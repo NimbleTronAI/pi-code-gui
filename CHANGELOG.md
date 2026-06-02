@@ -1,5 +1,16 @@
 # Change Log
 
+## [0.0.54]
+
+### Added
+- Workspace folder guard at startup — waits for VS Code to deliver workspace folders after host restart instead of falling back to `process.cwd()`.
+
+### Fixed
+- Previously open sessions now restore exactly on reload — no redundant `continueRecent` primary session created alongside restored sessions.
+- `saveOpenSessionPaths` now persists after every session initializes, not just at panel close. Sessions added mid-session survive crashes.
+- `vscode_apply_workspace_edit` auto-saves edited files so they don't remain dirty in the editor.
+- Added yaml, sql, and diff to highlight.js languages.
+
 ## [0.0.53]
 
 ### Fixed
