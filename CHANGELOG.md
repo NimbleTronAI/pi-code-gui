@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.0.55]
+
+### Fixed
+- SDK resolution now scans `$PATH` instead of relying on hardcoded candidate paths. Fixes SDK-not-found on systems with custom npm prefix locations.
+
 ## [0.0.54]
 
 ### Added
