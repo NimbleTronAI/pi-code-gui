@@ -51,21 +51,45 @@ A two-section tree:
 **Installed** — packages from `.pi/` config, each expandable to show:
 - Description, badges (version, license, downloads, publisher), keywords, links
   (npm, repo, homepage)
+- **Safety/provenance row** (risk · capabilities · source) from `rust-pi info`,
+  fetched in the background and cached per source
 - Actions: Uninstall, Update (if available)
 
 **Marketplace** — search results from npm registry filtered for Pi packages
 (`pi-` prefix, pi-related keywords). Each item expandable with the same
 overview format plus an Install action with scope picker.
 
+### Runtime-aware: shared catalog, available vs active
+
+Packages are **one shared ecosystem** across both runtimes (same npm-format
+packages, same `.pi/` locations) — see [Runtime Selection](runtime-selection.md).
+The view follows the **focused session's runtime** (`setFocusedRuntime()`, driven
+from `setActiveSession`):
+
+- The Installed header shows the runtime + active count (`Rust · 0/1 active`).
+- Each package is marked **active** (loaded by that runtime) or **available, not
+  loaded** (dimmed `circle-slash`). `PiPackageService.computeActiveSources()`:
+  TypeScript → every non-filtered package; Rust → none when `rustExtensions`
+  disables discovery, else the `rust-pi doctor`-compatible ones.
+- Installing under a focused Rust session warns (and points at `rustExtensions`)
+  when the package won't load — `checkRustLoadability()`.
+
+`PiPackageService` is backend-pluggable: the TypeScript SDK's
+`DefaultPackageManager` when present, else the **Rust binary**
+(`rust-pi list/install/remove/update`, see `src/rust-packages.ts`) so Rust-only
+installs still manage the same store. Search stays on the npm registry
+(runtime-independent).
+
 Key design decisions:
 - Marketplace search is debounced (2s minimum) with result caching
 - Banner images fetched from GitHub READMEs in background
-- Update availability checked via `checkForUpdates()` on refresh
+- Update availability checked via `checkForUpdates()` on refresh (SDK backend only)
 - Installed packages enriched with marketplace metadata for richer display
 
 ## Related
 
 - [Session Window](session-window.md) — the data source for open sessions
+- [Runtime Selection](runtime-selection.md) — shared package ecosystem; per-runtime active state
 - [PiPackageService](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/pi-package-service.ts) — the data source for installed and marketplace packages
 
-> **Last updated:** 2026-05-27 — progressive load, entry caching, state-change-aware refresh
+> **Last updated:** 2026-06-05 — runtime-aware Packages view: shared catalog, available vs active, Rust binary backend, safety signals

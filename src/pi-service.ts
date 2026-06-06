@@ -1,9 +1,31 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
-import { type PiServiceEvent, validateExtensionToWebview } from "./types.js";
+import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
+import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
+import { RustProcess, type RustEvent } from "./rust-process.js";
+import { resolveRustSessionDir } from "./rust-sessions.js";
+
+let _warnedNoWorkspace = false;
+/**
+ * The cwd a session/agent should run in. When no workspace folder is open, fall
+ * back to the home directory — NOT `process.cwd()`, which in the extension host
+ * is VS Code's own server dir (`.../vscode-server/.../api/node`). Running the
+ * agent there makes it treat VS Code's internals as "the project" (grepping
+ * extensionHostProcess.js, writing sessions under that path, EEXIST collisions).
+ */
+function resolveWorkspaceCwd(): string {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (folder) { return folder; }
+  if (!_warnedNoWorkspace) {
+    _warnedNoWorkspace = true;
+    piWarn("No workspace folder open — Pi has no project to operate on. Open a folder; falling back to the home directory.");
+  }
+  return os.homedir();
+}
 
 /** Find the last element matching predicate (ES2023 findLast polyfill). */
 function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
@@ -299,6 +321,17 @@ export class PiService {
   private _isStreaming = false;
   private sessionId: string | null = null;
 
+  // ── Runtime selection: in-process TypeScript SDK vs out-of-process Rust ──
+  private _backendKind: Runtime = "typescript";
+  private rust: RustProcess | null = null;
+  /** True while initializeRust is spawning, so a failed-spawn exit is handled by
+   *  the init path (return value) rather than the "exited unexpectedly" handler. */
+  private _rustInitializing = false;
+  /** Session file path for a Rust session (the SDK SessionManager owns this for TS). */
+  private _rustSessionPath: string | null = null;
+  /** Slash commands the live Rust session reports (its own extensions/templates/skills). */
+  private _rustSlashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
+
   // SDK root path (for re-importing individual modules)
   private _piRoot: string | null = null;
 
@@ -454,9 +487,17 @@ export class PiService {
     await fs.promises.unlink(filePath);
   }
 
-  async initialize(opts?: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string }> {
+  async initialize(opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     const fresh = opts?.fresh ?? false;
     const openPath = opts?.openPath ?? null;
+
+    // ── Runtime branch: Rust runs out-of-process via the RPC subprocess ──
+    const runtime = opts?.runtime ?? this._backendKind;
+    if (runtime === "rust") {
+      return this.initializeRust({ fresh, openPath: openPath ?? undefined });
+    }
+    this._backendKind = "typescript";
+
     // ── Step 1: Resolve SDK ────────────────────────────
     try {
       this._piRoot = resolvePiPackagePath();
@@ -514,7 +555,7 @@ export class PiService {
     }
 
     const SDK = this.SDK;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = resolveWorkspaceCwd();
 
     // ── Step 3: Auth & model registry ──────────────────
     try {
@@ -663,6 +704,17 @@ export class PiService {
         this.sessionManager = SDK.SessionManager.open(openPath, sessionDir);
       } else if (fresh) {
         this.sessionManager = SDK.SessionManager.create(cwd, sessionDir);
+        // A fresh session writes its file lazily on first persist via an
+        // EXCLUSIVE open ("wx"), which throws EEXIST if the generated path
+        // already exists. That collision was observed when the cwd is a shared
+        // dir (e.g. no workspace folder open → process.cwd()). Regenerate until
+        // the path is free so the first user message can't fail.
+        for (let i = 0; i < 8; i++) {
+          const f: string | undefined = this.sessionManager?.getSessionFile?.();
+          if (!f || !fs.existsSync(f)) { break; }
+          piWarn(`Fresh session path already exists, regenerating: ${f}`);
+          this.sessionManager = SDK.SessionManager.create(cwd, sessionDir);
+        }
       } else {
         try {
           this.sessionManager = await SDK.SessionManager.continueRecent(cwd);
@@ -805,6 +857,359 @@ export class PiService {
     }
 
     return { success: true };
+  }
+
+  // ── Rust runtime (out-of-process RPC) ──────────────────
+
+  /**
+   * Initialize a session backed by the Rust Pi binary (`pi --mode rpc`).
+   * The subprocess owns persistence and tool execution; we drive it over the
+   * line-delimited JSON RPC protocol and route its events through the existing
+   * handleAgentEvent path (the event shapes mirror the TS SDK's).
+   */
+  private async initializeRust(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
+    this._backendKind = "rust";
+    this._rustInitializing = true;
+    try {
+      return await this.initializeRustInner(opts);
+    } finally {
+      this._rustInitializing = false;
+    }
+  }
+
+  private async initializeRustInner(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
+    const fresh = opts.fresh ?? false;
+    const openPath = opts.openPath;
+
+    const status = detectRustBinary();
+    if (!status.installed || !status.binaryPath) {
+      return { success: false, error: status.error ?? "Rust Pi binary not found." };
+    }
+
+    const cwd = resolveWorkspaceCwd();
+    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+
+    // Build RPC args (flags verified against the v0.1.18 binary's README).
+    const args = ["--mode", "rpc", "--session-dir", resolveRustSessionDir()];
+    if (openPath) { args.push("--session", openPath); }
+    else if (!fresh) { args.push("--continue"); }
+    const provider = cfg.get<string>("defaultModelProvider")?.trim();
+    const modelId = cfg.get<string>("defaultModelId")?.trim();
+    if (provider) { args.push("--provider", provider); }
+    if (modelId) { args.push("--model", modelId); }
+    const thinking = cfg.get<string>("defaultThinkingLevel")?.trim();
+    if (thinking && thinking !== "off") { args.push("--thinking", thinking); }
+    const extPolicy = cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced";
+    args.push("--extension-policy", extPolicy);
+
+    // Extension discovery. The Rust binary aborts `--mode rpc` startup when it
+    // meets the workspace's TypeScript-SDK `.pi/` extensions (it wants its own
+    // tool-manifest shape: `missing field 'parameters'`). Per the rustExtensions
+    // setting we disable discovery up front ("disabled", or "auto" when those
+    // extensions are detected); the catch below is the safety net for the rest.
+    let noExtensions = shouldDisableRustExtensions(cwd);
+    if (noExtensions) { args.push("--no-extensions"); }
+
+    // Inherit env + runtime API-key overrides so Rust can authenticate.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    const anthropicKey = cfg.get<string>("anthropicApiKey");
+    if (anthropicKey) { env.ANTHROPIC_API_KEY = anthropicKey; }
+    const openaiKey = cfg.get<string>("openaiApiKey");
+    if (openaiKey) { env.OPENAI_API_KEY = openaiKey; }
+
+    this._thinkingLevel = thinking || "off";
+
+    let warning: string | undefined;
+    try {
+      await this.spawnRust(status.binaryPath, args, cwd, env);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Recover only from the extension-parse conflict, and only when we did NOT
+      // already disable extensions. In "auto" mode we self-heal (retry with
+      // discovery off + warn); when the user explicitly set "enabled" we respect
+      // that and surface an actionable error that points to the setting.
+      if (isRustExtensionConflict(msg) && !noExtensions && rustExtensionsMode() === "auto") {
+        piWarn("Rust start hit a TS-extension conflict; retrying with --no-extensions");
+        args.push("--no-extensions");
+        noExtensions = true;
+        warning = "rust-extensions-auto-disabled";
+        try {
+          await this.spawnRust(status.binaryPath, args, cwd, env);
+        } catch (e2: unknown) {
+          const msg2 = e2 instanceof Error ? e2.message : String(e2);
+          this.rust = null;
+          return { success: false, error: `Failed to start Rust Pi: ${msg2}`, errorKind: isRustExtensionConflict(msg2) ? "rust-extension-conflict" : undefined };
+        }
+      } else {
+        this.rust = null;
+        return { success: false, error: `Failed to start Rust Pi: ${msg}`, errorKind: isRustExtensionConflict(msg) ? "rust-extension-conflict" : undefined };
+      }
+    }
+
+    this._rustSessionPath = openPath ?? null;
+
+    // spawnRust succeeded above, so the process is live for the handshake.
+    const rust = this.rust!;
+
+    // Handshake: state → models → history.
+    try {
+      const state = await rust.request("get_state", {}, 15000);
+      if (state.success) { this.applyRustState(state.data); }
+    } catch (e: unknown) { piWarn(`Rust get_state failed: ${e instanceof Error ? e.message : String(e)}`); }
+
+    try {
+      const models = await rust.request("get_available_models", {}, 15000);
+      const list = this.rustModelList(models.data);
+      if (models.success && list.length > 0) { this.cycleModels = list; }
+    } catch (e: unknown) { piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`); }
+
+    try {
+      const msgs = await rust.request("get_messages", {}, 15000);
+      const entries = this.rustEntriesFromMessages(msgs.data);
+      this.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
+      await this.sendInitialMessages(entries);
+      this.emit({ type: "batch-end", data: { hasEntries: entries.length > 0 } });
+    } catch (e: unknown) { piWarn(`Rust get_messages failed: ${e instanceof Error ? e.message : String(e)}`); }
+
+    // The Rust session advertises its own commands/templates/skills — surface
+    // them in the slash-command list instead of the TypeScript SDK's.
+    try {
+      const cmds = await rust.request("get_commands", {}, 8000);
+      if (cmds.success) { this._rustSlashCommands = this.rustSlashCommandsFrom(cmds.data); }
+    } catch (e: unknown) { piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`); }
+
+    this.reportStatus();
+    try { this.emitScopedModels(); this.emitSettings(); this.emitSlashCommands(); }
+    catch (e: unknown) { piWarn(`Post-init emissions failed: ${e instanceof Error ? e.message : String(e)}`); }
+
+    return { success: true, warning };
+  }
+
+  /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
+  private async spawnRust(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+    this.rust?.dispose();
+    this.rust = new RustProcess({
+      binaryPath, args, cwd, env,
+      onEvent: (e: RustEvent) => this.handleRustEvent(e),
+      onExit: (code: number | null) => this.handleRustExit(code),
+    });
+    await this.rust.spawn();
+  }
+
+  /**
+   * Coerce Rust RPC payloads to the shapes the protocol schema requires. The
+   * Rust runtime sends `null` where the TypeScript SDK sends objects/strings
+   * (e.g. a tool with no params → `args: null`, `result.details: null`); the
+   * shared schema is strict on purpose, so we normalize on the Rust ingress only
+   * rather than weaken validation for the TS path. Fields are read directly off
+   * `event` exactly as handleAgentEvent reads them.
+   */
+  private normalizeRustEvent(event: RustEvent): void {
+    const nil = (v: unknown): boolean => v === null || v === undefined;
+    const fixText = (content: unknown): void => {
+      if (!Array.isArray(content)) { return; }
+      for (const c of content) {
+        if (c && typeof c === "object" && (c as { type?: string }).type === "text" && nil((c as { text?: unknown }).text)) {
+          (c as { text: string }).text = "";
+        }
+      }
+    };
+    const r = event as Record<string, unknown>;
+    switch (event?.type) {
+      case "tool_execution_start":
+        if (nil(r.args)) { r.args = {}; }
+        break;
+      case "tool_execution_update":
+        if (nil(r.partialResult)) { r.partialResult = {}; }
+        else { fixText((r.partialResult as { content?: unknown }).content); }
+        break;
+      case "tool_execution_end":
+        if (r.result === null) { delete r.result; }
+        else if (r.result && typeof r.result === "object") {
+          const res = r.result as { details?: unknown; content?: unknown };
+          if (res.details === null) { delete res.details; }
+          fixText(res.content);
+        }
+        break;
+      case "message_update": {
+        const d = r.assistantMessageEvent as { type?: string; delta?: unknown } | undefined;
+        if (d && (d.type === "text_delta" || d.type === "thinking_delta") && nil(d.delta)) { d.delta = ""; }
+        break;
+      }
+      case "message_end": {
+        const m = r.message as { role?: string; content?: unknown; details?: unknown } | undefined;
+        if (m && typeof m === "object") {
+          if (m.role === "custom" && nil(m.content)) { m.content = ""; }
+          if (m.details === null) { delete m.details; }
+        }
+        break;
+      }
+      case "compaction_end": {
+        const res = r.result as { summary?: unknown; tokensBefore?: unknown } | undefined;
+        if (res && typeof res === "object") {
+          if (nil(res.summary)) { res.summary = ""; }
+          if (nil(res.tokensBefore)) { res.tokensBefore = 0; }
+        }
+        break;
+      }
+    }
+  }
+
+  /** Route a raw Rust RPC event: intercept UI/errors, delegate the rest to handleAgentEvent. */
+  private handleRustEvent(event: RustEvent): void {
+    this.normalizeRustEvent(event);
+    switch (event?.type) {
+      case "extension_ui_request":
+        void this.handleRustUiRequest(event);
+        return;
+      case "extension_error":
+        this.emit({ type: "custom-message", data: { customType: "error", content: `Extension error: ${event.error ?? ""}`, timestamp: Date.now() } });
+        return;
+      case "agent_start":
+        if (typeof event.sessionId === "string") { this.sessionId = event.sessionId; }
+        break;
+    }
+    try {
+      this.handleAgentEvent(event);
+    } catch (e: unknown) {
+      piWarn(`handleRustEvent(${event?.type}): ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // After a turn, re-sync state so the (now-written) session file path,
+    // model, and settings are captured for status + reload persistence.
+    if (event?.type === "agent_end") { void this.refreshRustState(); }
+  }
+
+  /** Re-query Rust `get_state` (e.g. after a turn) to capture sessionFile/model/settings. */
+  private async refreshRustState(): Promise<void> {
+    if (!this.rust) { return; }
+    try {
+      const state = await this.rust.request("get_state", {}, 8000);
+      if (state.success) {
+        this.applyRustState(state.data);
+        this.reportStatus();
+      }
+    } catch (e: unknown) {
+      piWarn(`refreshRustState failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Map a Rust `extension_ui_request` onto the existing webview dialog/widget bridge. */
+  private async handleRustUiRequest(req: RustEvent): Promise<void> {
+    const method = String(req.method ?? "");
+    const id = typeof req.id === "string" ? req.id : undefined;
+    try {
+      switch (method) {
+        case "notify": {
+          const isError = req.notifyType === "error" || req.notifyType === "warning";
+          this.emit({ type: "custom-message", data: { customType: isError ? "error" : "extension-notify", content: String(req.message ?? ""), timestamp: Date.now() } });
+          return;
+        }
+        case "setStatus": {
+          const text = req.statusText;
+          const empty = text === null || text === undefined;
+          this.emit({ type: "widget-update", data: { key: `status-${req.statusKey}`, content: empty ? null : `**${req.statusKey}** ${text}` } });
+          return;
+        }
+        case "setWidget": {
+          const lines = Array.isArray(req.widgetLines) ? (req.widgetLines as string[]) : [];
+          this.emit({ type: "widget-update", data: { key: String(req.widgetKey ?? "widget"), content: lines.length ? lines.join("\n") : null } });
+          return;
+        }
+        case "select":
+        case "confirm":
+        case "input":
+        case "editor": {
+          const dialogType = method === "editor" ? "input" : method;
+          const prompt = String(req.title ?? req.message ?? "");
+          const pending = this._showDialog(dialogType, prompt, {
+            options: Array.isArray(req.options) ? (req.options as string[]) : undefined,
+            defaultValue: (req.defaultValue ?? req.prefill) as string | undefined,
+          });
+          const value = pending ? await pending : undefined;
+          if (id) {
+            if (value === undefined || value === null) {
+              this.rust?.send("extension_ui_response", { id, cancelled: true });
+            } else if (method === "confirm") {
+              this.rust?.send("extension_ui_response", { id, confirmed: !!value });
+            } else {
+              this.rust?.send("extension_ui_response", { id, value });
+            }
+          }
+          return;
+        }
+        default:
+          // setTitle / set_editor_text and other fire-and-forget methods: no-op for v1.
+          return;
+      }
+    } catch (e: unknown) {
+      piWarn(`handleRustUiRequest(${method}) failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Surface an unexpected Rust subprocess exit in the chat. */
+  private handleRustExit(code: number | null): void {
+    // A spawn failure during initialization (e.g. the extension-parse conflict)
+    // is reported through initializeRust's return value — don't also surface the
+    // generic "exited unexpectedly" message, which would race the recovery path.
+    if (this._rustInitializing) {
+      piWarn(`Rust process exited during init (code ${code ?? "?"})`);
+      return;
+    }
+    this._isStreaming = false;
+    this.emit({ type: "custom-message", data: { customType: "error", content: `Rust Pi exited unexpectedly (code ${code ?? "?"}). Start a new session to continue.`, timestamp: Date.now() } });
+    this.reportStatus();
+  }
+
+  /** Apply a Rust `get_state` response to local model/thinking/session fields. */
+  private applyRustState(data: unknown): void {
+    if (!data || typeof data !== "object") { return; }
+    const d = data as Record<string, unknown>;
+    const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string } | undefined;
+    if (model && typeof model === "object") {
+      this._model = { id: model.id, name: model.name, provider: model.provider };
+    } else if (typeof d.modelId === "string") {
+      this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
+    }
+    const thinking = (d.thinkingLevel ?? d.thinking) as string | undefined;
+    if (typeof thinking === "string") { this._thinkingLevel = thinking; }
+    if (typeof d.sessionId === "string") { this.sessionId = d.sessionId; }
+    // Field names verified against the real binary's get_state response.
+    if (typeof d.autoCompactionEnabled === "boolean") { this._autoCompactionEnabled = d.autoCompactionEnabled; }
+    if (typeof d.autoRetryEnabled === "boolean") { this._autoRetryEnabled = d.autoRetryEnabled; }
+    // Capture the on-disk session file (may be null until the first turn writes it)
+    // so fresh Rust sessions can be persisted and restored on reload.
+    if (typeof d.sessionFile === "string") { this._rustSessionPath = d.sessionFile; }
+  }
+
+  /** Normalize a Rust `get_available_models` response to {provider, id} pairs. */
+  private rustModelList(data: unknown): Array<{ provider: string; id: string }> {
+    const d = data as { models?: unknown } | undefined;
+    const raw = Array.isArray(d?.models) ? d.models : (Array.isArray(data) ? data : []);
+    return (raw as Array<{ provider?: string; id?: string }>)
+      .filter((m) => m && typeof m.provider === "string" && typeof m.id === "string")
+      .map((m) => ({ provider: m.provider as string, id: m.id as string }));
+  }
+
+  /** Wrap a Rust `get_messages` response as session-entry shapes for sendInitialMessages. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private rustEntriesFromMessages(data: unknown): any[] {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d = data as { messages?: any[] } | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messages: any[] = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? (data) : []);
+    return messages.map((m, i) => ({ type: "message", message: m, id: m?.id ?? `rust-${i}` }));
+  }
+
+  /** Send a prompt/steer/follow-up to the Rust subprocess. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async sendPromptRust(text: string, images?: any[], mode?: string): Promise<void> {
+    if (!this.rust) { throw new Error("Rust Pi session not initialized"); }
+    const imgs = images && images.length > 0 ? images : undefined;
+    const payload: Record<string, unknown> = { message: text };
+    if (imgs) { payload.images = imgs; }
+    if (mode === "steer") { this.rust.send("steer", payload); }
+    else if (mode === "queue") { this.rust.send("follow_up", payload); }
+    else { this.rust.send("prompt", payload); }
   }
 
   // ── Extension UI Bridge ────────────────────────────
@@ -993,52 +1398,83 @@ export class PiService {
    *  field so the UI can group or label them. */
   getAllSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
     const result: Array<{ cmd: string; desc: string; source: string }> = [];
+    const isRust = this._backendKind === "rust";
 
-    // ── Extension commands ──────────────────────────
-    try {
- 
-      const rawSession = (this.session);
-      const runner = rawSession?._extensionRunner;
-      if (runner && typeof runner.getRegisteredCommands === "function") {
-        const commands = runner.getRegisteredCommands();
-        if (commands && commands.length > 0) {
-          for (const c of commands) {
-            const source = c?.sourceInfo?.source
-              ? `extension (${c.sourceInfo.source})`
-              : "extension";
-            result.push({
-              cmd: `/${c.invocationName}`,
-              desc: c.description ?? "",
-              source,
-            });
+    // ── Agent-provided commands (per runtime) ───────
+    // These come from whichever agent is actually running this session, so each
+    // runtime advertises only the commands it can service.
+    if (isRust) {
+      // The Rust runtime reports its own extensions / templates / skills over RPC.
+      result.push(...this._rustSlashCommands);
+    } else {
+      // TypeScript SDK: extension-registered commands + builtin prompt templates.
+      try {
+        const rawSession = (this.session);
+        const runner = rawSession?._extensionRunner;
+        if (runner && typeof runner.getRegisteredCommands === "function") {
+          const commands = runner.getRegisteredCommands();
+          if (commands && commands.length > 0) {
+            for (const c of commands) {
+              const source = c?.sourceInfo?.source
+                ? `extension (${c.sourceInfo.source})`
+                : "extension";
+              result.push({ cmd: `/${c.invocationName}`, desc: c.description ?? "", source });
+            }
           }
         }
-      }
-    } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
+      } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
 
-    // ── Builtin prompt templates ────────────────────
-    result.push(
-      { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
-      { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
-      { cmd: "/refactor", desc: "Refactor the selected code", source: "builtin" },
-    );
+      // Builtin prompt templates are TypeScript-SDK-registered (Rust supplies its
+      // own via get_commands above), so they only apply to the TS runtime.
+      result.push(
+        { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
+        { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
+        { cmd: "/refactor", desc: "Refactor the selected code", source: "builtin" },
+      );
+    }
 
-    // ── Builtin SDK commands ────────────────────────
+    // ── GUI-orchestrated session commands (both runtimes) ───
+    // The extension services these directly (pickers, session ops), branching
+    // internally on the runtime, so they work from chat regardless of backend.
     result.push(
       { cmd: "/model", desc: "Switch model", source: "builtin" },
       { cmd: "/new", desc: "Start new session", source: "builtin" },
-      { cmd: "/resume", desc: "Resume a previous session", source: "builtin" },
-      { cmd: "/fork", desc: "Fork session from message", source: "builtin" },
       { cmd: "/compact", desc: "Compact context", source: "builtin" },
-      { cmd: "/export", desc: "Export session to HTML", source: "builtin" },
       { cmd: "/settings", desc: "Open settings", source: "builtin" },
       { cmd: "/login", desc: "Configure provider authentication", source: "builtin" },
       { cmd: "/logout", desc: "Remove provider authentication", source: "builtin" },
       { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
-      { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
     );
 
+    // ── TypeScript-only ─────────────────────────────
+    // resume/fork/export are serviced by the SDK when forwarded as a prompt; the
+    // Rust RPC can't run them from chat (use the Sessions view / palette there),
+    // so they're not advertised to Rust. /tools enumerates SDK customTools, for
+    // which there's no RPC equivalent under Rust.
+    if (!isRust) {
+      result.push(
+        { cmd: "/resume", desc: "Resume a previous session", source: "builtin" },
+        { cmd: "/fork", desc: "Fork session from message", source: "builtin" },
+        { cmd: "/export", desc: "Export session to HTML", source: "builtin" },
+        { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
+      );
+    }
+
     return result;
+  }
+
+  /** Map a Rust `get_commands` reply into slash-command entries (tolerant of field naming). */
+  private rustSlashCommandsFrom(data: unknown): Array<{ cmd: string; desc: string; source: string }> {
+    const list = (data as { commands?: unknown })?.commands;
+    if (!Array.isArray(list)) { return []; }
+    const out: Array<{ cmd: string; desc: string; source: string }> = [];
+    for (const c of list as Array<Record<string, unknown>>) {
+      const name = String(c.invocationName ?? c.name ?? c.command ?? c.id ?? "").replace(/^\/+/, "");
+      if (!name) { continue; }
+      const src = c.source ?? (c.sourceInfo as { source?: unknown } | undefined)?.source;
+      out.push({ cmd: `/${name}`, desc: String(c.description ?? c.desc ?? ""), source: src ? `rust (${String(src)})` : "rust" });
+    }
+    return out;
   }
 
   /** Emit all registered slash commands to the webview for autocomplete. */
@@ -1051,17 +1487,24 @@ export class PiService {
   }
 
   /** Send existing session messages to the webview on initial load (or after reload). */
-  async sendInitialMessages(): Promise<void> {
-    // Build session context from the session manager
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async sendInitialMessages(providedEntries?: any[]): Promise<void> {
+    // Build session context from the session manager, or from caller-provided
+    // entries (the Rust runtime supplies these from its `get_messages` reply).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let entries: any[];
-    try {
-      entries = this.sessionManager.getEntries();
-      piLog(`sendInitialMessages: ${entries?.length ?? 0} entries`);
+    if (providedEntries) {
+      entries = providedEntries;
+      piLog(`sendInitialMessages: ${entries.length} provided entries`);
+    } else {
+      try {
+        entries = this.sessionManager.getEntries();
+        piLog(`sendInitialMessages: ${entries?.length ?? 0} entries`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      piWarn(`sendInitialMessages: getEntries failed: ${e.message}`);
-      return;
+      } catch (e: any) {
+        piWarn(`sendInitialMessages: getEntries failed: ${e.message}`);
+        return;
+      }
     }
     if (!entries || entries.length === 0) { return; }
 
@@ -1299,7 +1742,7 @@ export class PiService {
             if (tc.name === "bash" || tc.name === "exec") { continue; }
             if (!this.currentAssistantToolCalls.has(tc.id)) {
               this.currentAssistantToolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments });
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments, fromMessage: true } });
+              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments ?? {}, fromMessage: true } });
             } else {
               const existing = this.currentAssistantToolCalls.get(tc.id);
               if (existing) {
@@ -1350,7 +1793,7 @@ export class PiService {
         if (event.toolName === "bash" || event.toolName === "exec") {
           this.emit({ type: "bash-start", data: { toolCallId: event.toolCallId, command: args?.command ?? "", entryId: tcEntryId } });
         } else {
-          this.emit({ type: "tool-start", data: { toolCallId: event.toolCallId, toolName: event.toolName, args: args, fromMessage: false, entryId: tcEntryId } });
+          this.emit({ type: "tool-start", data: { toolCallId: event.toolCallId, toolName: event.toolName, args: args ?? {}, fromMessage: false, entryId: tcEntryId } });
         }
         break;
       }
@@ -1448,6 +1891,7 @@ export class PiService {
         sessionId: this.sessionId ?? undefined,
         usage: stats,
         contextBudget: budget,
+        runtime: this._backendKind,
       },
     });
   }
@@ -1456,6 +1900,7 @@ export class PiService {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
+    if (this._backendKind === "rust") { return this.sendPromptRust(text, images, mode); }
     if (!this.session) { throw new Error("Pi session not initialized"); }
 
     // Handle slash commands at the PiService level before forwarding to
@@ -1630,6 +2075,11 @@ export class PiService {
   }
 
   async abort(): Promise<void> {
+    if (this._backendKind === "rust") {
+      this.rust?.send("abort_bash");
+      this.rust?.send("abort");
+      return;
+    }
     if (!this.session) {
       piWarn("abort() called but session not initialized — nothing to abort");
       return;
@@ -1641,6 +2091,21 @@ export class PiService {
     try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     try { this.session.agent.abort(); } catch (e: any) { piWarn(`abort() failed: ${e?.message ?? e}`); }
+  }
+
+  /**
+   * Compact the conversation context. Runtime-aware: the Rust RPC has an explicit
+   * `compact` command, whereas the TypeScript path uses the SDK session (the same
+   * call the command-palette `pi-code-gui.compact` uses, so TS behaviour is
+   * unchanged).
+   */
+  async compact(): Promise<void> {
+    if (this._backendKind === "rust") {
+      this.rust?.send("compact");
+      return;
+    }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    try { await this.rawSession?.compact?.(); } catch (e: any) { piWarn(`compact() failed: ${e?.message ?? e}`); }
   }
 
   /** Resolve a pending interactive dialog (called from webview-panel.ts). */
@@ -1798,6 +2263,14 @@ export class PiService {
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
+    if (this._backendKind === "rust") {
+      this.rust?.send("set_model", { provider, modelId });
+      this._model = { id: modelId, provider };
+      this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
+      if (this.cycleIndex === -1) { this.cycleIndex = 0; }
+      this.reportStatus();
+      return;
+    }
     if (!this.session || !this.AI) {
       piWarn(`setModel("${provider}/${modelId}") ignored: session not initialized`);
       return;
@@ -1830,6 +2303,19 @@ export class PiService {
   }
 
   async cycleModel(): Promise<void> {
+    if (this._backendKind === "rust") {
+      if (this.cycleModels.length === 0) {
+        vscode.window.showWarningMessage("No models available. Configure an API key first.");
+        return;
+      }
+      this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
+      const next = this.cycleModels[this.cycleIndex];
+      this.rust?.send("set_model", { provider: next.provider, modelId: next.id });
+      this._model = { id: next.id, provider: next.provider };
+      vscode.window.showInformationMessage(`Model: ${next.id}`);
+      this.reportStatus();
+      return;
+    }
     if (!this.session || !this.AI) {
       vscode.window.showWarningMessage("Pi session not ready yet.");
       return;
@@ -1855,6 +2341,12 @@ export class PiService {
   }
 
   async setThinkingLevel(level: string): Promise<void> {
+    if (this._backendKind === "rust") {
+      this.rust?.send("set_thinking_level", { level });
+      this._thinkingLevel = level;
+      this.reportStatus();
+      return;
+    }
     if (!this.session) {
       piWarn(`setThinkingLevel("${level}") ignored: session not initialized`);
       return;
@@ -2205,6 +2697,8 @@ export class PiService {
   get isStreaming(): boolean { return this._isStreaming; }
   get model(): { id?: string; name?: string; provider?: string } | null { return this._model; }
   get thinkingLevel(): string { return this._thinkingLevel; }
+  /** Which runtime backs this session: "typescript" (in-process SDK) or "rust" (RPC subprocess). */
+  get runtime(): Runtime { return this._backendKind; }
 
   /** Promote a follow-up message to a steering message. */
   async promoteToSteer(text: string): Promise<void> {
@@ -2228,10 +2722,10 @@ export class PiService {
   get sessionManagerInstance(): any { return this.sessionManager; }
   /** The file path of the session file on disk (for persistence across reloads). */
   get sessionFilePath(): string | null {
-    return this.sessionManager?.getSessionFile?.() ?? null;
+    return this.sessionManager?.getSessionFile?.() ?? this._rustSessionPath;
   }
   get sessionIdValue(): string | null { return this.sessionId; }
-  get initialized(): boolean { return this.session !== null; }
+  get initialized(): boolean { return this.session !== null || this.rust !== null; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get rawSession(): any { return this.session; }
   /** Expose the model registry for dynamic model pickers in the webview */
@@ -2304,6 +2798,10 @@ export class PiService {
 
   /** Open a QuickPick to select which tools are active for this session. */
   async pickActiveTools(): Promise<boolean> {
+    if (this._backendKind === "rust") {
+      vscode.window.showInformationMessage("Per-session tool selection isn't available for Rust sessions — Rust uses its full built-in tool set.");
+      return false;
+    }
     if (!this.session) {
       vscode.window.showWarningMessage("Pi session not ready yet.");
       return false;
@@ -2682,12 +3180,20 @@ export class PiService {
   // ── Cleanup ────────────────────────────────────────────
 
   dispose(): void {
+    // Rust runtime: tear down the subprocess (it owns its own persistence).
+    if (this._backendKind === "rust") {
+      if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
+      this.rust?.dispose();
+      this.rust = null;
+      return;
+    }
+
     // Force-flush the session file to disk before tearing down.
     // The SDK defers all disk writes until the first assistant message
     // arrives, so if the model is slow or the user closes the tab early,
     // entries (including session_info with the tab name) exist only in
     // memory and would be lost.  _rewriteFile bypasses the deferral.
- 
+
     const sm = this.sessionManager;
     if (sm && !sm.flushed && typeof sm._rewriteFile === "function") {
       try { sm._rewriteFile(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }

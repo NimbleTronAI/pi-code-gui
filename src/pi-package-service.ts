@@ -1,6 +1,11 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { resolvePiPackagePath } from "./pi-service.js";
+import type { Runtime } from "./types.js";
+import { detectRustBinary } from "./rust-resolver.js";
+import { rustListInstalled, rustInstall, rustRemove, rustUpdate, rustActiveSources, rustInfo, rustLoadability, type RustPackageInfo, type RustLoadability } from "./rust-packages.js";
+
+export type { RustPackageInfo, RustLoadability } from "./rust-packages.js";
 
 /**
  * Wraps the Pi SDK's DefaultPackageManager for use in the VS Code extension.
@@ -72,25 +77,31 @@ export class PiPackageService {
   private packageManager: any | null = null;
   private sdkRoot: string | null = null;
   private initialized = false;
+  /**
+   * Which backend drives package operations against the (shared) store:
+   * - "sdk"  — the TypeScript SDK's DefaultPackageManager (preferred when present)
+   * - "rust" — the Rust binary CLI, used when the SDK isn't installed
+   * Packages are a single shared ecosystem, so either backend manages the same
+   * `.pi/` packages; the choice only affects HOW operations are executed.
+   */
+  private backendKind: "sdk" | "rust" | "none" = "none";
 
   // Marketplace search debounce + cache
   private lastSearchTime = 0;
   private lastSearchPromise: Promise<MarketplacePackage[]> | null = null;
   private defaultResults: MarketplacePackage[] | null = null;
 
-  /** Initialize the package manager, loading the SDK dynamically. */
+  /**
+   * Initialize the package manager. Prefers the TypeScript SDK's
+   * DefaultPackageManager; if the SDK isn't installed, falls back to the Rust
+   * binary so Rust-only users can still manage the (shared) package store.
+   */
   async initialize(): Promise<{ success: boolean; error?: string }> {
     if (this.initialized) { return { success: true }; }
 
+    let sdkError: string;
     try {
       this.sdkRoot = resolvePiPackagePath();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `SDK not found: ${e.message ?? e}` };
-    }
-
-    try {
- 
       const SDK = (await import(path.join(this.sdkRoot, "dist/index.js")));
       const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
       const SettingsManager = SDK.SettingsManager;
@@ -103,15 +114,33 @@ export class PiPackageService {
         settingsManager,
       });
       this.initialized = true;
+      this.backendKind = "sdk";
       return { success: true };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
-      return { success: false, error: `Failed to initialize package manager: ${e.message ?? e}` };
+      sdkError = e?.message ?? String(e);
     }
+
+    // SDK unavailable — fall back to the Rust binary against the same store.
+    if (detectRustBinary().installed) {
+      this.initialized = true;
+      this.backendKind = "rust";
+      return { success: true };
+    }
+
+    this.backendKind = "none";
+    return { success: false, error: `No Pi runtime available for package management (SDK: ${sdkError}).` };
   }
 
-  /** List all configured/installed packages. */
-  listInstalled(): InstalledPackage[] {
+  /** Which backend is driving package operations ("sdk" | "rust" | "none"). */
+  get backend(): "sdk" | "rust" | "none" { return this.backendKind; }
+
+  /** List all configured/installed packages from the shared store. */
+  async listInstalled(): Promise<InstalledPackage[]> {
+    if (this.backendKind === "rust") {
+      const pkgs = await rustListInstalled();
+      return pkgs.map((p) => ({ source: p.source, scope: p.scope, filtered: false, installedPath: p.installedPath }));
+    }
     if (!this.packageManager) { return []; }
     try {
       const packages = this.packageManager.listConfiguredPackages();
@@ -127,8 +156,47 @@ export class PiPackageService {
     }
   }
 
+  /**
+   * The sources actually loaded ("active") by a session on `runtime`, given the
+   * installed set. Packages are shared, but a runtime may not load every one:
+   * - typescript — every configured, non-filtered package loads.
+   * - rust       — none when extension discovery is disabled for the workspace
+   *   (`rustExtensions` / `--no-extensions`); otherwise the doctor-compatible
+   *   ones. Installed-but-not-returned = "available, not loaded".
+   */
+  async computeActiveSources(runtime: Runtime, installed: InstalledPackage[]): Promise<Set<string>> {
+    if (runtime === "rust") {
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      return rustActiveSources(cwd, installed);
+    }
+    return new Set(installed.filter((p) => !p.filtered).map((p) => p.source));
+  }
+
+  /**
+   * Provenance / safety signals for a package (`rust-pi info`), or null when the
+   * Rust binary isn't available. Surfaced as badges in the Packages view.
+   */
+  async getSafetyInfo(source: string): Promise<RustPackageInfo | null> {
+    if (!detectRustBinary().installed) { return null; }
+    const name = source.startsWith("npm:") ? source.slice(4) : source;
+    return rustInfo(name);
+  }
+
+  /**
+   * Whether a focused Rust session would load the (installed) package — used to
+   * warn at install time. Resolves the package's on-disk path from the shared
+   * store, then defers to the Rust loadability check.
+   */
+  async checkRustLoadability(source: string): Promise<RustLoadability> {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const installed = await this.listInstalled();
+    const pkg = installed.find((p) => p.source === source);
+    return rustLoadability(cwd, pkg?.installedPath);
+  }
+
   /** Install a package by source string (e.g. "npm:pi-subagents", "npm:@scope/pkg"). */
   async install(source: string, scope: "user" | "project" = "user"): Promise<{ success: boolean; error?: string }> {
+    if (this.backendKind === "rust") { return rustInstall(source, scope === "project"); }
     if (!this.packageManager) {
       return { success: false, error: "Package manager not initialized" };
     }
@@ -143,6 +211,7 @@ export class PiPackageService {
 
   /** Uninstall a package by source string. */
   async uninstall(source: string, scope: "user" | "project" = "user"): Promise<{ success: boolean; error?: string }> {
+    if (this.backendKind === "rust") { return rustRemove(source, scope === "project"); }
     if (!this.packageManager) {
       return { success: false, error: "Package manager not initialized" };
     }
@@ -157,6 +226,7 @@ export class PiPackageService {
 
   /** Update all installed packages or a specific one. */
   async update(source?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.backendKind === "rust") { return rustUpdate(source); }
     if (!this.packageManager) {
       return { success: false, error: "Package manager not initialized" };
     }
@@ -171,7 +241,8 @@ export class PiPackageService {
 
   /** Check for available updates across all installed packages. */
   async checkForUpdates(): Promise<Array<{ source: string; displayName: string; type: string; scope: string }>> {
-    if (!this.packageManager) { return []; }
+    // The Rust CLI has no dry-run; skip the per-source update markers under it.
+    if (this.backendKind === "rust" || !this.packageManager) { return []; }
     try {
       return await this.packageManager.checkForAvailableUpdates();
     } catch {
@@ -304,9 +375,9 @@ export class PiPackageService {
     }
   }
 
-  /** Check if the package manager is ready. */
+  /** Check if the package manager is ready (via either backend). */
   get isReady(): boolean {
-    return this.initialized && this.packageManager !== null;
+    return this.initialized && this.backendKind !== "none";
   }
 
   /**

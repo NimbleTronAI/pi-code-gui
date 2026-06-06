@@ -614,10 +614,20 @@ export function handleThinkingDelta(data: any) {
   // ═══ In-webview status bar ═══════════════════════════
 
 let sbDot = document.getElementById("pi-sb-dot");
+let sbRuntime = document.getElementById("pi-sb-runtime");
 let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
 let sbEffort = document.getElementById("pi-sb-effort");
 let sbUsage = document.getElementById("pi-sb-usage");
+
+function setSbRuntime(runtime: string | undefined) {
+    if (!sbRuntime || !runtime) {return;}
+    const isRust = runtime === "rust";
+    sbRuntime.textContent = isRust ? "π Rust" : "π TS";
+    // Solid-fill runtime pill: blue for TypeScript, tan for Rust (see style.css).
+    sbRuntime.classList.toggle("pi-sb-runtime--rust", isRust);
+    sbRuntime.classList.toggle("pi-sb-runtime--ts", !isRust);
+  }
 
 export function setSbDot(state: string) {
     if (!sbDot) {return;}
@@ -637,6 +647,7 @@ export function sbModelText(modelId: string) {
 export function handleStatusUpdate(data: any) {
     if (data.reset) {return;}
 
+    setSbRuntime(data.runtime);
     if (sbModel && data.model) {
       sbModel.textContent = sbModelText(data.model);
     }
@@ -659,6 +670,7 @@ export function handleStatusUpdate(data: any) {
   }
 
 export function handleStatus(data: any) {
+    setSbRuntime(data.runtime);
     if (data.ready) {
       state.promptInput.disabled = false;
       state.sendButton.disabled = false;
@@ -1312,6 +1324,11 @@ export function sendPrompt(): void {
   });
 
   // ── In-webview status bar click handlers ─────────────
+  if (sbRuntime) {
+    sbRuntime.addEventListener("click", function () {
+      window.__vscode.postMessage({ type: "switchRuntime" });
+    });
+  }
   if (sbModel) {
     sbModel.addEventListener("click", function () {
       window.__vscode.postMessage({ type: "pickModel" });

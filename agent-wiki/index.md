@@ -16,6 +16,8 @@ reference; follow the links for depth.
 
 - [Session Window](architecture/session-window.md) — Paired PiService+WebviewPanel, multi-session, restore across reloads
 - [PiService](architecture/pi-service.md) — SDK lifecycle bridge, dynamic import, event translation, model/settings
+- [Runtime Selection](architecture/runtime-selection.md) — TypeScript vs Rust runtimes, `backendKind` branching, RPC, install/detection
+- [Runtime Switching UX](architecture/runtime-switching-ux.md) — per-session runtime pickers, switch command, indicators, install dialogs
 - [Webview Panel](architecture/webview-panel.md) — Webview creation, bidirectional messaging, tab indicators
 - [Bridge Tools](architecture/bridge-tools.md) — 17 VS Code API tools for the AI agent
 - [Event Translation](architecture/event-translation.md) — SDK agent events → PiServiceEvent types

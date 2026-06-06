@@ -4,7 +4,7 @@
   "author": "Jack Noppé",
   "displayName": "Pi Code Gui",
   "description": "Native VS Code editor experience for Pi coding agent",
-  "version": "0.0.55",
+  "version": "0.0.56",
   "license": "MIT",
   "sponsor": {
     "url": "https://github.com/sponsors/NimbleTronAI"
@@ -121,6 +121,30 @@
           "light": "media/pi-editor-button.svg",
           "dark": "media/pi-editor-dark.svg"
         }
+      },
+      {
+        "command": "pi-code-gui.addSessionWithRuntime",
+        "title": "PiGui: Add Pi Session (Choose Runtime)"
+      },
+      {
+        "command": "pi-code-gui.addSessionTypescript",
+        "title": "PiGui: Add TypeScript Pi Session"
+      },
+      {
+        "command": "pi-code-gui.addSessionRust",
+        "title": "PiGui: Add Rust Pi Session"
+      },
+      {
+        "command": "pi-code-gui.setDefaultRuntime",
+        "title": "PiGui: Set Default Runtime"
+      },
+      {
+        "command": "pi-code-gui.switchRuntime",
+        "title": "PiGui: Switch Runtime (New Session)"
+      },
+      {
+        "command": "pi-code-gui.installRust",
+        "title": "PiGui: Install Rust Pi"
       },
       {
         "command": "pi-code-gui.revealEntry",
@@ -327,6 +351,64 @@
           "type": "string",
           "default": "",
           "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir."
+        },
+        "pi-code-gui.defaultRuntime": {
+          "type": "string",
+          "enum": ["typescript", "rust"],
+          "default": "typescript",
+          "enumDescriptions": [
+            "TypeScript Pi — runs in-process for the deepest VS Code integration: 16 editor-bridge tools (diagnostics, symbols, types, format, apply-edit), interactive extension cards, and per-session tool control. Needs Node.js + npm.",
+            "Rust Pi — a fast, self-contained binary (no Node.js): ~100 ms startup, low memory, strong built-in safety. Trade-off: no VS Code editor-bridge tools, and extension cards fall back to plain markdown."
+          ],
+          "markdownDescription": "The Pi runtime used for **new** sessions. Resuming a session always reuses the runtime that created it, and if only one runtime is installed that one is used regardless of this setting. Change it anytime via **PiGui: Set Default Runtime** — your choice is remembered."
+        },
+        "pi-code-gui.sessionHistoryScope": {
+          "type": "string",
+          "enum": ["unified", "perRuntime"],
+          "default": "unified",
+          "enumDescriptions": [
+            "Show sessions from both runtimes in one list, each tagged with a TS or Rust badge.",
+            "Show only sessions created by your current default runtime."
+          ],
+          "markdownDescription": "Which past sessions appear under **Sessions → Past Sessions**. The runtimes store history separately; this only controls what the list shows. Each session is always reopened with the runtime that created it."
+        },
+        "pi-code-gui.rustBinaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual."
+        },
+        "pi-code-gui.rustInstallMethod": {
+          "type": "string",
+          "enum": ["managed", "curl", "manual"],
+          "default": "managed",
+          "enumDescriptions": [
+            "Download the verified prebuilt binary from GitHub releases into an extension-managed location (falls back to `cargo install` if a Rust toolchain is present). No PATH changes, no remote scripts.",
+            "Run the official `curl | sh` installer in a terminal. Easiest and sets up PATH, but runs a remote script and may rename an existing TypeScript `pi` command to `legacy-pi`.",
+            "Open the install guide; the extension detects the binary after you finish installing it yourself."
+          ],
+          "markdownDescription": "How **PiGui: Install Rust Pi** installs the binary when you opt in. You can still choose at install time; this just pre-selects an option."
+        },
+        "pi-code-gui.rustExtensionPolicy": {
+          "type": "string",
+          "enum": ["safe", "balanced", "permissive"],
+          "default": "balanced",
+          "enumDescriptions": [
+            "Most restrictive — extensions get minimal capabilities. Best if you run untrusted extensions.",
+            "Recommended — sensible capability limits for everyday use.",
+            "Most open — grants extensions broad capabilities. Choose only for extensions you trust."
+          ],
+          "markdownDescription": "Capability access granted to Rust Pi **extensions** (passed as `--extension-policy`). Governs third-party extension hostcalls (exec/http/file) only — built-in tools and Rust's catastrophic-command blocking are always enforced regardless of this setting."
+        },
+        "pi-code-gui.rustExtensions": {
+          "type": "string",
+          "enum": ["auto", "enabled", "disabled"],
+          "default": "auto",
+          "enumDescriptions": [
+            "Recommended — load extensions unless the workspace has TypeScript-format Pi extensions under .pi/ (which the Rust runtime can't parse). Avoids the startup conflict automatically.",
+            "Always let Rust discover extensions. Use only when your workspace has Rust-compatible extensions; a TypeScript-format .pi/ will prevent Rust sessions from starting.",
+            "Never load extensions under Rust (pure built-in tools). Most robust."
+          ],
+          "markdownDescription": "Whether **Rust** Pi sessions discover and load Pi extensions (controls the `--no-extensions` flag). The Rust runtime aborts startup when it meets the in-process TypeScript SDK's `.pi/` extensions (`missing field 'parameters'`). `auto` disables discovery only when such extensions are detected; `disabled` always disables it; `enabled` never does. Does not affect the TypeScript runtime."
         }
       }
     },
@@ -380,6 +462,11 @@
           "group": "3_sessionActions"
         },
         {
+          "command": "pi-code-gui.switchRuntime",
+          "when": "view == pi-code-gui.sessions && viewItem == session && pi-code-gui.bothAvailable",
+          "group": "3_sessionActions"
+        },
+        {
           "command": "pi-code-gui.resumePastSession",
           "when": "view == pi-code-gui.sessions && viewItem == pastSessionEntry",
           "group": "navigation"
@@ -410,6 +497,21 @@
           "command": "pi-code-gui.addSession",
           "when": "view == pi-code-gui.sessions",
           "group": "navigation"
+        },
+        {
+          "command": "pi-code-gui.addSessionRust",
+          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
+          "group": "1_runtime@1"
+        },
+        {
+          "command": "pi-code-gui.addSessionTypescript",
+          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
+          "group": "1_runtime@2"
+        },
+        {
+          "command": "pi-code-gui.setDefaultRuntime",
+          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
+          "group": "1_runtime@3"
         },
         {
           "command": "pi-code-gui.filterPastSessions",

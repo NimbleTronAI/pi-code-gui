@@ -1,5 +1,18 @@
 # Change Log
 
+## [0.0.56]
+
+### Added
+- **Rust runtime (opt-in).** Run each session on either the in-process TypeScript Pi SDK or the out-of-process Rust Pi binary (`pi --mode rpc`). New sessions default to TypeScript; the choice is per-session.
+- Runtime affordances: **PiGui: Add TypeScript/Rust Pi Session**, **Add Pi Session (Choose Runtime)**, **Set Default Runtime** (remembered), and **Switch Runtime (New Session)**. A runtime chip in each session's status bar and a `TS`/`Rust` badge in the Sessions tree.
+- **Lazy discovery & on-demand install.** Both runtimes are detected at startup; if neither is installed you choose one, and a missing runtime is only installed when you first need it. Rust install offers a managed binary download (verified against GitHub release checksums), the official `curl | sh` installer, manual guidance, or detecting an existing binary.
+- Unified Past Sessions list merges TypeScript and Rust sessions (badged); resume always reuses a session's origin runtime. New settings: `defaultRuntime`, `sessionHistoryScope`, `rustBinaryPath`, `rustInstallMethod`, `rustExtensionPolicy`, `rustExtensions`.
+- **Extension interop handling.** A workspace's TypeScript-format Pi extensions (`.pi/`) can't be parsed by the Rust runtime and previously blocked its startup. The new `rustExtensions` setting (`auto`/`enabled`/`disabled`, default `auto`) passes `--no-extensions` when such extensions are detected; if a conflict slips through, the Rust session self-heals and points you at the setting.
+- **Runtime-aware Packages view.** Packages are one shared catalog across both runtimes; the view now follows the focused session's runtime and marks each package **active** (loaded by that runtime) or **available** (installed but not loaded), with provenance/safety signals from the Rust catalog. It manages packages via the Rust binary when the TypeScript SDK isn't installed, and warns when a package won't load under a focused Rust session.
+
+### Known limitations
+- Under the Rust runtime, the 16 VS Code editor-bridge tools are unavailable, the `/tools` picker is disabled, custom-card extensions fall back to markdown, session history is stored separately, and the workspace's TypeScript-format `.pi/` extensions don't load (see `rustExtensions`).
+
 ## [0.0.55]
 
 ### Fixed

@@ -5,6 +5,12 @@ starts with `## [YYYY-MM-DD] <action> | <description>`. Actions:
 `ingest` (new page), `update` (existing page changed), `lint` (quality
 pass performed), `archive` (page moved to archive).
 
+## [2026-06-05] update | Tree Views + Runtime Selection — runtime-aware Packages view: shared catalog, focus-driven available-vs-active (`computeActiveSources`/`setFocusedRuntime`), Rust binary backend (`src/rust-packages.ts`: list/install/remove/update/info/doctor), install-time Rust-compat warning, provenance/safety signals
+## [2026-06-05] update | Runtime Selection — interop caveat resolved: `--no-extensions` + `pi-code-gui.rustExtensions` setting (auto/enabled/disabled), `shouldDisableRustExtensions`/`workspaceHasTsPiExtensions`/`isRustExtensionConflict`, spawn-retry self-heal + actionable conflict dialog
+## [2026-06-05] ingest | Architecture — Runtime Selection (`architecture/runtime-selection.md`): TypeScript + Rust runtimes, `backendKind` internal branching, RPC plumbing, detection/install, documented Rust limitations
+## [2026-06-05] ingest | Architecture — Runtime Switching UX (`architecture/runtime-switching-ux.md`): commands, persisted default, status chip + tree badges, setContext gating, resume-follows-origin, mixed-runtime tabs
+## [2026-06-05] update | Archive — `archive/multi-backend.md` marked superseded (2025 rejection reversed; dual-runtime shipped in v0.0.56 with markdown-fallback for custom cards)
+## [2026-06-05] update | Index — added Runtime Selection + Runtime Switching UX under Architecture
 ## [2026-05-27] lint | Full wiki + README audit — bridge-tools (16 tools, not 17; dedup table row), syntax-highlighting (15 languages, +yaml/sql/diff), tree-views (progressive load, entry caching, state-change refresh), event-translation (turn-end, message_update error, user message_end), streaming-pipeline (progressive replay), README (16 tools)
 ## [2026-05-26] update | Bridge Tools, PiService — added `/tools` runtime picker with persistence, replaced static `pi-code-gui.tools` allowlist
 ## [2026-05-25] archive | Architecture — Multi-Backend Architecture → `archive/multi-backend.md` (rejected: incompatible extension/UI model)

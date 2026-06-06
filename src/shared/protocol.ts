@@ -189,6 +189,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         reset: z.boolean().optional(),
         sessionId: z.string().optional(),
         contextBudget: z.number().optional(),
+        runtime: z.enum(["typescript", "rust"]).optional(),
       }),
   }),
   z.object({
@@ -199,6 +200,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         thinkingLevel: z.string().optional(),
         effort: z.string().optional(),
         ready: z.boolean().optional(),
+        runtime: z.enum(["typescript", "rust"]).optional(),
       })
       .optional(),
   }),

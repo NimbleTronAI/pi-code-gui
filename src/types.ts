@@ -8,6 +8,13 @@ export interface ImageContent {
   };
 }
 
+/**
+ * Which Pi runtime backs a session: the in-process TypeScript SDK
+ * (`@earendil-works/pi-coding-agent`) or the out-of-process Rust binary
+ * (`pi --mode rpc`).
+ */
+export type Runtime = "typescript" | "rust";
+
 /** Summary of a past session as returned by session listing. */
 export interface SessionSummary {
   name?: string;
@@ -16,6 +23,17 @@ export interface SessionSummary {
   messageCount: number;
   created?: number;
   modified?: number;
+  /** The runtime that created this session (used for the unified Past Sessions list). */
+  runtime?: Runtime;
+}
+
+/**
+ * A persisted reference to an open session window, tagged with the runtime that
+ * created it so reload can restore each tab on its origin runtime.
+ */
+export interface OpenSessionRef {
+  path: string;
+  runtime: Runtime;
 }
 
 /** A single entry in a session (message, compaction, model change, etc.). */

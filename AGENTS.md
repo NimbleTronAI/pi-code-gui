@@ -23,6 +23,7 @@ Key concepts:
 - **Extension UI Bridge** (`src/pi-service.ts` bindExtensionUI) — TUI widgets → webview
 - **Webview Frontend** (`media/`) — chat UI, morphdom streaming, marked rendering
 - **Tree Views** (`src/extension.ts` MultiSessionTreeProvider, `src/pi-packages-tree-provider.ts`)
+- **Runtime Selection** (`src/pi-service.ts` `_backendKind`; `src/rust-*.ts`; `src/runtime-detection.ts`) — per-session TypeScript (in-process SDK) or Rust (out-of-process `pi --mode rpc`) Pi; default TypeScript; see `agent-wiki/architecture/runtime-selection.md`
 
 See `agent-wiki/index.md` for the full topic catalog.
 
