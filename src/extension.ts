@@ -838,6 +838,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     .map((r): OpenSessionRef => (typeof r === "string" ? { path: r, runtime: lookupSessionRuntime(r) } : r))
     .filter((r) => fs.existsSync(r.path));
   const savedActivePath: string | undefined = context.workspaceState.get("pi-code-gui.activeSessionPath") ?? undefined;
+  const autoOpen = vscode.workspace.getConfiguration("pi-code-gui").get<boolean>("autoOpenOnStart", true);
 
   if (savedRefs.length > 0) {
     // Restore session counter to avoid ID collisions.
@@ -851,7 +852,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const ref = savedRefs[i];
       const sw = createSessionWindow(context, ref.runtime);
       if (i === 0) { setActiveSession(sw); }
-      void sw.webviewPanel.show();
+      if (autoOpen) { void sw.webviewPanel.show(); }
       void initSessionInBackground(context, sw, { openPath: ref.path, runtime: ref.runtime });
     }
     restoreActiveSession(savedActivePath);
@@ -859,7 +860,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // No saved sessions — create one fresh session on the effective default runtime.
     const sw = createSessionWindow(context, defaultRuntimeForNewSession());
     setActiveSession(sw);
-    void sw.webviewPanel.show();
+    if (autoOpen) { void sw.webviewPanel.show(); }
     void initSessionInBackground(context, sw, { fresh: true });
   }
 

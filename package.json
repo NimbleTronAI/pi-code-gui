@@ -409,6 +409,10 @@
             "Never load extensions under Rust (pure built-in tools). Most robust."
           ],
           "markdownDescription": "Whether **Rust** Pi sessions discover and load Pi extensions (controls the `--no-extensions` flag). The Rust runtime aborts startup when it meets the in-process TypeScript SDK's `.pi/` extensions (`missing field 'parameters'`). `auto` disables discovery only when such extensions are detected; `disabled` always disables it; `enabled` never does. Does not affect the TypeScript runtime."
+        "pi-code-gui.autoOpenOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
         }
       }
     },
