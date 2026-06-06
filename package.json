@@ -327,6 +327,11 @@
           "type": "string",
           "default": "",
           "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir."
+        },
+        "pi-code-gui.autoOpenOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
         }
       }
     },
