@@ -19,5 +19,5 @@
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false
   },
-  "exclude": ["agent-wiki", "src/webview"]
+  "exclude": ["agent-wiki", "src/webview", "sample-workspace"]
 }
