@@ -61,6 +61,34 @@ Both runtimes are detected at startup and installed only when you first reach fo
 | Session history | `~/.pi/agent/sessions` (JSONL) | Separate Rust pool (JSONL v3 tree + SQLite index) |
 | Built-in safety | Tools auto-accept (no per-tool gate) | Tools auto-accept, **plus** catastrophic-command blocking, zero `unsafe`, secret env filtering |
 
+### Custom models on the Rust runtime
+
+The TypeScript SDK passes any model id straight through to the provider, so a model it doesn't list still works. **Rust resolves models against a fixed built-in registry** — a model it doesn't know (a brand-new id, or any OpenAI-compatible endpoint) won't resolve, and the session reports *"No model is active"* instead of failing silently.
+
+To use such a model under Rust, declare it in the **`pi-code-gui.rustCustomModels`** setting (the VS Code settings UI prompts for each field). The extension writes it into Rust's `models.json` (`{"providers": …}`); the TypeScript runtime is unaffected. Example:
+
+```jsonc
+"pi-code-gui.rustCustomModels": [
+  {
+    "provider": "deepseek",
+    "id": "deepseek-v4-pro",
+    "baseUrl": "https://api.deepseek.com",
+    "api": "openai-completions",          // OpenAI-compatible endpoints use this
+    "apiKeyEnv": "DEEPSEEK_API_KEY",       // env var holding the key
+    "contextWindow": 1048576,              // deepseek-v4-pro: 1M context
+    "maxTokens": 384000                    // 384K max output
+  }
+]
+```
+
+**Where `models.json` is written** is controlled by **`pi-code-gui.rustAgentDir`**:
+- *empty (default)* — uses `~/.pi/agent` when it exists (no relocation; your entries there are **merged**, never clobbered), otherwise an extension-managed folder.
+- *set to a path* — Rust is redirected there (`PI_CODING_AGENT_DIR`) and `auth.json` is seeded from `~/.pi/agent`. Sessions are unaffected (placed via `--session-dir`).
+
+> **Note — built-in providers:** declaring custom models for a provider Rust already knows (e.g. `deepseek`) **replaces** that provider's built-in models in the picker (your custom model still inherits the provider's base URL). If you want to keep built-ins like `deepseek-chat` alongside `deepseek-v4-pro`, list them in `rustCustomModels` too.
+
+Nothing fails silently: an unwritable directory, a corrupt `models.json`, or an invalid entry surfaces as a clear error/warning in the chat (and a notification for fatal cases).
+
 ## Features
 
 | Feature | Description |
@@ -266,6 +294,8 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 | `pi-code-gui.rustInstallMethod` | string (`managed`\|`curl`\|`manual`) | `managed` | Pre-selected method in the on-demand Rust install dialog |
 | `pi-code-gui.rustExtensionPolicy` | string (`safe`\|`balanced`\|`permissive`) | `balanced` | Capability profile for Rust Pi extensions (`--extension-policy`) |
 | `pi-code-gui.rustExtensions` | string (`auto`\|`enabled`\|`disabled`) | `auto` | Whether Rust sessions load Pi extensions (`--no-extensions`). `auto` disables discovery only when the workspace has TypeScript-format `.pi/` extensions the Rust runtime can't parse |
+| `pi-code-gui.rustCustomModels` | array | `[]` | Custom models for the **Rust** runtime (models outside its built-in registry, incl. OpenAI-compatible endpoints). Written into Rust's `models.json`; TypeScript-runtime unaffected. See [Custom models on the Rust runtime](#custom-models-on-the-rust-runtime) |
+| `pi-code-gui.rustAgentDir` | string | `""` | Rust agent home (`PI_CODING_AGENT_DIR`) where `models.json` lives. Empty = `~/.pi/agent` if present, else an extension-managed folder. A set path redirects Rust there and seeds `auth.json` |
 
 ## Requirements
 

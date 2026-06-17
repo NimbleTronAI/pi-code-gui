@@ -171,7 +171,11 @@ export class RustProcess {
     try { child.stdin.end(); } catch { /* ignore */ }
     try { child.kill("SIGTERM"); } catch { /* ignore */ }
     setTimeout(() => {
-      try { if (child.exitCode === null && !child.killed) { child.kill("SIGKILL"); } } catch { /* ignore */ }
+      // Escalate to SIGKILL if the process hasn't exited. Gate on exitCode, NOT
+      // child.killed — `killed` flips true the moment a signal is *delivered*
+      // (i.e. right after the SIGTERM above), so `!child.killed` would always be
+      // false and the SIGKILL would never fire, leaking unresponsive children.
+      try { if (child.exitCode === null) { child.kill("SIGKILL"); } } catch { /* ignore */ }
     }, 2000).unref?.();
   }
 }

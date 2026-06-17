@@ -25,9 +25,9 @@ export function registerPhase4Commands(
     vscode.commands.executeCommand("pi-code-gui.sendSlashCommand", "/resume");
   });
 
-  safeRegister(context, "pi-code-gui.compact", async () => {
-    vscode.commands.executeCommand("pi-code-gui.sendSlashCommand", "/compact");
-  });
+  // NOTE: compact / reloadContext are registered directly in extension.ts
+  // (active-session aware). Not registered here — doing so only duplicated those
+  // ids and produced "already registered" log noise.
 
   safeRegister(context, "pi-code-gui.toggleAutoCompaction", async () => {
     const enabled = await piService.toggleAutoCompaction();
@@ -37,14 +37,5 @@ export function registerPhase4Commands(
   safeRegister(context, "pi-code-gui.toggleAutoRetry", async () => {
     const enabled = await piService.toggleAutoRetry();
     vscode.window.showInformationMessage(`Auto-retry ${enabled ? "enabled" : "disabled"}.`);
-  });
-
-  safeRegister(context, "pi-code-gui.reloadContext", async () => {
-    try {
-      await piService.newSession();
-      vscode.window.showInformationMessage("Context reloaded.");
-    } catch (e: unknown) {
-      vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));
-    }
   });
 }

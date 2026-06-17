@@ -1,6 +1,6 @@
 import * as path from "node:path";
-import * as vscode from "vscode";
 import { resolvePiPackagePath } from "./pi-service.js";
+import { resolveWorkspaceCwd } from "./workspace.js";
 import type { Runtime } from "./types.js";
 import { detectRustBinary } from "./rust-resolver.js";
 import { rustListInstalled, rustInstall, rustRemove, rustUpdate, rustActiveSources, rustInfo, rustLoadability, type RustPackageInfo, type RustLoadability } from "./rust-packages.js";
@@ -103,7 +103,7 @@ export class PiPackageService {
     try {
       this.sdkRoot = resolvePiPackagePath();
       const SDK = (await import(path.join(this.sdkRoot, "dist/index.js")));
-      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const cwd = resolveWorkspaceCwd();
       const SettingsManager = SDK.SettingsManager;
       const DefaultPackageManagerClass = SDK.DefaultPackageManager;
       const settingsManager = SettingsManager.create(cwd);
@@ -166,7 +166,7 @@ export class PiPackageService {
    */
   async computeActiveSources(runtime: Runtime, installed: InstalledPackage[]): Promise<Set<string>> {
     if (runtime === "rust") {
-      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const cwd = resolveWorkspaceCwd();
       return rustActiveSources(cwd, installed);
     }
     return new Set(installed.filter((p) => !p.filtered).map((p) => p.source));
@@ -188,7 +188,7 @@ export class PiPackageService {
    * store, then defers to the Rust loadability check.
    */
   async checkRustLoadability(source: string): Promise<RustLoadability> {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = resolveWorkspaceCwd();
     const installed = await this.listInstalled();
     const pkg = installed.find((p) => p.source === source);
     return rustLoadability(cwd, pkg?.installedPath);

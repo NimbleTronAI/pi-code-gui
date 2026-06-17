@@ -187,6 +187,11 @@ export const state: AppState = {
   extensionSlashCommands: [],
   localSlashCommands: [
     "/login", "/logout", "/debug", "/model", "/thinking", "/sessions", "/settings",
+    // Session ops the extension services itself — must be intercepted here so they
+    // reach handleSlashCommand → the runtime-aware router, instead of being sent to
+    // the model as a prompt. (TypeScript's SDK parses such prompts; the Rust RPC
+    // does NOT, so /compact, /new etc. otherwise just talk to the model under Rust.)
+    "/new", "/clear", "/compact",
   ],
 
   chatContainer: null!,

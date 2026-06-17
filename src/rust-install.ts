@@ -183,8 +183,16 @@ function download(url: string, dest: string, redirects = 5): Promise<void> {
 
 function verifyChecksum(file: string, name: string, sumsPath: string): boolean {
   const sums = fs.readFileSync(sumsPath, "utf-8");
-  const line = sums.split("\n").find((l) => l.includes(name));
-  if (!line) { piWarn(`No checksum entry for ${name}; skipping verification.`); return true; }
+  // SHA256SUMS lines are "<hex>  <name>" (the name may carry a leading "*" in
+  // binary mode). Match the filename field EXACTLY — a substring match could
+  // grab a sibling entry such as "<name>.sig" and verify against the wrong hash.
+  const line = sums.split("\n").find((l) => {
+    const parts = l.trim().split(/\s+/);
+    return parts.length >= 2 && parts[parts.length - 1].replace(/^\*/, "") === name;
+  });
+  // A SHA256SUMS that omits this asset must be a hard failure, not a silent pass:
+  // the caller and the "Verifying checksum…" UI both treat `true` as verified.
+  if (!line) { piWarn(`No checksum entry for ${name} in SHA256SUMS — refusing to trust the download.`); return false; }
   const expected = line.trim().split(/\s+/)[0];
   const actual = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
   if (expected !== actual) { piWarn(`Checksum mismatch for ${name}: expected ${expected}, got ${actual}`); }

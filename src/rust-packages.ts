@@ -6,6 +6,8 @@
 // TypeScript SDK isn't available (Rust-only installs), and its `doctor` check
 // powers the "available vs active" distinction for focused Rust sessions.
 
+import * as path from "node:path";
+import * as fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { detectRustBinary, shouldDisableRustExtensions } from "./rust-resolver.js";
@@ -212,4 +214,29 @@ export async function rustActiveSources(cwd: string, installed: Array<{ source: 
     }
   }));
   return active;
+}
+
+/**
+ * Export a Rust session file to HTML. `pi --export <file>` writes
+ * `pi-session-<name>.html` into the current working directory (it has no output-
+ * path flag), so we run it in the target directory and rename the result to the
+ * caller's chosen path. Returns the final path.
+ */
+export async function rustExportHtml(sessionFile: string, outputPath: string): Promise<string> {
+  const status = detectRustBinary();
+  if (!status.installed || !status.binaryPath) { throw new Error("Rust Pi binary not found."); }
+  if (!fs.existsSync(sessionFile)) { throw new Error(`Session file not found: ${sessionFile}`); }
+  const outDir = path.dirname(outputPath);
+  await fs.promises.mkdir(outDir, { recursive: true });
+  const { stdout } = await execFileAsync(status.binaryPath, ["--export", sessionFile], { cwd: outDir, timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+  // Output looks like: "Exported to: pi-session-<name>.html"
+  const m = stdout.match(/Exported to:\s*(\S.*\.html)\s*$/m);
+  const produced = m ? path.join(outDir, path.basename(m[1].trim())) : "";
+  if (!produced || !fs.existsSync(produced)) {
+    throw new Error(`Rust export produced no file (output: ${stdout.trim().slice(0, 200)})`);
+  }
+  if (path.resolve(produced) !== path.resolve(outputPath)) {
+    await fs.promises.rename(produced, outputPath);
+  }
+  return outputPath;
 }

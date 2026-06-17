@@ -1,31 +1,15 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
+import { setupRustModels } from "./rust-models.js";
 import { RustProcess, type RustEvent } from "./rust-process.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
-
-let _warnedNoWorkspace = false;
-/**
- * The cwd a session/agent should run in. When no workspace folder is open, fall
- * back to the home directory — NOT `process.cwd()`, which in the extension host
- * is VS Code's own server dir (`.../vscode-server/.../api/node`). Running the
- * agent there makes it treat VS Code's internals as "the project" (grepping
- * extensionHostProcess.js, writing sessions under that path, EEXIST collisions).
- */
-function resolveWorkspaceCwd(): string {
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (folder) { return folder; }
-  if (!_warnedNoWorkspace) {
-    _warnedNoWorkspace = true;
-    piWarn("No workspace folder open — Pi has no project to operate on. Open a folder; falling back to the home directory.");
-  }
-  return os.homedir();
-}
+import { rustExportHtml } from "./rust-packages.js";
+import { resolveWorkspaceCwd } from "./workspace.js";
 
 /** Find the last element matching predicate (ES2023 findLast polyfill). */
 function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
@@ -329,8 +313,20 @@ export class PiService {
   private _rustInitializing = false;
   /** Session file path for a Rust session (the SDK SessionManager owns this for TS). */
   private _rustSessionPath: string | null = null;
+  /** Cumulative usage for a Rust session (from get_session_stats) — the TS SDK's
+   *  sessionManager/getContextUsage that getUsageStats() normally reads aren't
+   *  available for an out-of-process runtime. */
+  private _rustUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextPercent: number | null; contextWindow: number } | null = null;
+  private _rustContextWindow = 0;
+  /** Latest turn's input+cacheRead tokens (≈ current context fill) → context %. */
+  private _rustLastContextTokens = 0;
   /** Slash commands the live Rust session reports (its own extensions/templates/skills). */
   private _rustSlashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
+  /** Cached session entries for a Rust session (from get_messages). The TS SDK's
+   *  sessionManager.getEntries() isn't available out-of-process, so the Open
+   *  Sessions tree reads this instead. Refreshed on init and each turn end. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _rustEntries: any[] = [];
 
   // SDK root path (for re-importing individual modules)
   private _piRoot: string | null = null;
@@ -346,7 +342,7 @@ export class PiService {
   private resourceLoader: any = null;
 
   // Model cycling state (populated dynamically from registry)
-  private cycleModels: Array<{ provider: string; id: string }> = [];
+  private cycleModels: Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }> = [];
   private cycleIndex = 0;
 
   // Track current assistant message content (for toolCall stubs during message_update)
@@ -880,6 +876,9 @@ export class PiService {
   private async initializeRustInner(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     const fresh = opts.fresh ?? false;
     const openPath = opts.openPath;
+    // Reset per-session usage so a re-init (e.g. /new) starts clean.
+    this._rustUsage = null;
+    this._rustLastContextTokens = 0;
 
     const status = detectRustBinary();
     if (!status.installed || !status.binaryPath) {
@@ -895,8 +894,15 @@ export class PiService {
     else if (!fresh) { args.push("--continue"); }
     const provider = cfg.get<string>("defaultModelProvider")?.trim();
     const modelId = cfg.get<string>("defaultModelId")?.trim();
-    if (provider) { args.push("--provider", provider); }
-    if (modelId) { args.push("--model", modelId); }
+    // Apply the DEFAULT model only to a fresh session. A restored (--session) or
+    // continued (--continue) session carries its own recorded provider/model in
+    // its file; overriding with the setting would silently switch its model on
+    // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
+    const restoring = !!openPath || !fresh;
+    if (!restoring) {
+      if (provider) { args.push("--provider", provider); }
+      if (modelId) { args.push("--model", modelId); }
+    }
     const thinking = cfg.get<string>("defaultThinkingLevel")?.trim();
     if (thinking && thinking !== "off") { args.push("--thinking", thinking); }
     const extPolicy = cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced";
@@ -916,6 +922,24 @@ export class PiService {
     if (anthropicKey) { env.ANTHROPIC_API_KEY = anthropicKey; }
     const openaiKey = cfg.get<string>("openaiApiKey");
     if (openaiKey) { env.OPENAI_API_KEY = openaiKey; }
+
+    // Custom models: make Rust able to resolve models outside its built-in
+    // registry (`pi-code-gui.rustCustomModels`). Never silent — fatal problems
+    // (unwritable dir, corrupt models.json) become a loud error + notification;
+    // softer ones (a skipped entry, an auth-seed miss) become chat warnings.
+    try {
+      const { piEnv, warnings } = setupRustModels();
+      Object.assign(env, piEnv);
+      for (const w of warnings) {
+        this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${w}`, timestamp: Date.now() } });
+      }
+    } catch (e: unknown) {
+      const m = e instanceof Error ? e.message : String(e);
+      piWarn(`Rust custom-models setup failed: ${m}`);
+      this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ Custom models for Rust couldn't be configured — ${m}`, timestamp: Date.now() } });
+      void vscode.window.showErrorMessage(`Pi Code Gui: ${m}`);
+      // Continue: built-in models still work; an unresolved model is caught below.
+    }
 
     this._thinkingLevel = thinking || "off";
 
@@ -966,6 +990,8 @@ export class PiService {
     try {
       const msgs = await rust.request("get_messages", {}, 15000);
       const entries = this.rustEntriesFromMessages(msgs.data);
+      this._rustEntries = entries;
+      this.captureRustContextFromMessages(msgs.data);
       this.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
       await this.sendInitialMessages(entries);
       this.emit({ type: "batch-end", data: { hasEntries: entries.length > 0 } });
@@ -978,9 +1004,23 @@ export class PiService {
       if (cmds.success) { this._rustSlashCommands = this.rustSlashCommandsFrom(cmds.data); }
     } catch (e: unknown) { piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`); }
 
+    await this.refreshRustUsage();
     this.reportStatus();
     try { this.emitScopedModels(); this.emitSettings(); this.emitSlashCommands(); }
     catch (e: unknown) { piWarn(`Post-init emissions failed: ${e instanceof Error ? e.message : String(e)}`); }
+
+    // Loud failure on an unresolved model. An invalid `defaultModelId` (e.g. the
+    // non-existent "deepseek-v4-pro") leaves the Rust session with no active model
+    // and otherwise SILENTLY inert — every prompt/command no-ops. Surface it.
+    if (!this._model) {
+      const valid = this.cycleModels.slice(0, 8).map((m) => m.id).join(", ");
+      const want = restoring
+        ? "this session's recorded model"
+        : (modelId ? `"${modelId}"${provider ? ` (provider "${provider}")` : ""}` : "your configured model");
+      const content = `⚠ No model is active — ${want} could not be resolved, so this Rust session can't run. Pick a valid model with \`/model\`${valid ? ` (e.g. ${valid})` : ""}, or fix the \`pi-code-gui.defaultModelId\` setting.`;
+      piWarn(`Rust session has no resolved model (configured: ${provider ?? "?"}/${modelId ?? "?"})`);
+      this.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
+    }
 
     return { success: true, warning };
   }
@@ -1084,12 +1124,79 @@ export class PiService {
     if (!this.rust) { return; }
     try {
       const state = await this.rust.request("get_state", {}, 8000);
-      if (state.success) {
-        this.applyRustState(state.data);
-        this.reportStatus();
-      }
+      if (state.success) { this.applyRustState(state.data); }
     } catch (e: unknown) {
       piWarn(`refreshRustState failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    await this.refreshRustUsage();
+    await this.refreshRustEntries();
+    this.reportStatus();
+  }
+
+  /** Re-pull the Rust session's entries so the Open Sessions tree reflects new turns. */
+  private async refreshRustEntries(): Promise<void> {
+    if (!this.rust) { return; }
+    try {
+      const msgs = await this.rust.request("get_messages", {}, 8000);
+      if (msgs.success) { this._rustEntries = this.rustEntriesFromMessages(msgs.data); }
+    } catch (e: unknown) {
+      piWarn(`refreshRustEntries failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Runtime-agnostic session entries for the Open Sessions tree. The TS SDK
+   *  exposes them via sessionManager.getEntries(); the out-of-process Rust
+   *  runtime supplies them through the cached get_messages reply. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getDisplayEntries(): any[] {
+    if (this._backendKind === "rust") { return this._rustEntries; }
+    return this.sessionManager?.getEntries?.() ?? [];
+  }
+
+  /** Pull cumulative token/cost usage from the Rust subprocess (get_session_stats). */
+  private async refreshRustUsage(): Promise<void> {
+    if (!this.rust) { return; }
+    try {
+      const r = await this.rust.request("get_session_stats", {}, 8000);
+      if (r.success) { this.applyRustUsage(r.data); }
+    } catch (e: unknown) {
+      piWarn(`refreshRustUsage failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  private applyRustUsage(data: unknown): void {
+    if (!data || typeof data !== "object") { return; }
+    const d = data as Record<string, unknown>;
+    const t = (d.tokens && typeof d.tokens === "object" ? d.tokens : {}) as Record<string, unknown>;
+    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+    const cw = this._rustContextWindow;
+    const ctx = this._rustLastContextTokens;
+    this._rustUsage = {
+      input: n(t.input), output: n(t.output),
+      cacheRead: n(t.cacheRead), cacheWrite: n(t.cacheWrite),
+      cost: n(d.cost),
+      contextWindow: cw,
+      // Current context fill = latest turn's input(+cacheRead) over the window.
+      contextPercent: (cw > 0 && ctx > 0) ? Math.min(100, (ctx / cw) * 100) : null,
+    };
+  }
+
+  /** Record the latest turn's input(+cacheRead) tokens as the current context fill. */
+  private captureRustContext(usage: unknown): void {
+    if (!usage || typeof usage !== "object") { return; }
+    const u = usage as Record<string, unknown>;
+    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+    const ctx = n(u.input) + n(u.cacheRead);
+    if (ctx > 0) { this._rustLastContextTokens = ctx; }
+  }
+
+  /** On resume, seed the context fill from the last assistant message's usage. */
+  private captureRustContextFromMessages(data: unknown): void {
+    const d = data as { messages?: unknown } | undefined;
+    const messages = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? data : []);
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i] as { role?: string; usage?: unknown } | undefined;
+      if (m?.role === "assistant" && m.usage) { this.captureRustContext(m.usage); return; }
     }
   }
 
@@ -1164,9 +1271,10 @@ export class PiService {
   private applyRustState(data: unknown): void {
     if (!data || typeof data !== "object") { return; }
     const d = data as Record<string, unknown>;
-    const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string } | undefined;
+    const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string; contextWindow?: number } | undefined;
     if (model && typeof model === "object") {
       this._model = { id: model.id, name: model.name, provider: model.provider };
+      if (typeof model.contextWindow === "number") { this._rustContextWindow = model.contextWindow; }
     } else if (typeof d.modelId === "string") {
       this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
     }
@@ -1182,12 +1290,18 @@ export class PiService {
   }
 
   /** Normalize a Rust `get_available_models` response to {provider, id} pairs. */
-  private rustModelList(data: unknown): Array<{ provider: string; id: string }> {
+  private rustModelList(data: unknown): Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }> {
     const d = data as { models?: unknown } | undefined;
     const raw = Array.isArray(d?.models) ? d.models : (Array.isArray(data) ? data : []);
-    return (raw as Array<{ provider?: string; id?: string }>)
+    return raw
       .filter((m) => m && typeof m.provider === "string" && typeof m.id === "string")
-      .map((m) => ({ provider: m.provider as string, id: m.id as string }));
+      .map((m) => ({
+        provider: m.provider,
+        id: m.id,
+        name: typeof m.name === "string" ? m.name : undefined,
+        contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
+        cost: m.cost && typeof m.cost.input === "number" ? { input: m.cost.input, output: m.cost.output } : undefined,
+      }));
   }
 
   /** Wrap a Rust `get_messages` response as session-entry shapes for sendInitialMessages. */
@@ -1758,6 +1872,8 @@ export class PiService {
       case "message_end":
         if (event.message?.role === "user") { break; }
         if (event.message?.role === "assistant") {
+          // Rust: the turn's input(+cacheRead) ≈ current context fill → context %.
+          if (this._backendKind === "rust") { this.captureRustContext(event.message.usage); }
           const toolCalls = this.extractToolCallsFromContent(event.message.content);
           this.emit({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
           this.reportStatus();
@@ -2035,7 +2151,7 @@ export class PiService {
         // Parse optional output path from text
         const exportArgs = text.startsWith("/export ") ? text.slice(8).trim() : undefined;
         const outputPath = exportArgs || vscode.Uri.joinPath(
-          vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
+          vscode.Uri.file(resolveWorkspaceCwd()),
           `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`
         ).fsPath;
         const result = await this.session.exportToHtml(outputPath);
@@ -2100,12 +2216,52 @@ export class PiService {
    * unchanged).
    */
   async compact(): Promise<void> {
+    piLog(`compact() invoked (backend=${this._backendKind})`);
     if (this._backendKind === "rust") {
-      this.rust?.send("compact");
+      if (!this.rust) { return; }
+      // Use request() (correlated by id) — NOT send() — so the reply isn't
+      // dropped. Compaction replies (success OR errors like "Compaction not
+      // available") come back as a {type:"response"}, which RustProcess discards
+      // unless a pending id is awaiting it. Render the outcome either way.
+      try {
+        const resp = await this.rust.request("compact", {}, 120000);
+        if (resp.success) {
+          await this.refreshRustState();
+          this.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Context compacted.", timestamp: Date.now() } });
+        } else {
+          const err = resp.error ?? "";
+          // The Rust runtime gates compaction behind its auto-compaction
+          // threshold (contextTokens > contextWindow − reserveTokens) — manual
+          // /compact won't summarize a conversation that still fits. That is
+          // NOT a failure, so explain it honestly rather than flag a red error.
+          // (The TypeScript runtime has no such gate and compacts on demand.)
+          if (/not available|missing ids|already compacted|too little history|nothing to compact/i.test(err)) {
+            this.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Nothing to compact yet. The Rust runtime compacts automatically as the conversation approaches the model's context limit — it won't compact one that still fits comfortably (unlike the TypeScript runtime, which compacts on demand).", timestamp: Date.now() } });
+          } else {
+            this.emit({ type: "custom-message", data: { customType: "error", content: `Compact failed: ${err || "unknown error"}`, timestamp: Date.now() } });
+          }
+        }
+      } catch (e: unknown) {
+        this.emit({ type: "custom-message", data: { customType: "error", content: `Compact failed: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } });
+      }
       return;
     }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     try { await this.rawSession?.compact?.(); } catch (e: any) { piWarn(`compact() failed: ${e?.message ?? e}`); }
+  }
+
+  /**
+   * Export the conversation to HTML at `outputPath`. Runtime-aware: the
+   * TypeScript SDK session exports directly; Rust shells out to `pi --export`
+   * (rawSession is null under Rust). Returns the written path.
+   */
+  async exportToHtml(outputPath: string): Promise<string> {
+    if (this._backendKind === "rust") {
+      const sf = this.sessionFilePath;
+      if (!sf) { throw new Error("This Rust session hasn't been saved yet — send a message first, then export."); }
+      return rustExportHtml(sf, outputPath);
+    }
+    return this.rawSession.exportToHtml(outputPath);
   }
 
   /** Resolve a pending interactive dialog (called from webview-panel.ts). */
@@ -2450,20 +2606,30 @@ export class PiService {
     interface ModelItem { label: string; provider: string; modelId: string; cost?: { input: number; output: number }; contextWindow?: number }
     let models: ModelItem[] = [];
 
-    try {
-      const available = await this.getAvailableModels();
-      if (available.length > 0) {
-        models = available.map((m) => ({
-          label: m.name || m.id,
-          provider: m.provider,
-          modelId: m.id,
-          cost: m.cost,
-          contextWindow: m.contextWindow,
-        }));
-      }
+    if (this._backendKind === "rust") {
+      // Rust reports its own catalog via get_available_models (cached in
+      // cycleModels) — which INCLUDES custom models.json entries. getAvailableModels()
+      // is the TypeScript SDK registry (always empty under Rust), so it would hide
+      // custom models and fall back to the static list.
+      models = this.cycleModels.map((m) => ({
+        label: m.name || m.id, provider: m.provider, modelId: m.id, cost: m.cost, contextWindow: m.contextWindow,
+      }));
+    } else {
+      try {
+        const available = await this.getAvailableModels();
+        if (available.length > 0) {
+          models = available.map((m) => ({
+            label: m.name || m.id,
+            provider: m.provider,
+            modelId: m.id,
+            cost: m.cost,
+            contextWindow: m.contextWindow,
+          }));
+        }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
+      } catch (e: any) {
+        piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
+      }
     }
 
     // Fallback: static list of common models (no pricing — only SDK-reported pricing is shown)
@@ -2655,6 +2821,12 @@ export class PiService {
     contextPercent: number | null;
     contextWindow: number;
   } {
+    // Rust runs out-of-process (no SDK sessionManager) — usage comes from its
+    // get_session_stats RPC, cached in _rustUsage and refreshed at init + each turn.
+    if (this._backendKind === "rust") {
+      return this._rustUsage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: this._rustContextWindow };
+    }
+
     if (!this.sessionManager) {
       return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
     }

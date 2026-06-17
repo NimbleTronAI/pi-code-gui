@@ -46,10 +46,12 @@ else
 fi
 
 # ── pi packages ──────────────────────────────────────
-# Update project-local pi packages to latest on every start.
+# Update project-local pi packages to latest on every start. `--approve` trusts
+# the project's .pi/ files for this command so the install runs non-interactively;
+# without it, pi stops to ask "Trust project folder?" and blocks container start.
 echo "==> pi packages (latest)"
 if command -v pi &>/dev/null; then
-    pi install npm:pi-web-access -l
+    pi install npm:pi-web-access -l --approve
     echo "    pi packages updated"
 else
     echo "    warn: pi not found — skipping package updates"

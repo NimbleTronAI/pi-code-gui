@@ -1,6 +1,6 @@
 # Change Log
 
-## [0.1.01]
+## [0.1.1]
 
 ### Added
 - **Rust runtime (opt-in).** Run each session on either the in-process TypeScript Pi SDK or the out-of-process Rust Pi binary (`pi --mode rpc`). New sessions default to TypeScript; the choice is per-session.

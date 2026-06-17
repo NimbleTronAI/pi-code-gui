@@ -1,10 +1,12 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import { PiService } from "./pi-service.js";
+import { resolveWorkspaceCwd } from "./workspace.js";
 import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
 import { initLogger, disposeLogger, piLog, piWarn } from "./logger.js";
+import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary, Runtime, OpenSessionRef } from "./types.js";
@@ -78,6 +80,9 @@ function lookupSessionRuntime(p: string): Runtime {
 
 /** The most recently focused (active) session window. */
 let activeSessionWindow: SessionWindow | null = null;
+
+/** Phase 3/4 commands are global; register them once per host lifetime. */
+let phaseCommandsRegistered = false;
 
 function setActiveSession(sw: SessionWindow | null): void {
   activeSessionWindow = sw;
@@ -170,7 +175,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const outputChannel = vscode.window.createOutputChannel("Pi Code Gui", { log: true });
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
-  piLog("Pi Code Gui starting...");
+  initRustModels(context);
+  piLog(`Pi Code Gui v${context.extension.packageJSON.version} starting... (dev=${context.extensionMode === vscode.ExtensionMode.Development})`);
 
   // After extension host restart, workspace folders may not be available yet.
   // Without this guard, we fall back to process.cwd() which on remote servers
@@ -546,7 +552,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         if (sw.piService.isStreaming) { await sw.piService.abort(); }
         vscode.window.showInformationMessage("Compacting context...");
-        await sw.piService.rawSession.compact();
+        // Runtime-aware: rawSession is null under Rust (RPC `compact` instead).
+        await sw.piService.compact();
         vscode.window.showInformationMessage("Context compacted.");
         sessionTreeProvider?.refresh();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -564,9 +571,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage("No active Pi session.");
         return;
       }
+      // Rust exports via `pi --export`, which needs the session written to disk.
+      if (sw.piService.runtime === "rust" && !sw.piService.sessionFilePath) {
+        vscode.window.showWarningMessage("This Rust session hasn't been saved yet — send a message first, then export.");
+        return;
+      }
       try {
         const defaultPath = vscode.Uri.joinPath(
-          vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
+          vscode.Uri.file(resolveWorkspaceCwd()),
           `pi-session-${sw.id}.html`
         );
         const uri = await vscode.window.showSaveDialog({
@@ -574,7 +586,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           filters: { "HTML": ["html"] },
         });
         if (!uri) { return; }
-        const result = await sw.piService.rawSession.exportToHtml(uri.fsPath);
+        const result = await sw.piService.exportToHtml(uri.fsPath);
         vscode.window.showInformationMessage(`Session exported to: ${result}`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
@@ -589,6 +601,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const sw = activeSessionWindow ?? primarySession();
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
+        return;
+      }
+      // rawSession is null under Rust; the Rust runtime loads extensions/skills at
+      // startup with no in-session reload — start a new Rust session to pick up changes.
+      if (sw.piService.runtime === "rust") {
+        vscode.window.showInformationMessage("Reload context is available for TypeScript Pi sessions; start a new Rust session to reload its extensions and skills.");
         return;
       }
       try {
@@ -1350,7 +1368,11 @@ function ensureTreeProvider(context: vscode.ExtensionContext): void {
  * delete / resume operations that change the pool of saved sessions.
  */
 async function refreshPastSessionsList(): Promise<void> {
-  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  // Must match how sessions are CREATED (PiService.resolveWorkspaceCwd) — under a
+  // no-folder workspace that resolves to the home dir, not process.cwd() (the
+  // extension-host server dir). Using process.cwd() here filtered out Rust
+  // sessions, since listRustSessions drops entries whose recorded cwd != target.
+  const cwd = resolveWorkspaceCwd();
   if (!sessionTreeProvider) {
     piWarn("refreshPastSessionsList: sessionTreeProvider is null, skipping");
     return;
@@ -1515,8 +1537,10 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     });
   }
 
-  // Primary session gets phase 3/4 commands
-  if (sw === primarySession()) {
+  // Phase 3/4 commands are global — register once (re-registering on every
+  // primary-session init just threw "already registered" and logged noise).
+  if (!phaseCommandsRegistered && sw === primarySession()) {
+    phaseCommandsRegistered = true;
     registerPhase3Commands(context, sw.piService);
     registerPhase4Commands(context, sw.piService);
   }
@@ -1941,8 +1965,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     }
 
     // Entries
-    const sm = ps.sessionManagerInstance;
-    const entries = sm ? sm.getEntries() : [];
+    const entries = ps.getDisplayEntries();
     if (entries && entries.length > 0) {
       const alreadyExpanded = this.expandedEntries.has(sw.id);
       const entriesHeader = new SessionTreeItem(
@@ -1963,10 +1986,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
 
   private getEntryChildren(element: SessionTreeItem): SessionTreeItem[] {
     const sw = this.sessions.find((s) => s.id === element.sessionId);
-    if (!sw || !sw.piService.sessionManagerInstance) { return []; }
+    if (!sw) { return []; }
 
-    const sm = sw.piService.sessionManagerInstance;
-    const entries = sm.getEntries();
+    const entries = sw.piService.getDisplayEntries();
     if (!entries || entries.length === 0) { return []; }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2116,9 +2138,9 @@ function formatEntryLabel(entry: any): { label: string; tooltip: string; type: s
 }
 
 function getEntryCount(sw: SessionWindow): number {
-  return sw.piService.sessionManagerInstance
-    ? sw.piService.sessionManagerInstance.getEntries()?.length ?? 0
-    : 0;
+  // Runtime-agnostic: TS reads its SessionManager, Rust reads its get_messages
+  // cache. Using the unified accessor keeps Rust sessions expandable like TS.
+  return sw.piService.getDisplayEntries()?.length ?? 0;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,0 +1,20 @@
+{
+  // Model config for the Extension Development Host (this folder is what F5 opens).
+  // Defines deepseek-v4-pro as a custom Rust model (the binary's static registry
+  // predates it) and uses it as the default, so Rust sessions here resolve.
+  // Requires DEEPSEEK_API_KEY in the environment.
+  "pi-code-gui.defaultModelProvider": "deepseek",
+  "pi-code-gui.defaultModelId": "deepseek-v4-pro",
+  "pi-code-gui.defaultThinkingLevel": "off",
+  "pi-code-gui.rustCustomModels": [
+    {
+      "provider": "deepseek",
+      "id": "deepseek-v4-pro",
+      "baseUrl": "https://api.deepseek.com",
+      "api": "openai-completions",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "contextWindow": 1048576,
+      "maxTokens": 384000
+    }
+  ]
+}

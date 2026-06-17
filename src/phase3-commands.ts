@@ -18,13 +18,9 @@ export function registerPhase3Commands(
   context: vscode.ExtensionContext,
   piService: PiService,
 ): void {
-  safeRegister(context, "pi-code-gui.pickModel", async () => {
-    if (!piService.initialized) {
-      vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
-      return;
-    }
-    vscode.commands.executeCommand("pi-code-gui.sendSlashCommand", "/model");
-  });
+  // NOTE: pickModel / exportSession are registered directly in extension.ts
+  // (active-session aware). They are intentionally NOT registered here — doing so
+  // duplicated those ids and only produced "already registered" log noise.
 
   safeRegister(context, "pi-code-gui.cycleModel", async () => {
     if (!piService.initialized) {
@@ -64,10 +60,6 @@ export function registerPhase3Commands(
 
   safeRegister(context, "pi-code-gui.pickFork", async () => {
     vscode.window.showInformationMessage("Fork via /fork command in chat.");
-  });
-
-  safeRegister(context, "pi-code-gui.exportSession", async () => {
-    vscode.window.showInformationMessage("Export via /export command in chat.");
   });
 }
 

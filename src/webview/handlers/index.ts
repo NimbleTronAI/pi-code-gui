@@ -663,7 +663,7 @@ export function handleStatusUpdate(data: any) {
       if (u.input > 0) {parts.push("\u2191" + formatTokens(u.input));}
       if (u.output > 0) {parts.push("\u2193" + formatTokens(u.output));}
       if (u.cost > 0) {parts.push("$" + u.cost.toFixed(2));}
-      if (u.contextPercent !== undefined) {parts.push(u.contextPercent.toFixed(0) + "%");}
+      if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }
     setSbDot(data.state.isStreaming ? "streaming" : "idle");
