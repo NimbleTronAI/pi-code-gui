@@ -87,6 +87,8 @@ To use such a model under Rust, declare it in the **`pi-code-gui.rustCustomModel
 
 > **Note — built-in providers:** declaring custom models for a provider Rust already knows (e.g. `deepseek`) **replaces** that provider's built-in models in the picker (your custom model still inherits the provider's base URL). If you want to keep built-ins like `deepseek-chat` alongside `deepseek-v4-pro`, list them in `rustCustomModels` too.
 
+> **Note — context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps the custom model's effective `contextWindow` to the budget in `models.json`. That makes the Rust runtime's auto-compaction (and manual `/compact`) trigger at your budget rather than only near the model's full window — matching the TypeScript runtime. The clamp applies wherever Rust's `models.json` lives, so the budget behaves the same everywhere.
+
 Nothing fails silently: an unwritable directory, a corrupt `models.json`, or an invalid entry surfaces as a clear error/warning in the chat (and a notification for fatal cases).
 
 ## Features
@@ -286,7 +288,7 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 | `pi-code-gui.defaultModelProvider` | string | `""` | Default model provider (e.g. `anthropic`). Empty = auto-detect |
 | `pi-code-gui.defaultModelId` | string | `""` | Default model ID (e.g. `claude-sonnet-4-5`). Requires provider set |
 | `pi-code-gui.defaultThinkingLevel` | string | `"off"` | Default thinking level for new sessions |
-| `pi-code-gui.contextBudget` | number | `0` | Per-session token budget. 0 = model default |
+| `pi-code-gui.contextBudget` | number | `0` | Per-session token budget (0 = model default). Drives auto-compaction; for the Rust runtime it clamps the custom model's effective context window |
 | `pi-code-gui.sessionDir` | string | `""` | Custom directory for session `.jsonl` files. Empty = pi SDK default (`~/.pi/agent/sessions/`) |
 | `pi-code-gui.defaultRuntime` | string (`typescript`\|`rust`) | `typescript` | Runtime for new sessions when both are installed. Resume always reuses a session's origin runtime |
 | `pi-code-gui.sessionHistoryScope` | string (`unified`\|`perRuntime`) | `unified` | Whether Past Sessions shows both runtimes (badged) or only the default runtime's |

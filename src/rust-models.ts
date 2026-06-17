@@ -90,8 +90,13 @@ function ensureDir(dir: string): void {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ModelsRoot = { providers: Record<string, any> };
 
-/** Merge the managed models into models.json, preserving user-authored entries. */
-function applyManagedModels(file: string, models: RustCustomModel[]): void {
+/** Merge the managed models into models.json, preserving user-authored entries.
+ *  When a context budget is set, the written contextWindow is clamped to it so
+ *  the Rust runtime's auto-compaction threshold (contextWindow − reserveTokens)
+ *  fires at the budget — matching how the TypeScript runtime applies it. The
+ *  clamp is unconditional (it applies in the shared ~/.pi/agent dir too), so the
+ *  budget behaves identically everywhere rather than varying by agent dir. */
+function applyManagedModels(file: string, models: RustCustomModel[], contextBudget: number): void {
   const prev = _ctx!.globalState.get<ManagedRef[]>(MANAGED_KEY, []);
   let root: ModelsRoot = { providers: {} };
   if (fs.existsSync(file)) {
@@ -129,9 +134,14 @@ function applyManagedModels(file: string, models: RustCustomModel[]): void {
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     p.models = p.models.filter((x: any) => x?.id !== m.id);
+    const declaredCw = m.contextWindow ?? 128000;
+    const effectiveCw = contextBudget > 0 ? Math.min(declaredCw, contextBudget) : declaredCw;
+    if (effectiveCw !== declaredCw) {
+      piLog(`Rust custom model ${m.provider}/${m.id}: contextWindow clamped ${declaredCw} → ${effectiveCw} by contextBudget`);
+    }
     p.models.push({
       id: m.id, name: m.name ?? m.id,
-      contextWindow: m.contextWindow ?? 128000, maxTokens: m.maxTokens ?? 8192,
+      contextWindow: effectiveCw, maxTokens: m.maxTokens ?? 8192,
       input: ["text"], ...(m.reasoning ? { reasoning: true } : {}),
     });
     nowManaged.push({ provider: m.provider, id: m.id });
@@ -174,10 +184,11 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   // Nothing configured now or previously → don't touch anything.
   if (models.length === 0 && prev.length === 0) { return { piEnv: {}, warnings }; }
 
+  const contextBudget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
   const { dir, relocate } = resolveAgentDir();
   ensureDir(dir);
-  applyManagedModels(path.join(dir, "models.json"), models);
-  piLog(`Rust custom models: ${models.length} managed in ${dir}/models.json (relocate=${relocate})`);
+  applyManagedModels(path.join(dir, "models.json"), models, contextBudget);
+  piLog(`Rust custom models: ${models.length} managed in ${dir}/models.json (relocate=${relocate}, budget=${contextBudget})`);
 
   const piEnv: Record<string, string> = {};
   if (relocate) {
