@@ -75,13 +75,17 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         progress.report({ message: `Downloading ${asset.archive}…` });
         await download(binAsset.browser_download_url, archivePath);
 
-        if (sumsAsset) {
-          progress.report({ message: "Verifying checksum…" });
-          const sumsPath = path.join(tmp, "SHA256SUMS");
-          await download(sumsAsset.browser_download_url, sumsPath);
-          if (!verifyChecksum(archivePath, asset.archive, sumsPath)) {
-            throw new Error("Checksum verification failed — aborting.");
-          }
+        // A release with no SHA256SUMS asset must be a hard failure, not a silent
+        // skip: the managed-install path promises a verified binary, so running an
+        // unverifiable one would break that contract.
+        if (!sumsAsset) {
+          throw new Error(`Release ${tag} has no SHA256SUMS asset — refusing to install an unverified binary.`);
+        }
+        progress.report({ message: "Verifying checksum…" });
+        const sumsPath = path.join(tmp, "SHA256SUMS");
+        await download(sumsAsset.browser_download_url, sumsPath);
+        if (!verifyChecksum(archivePath, asset.archive, sumsPath)) {
+          throw new Error("Checksum verification failed — aborting.");
         }
 
         progress.report({ message: "Extracting…" });
