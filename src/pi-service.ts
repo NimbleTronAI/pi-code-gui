@@ -2441,8 +2441,17 @@ export class PiService {
 
   async setModel(provider: string, modelId: string): Promise<void> {
     if (this._backendKind === "rust") {
-      this.rust?.send("set_model", { provider, modelId });
-      this._model = { id: modelId, provider };
+      if (!this.rust) { return; }
+      // request() not send(): the binary returns the new model (with its real
+      // contextWindow) and any failure ONLY in the response, which RustProcess
+      // drops if nothing awaits the id. Apply the reply so a bad switch surfaces
+      // and the budget clamp / context-% reflect the new model immediately.
+      const resp = await this.rust.request("set_model", { provider, modelId }, 15000);
+      if (!resp.success) {
+        this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
+        return;
+      }
+      this.applyRustState({ model: resp.data });
       this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
       if (this.cycleIndex === -1) { this.cycleIndex = 0; }
       this.reportStatus();
@@ -2485,10 +2494,15 @@ export class PiService {
         vscode.window.showWarningMessage("No models available. Configure an API key first.");
         return;
       }
+      if (!this.rust) { return; }
       this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
       const next = this.cycleModels[this.cycleIndex];
-      this.rust?.send("set_model", { provider: next.provider, modelId: next.id });
-      this._model = { id: next.id, provider: next.provider };
+      const resp = await this.rust.request("set_model", { provider: next.provider, modelId: next.id }, 15000);
+      if (!resp.success) {
+        this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
+        return;
+      }
+      this.applyRustState({ model: resp.data });
       vscode.window.showInformationMessage(`Model: ${next.id}`);
       this.reportStatus();
       return;
@@ -2519,8 +2533,19 @@ export class PiService {
 
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
-      this.rust?.send("set_thinking_level", { level });
+      if (!this.rust) { return; }
+      const resp = await this.rust.request("set_thinking_level", { level }, 15000);
+      if (!resp.success) {
+        this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
+        return;
+      }
+      // The binary clamps the level to the model's max and returns no value, so
+      // re-read state to reflect what was actually applied (not the requested level).
       this._thinkingLevel = level;
+      try {
+        const st = await this.rust.request("get_state", {}, 8000);
+        if (st.success) { this.applyRustState(st.data); }
+      } catch { /* keep optimistic level */ }
       this.reportStatus();
       return;
     }
