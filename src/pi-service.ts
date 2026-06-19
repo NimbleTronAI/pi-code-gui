@@ -1228,17 +1228,37 @@ export class PiService {
         case "editor": {
           const dialogType = method === "editor" ? "input" : method;
           const prompt = String(req.title ?? req.message ?? "");
+          // Normalize select options: a Rust extension may send plain strings or
+          // {value,label} objects. Show labels, but map the choice back to the
+          // option's `value` so the binary's extension_ui_response matcher (which
+          // compares the reply against an option's value/label) accepts it.
+          let optionLabels: string[] | undefined;
+          const labelToValue = new Map<string, string>();
+          if (Array.isArray(req.options)) {
+            optionLabels = req.options.map((o) => {
+              if (o && typeof o === "object") {
+                const obj = o as Record<string, unknown>;
+                const label = String(obj.label ?? obj.value ?? "");
+                labelToValue.set(label, String(obj.value ?? obj.label ?? ""));
+                return label;
+              }
+              const s = String(o);
+              labelToValue.set(s, s);
+              return s;
+            });
+          }
           const pending = this._showDialog(dialogType, prompt, {
-            options: Array.isArray(req.options) ? (req.options as string[]) : undefined,
+            options: optionLabels,
             defaultValue: (req.defaultValue ?? req.prefill) as string | undefined,
           });
-          const value = pending ? await pending : undefined;
+          const chosen = pending ? await pending : undefined;
           if (id) {
-            if (value === undefined || value === null) {
+            if (chosen === undefined || chosen === null) {
               this.rust?.send("extension_ui_response", { id, cancelled: true });
             } else if (method === "confirm") {
-              this.rust?.send("extension_ui_response", { id, confirmed: !!value });
+              this.rust?.send("extension_ui_response", { id, confirmed: !!chosen });
             } else {
+              const value = labelToValue.get(String(chosen)) ?? chosen;
               this.rust?.send("extension_ui_response", { id, value });
             }
           }
