@@ -72,12 +72,12 @@ function readCustomModels(): { models: RustCustomModel[]; warnings: string[] } {
 }
 
 /** Resolve where Rust's agent home (and thus models.json) should live. */
-function resolveAgentDir(): { dir: string; relocate: boolean } {
+function resolveAgentDir(ctx: vscode.ExtensionContext): { dir: string; relocate: boolean } {
   const setting = vscode.workspace.getConfiguration("pi-code-gui").get<string>("rustAgentDir")?.trim();
   if (setting) { return { dir: setting, relocate: true }; }
   const home = path.join(os.homedir(), ".pi", "agent");
   if (fs.existsSync(home)) { return { dir: home, relocate: false }; }
-  return { dir: path.join(_ctx!.globalStorageUri.fsPath, "rust-agent"), relocate: true };
+  return { dir: path.join(ctx.globalStorageUri.fsPath, "rust-agent"), relocate: true };
 }
 
 function ensureDir(dir: string): void {
@@ -103,8 +103,8 @@ type ModelsRoot = { providers: Record<string, any> };
  *  trigger can't be clamped from the extension (only by shadowing the built-in,
  *  which we refuse to do). For those, the GUI clamps the context-% DISPLAY in
  *  pi-service.ts applyRustState instead — see the limitation note there. */
-function applyManagedModels(file: string, models: RustCustomModel[], contextBudget: number): void {
-  const prev = _ctx!.globalState.get<ManagedRef[]>(MANAGED_KEY, []);
+function applyManagedModels(ctx: vscode.ExtensionContext, file: string, models: RustCustomModel[], contextBudget: number): void {
+  const prev = ctx.globalState.get<ManagedRef[]>(MANAGED_KEY, []);
   let root: ModelsRoot = { providers: {} };
   if (fs.existsSync(file)) {
     let raw: string;
@@ -163,7 +163,7 @@ function applyManagedModels(file: string, models: RustCustomModel[], contextBudg
 
   try { fs.writeFileSync(file, JSON.stringify(root, null, 2) + "\n"); }
   catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. Custom models won't be available to Rust.`); }
-  void _ctx!.globalState.update(MANAGED_KEY, nowManaged);
+  void ctx.globalState.update(MANAGED_KEY, nowManaged);
 }
 
 /** Make the relocated agent dir usable for auth: link/copy ~/.pi/agent/auth.json. */
@@ -192,9 +192,9 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   if (models.length === 0 && prev.length === 0) { return { piEnv: {}, warnings }; }
 
   const contextBudget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
-  const { dir, relocate } = resolveAgentDir();
+  const { dir, relocate } = resolveAgentDir(_ctx);
   ensureDir(dir);
-  applyManagedModels(path.join(dir, "models.json"), models, contextBudget);
+  applyManagedModels(_ctx, path.join(dir, "models.json"), models, contextBudget);
   piLog(`Rust custom models: ${models.length} managed in ${dir}/models.json (relocate=${relocate}, budget=${contextBudget})`);
 
   const piEnv: Record<string, string> = {};
