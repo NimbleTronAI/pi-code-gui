@@ -2466,7 +2466,12 @@ export class PiService {
       // contextWindow) and any failure ONLY in the response, which RustProcess
       // drops if nothing awaits the id. Apply the reply so a bad switch surfaces
       // and the budget clamp / context-% reflect the new model immediately.
-      const resp = await this.rust.request("set_model", { provider, modelId }, 15000);
+      // .catch() because request() rejects on RPC timeout / process exit — a user
+      // action like a model switch must surface that, not become an unhandled
+      // rejection in the webview message handler (which doesn't wrap this call).
+      const resp = await this.rust.request("set_model", { provider, modelId }, 15000)
+        .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
+      if (!resp) { return; }
       if (!resp.success) {
         this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
         return;
@@ -2517,7 +2522,9 @@ export class PiService {
       if (!this.rust) { return; }
       this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
       const next = this.cycleModels[this.cycleIndex];
-      const resp = await this.rust.request("set_model", { provider: next.provider, modelId: next.id }, 15000);
+      const resp = await this.rust.request("set_model", { provider: next.provider, modelId: next.id }, 15000)
+        .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
+      if (!resp) { return; }
       if (!resp.success) {
         this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
         return;
@@ -2554,7 +2561,9 @@ export class PiService {
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
       if (!this.rust) { return; }
-      const resp = await this.rust.request("set_thinking_level", { level }, 15000);
+      const resp = await this.rust.request("set_thinking_level", { level }, 15000)
+        .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
+      if (!resp) { return; }
       if (!resp.success) {
         this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
         return;
