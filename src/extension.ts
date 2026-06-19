@@ -382,6 +382,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /** Fork at a specific entry within an already-open session. */
   async function doForkFromOpenEntry(sessionId: string, entryId: string): Promise<void> {
     const srcSw = sessions.find((s) => s.id === sessionId);
+    // Fork/branch is a TypeScript-SDK SessionManager operation (getLeafId /
+    // createBranchedSession); the out-of-process Rust runtime doesn't expose it.
+    if (srcSw?.piService.runtime === "rust") {
+      throw new Error("Forking isn't supported for Rust sessions yet.");
+    }
     if (!srcSw || !srcSw.piService.sessionManagerInstance) {
       throw new Error(`Source session not found (id=${sessionId}).`);
     }
@@ -430,6 +435,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** Fork a past session at its current leaf (opens the session, then forks). */
   async function doForkFromPastSession(sessionPath: string): Promise<void> {
+    // Rust sessions can't be opened by the TS SDK (and fork is a TS-SDK op), so
+    // refuse clearly instead of failing with a cryptic "Cannot open past session".
+    if (lookupSessionRuntime(sessionPath) === "rust") {
+      throw new Error("Forking isn't supported for Rust sessions yet.");
+    }
     // Initialize a new PiService to load the session and get leaf ID
     const tempPi = new PiService();
     const result = await tempPi.initialize({ openPath: sessionPath });
@@ -520,6 +530,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const sw = activeSessionWindow ?? primarySession();
       if (!sw || !sw.initialized) {
         vscode.window.showErrorMessage("Cannot clone: no active Pi session.");
+        return;
+      }
+      if (sw.piService.runtime === "rust") {
+        vscode.window.showErrorMessage("Cloning isn't supported for Rust sessions yet.");
         return;
       }
       const sm = sw.piService.sessionManagerInstance;
