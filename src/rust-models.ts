@@ -124,12 +124,12 @@ function applyManagedModels(file: string, models: RustCustomModel[], contextBudg
     let p = root.providers[m.provider];
     if (!p || typeof p !== "object") {
       p = root.providers[m.provider] = { baseUrl: m.baseUrl, api: m.api, models: [] };
-      if (m.apiKeyEnv) { p.apiKey = `$ENV:${m.apiKeyEnv}`; }
+      if (m.apiKeyEnv) { p.apiKey = `env:${m.apiKeyEnv}`; }
     } else {
       // Existing (possibly user-authored) provider — only fill gaps, don't clobber.
       if (!p.baseUrl) { p.baseUrl = m.baseUrl; }
       if (!p.api) { p.api = m.api; }
-      if (m.apiKeyEnv && !p.apiKey) { p.apiKey = `$ENV:${m.apiKeyEnv}`; }
+      if (m.apiKeyEnv && !p.apiKey) { p.apiKey = `env:${m.apiKeyEnv}`; }
       if (!Array.isArray(p.models)) { p.models = []; }
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
