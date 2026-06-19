@@ -1233,13 +1233,18 @@ export class PiService {
           // option's `value` so the binary's extension_ui_response matcher (which
           // compares the reply against an option's value/label) accepts it.
           let optionLabels: string[] | undefined;
-          const labelToValue = new Map<string, string>();
+          // Preserve each option's ORIGINAL value type (number/bool/string): the
+          // binary matches the reply against the raw JSON value, so String()-
+          // coercing a numeric/bool value would make Number(1) != "1" and the pick
+          // would be rejected. (Duplicate labels collapse to the last value — a
+          // degenerate input the pre-fix code failed on entirely.)
+          const labelToValue = new Map<string, unknown>();
           if (Array.isArray(req.options)) {
             optionLabels = req.options.map((o) => {
               if (o && typeof o === "object") {
                 const obj = o as Record<string, unknown>;
                 const label = String(obj.label ?? obj.value ?? "");
-                labelToValue.set(label, String(obj.value ?? obj.label ?? ""));
+                labelToValue.set(label, obj.value ?? obj.label ?? label);
                 return label;
               }
               const s = String(o);
@@ -1258,7 +1263,7 @@ export class PiService {
             } else if (method === "confirm") {
               this.rust?.send("extension_ui_response", { id, confirmed: !!chosen });
             } else {
-              const value = labelToValue.get(String(chosen)) ?? chosen;
+              const value = labelToValue.has(String(chosen)) ? labelToValue.get(String(chosen)) : chosen;
               this.rust?.send("extension_ui_response", { id, value });
             }
           }
