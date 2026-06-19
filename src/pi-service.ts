@@ -1274,7 +1274,28 @@ export class PiService {
     const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string; contextWindow?: number } | undefined;
     if (model && typeof model === "object") {
       this._model = { id: model.id, name: model.name, provider: model.provider };
-      if (typeof model.contextWindow === "number") { this._rustContextWindow = model.contextWindow; }
+      if (typeof model.contextWindow === "number") {
+        // Clamp the displayed context window to the user's context budget so the
+        // context-% readout honours the budget for EVERY Rust model — including
+        // built-in (static-registry) models, which never pass through models.json
+        // and so can't be clamped at the source the way custom models are.
+        //
+        // Limitation / compromise: this clamp only affects the GUI's context-%
+        // display. The binary's real auto-compaction trigger is should_compact()
+        // = contextTokens > contextWindow − reserveTokens, evaluated against the
+        // model's OWN contextWindow inside the Rust process. For CUSTOM models we
+        // also bake the budget into models.json (see rust-models.ts applyManaged-
+        // Models), so the binary compacts at the budget too — full parity with TS.
+        // For BUILT-IN models we cannot lower that window without writing a
+        // models.json entry that SHADOWS the built-in (which would replace the
+        // provider's other models), so the binary keeps auto-compacting at the
+        // registry window. Net result: the budget governs the % display
+        // everywhere and real compaction for custom models; built-in models' real
+        // compaction remains at their registry window. This was a deliberate
+        // trade-off to avoid shadowing built-ins for a display-parity gain.
+        const budget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
+        this._rustContextWindow = budget > 0 ? Math.min(model.contextWindow, budget) : model.contextWindow;
+      }
     } else if (typeof d.modelId === "string") {
       this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
     }

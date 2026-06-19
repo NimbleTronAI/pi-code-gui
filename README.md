@@ -87,7 +87,7 @@ To use such a model under Rust, declare it in the **`pi-code-gui.rustCustomModel
 
 > **Note — built-in providers:** declaring custom models for a provider Rust already knows (e.g. `deepseek`) **replaces** that provider's built-in models in the picker (your custom model still inherits the provider's base URL). If you want to keep built-ins like `deepseek-chat` alongside `deepseek-v4-pro`, list them in `rustCustomModels` too.
 
-> **Note — context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps the custom model's effective `contextWindow` to the budget in `models.json`. That makes the Rust runtime's auto-compaction (and manual `/compact`) trigger at your budget rather than only near the model's full window — matching the TypeScript runtime. The clamp applies wherever Rust's `models.json` lives, so the budget behaves the same everywhere.
+> **Note — context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps each **custom** model's effective `contextWindow` to the budget in `models.json`. That makes the Rust runtime's auto-compaction (and manual `/compact`) trigger at your budget rather than only near the model's full window — genuine parity with the TypeScript runtime, and it applies wherever Rust's `models.json` lives. **Built-in** Rust models (the binary's static registry) never reach `models.json`, so the budget governs their context-% **display** but not the binary's actual compaction trigger, which stays at the registry window. For full budget-driven compaction on Rust, use a custom model entry.
 
 Nothing fails silently: an unwritable directory, a corrupt `models.json`, or an invalid entry surfaces as a clear error/warning in the chat (and a notification for fatal cases).
 

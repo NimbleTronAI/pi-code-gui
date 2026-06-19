@@ -93,9 +93,16 @@ type ModelsRoot = { providers: Record<string, any> };
 /** Merge the managed models into models.json, preserving user-authored entries.
  *  When a context budget is set, the written contextWindow is clamped to it so
  *  the Rust runtime's auto-compaction threshold (contextWindow − reserveTokens)
- *  fires at the budget — matching how the TypeScript runtime applies it. The
- *  clamp is unconditional (it applies in the shared ~/.pi/agent dir too), so the
- *  budget behaves identically everywhere rather than varying by agent dir. */
+ *  fires at the budget for these CUSTOM models — genuine parity with TS, which
+ *  clamps the active model's contextWindow directly. The clamp is unconditional
+ *  (it applies in the shared ~/.pi/agent dir too), so the budget behaves
+ *  identically everywhere rather than varying by agent dir.
+ *
+ *  Scope: this only covers models we write here. Built-in Rust models live in the
+ *  binary's static registry and never reach models.json, so their REAL compaction
+ *  trigger can't be clamped from the extension (only by shadowing the built-in,
+ *  which we refuse to do). For those, the GUI clamps the context-% DISPLAY in
+ *  pi-service.ts applyRustState instead — see the limitation note there. */
 function applyManagedModels(file: string, models: RustCustomModel[], contextBudget: number): void {
   const prev = _ctx!.globalState.get<ManagedRef[]>(MANAGED_KEY, []);
   let root: ModelsRoot = { providers: {} };
