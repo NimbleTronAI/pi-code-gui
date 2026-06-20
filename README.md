@@ -61,35 +61,19 @@ Both runtimes are detected at startup and installed only when you first reach fo
 | Session history | `~/.pi/agent/sessions` (JSONL) | Separate Rust pool (JSONL v3 tree + SQLite index) |
 | Built-in safety | Tools auto-accept (no per-tool gate) | Tools auto-accept, **plus** catastrophic-command blocking, zero `unsafe`, secret env filtering |
 
-### Custom models on the Rust runtime
+### Model catalog on the Rust runtime
 
-The TypeScript SDK passes any model id straight through to the provider, so a model it doesn't list still works. **Rust resolves models against a fixed built-in registry** — a model it doesn't know (a brand-new id, or any OpenAI-compatible endpoint) won't resolve, and the session reports *"No model is active"* instead of failing silently.
+The Rust binary ships with its own curated model registry baked into each release, so its catalog reflects whatever was current when that binary was built. To keep the two runtimes in step — and to save you any per-model setup — this extension bundles the **same model catalog Pi itself uses** (generated from [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai)) and writes it into the Rust agent's `models.json`, taking precedence over the binary's built-in list for standard API-key providers. So on Rust you get the same models as the TypeScript runtime — with matching pricing, context windows, reasoning/thinking support, and more regularly maintained model definitions — and **nothing to configure**: pick a model, put its provider's API key in your environment, and go.
 
-To use such a model under Rust, declare it in the **`pi-code-gui.rustCustomModels`** setting (the VS Code settings UI prompts for each field). The extension writes it into Rust's `models.json` (`{"providers": …}`); the TypeScript runtime is unaffected. Example:
+The catalog stays current on its own. Dependabot tracks `@earendil-works/pi-ai`, and a build check refuses to package a stale catalog, so every release ships fresh data — updating the extension updates your Rust model list.
 
-```jsonc
-"pi-code-gui.rustCustomModels": [
-  {
-    "provider": "deepseek",
-    "id": "deepseek-v4-pro",
-    "baseUrl": "https://api.deepseek.com",
-    "api": "openai-completions",          // OpenAI-compatible endpoints use this
-    "apiKeyEnv": "DEEPSEEK_API_KEY",       // env var holding the key
-    "contextWindow": 1048576,              // deepseek-v4-pro: 1M context
-    "maxTokens": 384000                    // 384K max output
-  }
-]
-```
+> **Cloud providers with specialized auth** — Amazon Bedrock, Azure, Google Vertex, GitHub Copilot — aren't in the catalog, because their authentication and routing can't be expressed as a plain `models.json` entry. They keep working through the Rust binary's own native handling, exactly as in the Pi CLI.
 
-**Where `models.json` is written** is controlled by **`pi-code-gui.rustAgentDir`**:
-- *empty (default)* — uses `~/.pi/agent` when it exists (no relocation; your entries there are **merged**, never clobbered), otherwise an extension-managed folder.
-- *set to a path* — Rust is redirected there (`PI_CODING_AGENT_DIR`) and `auth.json` is seeded from `~/.pi/agent`. Sessions are unaffected (placed via `--session-dir`).
+> **Prefer raw, unmanaged control of the Rust model registry?** That's a perfect job for the **Pi CLI** — this extension intentionally favors a curated, always-fresh catalog over hand-maintained model definitions. (You can still redirect the extension's Rust agent home with **`pi-code-gui.rustAgentDir`**, e.g. to a writable path of your choosing.)
 
-> **Note — built-in providers:** declaring custom models for a provider Rust already knows (e.g. `deepseek`) **replaces** that provider's built-in models in the picker (your custom model still inherits the provider's base URL). If you want to keep built-ins like `deepseek-chat` alongside `deepseek-v4-pro`, list them in `rustCustomModels` too.
+> **Context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps each catalog model's effective `contextWindow` to your budget in `models.json`, so the Rust runtime's auto-compaction (and manual `/compact`) trigger at the budget rather than only near the model's full window — matching the TypeScript runtime.
 
-> **Note — context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps each **custom** model's effective `contextWindow` to the budget in `models.json`. That makes the Rust runtime's auto-compaction (and manual `/compact`) trigger at your budget rather than only near the model's full window — genuine parity with the TypeScript runtime, and it applies wherever Rust's `models.json` lives. **Built-in** Rust models (the binary's static registry) never reach `models.json`, so the budget governs their context-% **display** but not the binary's actual compaction trigger, which stays at the registry window. For full budget-driven compaction on Rust, use a custom model entry.
-
-Nothing fails silently: an unwritable directory, a corrupt `models.json`, or an invalid entry surfaces as a clear error/warning in the chat (and a notification for fatal cases).
+Nothing fails silently: an unwritable agent directory surfaces as a clear error in the chat (and a notification for fatal cases).
 
 ## Features
 
@@ -302,8 +286,7 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 | `pi-code-gui.rustInstallMethod` | string (`managed`\|`curl`\|`manual`) | `managed` | Pre-selected method in the on-demand Rust install dialog |
 | `pi-code-gui.rustExtensionPolicy` | string (`safe`\|`balanced`\|`permissive`) | `balanced` | Capability profile for Rust Pi extensions (`--extension-policy`) |
 | `pi-code-gui.rustExtensions` | string (`auto`\|`enabled`\|`disabled`) | `auto` | Whether Rust sessions load Pi extensions (`--no-extensions`). `auto` disables discovery only when the workspace has TypeScript-format `.pi/` extensions the Rust runtime can't parse |
-| `pi-code-gui.rustCustomModels` | array | `[]` | Custom models for the **Rust** runtime (models outside its built-in registry, incl. OpenAI-compatible endpoints). Written into Rust's `models.json`; TypeScript-runtime unaffected. See [Custom models on the Rust runtime](#custom-models-on-the-rust-runtime) |
-| `pi-code-gui.rustAgentDir` | string | `""` | Rust agent home (`PI_CODING_AGENT_DIR`) where `models.json` lives. Empty = `~/.pi/agent` if present, else an extension-managed folder. A set path redirects Rust there and seeds `auth.json` |
+| `pi-code-gui.rustAgentDir` | string | `""` | Rust agent home (`PI_CODING_AGENT_DIR`) where the extension writes its managed `models.json` (the bundled [Pi model catalog](#model-catalog-on-the-rust-runtime)). Empty = an extension-managed folder (so the full-catalog write never clobbers your `~/.pi/agent`); a set path redirects Rust there. `auth.json` is seeded from `~/.pi/agent` for OAuth |
 
 ## Requirements
 

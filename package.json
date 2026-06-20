@@ -434,86 +434,10 @@
           "default": true,
           "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
         },
-        "pi-code-gui.rustCustomModels": {
-          "type": "array",
-          "default": [],
-          "markdownDescription": "Custom models for the **Rust** runtime. Rust resolves models against a fixed registry, so add any model it doesn't know — including any OpenAI-compatible endpoint — here. The extension writes these into the Rust agent's `models.json`. **Rust-only** — does not affect the TypeScript runtime. Example: `{ \"provider\": \"deepseek\", \"id\": \"deepseek-v4-pro\", \"baseUrl\": \"https://api.deepseek.com\", \"api\": \"openai-completions\", \"apiKeyEnv\": \"DEEPSEEK_API_KEY\" }`",
-          "items": {
-            "type": "object",
-            "required": [
-              "provider",
-              "id",
-              "baseUrl",
-              "api"
-            ],
-            "properties": {
-              "provider": {
-                "type": "string",
-                "description": "Provider id, e.g. \"deepseek\" (reuses a built-in provider or names a new one)."
-              },
-              "id": {
-                "type": "string",
-                "description": "Model id sent to the API, e.g. \"deepseek-v4-pro\"."
-              },
-              "baseUrl": {
-                "type": "string",
-                "description": "Provider API base URL, e.g. \"https://api.deepseek.com\"."
-              },
-              "api": {
-                "type": "string",
-                "enum": [
-                  "openai-completions",
-                  "openai-responses",
-                  "anthropic",
-                  "gemini"
-                ],
-                "default": "openai-completions",
-                "description": "API protocol. OpenAI-compatible endpoints (DeepSeek, Groq, etc.) use \"openai-completions\"."
-              },
-              "apiKeyEnv": {
-                "type": "string",
-                "description": "Name of the environment variable holding the API key, e.g. \"DEEPSEEK_API_KEY\"."
-              },
-              "contextWindow": {
-                "type": "number",
-                "default": 128000,
-                "description": "Context window in tokens."
-              },
-              "maxTokens": {
-                "type": "number",
-                "default": 8192,
-                "description": "Maximum output tokens."
-              },
-              "name": {
-                "type": "string",
-                "description": "Optional display name."
-              },
-              "reasoning": {
-                "type": "boolean",
-                "default": false,
-                "description": "Whether the model supports extended thinking. Required for reasoning models the binary doesn't recognise by id (e.g. deepseek-v4-pro) — otherwise thinking levels silently clamp to off."
-              },
-              "input": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "text",
-                    "image"
-                  ]
-                },
-                "default": [
-                  "text"
-                ],
-                "description": "Input modalities the model accepts. Use [\"text\", \"image\"] for vision models. Defaults to [\"text\"]."
-              }
-            }
-          }
-        },
         "pi-code-gui.rustAgentDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`), where its `models.json` lives. Empty (default) uses `~/.pi/agent` when it exists (no relocation), otherwise an extension-managed folder. Set a path to force a specific location — the extension then redirects Rust there and seeds `auth.json` from `~/.pi/agent`. Sessions are unaffected (placed via `--session-dir`)."
+          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`), where the extension writes its managed `models.json` (the bundled Pi model catalog). Empty (default) uses an extension-managed folder so the full-catalog write never clobbers your own `~/.pi/agent`; `auth.json` is seeded from `~/.pi/agent` for OAuth, and API keys resolve from the environment. Set a path to force a specific location. Sessions are unaffected (placed via `--session-dir`)."
         }
       }
     },

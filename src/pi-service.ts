@@ -923,10 +923,10 @@ export class PiService {
     const openaiKey = cfg.get<string>("openaiApiKey");
     if (openaiKey) { env.OPENAI_API_KEY = openaiKey; }
 
-    // Custom models: make Rust able to resolve models outside its built-in
-    // registry (`pi-code-gui.rustCustomModels`). Never silent — fatal problems
-    // (unwritable dir, corrupt models.json) become a loud error + notification;
-    // softer ones (a skipped entry, an auth-seed miss) become chat warnings.
+    // Model catalog: override the Rust binary's stale built-in model list with the
+    // bundled Pi catalog (writes models.json in the relocated agent home). Never
+    // silent — fatal problems (unwritable dir) become a loud error + notification;
+    // softer ones (an auth-seed miss) become chat warnings.
     try {
       const { piEnv, warnings } = setupRustModels();
       Object.assign(env, piEnv);
@@ -2573,13 +2573,21 @@ export class PiService {
         this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
         return;
       }
-      // The binary clamps the level to the model's max and returns no value, so
-      // re-read state to reflect what was actually applied (not the requested level).
+      // The binary clamps the level to the model's capability (a non-reasoning
+      // model forces "off") and returns no value, so re-read state to reflect
+      // what was actually applied rather than what was requested.
       this._thinkingLevel = level;
       try {
         const st = await this.rust.request("get_state", {}, 8000);
         if (st.success) { this.applyRustState(st.data); }
       } catch { /* keep optimistic level */ }
+      // The binary clamps thinking to "off" for non-reasoning models. We override
+      // its model list with the Pi catalog (correct reasoning flags), so a clamp
+      // now means the model genuinely doesn't support thinking — say so rather than
+      // leaving the switch a silent no-op.
+      if (this._thinkingLevel !== level) {
+        vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${this._thinkingLevel}".`);
+      }
       this.reportStatus();
       return;
     }
