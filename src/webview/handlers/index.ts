@@ -666,7 +666,7 @@ export function handleStatusUpdate(data: any) {
       if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }
-    setSbDot(data.state.isStreaming ? "streaming" : "idle");
+    setSbDot(data.isStreaming ? "streaming" : "idle");
   }
 
 export function handleStatus(data: any) {
