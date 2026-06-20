@@ -355,7 +355,10 @@
         },
         "pi-code-gui.defaultRuntime": {
           "type": "string",
-          "enum": ["typescript", "rust"],
+          "enum": [
+            "typescript",
+            "rust"
+          ],
           "default": "typescript",
           "enumDescriptions": [
             "TypeScript Pi — runs in-process for the deepest VS Code integration: 16 editor-bridge tools (diagnostics, symbols, types, format, apply-edit), interactive extension cards, and per-session tool control. Needs Node.js + npm.",
@@ -365,7 +368,10 @@
         },
         "pi-code-gui.sessionHistoryScope": {
           "type": "string",
-          "enum": ["unified", "perRuntime"],
+          "enum": [
+            "unified",
+            "perRuntime"
+          ],
           "default": "unified",
           "enumDescriptions": [
             "Show sessions from both runtimes in one list, each tagged with a TS or Rust badge.",
@@ -380,7 +386,11 @@
         },
         "pi-code-gui.rustInstallMethod": {
           "type": "string",
-          "enum": ["managed", "curl", "manual"],
+          "enum": [
+            "managed",
+            "curl",
+            "manual"
+          ],
           "default": "managed",
           "enumDescriptions": [
             "Download the verified prebuilt binary from GitHub releases into an extension-managed location (falls back to `cargo install` if a Rust toolchain is present). No PATH changes, no remote scripts.",
@@ -391,7 +401,11 @@
         },
         "pi-code-gui.rustExtensionPolicy": {
           "type": "string",
-          "enum": ["safe", "balanced", "permissive"],
+          "enum": [
+            "safe",
+            "balanced",
+            "permissive"
+          ],
           "default": "balanced",
           "enumDescriptions": [
             "Most restrictive — extensions get minimal capabilities. Best if you run untrusted extensions.",
@@ -402,7 +416,11 @@
         },
         "pi-code-gui.rustExtensions": {
           "type": "string",
-          "enum": ["auto", "enabled", "disabled"],
+          "enum": [
+            "auto",
+            "enabled",
+            "disabled"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Recommended — load extensions unless the workspace has TypeScript-format Pi extensions under .pi/ (which the Rust runtime can't parse). Avoids the startup conflict automatically.",
@@ -422,17 +440,73 @@
           "markdownDescription": "Custom models for the **Rust** runtime. Rust resolves models against a fixed registry, so add any model it doesn't know — including any OpenAI-compatible endpoint — here. The extension writes these into the Rust agent's `models.json`. **Rust-only** — does not affect the TypeScript runtime. Example: `{ \"provider\": \"deepseek\", \"id\": \"deepseek-v4-pro\", \"baseUrl\": \"https://api.deepseek.com\", \"api\": \"openai-completions\", \"apiKeyEnv\": \"DEEPSEEK_API_KEY\" }`",
           "items": {
             "type": "object",
-            "required": ["provider", "id", "baseUrl", "api"],
+            "required": [
+              "provider",
+              "id",
+              "baseUrl",
+              "api"
+            ],
             "properties": {
-              "provider": { "type": "string", "description": "Provider id, e.g. \"deepseek\" (reuses a built-in provider or names a new one)." },
-              "id": { "type": "string", "description": "Model id sent to the API, e.g. \"deepseek-v4-pro\"." },
-              "baseUrl": { "type": "string", "description": "Provider API base URL, e.g. \"https://api.deepseek.com\"." },
-              "api": { "type": "string", "enum": ["openai-completions", "openai-responses", "anthropic", "gemini"], "default": "openai-completions", "description": "API protocol. OpenAI-compatible endpoints (DeepSeek, Groq, etc.) use \"openai-completions\"." },
-              "apiKeyEnv": { "type": "string", "description": "Name of the environment variable holding the API key, e.g. \"DEEPSEEK_API_KEY\"." },
-              "contextWindow": { "type": "number", "default": 128000, "description": "Context window in tokens." },
-              "maxTokens": { "type": "number", "default": 8192, "description": "Maximum output tokens." },
-              "name": { "type": "string", "description": "Optional display name." },
-              "reasoning": { "type": "boolean", "default": false, "description": "Whether the model supports extended thinking." }
+              "provider": {
+                "type": "string",
+                "description": "Provider id, e.g. \"deepseek\" (reuses a built-in provider or names a new one)."
+              },
+              "id": {
+                "type": "string",
+                "description": "Model id sent to the API, e.g. \"deepseek-v4-pro\"."
+              },
+              "baseUrl": {
+                "type": "string",
+                "description": "Provider API base URL, e.g. \"https://api.deepseek.com\"."
+              },
+              "api": {
+                "type": "string",
+                "enum": [
+                  "openai-completions",
+                  "openai-responses",
+                  "anthropic",
+                  "gemini"
+                ],
+                "default": "openai-completions",
+                "description": "API protocol. OpenAI-compatible endpoints (DeepSeek, Groq, etc.) use \"openai-completions\"."
+              },
+              "apiKeyEnv": {
+                "type": "string",
+                "description": "Name of the environment variable holding the API key, e.g. \"DEEPSEEK_API_KEY\"."
+              },
+              "contextWindow": {
+                "type": "number",
+                "default": 128000,
+                "description": "Context window in tokens."
+              },
+              "maxTokens": {
+                "type": "number",
+                "default": 8192,
+                "description": "Maximum output tokens."
+              },
+              "name": {
+                "type": "string",
+                "description": "Optional display name."
+              },
+              "reasoning": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether the model supports extended thinking. Required for reasoning models the binary doesn't recognise by id (e.g. deepseek-v4-pro) — otherwise thinking levels silently clamp to off."
+              },
+              "input": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "image"
+                  ]
+                },
+                "default": [
+                  "text"
+                ],
+                "description": "Input modalities the model accepts. Use [\"text\", \"image\"] for vision models. Defaults to [\"text\"]."
+              }
             }
           }
         },
@@ -602,6 +676,7 @@
     ]
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "~22.19.19",
     "@types/vscode": "^1.118.0",
     "@vscode/vsce": "^3.9.1",
