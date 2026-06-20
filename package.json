@@ -653,9 +653,11 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:webview": "node esbuild.webview.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "node scripts/check-diagram.mjs && pnpm run check-types && pnpm run lint && node esbuild.js --production && node esbuild.webview.js --production",
+    "package": "node scripts/check-diagram.mjs && node scripts/check-model-registry.mjs && pnpm run check-types && pnpm run lint && node esbuild.js --production && node esbuild.webview.js --production",
     "gen:diagram": "node scripts/gen-diagram.mjs",
     "check:diagram": "node scripts/check-diagram.mjs",
+    "gen:model-registry": "node scripts/gen-model-registry.mjs",
+    "check:model-registry": "node scripts/check-model-registry.mjs",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
@@ -676,6 +678,7 @@
     ]
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.79.8",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "~22.19.19",
     "@types/vscode": "^1.118.0",
