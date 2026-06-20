@@ -29,3 +29,8 @@ env/**
 media/entry.js
 agent-wiki/**
 WEBVIEW_REWRITE_TODO.md
+sample-workspace/**
+scripts/**
+media/architecture.svg
+media/architecture.png
+media/architecture.gen.json

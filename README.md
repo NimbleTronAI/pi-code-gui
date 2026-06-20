@@ -272,7 +272,13 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 - **PiWebviewPanel** renders a webview chat UI. It subscribes to PiService events and re-renders streaming text, thinking blocks, tool execution, bash output, compaction summaries, and custom messages in real time — identically for both runtimes.
 - **Bridge tools** are registered as SDK `customTools` constructed with `defineTool()` and Typebox schemas, the same way the SDK's own built-in tools are defined. They are a **TypeScript-runtime** feature; Rust Pi uses its own built-in `read`/`write`/`edit`/`bash`/`grep` tools on the same files.
 
-![Architecture](https://raw.githubusercontent.com/NimbleTronAI/pi-code-gui/main/media/architecture.svg)
+<!--
+  This image is a PNG because vsce forbids inline SVGs in the README. The PNG is
+  GENERATED from media/architecture.svg (the source of truth) — do NOT hand-edit it.
+  After changing the SVG: run `npm run gen:diagram`, then commit both files. The
+  `package`/`vsix` build runs `check:diagram` and FAILS if the two drift apart.
+-->
+![Architecture](https://raw.githubusercontent.com/NimbleTronAI/pi-code-gui/main/media/architecture.png)
 
 ## Extension Settings
 
