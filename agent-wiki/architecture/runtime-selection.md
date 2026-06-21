@@ -1,7 +1,7 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-06-05
+> **Last updated:** 2026-06-21 — added "Design decisions & trade-offs" (ADR notes); verified live against rust-pi 0.1.18 (no `queue_update`; tool-skip-on-queued-message; duplicate `agent_end`)
 > **Verified:** the RPC integration was driven against a locally-built
 > `pi_agent_rust` v0.1.18 — `get_state` / `get_available_models` / `get_messages`
 > response shapes confirmed, and a real streaming turn (DeepSeek) round-tripped
@@ -137,6 +137,50 @@ differs is *execution*: a TypeScript-format extension may be **installed
 `rustExtensions` and per-package QuickJS compatibility (`rust-pi doctor`).
 `PiPackageService` drives the Rust binary (`rust-pi`) when the TypeScript SDK
 isn't installed, so Rust-only setups can still manage packages.
+
+## Design decisions & trade-offs
+
+Short rationale for the non-obvious choices, so they aren't "fixed" back into a
+rejected alternative. (Lightweight, in lieu of formal ADRs.)
+
+- **Internal branching over a `PiBackend` interface.** A polymorphic backend was
+  considered and rejected: ~85% of PiService is runtime-agnostic, and a shared
+  interface would force the in-process-only custom-card renderer into an
+  abstraction with no out-of-process equivalent. Branching keeps the shared part
+  shared (see *Internal branching* above).
+- **Pinned managed binary, not `latest`.** The managed download installs a fixed,
+  tested release (`src/rust-pi-version.json`), never upstream `latest` —
+  auto-pulling a brand-new release behind the extension would break the
+  verified-binary contract. A user-supplied binary of a different version gets a
+  one-time warning. Dependabot can't track GitHub releases, so the SoT JSON
+  carries `datasource`/`repo`/`tag` for a future Renovate or scheduled bump.
+- **Synthetic steer/follow-up queue.** rust-pi 0.1.18 emits no `queue_update`, so
+  the webview's pending indicator (driven entirely by that event) would never
+  appear. PiService mirrors the queue locally and clears an entry when the binary
+  folds it into a user turn (matched by text). Verified: zero `queue_update`
+  across idle-steer, mid-turn-steer, and live generation.
+- **Tool-skip on a queued message is expected, rendered neutrally.** Steering or
+  queuing mid-turn makes rust-pi abort the in-flight tool with `isError` +
+  `"Skipped due to queued user message."` and retry it next turn. The GUI renders
+  this as a neutral note, not a red failure, because it is not one.
+- **`get_state` doubles as the init liveness check.** A crash during the handshake
+  is otherwise swallowed by the `_rustInitializing` guard; failing init on a dead
+  `get_state` (or `!RustProcess.isAlive()`) avoids reporting success on a dead
+  subprocess. rust-pi also emits `agent_end` twice on the abort/error path, so
+  `_agentRunActive` dedupes it.
+- **Settings live in the binary.** `autoCompactionEnabled`/`autoRetryEnabled` are
+  toggled over RPC (`set_auto_compaction`/`set_auto_retry`); there is no
+  in-process session to mutate, and `get_state` re-syncs the values.
+- **Context-window clamp asymmetry (built-in vs custom models).** Built-in Rust
+  models keep their registry window for real auto-compaction; only custom models
+  (written into `models.json`) are clamped to the context budget — lowering a
+  built-in's window would require shadowing it. The displayed `%` honours the
+  budget for both.
+- **Relocated agent home + guarded auth seed.** Every Rust session sets
+  `PI_CODING_AGENT_DIR` to an extension-owned dir so writing the bundled
+  `models.json` never clobbers `~/.pi/agent`. `auth.json` is linked from there
+  only when the source is non-empty, valid JSON (a 0-byte source made the binary
+  write `auth.json.corrupt`).
 
 ## Cross-reference
 

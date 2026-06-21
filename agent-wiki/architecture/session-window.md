@@ -5,8 +5,12 @@
 The Session Window pattern (`src/extension.ts`, the `SessionWindow` interface and
 surrounding management code) is the top-level abstraction for multi-session
 chat tabs. Each open chat tab is a `SessionWindow`: a paired `PiService` +
-`PiWebviewPanel` with a unique ID, initialization flag, streaming state, and a
-cached display label derived from the session name or tab summary.
+`PiWebviewPanel` with a unique ID, initialization flag, streaming state, a
+cached display label, and a `runtime: Runtime` field recording whether the tab
+runs on the TypeScript SDK or the Rust binary.
+
+Tabs are **mixed-runtime**: a TypeScript session and a Rust session can be open
+side by side, each badged (`π TS` / `π Rust`) in the status bar and the tree.
 
 ## Why it exists
 
@@ -39,10 +43,25 @@ tracks all open sessions; `activeSessionWindow` tracks the currently focused one
    `workspaceState` and re-creates `SessionWindow` instances for each, skipping
    the primary session (which already loaded via `continueRecent`).
 
+## Runtime tracking
+
+A session's runtime is **resume-follows-origin**: a session created on Rust
+reopens on Rust, and likewise for TypeScript — the runtime is not re-chosen on
+resume. It is resolved by `lookupSessionRuntime(path)` (`extension.ts`), which
+checks a `workspaceState` runtime index keyed by session path first
+(`recordSessionRuntime` writes it on create), then falls back to whether the path
+lives under the Rust session storage dir (`isRustSessionPath`), defaulting to
+TypeScript. New sessions pick a runtime via `resolveEffectiveDefaultRuntime`
+(the `defaultRuntime` setting when both are installed; otherwise the one that is).
+
+See [Runtime Selection](runtime-selection.md) and
+[Runtime Switching UX](runtime-switching-ux.md) for the surrounding model.
+
 ## Related
 
-- [PiService](pi-service.md) — the SDK lifecycle manager inside each SessionWindow
+- [PiService](pi-service.md) — the runtime lifecycle manager inside each SessionWindow
+- [Runtime Selection](runtime-selection.md) — the TypeScript-vs-Rust split
 - [Webview Panel](webview-panel.md) — the UI panel paired with PiService
 - [Tree Views](tree-views.md) — how sessions appear in the sidebar
 
-> **Last updated:** 2026-05-27 — verified accurate; progressive replay, crash telemetry, tree refresh debounce now handled
+> **Last updated:** 2026-06-21 — documented the `runtime` field, mixed-runtime tabs, and resume-follows-origin runtime resolution (`lookupSessionRuntime`)

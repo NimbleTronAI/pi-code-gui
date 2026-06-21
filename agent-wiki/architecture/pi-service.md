@@ -2,11 +2,16 @@
 
 > **Status:** evolving
 
-PiService (`src/pi-service.ts`) is the core lifecycle manager that bridges the
-Pi coding agent SDK (`@earendil-works/pi-coding-agent`) to VS Code. Every
-`SessionWindow` owns one PiService instance. It handles SDK resolution, agent
-session creation, event subscription/translation, model cycling, thinking level
-management, and usage stat tracking.
+PiService (`src/pi-service.ts`) is the core lifecycle manager behind every
+`SessionWindow`. It is the **runtime branch point**: a single instance drives
+*either* the in-process TypeScript SDK (`@earendil-works/pi-coding-agent`) *or*
+an out-of-process Rust binary (`pi --mode rpc`), chosen per session. It handles
+runtime/SDK resolution, agent session creation, event subscription/translation,
+model cycling, thinking level management, and usage stat tracking — presenting
+the same `PiServiceEvent` stream to the webview regardless of runtime.
+
+See [Runtime Selection](runtime-selection.md) for the architecture-level split;
+this page covers PiService's internals for both paths.
 
 ## Why it exists
 
@@ -52,10 +57,43 @@ independently, leading to duplicated init logic and inconsistent error handling.
 - **Session listing** (`PiService.listSessions`, `PiService.deleteSessionFile`) —
   static methods for the Past Sessions tree view.
 
+## Dual runtime (TypeScript SDK vs Rust binary)
+
+`_backendKind: Runtime` (`"typescript" | "rust"`) records which path a session
+uses. `initialize()` dispatches to either the SDK init sequence or
+`initializeRust()`, and most action methods branch on `_backendKind` (early-return
+the Rust path, fall through to the SDK path). Notable Rust-path details:
+
+- **Spawn + handshake** (`initializeRust` → `spawnRust`) — launches `pi --mode rpc`
+  via `RustProcess` (`src/rust-process.ts`), then handshakes `get_state` →
+  `get_available_models` → `get_messages` → `get_commands`. `get_state` doubles
+  as a **liveness check**: if the subprocess died during/after spawn, init fails
+  here instead of returning success on a dead process (`RustProcess.isAlive()`).
+- **Event ingress** (`handleRustEvent`) — raw RPC events are normalized
+  (`normalizeRustEvent` in `src/rust-events.ts`) to the shapes the shared Zod
+  schema expects (the Rust runtime sends `null` where the SDK sends objects/
+  strings), then routed through the same `handleAgentEvent` as the SDK path.
+- **Typed RPC commands** — all `request()`/`send()` calls use `RUST_RPC.*`
+  constants (no bare strings), so a typo is a compile error, not a silent timeout.
+- **Synthetic steer/follow-up queue** — rust-pi 0.1.18 emits no `queue_update`,
+  so PiService tracks the pending queue itself (`_rustSteering`/`_rustFollowUp`),
+  emits `queue-update` on send, and clears an entry when the binary folds it into
+  a user turn. See [Runtime Selection](runtime-selection.md) for the trade-offs.
+- **Settings over RPC** — `toggleAutoCompaction`/`toggleAutoRetry` call
+  `set_auto_compaction`/`set_auto_retry` on the Rust path (the binary owns the
+  setting; there is no in-process session to mutate).
+- **Duplicate `agent_end` guard** — rust-pi can emit `agent_end` twice on the
+  abort/error path; `_agentRunActive` dedupes it.
+
+State that the SDK exposes via its session object is mirrored in `_rust*` fields
+for the out-of-process runtime: `_rustSessionPath`, `_rustUsage`,
+`_rustContextWindow`, `_rustEntries`, `_rustSlashCommands`.
+
 ## Related
 
+- [Runtime Selection](runtime-selection.md) — the TypeScript-vs-Rust split and trade-offs
 - [Session Window](session-window.md) — the SessionWindow that owns PiService
 - [Event Translation](event-translation.md) — how SDK events become PiServiceEvent types
 - [SDK Resolution & Init](../operations/sdk-resolution.md) — detailed walkthrough of the init sequence
 
-> **Last updated:** 2026-05-27 — progressive replay in sendInitialMessages, removed _activeToolNames field
+> **Last updated:** 2026-06-21 — documented the dual-runtime (Rust) path: `_backendKind` branching, `initializeRust` handshake + liveness check, `RUST_RPC` constants, synthetic steer/queue, settings-over-RPC, `agent_end` dedupe
