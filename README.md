@@ -8,7 +8,7 @@
 [![Publish](https://github.com/NimbleTronAI/pi-code-gui/actions/workflows/publish.yml/badge.svg)](https://github.com/NimbleTronAI/pi-code-gui/actions/workflows/publish.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![TypeScript runtime](https://img.shields.io/npm/v/%40earendil-works%2Fpi-coding-agent?label=TypeScript%20Pi&color=7C3AED&style=flat-square&logo=typescript&logoColor=white)](https://pi.dev)
-[![Rust runtime](https://img.shields.io/github/v/release/Dicklesworthstone/pi_agent_rust?label=Rust%20Pi&color=DEA584&style=flat-square&logo=rust&logoColor=white)](https://github.com/Dicklesworthstone/pi_agent_rust)
+[![Rust runtime (tested)](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FNimbleTronAI%2Fpi-code-gui%2Fmain%2Fsrc%2Frust-pi-version.json&query=%24.tag&label=Rust%20Pi%20%28tested%29&color=DEA584&style=flat-square&logo=rust&logoColor=white)](https://github.com/Dicklesworthstone/pi_agent_rust/releases)
 
 > A native VS Code editor experience for the **Pi coding agent** — Pi runs inside VS Code, not in a terminal. Pick your engine per session: [**TypeScript Pi**](https://pi.dev), with full access to your editor state, diagnostics, and symbols, or [**Rust Pi**](https://github.com/Dicklesworthstone/pi_agent_rust), a fast, self-contained binary, with a stronger security model.
 

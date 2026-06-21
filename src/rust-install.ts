@@ -13,10 +13,14 @@ import { promisify } from "node:util";
 import { piLog, piWarn } from "./logger.js";
 import { refreshRuntimeContext } from "./runtime-detection.js";
 import { detectRustBinary } from "./rust-resolver.js";
+import pinnedRust from "./rust-pi-version.json";
 
 const execFileP = promisify(execFile);
 const REPO = "Dicklesworthstone/pi_agent_rust";
-const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+// Pin the managed download to the release we test against (src/rust-pi-version.json)
+// rather than "latest" — auto-installing a moving upstream target is the footgun
+// we deliberately avoid. The pin is bumped via .github/workflows/update-rust-pi.yml.
+const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/tags/${pinnedRust.tag}`;
 
 type Method = "managed" | "curl" | "manual" | "detect";
 
@@ -63,9 +67,9 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
     async (progress) => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rustpi-"));
       try {
-        progress.report({ message: "Resolving latest release…" });
+        progress.report({ message: `Resolving release ${pinnedRust.tag}…` });
         const release = await fetchJson(RELEASES_API);
-        const tag = String(release.tag_name ?? "latest");
+        const tag = String(release.tag_name ?? pinnedRust.tag);
         const assets = (release.assets ?? []) as Array<{ name: string; browser_download_url: string }>;
         const binAsset = assets.find((a) => a.name === asset.archive);
         const sumsAsset = assets.find((a) => a.name === "SHA256SUMS");

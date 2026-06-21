@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { PiService } from "./pi-service.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { PiWebviewPanel } from "./webview-panel.js";
@@ -14,6 +15,7 @@ import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext }
 import { detectRustBinary } from "./rust-resolver.js";
 import { isRustSessionPath, listRustSessions } from "./rust-sessions.js";
 import { installRustInteractive } from "./rust-install.js";
+import pinnedRust from "./rust-pi-version.json";
 
 // ── Session window management ──────────────────────────
 
@@ -163,6 +165,28 @@ function isBenignCancellation(e: unknown): boolean {
   if (name === "Canceled" || name === "CanceledError" || name === "CancellationError") { return true; }
   const msg = e instanceof Error ? e.message : String(e);
   return msg === "Canceled" || msg === "Canceled: Canceled" || /^Canceled\b/.test(msg);
+}
+
+/** Warn once if a user-supplied Rust binary differs from the version this
+ *  extension is built/tested against. The managed build (globalStorage/rust-pi)
+ *  is pinned to that version, so it never warns. API keys aside, a mismatched
+ *  binary can drift in event/RPC shape — surface it instead of failing silently. */
+async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promise<void> {
+  const status = cachedRuntimes()?.rustStatus;
+  if (!status?.installed || !status.version || !status.binaryPath) { return; }
+  const detected = status.version.match(/\d+\.\d+\.\d+/)?.[0];
+  const pinnedVersion = pinnedRust.tag.replace(/^v/, "");
+  if (!detected || detected === pinnedVersion) { return; }
+  // The managed build is pinned, so never warn about it.
+  const managedDir = path.resolve(path.join(context.globalStorageUri.fsPath, "rust-pi"));
+  try { if (path.resolve(status.binaryPath).startsWith(managedDir)) { return; } } catch { /* ignore */ }
+  // One notification per distinct version, so we don't nag every launch.
+  if (context.globalState.get<string>("rustVersionWarned") === detected) { return; }
+  await context.globalState.update("rustVersionWarned", detected);
+  void vscode.window.showWarningMessage(
+    `Rust Pi ${detected} is installed, but this extension is tested against ${pinnedVersion}. ` +
+    "If you hit odd behaviour, run “PiGui: Install Pi” for the managed build, or update the extension.",
+  );
 }
 
 // ── Activate ───────────────────────────────────────────
@@ -861,6 +885,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await offerInitialRuntimeChoice(context);
     await refreshRuntimeContext(true);
   }
+
+  // Warn (once) if a user-supplied Rust binary differs from the version we test
+  // against. The managed build is pinned to that version, so it never warns.
+  await warnIfUntestedRustBinary(context);
 
   // ── Step 4: Restore previously open sessions, or create a fresh one ──
   // openSessionPaths may be the new tagged shape (OpenSessionRef[]) or a legacy
