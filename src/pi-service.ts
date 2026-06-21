@@ -1274,8 +1274,29 @@ export class PiService {
       return;
     }
     this._isStreaming = false;
-    this.emit({ type: "custom-message", data: { customType: "error", content: `Rust Pi exited unexpectedly (code ${code ?? "?"}). Start a new session to continue.`, timestamp: Date.now() } });
+    this._agentRunActive = false;
+    // Clear any pending steer/queue indicator — the process that owned it is gone.
+    if (this._rustSteering.length || this._rustFollowUp.length) {
+      this._rustSteering = [];
+      this._rustFollowUp = [];
+      this.emitRustQueue();
+    }
+    const file = this._rustSessionPath;
+    this.emit({ type: "custom-message", data: { customType: "error", content: `Rust Pi exited unexpectedly (code ${code ?? "?"}).${file ? "" : " Start a new session to continue."}`, timestamp: Date.now() } });
     this.reportStatus();
+    // The session JSONL persists on disk and rust-pi self-exits on stdin EOF (so
+    // this is a real crash, not host teardown). Offer one-click recovery into a
+    // fresh window via the existing resume flow — avoids in-place re-init (which
+    // would replay history into the dead tab) and crash-loops (user-initiated).
+    if (file) {
+      void vscode.window
+        .showWarningMessage(`Rust Pi exited unexpectedly (code ${code ?? "?"}).`, "Reopen session")
+        .then((choice) => {
+          if (choice === "Reopen session") {
+            void vscode.commands.executeCommand("pi-code-gui.resumePastSession", file);
+          }
+        });
+    }
   }
 
   /** Apply a Rust `get_state` response to local model/thinking/session fields. */

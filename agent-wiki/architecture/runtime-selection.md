@@ -181,6 +181,13 @@ rejected alternative. (Lightweight, in lieu of formal ADRs.)
   `models.json` never clobbers `~/.pi/agent`. `auth.json` is linked from there
   only when the source is non-empty, valid JSON (a 0-byte source made the binary
   write `auth.json.corrupt`).
+- **No orphan watchdog needed; crash offers one-click reopen.** Verified that
+  rust-pi exits cleanly (~15ms) on stdin EOF, so when the extension host dies the
+  closed pipe terminates the subprocess — no orphaning, no watchdog. `dispose()`
+  still SIGTERM/SIGKILLs on graceful teardown. A *real* mid-session crash
+  (`handleRustExit`) is not auto-restarted (avoids crash-loops and replaying
+  history into the dead tab); instead it offers a "Reopen session" notification
+  that resumes from the on-disk JSONL via the existing `resumePastSession` flow.
 
 ## Cross-reference
 
