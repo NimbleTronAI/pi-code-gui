@@ -51,6 +51,13 @@ export interface RustProcessOpts {
   onEvent: (e: RustEvent) => void;
   /** Called once when the process exits unexpectedly (not via dispose()). */
   onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+  /** If set, `spawn()` resolves only when this RPC command first responds — a
+   *  real readiness signal (the binary emits no startup event), replacing the
+   *  old fixed timer. Omit to fall back to a short "did it crash immediately?"
+   *  window. */
+  readyCommand?: string;
+  /** Timeout for the readiness probe (default 15000ms). */
+  readyTimeoutMs?: number;
 }
 
 export class RustProcess {
@@ -64,7 +71,8 @@ export class RustProcess {
 
   constructor(opts: RustProcessOpts) { this.opts = opts; }
 
-  /** Spawn the process and resolve once it's running (or reject on immediate failure). */
+  /** Spawn the process and resolve once it's ready (readiness probe) or running
+   *  (timer fallback); reject on immediate failure. */
   async spawn(): Promise<void> {
     const { binaryPath, args, cwd, env } = this.opts;
     piLog(`RustProcess: spawn ${binaryPath} ${args.join(" ")}`);
@@ -89,17 +97,28 @@ export class RustProcess {
       if (!this.disposed) { this.opts.onExit(code, signal); }
     });
 
-    // Surface an immediate spawn failure (ENOENT, glibc mismatch, etc.) so the
-    // caller can fall back gracefully instead of hanging on the first request.
+    // Resolve on a real readiness signal when `readyCommand` is set: the binary
+    // emits no startup event, so we confirm it by a round-trip RPC (resolves as
+    // soon as it answers — fast for healthy starts, and a hung binary surfaces
+    // here rather than hanging the first real request). Without `readyCommand`,
+    // fall back to a short window that just catches an immediate spawn failure
+    // (ENOENT, glibc mismatch, …). Either way, an immediate error/exit rejects.
     await new Promise<void>((resolve, reject) => {
-      const settle = setTimeout(resolve, 400);
-      child.once("error", (e: Error) => { clearTimeout(settle); reject(e); });
+      let settled = false;
+      const settleResolve = (): void => { if (!settled) { settled = true; resolve(); } };
+      const settleReject = (e: Error): void => { if (!settled) { settled = true; reject(e); } };
+      child.once("error", settleReject);
       child.once("exit", (code) => {
         if (code !== 0 && code !== null) {
-          clearTimeout(settle);
-          reject(new Error(`Rust process exited immediately (code ${code}): ${this.stderrBuf.trim().slice(0, 400)}`));
+          settleReject(new Error(`Rust process exited immediately (code ${code}): ${this.stderrBuf.trim().slice(0, 400)}`));
         }
       });
+      if (this.opts.readyCommand) {
+        this.request(this.opts.readyCommand, {}, this.opts.readyTimeoutMs ?? 15000)
+          .then(settleResolve, (e: unknown) => settleReject(e instanceof Error ? e : new Error(String(e))));
+      } else {
+        setTimeout(settleResolve, 400);
+      }
     });
   }
 

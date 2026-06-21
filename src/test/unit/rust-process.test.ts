@@ -40,15 +40,18 @@ before(() => {
 });
 after(() => { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ } });
 
-function spawnFake() {
+interface FakeOpts { readyCommand?: string; readyTimeoutMs?: number; binaryPath?: string; args?: string[] }
+function spawnFake(extra: FakeOpts = {}) {
   const events: RustEvent[] = [];
   let exitCode: number | null | undefined = undefined;
   const rp = new RustProcess({
-    binaryPath: process.execPath,
-    args: [fakeBin],
+    binaryPath: extra.binaryPath ?? process.execPath,
+    args: extra.args ?? [fakeBin],
     cwd: tmp,
     onEvent: (e) => events.push(e),
     onExit: (c) => { exitCode = c; },
+    ...(extra.readyCommand ? { readyCommand: extra.readyCommand } : {}),
+    ...(extra.readyTimeoutMs ? { readyTimeoutMs: extra.readyTimeoutMs } : {}),
   });
   return { rp, events, getExit: () => exitCode };
 }
@@ -116,4 +119,23 @@ test("dispose() does NOT call onExit (intentional teardown is not a crash)", asy
   await delay(250);
   assert.equal(getExit(), undefined);
   assert.equal(rp.isAlive(), false);
+});
+
+// ── F20: readiness signal ─────────────────────────────────────────────
+test("spawn() with readyCommand resolves only on the first RPC response", async () => {
+  const { rp } = spawnFake({ readyCommand: "ping" });
+  await rp.spawn(); // resolves because the fake answers "ping", not on a timer
+  assert.equal(rp.isAlive(), true);
+  rp.dispose();
+});
+
+test("spawn() rejects on readiness timeout when readyCommand is never answered", async () => {
+  const { rp } = spawnFake({ readyCommand: "slow", readyTimeoutMs: 200 });
+  await assert.rejects(() => rp.spawn(), /timed out/);
+  rp.dispose();
+});
+
+test("spawn() rejects when the process exits immediately", async () => {
+  const { rp } = spawnFake({ binaryPath: process.execPath, args: ["-e", "process.exit(2)"] });
+  await assert.rejects(() => rp.spawn(), /exited immediately/);
 });

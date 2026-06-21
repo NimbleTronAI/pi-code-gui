@@ -1065,6 +1065,8 @@ export class PiService {
       binaryPath, args, cwd, env,
       onEvent: (e: RustEvent) => this.handleRustEvent(e),
       onExit: (code: number | null) => this.handleRustExit(code),
+      // Confirm startup by a real get_state round-trip rather than a blind timer.
+      readyCommand: RUST_RPC.getState,
     });
     await this.rust.spawn();
   }
