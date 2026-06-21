@@ -7,6 +7,7 @@ import { piLog, piWarn } from "./logger.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { RustProcess, type RustEvent } from "./rust-process.js";
+import { normalizeRustEvent, dropQueuedMessage } from "./rust-events.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
@@ -1065,68 +1066,9 @@ export class PiService {
     await this.rust.spawn();
   }
 
-  /**
-   * Coerce Rust RPC payloads to the shapes the protocol schema requires. The
-   * Rust runtime sends `null` where the TypeScript SDK sends objects/strings
-   * (e.g. a tool with no params → `args: null`, `result.details: null`); the
-   * shared schema is strict on purpose, so we normalize on the Rust ingress only
-   * rather than weaken validation for the TS path. Fields are read directly off
-   * `event` exactly as handleAgentEvent reads them.
-   */
-  private normalizeRustEvent(event: RustEvent): void {
-    const nil = (v: unknown): boolean => v === null || v === undefined;
-    const fixText = (content: unknown): void => {
-      if (!Array.isArray(content)) { return; }
-      for (const c of content) {
-        if (c && typeof c === "object" && (c as { type?: string }).type === "text" && nil((c as { text?: unknown }).text)) {
-          (c as { text: string }).text = "";
-        }
-      }
-    };
-    const r = event as Record<string, unknown>;
-    switch (event?.type) {
-      case "tool_execution_start":
-        if (nil(r.args)) { r.args = {}; }
-        break;
-      case "tool_execution_update":
-        if (nil(r.partialResult)) { r.partialResult = {}; }
-        else { fixText((r.partialResult as { content?: unknown }).content); }
-        break;
-      case "tool_execution_end":
-        if (r.result === null) { delete r.result; }
-        else if (r.result && typeof r.result === "object") {
-          const res = r.result as { details?: unknown; content?: unknown };
-          if (res.details === null) { delete res.details; }
-          fixText(res.content);
-        }
-        break;
-      case "message_update": {
-        const d = r.assistantMessageEvent as { type?: string; delta?: unknown } | undefined;
-        if (d && (d.type === "text_delta" || d.type === "thinking_delta") && nil(d.delta)) { d.delta = ""; }
-        break;
-      }
-      case "message_end": {
-        const m = r.message as { role?: string; content?: unknown; details?: unknown } | undefined;
-        if (m && typeof m === "object") {
-          if (m.role === "custom" && nil(m.content)) { m.content = ""; }
-          if (m.details === null) { delete m.details; }
-        }
-        break;
-      }
-      case "compaction_end": {
-        const res = r.result as { summary?: unknown; tokensBefore?: unknown } | undefined;
-        if (res && typeof res === "object") {
-          if (nil(res.summary)) { res.summary = ""; }
-          if (nil(res.tokensBefore)) { res.tokensBefore = 0; }
-        }
-        break;
-      }
-    }
-  }
-
   /** Route a raw Rust RPC event: intercept UI/errors, delegate the rest to handleAgentEvent. */
   private handleRustEvent(event: RustEvent): void {
-    this.normalizeRustEvent(event);
+    normalizeRustEvent(event);
     // rust-pi never emits queue_update; when it consumes a queued steer/
     // follow-up the message reappears here as a user turn — drop it from the
     // synthetic queue so the pending indicator clears.
@@ -1432,13 +1374,7 @@ export class PiService {
    *  consumes it (rust-pi has no queue_update to tell us). Returns true if one
    *  was removed. */
   private dropRustQueued(text: string): boolean {
-    const t = (text ?? "").trim();
-    if (!t) { return false; }
-    let i = this._rustSteering.findIndex((m) => m.trim() === t);
-    if (i >= 0) { this._rustSteering.splice(i, 1); return true; }
-    i = this._rustFollowUp.findIndex((m) => m.trim() === t);
-    if (i >= 0) { this._rustFollowUp.splice(i, 1); return true; }
-    return false;
+    return dropQueuedMessage(this._rustSteering, this._rustFollowUp, text);
   }
 
   // ── Extension UI Bridge ────────────────────────────

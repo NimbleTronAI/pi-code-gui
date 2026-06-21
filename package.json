@@ -588,6 +588,7 @@
     "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src",
     "test": "vscode-test",
+    "test:unit": "pnpm run compile-tests && node --test out/test/unit/*.test.js",
     "vsix": "pnpm run package && npx @vscode/vsce package --no-dependencies",
     "wiki:lint": "npx tsx agent-wiki/scripts/wiki-lint.ts",
     "wiki:lint:full": "npx tsx agent-wiki/scripts/wiki-lint.ts --full",

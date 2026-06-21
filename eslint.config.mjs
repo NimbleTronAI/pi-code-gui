@@ -49,4 +49,15 @@ export default [
       "@typescript-eslint/no-unnecessary-type-assertion": "error",
     },
   },
+  {
+    // Tests use the node:test runner: top-level test() calls intentionally
+    // "float", and fixtures use `any` / untyped callbacks. Relax those rules
+    // for test files only — production code keeps the strict settings above.
+    files: ["src/test/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-floating-promises": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/explicit-function-return-type": "off",
+    },
+  },
 ];
