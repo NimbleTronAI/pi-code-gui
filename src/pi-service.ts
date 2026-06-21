@@ -308,6 +308,9 @@ export class PiService {
    *  the abort/error path); the duplicate would double-emit agent-end and
    *  double-refresh state. Set on agent_start, cleared on the first agent_end. */
   private _agentRunActive = false;
+  /** Event types already logged as unhandled, so upstream protocol drift is
+   *  surfaced once in the output channel rather than flooding it per event. */
+  private _warnedUnknownEvents = new Set<string>();
   private sessionId: string | null = null;
 
   // ── Runtime selection: in-process TypeScript SDK vs out-of-process Rust ──
@@ -2039,8 +2042,15 @@ export class PiService {
         break;
 
       default:
-        // Surface unknown SDK events as visible notifications so they
-        // aren't silently lost.  Add a case above once handled.
+        // Surface unknown events so they aren't silently lost. An unhandled type
+        // usually means upstream protocol drift (a renamed/new Rust or SDK event),
+        // so log it loudly to the output channel — once per type, since a renamed
+        // streaming event (e.g. message_update) would otherwise flood. The
+        // diagnostic emit keeps the in-webview signal. Add a case above once handled.
+        if (event?.type && !this._warnedUnknownEvents.has(event.type)) {
+          this._warnedUnknownEvents.add(event.type);
+          piWarn(`Unhandled agent event "${event.type}" — possible upstream protocol drift (logged once).`);
+        }
         this.emit({
           type: "custom-message",
           data: {
