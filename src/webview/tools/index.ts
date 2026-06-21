@@ -841,7 +841,26 @@ export function handleToolUpdate(data: any) {
     scrollToBottom();
   }
 
+/** rust-pi aborts an in-flight tool call when the user queues/steers a message,
+ *  returning isError with this sentinel in the result text. It's not a failure —
+ *  the tool re-runs in the next turn — so callers render it neutrally. */
+function isInterruptedByQueue(result: any): boolean {
+  try {
+    var content = result && result.content;
+    if (!Array.isArray(content)) { return false; }
+    return content.some(function (c: any) {
+      return c && c.type === "text" && typeof c.text === "string" &&
+        c.text.indexOf("queued user message") !== -1;
+    });
+  } catch (_e) { return false; }
+}
+
 export function handleToolEnd(data: any) {
+    // Downgrade the "Skipped due to queued user message" abort from a red error
+    // to a neutral result — the result text still explains what happened.
+    if (data && data.isError && isInterruptedByQueue(data.result)) {
+      data = Object.assign({}, data, { isError: false });
+    }
     var callId = data.toolCallId;
     var entry = state.currentToolBlocks[callId];
     logEvent("tool-end", {

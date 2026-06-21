@@ -87,11 +87,32 @@ function writeModelsJson(file: string, contextBudget: number): void {
   catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. The Rust model catalog won't be available.`); }
 }
 
+/** True if `file` holds parseable, non-empty auth JSON. A 0-byte or corrupt
+ *  source makes the binary write auth.json.corrupt on startup, so we refuse to
+ *  seed (or keep a link) from one. */
+function isUsableAuth(file: string): boolean {
+  try {
+    const raw = fs.readFileSync(file, "utf-8").trim();
+    if (!raw) { return false; }
+    JSON.parse(raw);
+    return true;
+  } catch { return false; }
+}
+
 /** Make the relocated agent dir usable for OAuth: link/copy ~/.pi/agent/auth.json. */
 function seedAuth(dir: string): string | null {
   const src = path.join(os.homedir(), ".pi", "agent", "auth.json");
   const dst = path.join(dir, "auth.json");
-  if (!fs.existsSync(src) || fs.existsSync(dst)) { return null; }
+  // Never seed (or keep) a link to a missing/empty/corrupt source — the binary
+  // would just mark it auth.json.corrupt. API keys still resolve from the env.
+  if (!isUsableAuth(src)) {
+    try {
+      const st = fs.lstatSync(dst);
+      if (st.isSymbolicLink() || st.size === 0) { fs.unlinkSync(dst); }
+    } catch { /* dst absent — nothing to clean up */ }
+    return null;
+  }
+  if (fs.existsSync(dst)) { return null; }
   try { fs.symlinkSync(src, dst); return null; }
   catch {
     try { fs.copyFileSync(src, dst); return `Copied auth.json into "${dir}" (symlink unavailable) — it won't track future logins; re-run after \`pi login\`.`; }

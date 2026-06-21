@@ -303,6 +303,10 @@ export class PiService {
   private _thinkingLevel = "off";
   private _effort = "auto";
   private _isStreaming = false;
+  /** Guards against rust-pi emitting agent_end twice for one run (observed on
+   *  the abort/error path); the duplicate would double-emit agent-end and
+   *  double-refresh state. Set on agent_start, cleared on the first agent_end. */
+  private _agentRunActive = false;
   private sessionId: string | null = null;
 
   // ── Runtime selection: in-process TypeScript SDK vs out-of-process Rust ──
@@ -327,6 +331,13 @@ export class PiService {
    *  Sessions tree reads this instead. Refreshed on init and each turn end. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _rustEntries: any[] = [];
+  /** Synthetic steer/follow-up queue for the Rust runtime. rust-pi (0.1.18)
+   *  never emits queue_update, so the webview's pending indicator — which is
+   *  driven entirely by that event — would never appear. We mirror queued
+   *  messages here, emit queue-update ourselves on send, and clear entries when
+   *  the binary consumes them (they reappear as a user turn) or the run ends. */
+  private _rustSteering: string[] = [];
+  private _rustFollowUp: string[] = [];
 
   // SDK root path (for re-importing individual modules)
   private _piRoot: string | null = null;
@@ -879,6 +890,8 @@ export class PiService {
     // Reset per-session usage so a re-init (e.g. /new) starts clean.
     this._rustUsage = null;
     this._rustLastContextTokens = 0;
+    this._rustSteering = [];
+    this._rustFollowUp = [];
 
     const status = detectRustBinary();
     if (!status.installed || !status.binaryPath) {
@@ -1098,6 +1111,15 @@ export class PiService {
   /** Route a raw Rust RPC event: intercept UI/errors, delegate the rest to handleAgentEvent. */
   private handleRustEvent(event: RustEvent): void {
     this.normalizeRustEvent(event);
+    // rust-pi never emits queue_update; when it consumes a queued steer/
+    // follow-up the message reappears here as a user turn — drop it from the
+    // synthetic queue so the pending indicator clears.
+    if ((this._rustSteering.length || this._rustFollowUp.length) &&
+        event?.type === "message_start" && event.message?.role === "user") {
+      if (this.dropRustQueued(this.extractTextFromContent(event.message?.content))) {
+        this.emitRustQueue();
+      }
+    }
     switch (event?.type) {
       case "extension_ui_request":
         void this.handleRustUiRequest(event);
@@ -1109,6 +1131,9 @@ export class PiService {
         if (typeof event.sessionId === "string") { this.sessionId = event.sessionId; }
         break;
     }
+    // Capture before handleAgentEvent (which clears the flag) so a duplicate
+    // agent_end doesn't trigger a second state re-sync.
+    const realAgentEnd = event?.type === "agent_end" && this._agentRunActive;
     try {
       this.handleAgentEvent(event);
     } catch (e: unknown) {
@@ -1116,7 +1141,7 @@ export class PiService {
     }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
-    if (event?.type === "agent_end") { void this.refreshRustState(); }
+    if (realAgentEnd) { void this.refreshRustState(); }
   }
 
   /** Re-query Rust `get_state` (e.g. after a turn) to capture sessionFile/model/settings. */
@@ -1367,9 +1392,37 @@ export class PiService {
     const imgs = images && images.length > 0 ? images : undefined;
     const payload: Record<string, unknown> = { message: text };
     if (imgs) { payload.images = imgs; }
-    if (mode === "steer") { this.rust.send("steer", payload); }
-    else if (mode === "queue") { this.rust.send("follow_up", payload); }
-    else { this.rust.send("prompt", payload); }
+    if (mode === "steer") {
+      this.rust.send("steer", payload);
+      // rust-pi never echoes queue_update, so surface the pending message
+      // ourselves; it clears when the binary folds it into a user turn.
+      this._rustSteering.push(text);
+      this.emitRustQueue();
+    } else if (mode === "queue") {
+      this.rust.send("follow_up", payload);
+      this._rustFollowUp.push(text);
+      this.emitRustQueue();
+    } else {
+      this.rust.send("prompt", payload);
+    }
+  }
+
+  /** Emit the synthetic Rust steer/follow-up queue to the webview pending UI. */
+  private emitRustQueue(): void {
+    this.emit({ type: "queue-update", data: { steering: [...this._rustSteering], followUp: [...this._rustFollowUp] } });
+  }
+
+  /** Drop the first queued steer/follow-up matching `text` once the binary
+   *  consumes it (rust-pi has no queue_update to tell us). Returns true if one
+   *  was removed. */
+  private dropRustQueued(text: string): boolean {
+    const t = (text ?? "").trim();
+    if (!t) { return false; }
+    let i = this._rustSteering.findIndex((m) => m.trim() === t);
+    if (i >= 0) { this._rustSteering.splice(i, 1); return true; }
+    i = this._rustFollowUp.findIndex((m) => m.trim() === t);
+    if (i >= 0) { this._rustFollowUp.splice(i, 1); return true; }
+    return false;
   }
 
   // ── Extension UI Bridge ────────────────────────────
@@ -1834,6 +1887,7 @@ export class PiService {
   private handleAgentEvent(event: any): void {
     switch (event.type) {
       case "agent_start":
+        this._agentRunActive = true;
         this._isStreaming = true;
         this.currentAssistantToolCalls.clear();
         this.turnIndex = 0;
@@ -1841,9 +1895,19 @@ export class PiService {
         break;
 
       case "agent_end":
+        // rust-pi can emit agent_end twice for one run (seen on the abort/error
+        // path); ignore the duplicate so we don't double-emit or double-refresh.
+        if (this._backendKind === "rust" && !this._agentRunActive) { break; }
+        this._agentRunActive = false;
         this._isStreaming = false;
         this.currentAssistantToolCalls.clear();
         this.turnIndex = 0;
+        // Safety net: clear any synthetic queue entries the consume-path missed.
+        if (this._backendKind === "rust" && (this._rustSteering.length || this._rustFollowUp.length)) {
+          this._rustSteering = [];
+          this._rustFollowUp = [];
+          this.emitRustQueue();
+        }
         this.emit({ type: "agent-end", data: { messages: event.messages } });
         this.reportStatus();
         break;
@@ -2973,6 +3037,14 @@ export class PiService {
 
   /** Clear all queued messages. */
   async clearQueue(): Promise<void> {
+    if (this._backendKind === "rust") {
+      // rust-pi has already accepted these (it auto-processes steers), so this
+      // only clears the local pending indicator.
+      this._rustSteering = [];
+      this._rustFollowUp = [];
+      this.emitRustQueue();
+      return;
+    }
     if (!this.session) { return; }
     this.session.clearQueue();
   }
@@ -3443,6 +3515,8 @@ export class PiService {
     // Rust runtime: tear down the subprocess (it owns its own persistence).
     if (this._backendKind === "rust") {
       if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
+      this._rustSteering = [];
+      this._rustFollowUp = [];
       this.rust?.dispose();
       this.rust = null;
       return;
