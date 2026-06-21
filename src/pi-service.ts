@@ -6,7 +6,7 @@ import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from ".
 import { piLog, piWarn } from "./logger.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
-import { RustProcess, type RustEvent } from "./rust-process.js";
+import { RustProcess, RUST_RPC, type RustEvent } from "./rust-process.js";
 import { normalizeRustEvent, dropQueuedMessage } from "./rust-events.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
@@ -995,7 +995,7 @@ export class PiService {
     // and we fail init here instead of returning success on a dead subprocess.
     // (handleRustExit swallows the crash itself while _rustInitializing is set.)
     try {
-      const state = await rust.request("get_state", {}, 15000);
+      const state = await rust.request(RUST_RPC.getState, {}, 15000);
       if (state.success) { this.applyRustState(state.data); }
     } catch (e: unknown) {
       const m = e instanceof Error ? e.message : String(e);
@@ -1012,13 +1012,13 @@ export class PiService {
     }
 
     try {
-      const models = await rust.request("get_available_models", {}, 15000);
+      const models = await rust.request(RUST_RPC.getAvailableModels, {}, 15000);
       const list = this.rustModelList(models.data);
       if (models.success && list.length > 0) { this.cycleModels = list; }
     } catch (e: unknown) { piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`); }
 
     try {
-      const msgs = await rust.request("get_messages", {}, 15000);
+      const msgs = await rust.request(RUST_RPC.getMessages, {}, 15000);
       const entries = this.rustEntriesFromMessages(msgs.data);
       this._rustEntries = entries;
       this.captureRustContextFromMessages(msgs.data);
@@ -1030,7 +1030,7 @@ export class PiService {
     // The Rust session advertises its own commands/templates/skills — surface
     // them in the slash-command list instead of the TypeScript SDK's.
     try {
-      const cmds = await rust.request("get_commands", {}, 8000);
+      const cmds = await rust.request(RUST_RPC.getCommands, {}, 8000);
       if (cmds.success) { this._rustSlashCommands = this.rustSlashCommandsFrom(cmds.data); }
     } catch (e: unknown) { piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`); }
 
@@ -1106,7 +1106,7 @@ export class PiService {
   private async refreshRustState(): Promise<void> {
     if (!this.rust) { return; }
     try {
-      const state = await this.rust.request("get_state", {}, 8000);
+      const state = await this.rust.request(RUST_RPC.getState, {}, 8000);
       if (state.success) { this.applyRustState(state.data); }
     } catch (e: unknown) {
       piWarn(`refreshRustState failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1120,7 +1120,7 @@ export class PiService {
   private async refreshRustEntries(): Promise<void> {
     if (!this.rust) { return; }
     try {
-      const msgs = await this.rust.request("get_messages", {}, 8000);
+      const msgs = await this.rust.request(RUST_RPC.getMessages, {}, 8000);
       if (msgs.success) { this._rustEntries = this.rustEntriesFromMessages(msgs.data); }
     } catch (e: unknown) {
       piWarn(`refreshRustEntries failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1140,7 +1140,7 @@ export class PiService {
   private async refreshRustUsage(): Promise<void> {
     if (!this.rust) { return; }
     try {
-      const r = await this.rust.request("get_session_stats", {}, 8000);
+      const r = await this.rust.request(RUST_RPC.getSessionStats, {}, 8000);
       if (r.success) { this.applyRustUsage(r.data); }
     } catch (e: unknown) {
       piWarn(`refreshRustUsage failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1242,12 +1242,12 @@ export class PiService {
           const chosen = pending ? await pending : undefined;
           if (id) {
             if (chosen === undefined || chosen === null) {
-              this.rust?.send("extension_ui_response", { id, cancelled: true });
+              this.rust?.send(RUST_RPC.extensionUiResponse, { id, cancelled: true });
             } else if (method === "confirm") {
-              this.rust?.send("extension_ui_response", { id, confirmed: !!chosen });
+              this.rust?.send(RUST_RPC.extensionUiResponse, { id, confirmed: !!chosen });
             } else {
               const value = labelToValue.has(String(chosen)) ? labelToValue.get(String(chosen)) : chosen;
-              this.rust?.send("extension_ui_response", { id, value });
+              this.rust?.send(RUST_RPC.extensionUiResponse, { id, value });
             }
           }
           return;
@@ -1351,17 +1351,17 @@ export class PiService {
     const payload: Record<string, unknown> = { message: text };
     if (imgs) { payload.images = imgs; }
     if (mode === "steer") {
-      this.rust.send("steer", payload);
+      this.rust.send(RUST_RPC.steer, payload);
       // rust-pi never echoes queue_update, so surface the pending message
       // ourselves; it clears when the binary folds it into a user turn.
       this._rustSteering.push(text);
       this.emitRustQueue();
     } else if (mode === "queue") {
-      this.rust.send("follow_up", payload);
+      this.rust.send(RUST_RPC.followUp, payload);
       this._rustFollowUp.push(text);
       this.emitRustQueue();
     } else {
-      this.rust.send("prompt", payload);
+      this.rust.send(RUST_RPC.prompt, payload);
     }
   }
 
@@ -2254,8 +2254,8 @@ export class PiService {
 
   async abort(): Promise<void> {
     if (this._backendKind === "rust") {
-      this.rust?.send("abort_bash");
-      this.rust?.send("abort");
+      this.rust?.send(RUST_RPC.abortBash);
+      this.rust?.send(RUST_RPC.abort);
       return;
     }
     if (!this.session) {
@@ -2286,7 +2286,7 @@ export class PiService {
       // available") come back as a {type:"response"}, which RustProcess discards
       // unless a pending id is awaiting it. Render the outcome either way.
       try {
-        const resp = await this.rust.request("compact", {}, 120000);
+        const resp = await this.rust.request(RUST_RPC.compact, {}, 120000);
         if (resp.success) {
           await this.refreshRustState();
           this.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Context compacted.", timestamp: Date.now() } });
@@ -2490,7 +2490,7 @@ export class PiService {
       // .catch() because request() rejects on RPC timeout / process exit — a user
       // action like a model switch must surface that, not become an unhandled
       // rejection in the webview message handler (which doesn't wrap this call).
-      const resp = await this.rust.request("set_model", { provider, modelId }, 15000)
+      const resp = await this.rust.request(RUST_RPC.setModel, { provider, modelId }, 15000)
         .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
       if (!resp) { return; }
       if (!resp.success) {
@@ -2543,7 +2543,7 @@ export class PiService {
       if (!this.rust) { return; }
       this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
       const next = this.cycleModels[this.cycleIndex];
-      const resp = await this.rust.request("set_model", { provider: next.provider, modelId: next.id }, 15000)
+      const resp = await this.rust.request(RUST_RPC.setModel, { provider: next.provider, modelId: next.id }, 15000)
         .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
       if (!resp) { return; }
       if (!resp.success) {
@@ -2582,7 +2582,7 @@ export class PiService {
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
       if (!this.rust) { return; }
-      const resp = await this.rust.request("set_thinking_level", { level }, 15000)
+      const resp = await this.rust.request(RUST_RPC.setThinkingLevel, { level }, 15000)
         .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
       if (!resp) { return; }
       if (!resp.success) {
@@ -2594,7 +2594,7 @@ export class PiService {
       // what was actually applied rather than what was requested.
       this._thinkingLevel = level;
       try {
-        const st = await this.rust.request("get_state", {}, 8000);
+        const st = await this.rust.request(RUST_RPC.getState, {}, 8000);
         if (st.success) { this.applyRustState(st.data); }
       } catch { /* keep optimistic level */ }
       // The binary clamps thinking to "off" for non-reasoning models. We override
@@ -2848,7 +2848,7 @@ export class PiService {
       // local state only on success — applyRustState re-syncs it from get_state.
       const next = !this._autoCompactionEnabled;
       try {
-        const r = await this.rust?.request("set_auto_compaction", { enabled: next }, 8000);
+        const r = await this.rust?.request(RUST_RPC.setAutoCompaction, { enabled: next }, 8000);
         if (r?.success) { this._autoCompactionEnabled = next; }
         else { piWarn(`set_auto_compaction rejected: ${r?.error ?? "no response"}`); }
       } catch (e: unknown) { piWarn(`set_auto_compaction failed: ${e instanceof Error ? e.message : String(e)}`); }
@@ -2868,7 +2868,7 @@ export class PiService {
     if (this._backendKind === "rust") {
       const next = !this._autoRetryEnabled;
       try {
-        const r = await this.rust?.request("set_auto_retry", { enabled: next }, 8000);
+        const r = await this.rust?.request(RUST_RPC.setAutoRetry, { enabled: next }, 8000);
         if (r?.success) { this._autoRetryEnabled = next; }
         else { piWarn(`set_auto_retry rejected: ${r?.error ?? "no response"}`); }
       } catch (e: unknown) { piWarn(`set_auto_retry failed: ${e instanceof Error ? e.message : String(e)}`); }

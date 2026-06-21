@@ -20,6 +20,28 @@ export interface RustResponse {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface RustEvent { type: string;[k: string]: any; }
 
+/** RPC command names PiService sends to the Rust subprocess. Centralized so a
+ *  typo is a compile error rather than a silent timeout, and so call sites are
+ *  greppable/refactorable. Values verified against rust-pi 0.1.18. */
+export const RUST_RPC = {
+  getState: "get_state",
+  getAvailableModels: "get_available_models",
+  getMessages: "get_messages",
+  getCommands: "get_commands",
+  getSessionStats: "get_session_stats",
+  prompt: "prompt",
+  steer: "steer",
+  followUp: "follow_up",
+  abort: "abort",
+  abortBash: "abort_bash",
+  compact: "compact",
+  setModel: "set_model",
+  setThinkingLevel: "set_thinking_level",
+  setAutoCompaction: "set_auto_compaction",
+  setAutoRetry: "set_auto_retry",
+  extensionUiResponse: "extension_ui_response",
+} as const;
+
 export interface RustProcessOpts {
   binaryPath: string;
   args: string[];
