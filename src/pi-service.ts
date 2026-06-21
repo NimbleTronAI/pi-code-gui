@@ -989,10 +989,26 @@ export class PiService {
     const rust = this.rust!;
 
     // Handshake: state → models → history.
+    // get_state doubles as the liveness check: if the process crashed during or
+    // right after spawn, its pending request is rejected (or the call times out),
+    // and we fail init here instead of returning success on a dead subprocess.
+    // (handleRustExit swallows the crash itself while _rustInitializing is set.)
     try {
       const state = await rust.request("get_state", {}, 15000);
       if (state.success) { this.applyRustState(state.data); }
-    } catch (e: unknown) { piWarn(`Rust get_state failed: ${e instanceof Error ? e.message : String(e)}`); }
+    } catch (e: unknown) {
+      const m = e instanceof Error ? e.message : String(e);
+      piWarn(`Rust get_state failed: ${m}`);
+      this.rust?.dispose();
+      this.rust = null;
+      return { success: false, error: `Rust Pi started but did not respond (${m}). The binary may have crashed on startup — check the Pi Code Gui output channel.` };
+    }
+    if (!rust.isAlive()) {
+      piWarn("Rust process exited during initialization handshake");
+      this.rust?.dispose();
+      this.rust = null;
+      return { success: false, error: "Rust Pi exited during initialization. Check the Pi Code Gui output channel for the binary's stderr." };
+    }
 
     try {
       const models = await rust.request("get_available_models", {}, 15000);
@@ -2890,6 +2906,19 @@ export class PiService {
   }
 
   async toggleAutoCompaction(): Promise<boolean> {
+    if (this._backendKind === "rust") {
+      // The Rust runtime owns this setting; toggle it over RPC (the GUI toggle
+      // was previously a no-op here since there's no in-process session). Flip
+      // local state only on success — applyRustState re-syncs it from get_state.
+      const next = !this._autoCompactionEnabled;
+      try {
+        const r = await this.rust?.request("set_auto_compaction", { enabled: next }, 8000);
+        if (r?.success) { this._autoCompactionEnabled = next; }
+        else { piWarn(`set_auto_compaction rejected: ${r?.error ?? "no response"}`); }
+      } catch (e: unknown) { piWarn(`set_auto_compaction failed: ${e instanceof Error ? e.message : String(e)}`); }
+      this.emitSettings();
+      return this._autoCompactionEnabled;
+    }
     if (!this.session) { return this._autoCompactionEnabled; }
     this._autoCompactionEnabled = !this._autoCompactionEnabled;
     if (typeof this.session.setAutoCompactionEnabled === "function") {
@@ -2900,6 +2929,16 @@ export class PiService {
   }
 
   async toggleAutoRetry(): Promise<boolean> {
+    if (this._backendKind === "rust") {
+      const next = !this._autoRetryEnabled;
+      try {
+        const r = await this.rust?.request("set_auto_retry", { enabled: next }, 8000);
+        if (r?.success) { this._autoRetryEnabled = next; }
+        else { piWarn(`set_auto_retry rejected: ${r?.error ?? "no response"}`); }
+      } catch (e: unknown) { piWarn(`set_auto_retry failed: ${e instanceof Error ? e.message : String(e)}`); }
+      this.emitSettings();
+      return this._autoRetryEnabled;
+    }
     if (!this.session) { return this._autoRetryEnabled; }
     this._autoRetryEnabled = !this._autoRetryEnabled;
     this.emitSettings();

@@ -155,6 +155,12 @@ export class RustProcess {
     });
   }
 
+  /** True while the subprocess is spawned and has neither exited nor been
+   *  disposed — used to detect a crash during the init handshake. */
+  isAlive(): boolean {
+    return !!this.child && !this.disposed && this.child.exitCode === null;
+  }
+
   private failAllPending(err: Error): void {
     for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
     this.pending.clear();
