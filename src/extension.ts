@@ -14,6 +14,7 @@ import type { SessionSummary, Runtime, OpenSessionRef } from "./types.js";
 import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext } from "./runtime-detection.js";
 import { detectRustBinary } from "./rust-resolver.js";
 import { isRustSessionPath, listRustSessions } from "./rust-sessions.js";
+import { isRustSessionHeader } from "./session-format.js";
 import { installRustInteractive } from "./rust-install.js";
 import pinnedRust from "./rust-pi-version.json";
 
@@ -77,6 +78,10 @@ function lookupSessionRuntime(p: string): Runtime {
   if (map[p] === "rust" || map[p] === "typescript") { return map[p]; }
   // Inferred fallback: the Rust pool lives in its own storage directory.
   if (isRustSessionPath(p)) { return "rust"; }
+  // Last resort: inspect the file header. Catches Rust sessions created via the
+  // CLI, moved, or under a custom sessionDir, where the path prefix no longer
+  // applies (only upgrades to "rust" on a clear header signal — never downgrades).
+  if (isRustSessionHeader(p)) { return "rust"; }
   return "typescript";
 }
 
