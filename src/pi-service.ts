@@ -7,7 +7,7 @@ import { piLog, piWarn } from "./logger.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { RustProcess, RUST_RPC, type RustEvent } from "./rust-process.js";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, routeRustEvent, extractMessageText } from "./rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, routeRustEvent, extractMessageText, shouldWarnDegraded, clearDegraded } from "./rust-events.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
@@ -342,6 +342,12 @@ export class PiService {
    *  the binary consumes them (they reappear as a user turn) or the run ends. */
   private _rustSteering: string[] = [];
   private _rustFollowUp: string[] = [];
+  /** Capability keys (models/history/usage/status/commands) for which a "this
+   *  Rust capability is degraded" warning has already been surfaced this session.
+   *  A post-init RPC failing silently strips model-switching, history, or the
+   *  usage readout; we surface it once per capability (until it recovers) so the
+   *  degradation isn't invisible — without spamming after every turn. */
+  private _rustDegradedWarned = new Set<string>();
 
   // SDK root path (for re-importing individual modules)
   private _piRoot: string | null = null;
@@ -896,6 +902,7 @@ export class PiService {
     this._rustLastContextTokens = 0;
     this._rustSteering = [];
     this._rustFollowUp = [];
+    this._rustDegradedWarned.clear();
 
     const status = detectRustBinary();
     if (!status.installed || !status.binaryPath) {
@@ -1017,8 +1024,12 @@ export class PiService {
     try {
       const models = await rust.request(RUST_RPC.getAvailableModels, {}, 15000);
       const list = this.rustModelList(models.data);
-      if (models.success && list.length > 0) { this.cycleModels = list; }
-    } catch (e: unknown) { piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`); }
+      if (models.success && list.length > 0) { this.cycleModels = list; this.recordRustCapOk("models"); }
+      else { this.warnRustDegraded("models", "Rust Pi returned no model list — model switching (/model) may be unavailable this session."); }
+    } catch (e: unknown) {
+      piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.warnRustDegraded("models", "Couldn't load the Rust model list — model switching (/model) may be unavailable this session.");
+    }
 
     try {
       const msgs = await rust.request(RUST_RPC.getMessages, {}, 15000);
@@ -1028,14 +1039,21 @@ export class PiService {
       this.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
       await this.sendInitialMessages(entries);
       this.emit({ type: "batch-end", data: { hasEntries: entries.length > 0 } });
-    } catch (e: unknown) { piWarn(`Rust get_messages failed: ${e instanceof Error ? e.message : String(e)}`); }
+      this.recordRustCapOk("history");
+    } catch (e: unknown) {
+      piWarn(`Rust get_messages failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.warnRustDegraded("history", "Couldn't load this session's history from Rust Pi — earlier messages may not be shown (the session file on disk is intact).");
+    }
 
     // The Rust session advertises its own commands/templates/skills — surface
     // them in the slash-command list instead of the TypeScript SDK's.
     try {
       const cmds = await rust.request(RUST_RPC.getCommands, {}, 8000);
-      if (cmds.success) { this._rustSlashCommands = this.rustSlashCommandsFrom(cmds.data); }
-    } catch (e: unknown) { piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`); }
+      if (cmds.success) { this._rustSlashCommands = this.rustSlashCommandsFrom(cmds.data); this.recordRustCapOk("commands"); }
+    } catch (e: unknown) {
+      piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.warnRustDegraded("commands", "Couldn't load Rust Pi's slash commands — its session-specific commands may be missing from the list.");
+    }
 
     await this.refreshRustUsage();
     this.reportStatus();
@@ -1114,9 +1132,10 @@ export class PiService {
     if (!this.rust) { return; }
     try {
       const state = await this.rust.request(RUST_RPC.getState, {}, 8000);
-      if (state.success) { this.applyRustState(state.data); }
+      if (state.success) { this.applyRustState(state.data); this.recordRustCapOk("status"); }
     } catch (e: unknown) {
       piWarn(`refreshRustState failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.warnRustDegraded("status", "Couldn't sync Rust Pi's status — the model/context readout may be stale.");
     }
     await this.refreshRustUsage();
     await this.refreshRustEntries();
@@ -1128,9 +1147,10 @@ export class PiService {
     if (!this.rust) { return; }
     try {
       const msgs = await this.rust.request(RUST_RPC.getMessages, {}, 8000);
-      if (msgs.success) { this._rustEntries = this.rustEntriesFromMessages(msgs.data); }
+      if (msgs.success) { this._rustEntries = this.rustEntriesFromMessages(msgs.data); this.recordRustCapOk("history"); }
     } catch (e: unknown) {
       piWarn(`refreshRustEntries failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.warnRustDegraded("history", "Couldn't refresh this session's history from Rust Pi — the Open Sessions list may not reflect the latest turn.");
     }
   }
 
@@ -1148,9 +1168,10 @@ export class PiService {
     if (!this.rust) { return; }
     try {
       const r = await this.rust.request(RUST_RPC.getSessionStats, {}, 8000);
-      if (r.success) { this.applyRustUsage(r.data); }
+      if (r.success) { this.applyRustUsage(r.data); this.recordRustCapOk("usage"); }
     } catch (e: unknown) {
       piWarn(`refreshRustUsage failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.warnRustDegraded("usage", "Couldn't read Rust Pi's token/cost usage — the usage readout may be missing or stale.");
     }
   }
 
@@ -1403,6 +1424,20 @@ export class PiService {
    *  was removed. */
   private dropRustQueued(text: string): boolean {
     return dropQueuedMessage(this._rustSteering, this._rustFollowUp, text);
+  }
+
+  /** Surface a one-line, deduped warning when a Rust capability RPC fails, so a
+   *  degraded session (no model list, no history, no usage readout) isn't silent.
+   *  Warns once per capability per session until recordRustCapOk(cap) clears it. */
+  private warnRustDegraded(cap: string, message: string): void {
+    if (shouldWarnDegraded(this._rustDegradedWarned, cap)) {
+      this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${message}`, timestamp: Date.now() } });
+    }
+  }
+
+  /** Mark a Rust capability healthy again so a later failure warns once more. */
+  private recordRustCapOk(cap: string): void {
+    clearDegraded(this._rustDegradedWarned, cap);
   }
 
   // ── Extension UI Bridge ────────────────────────────

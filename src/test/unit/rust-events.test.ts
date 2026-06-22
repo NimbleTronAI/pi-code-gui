@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, shouldWarnDegraded, clearDegraded } from "../../rust-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {
@@ -134,4 +134,28 @@ test("shouldEmitToolPreview: id-less call with no name yet is skipped (the exact
 test("shouldEmitToolPreview: bash/exec skipped even with an id (own render path)", () => {
   assert.equal(shouldEmitToolPreview({ id: "call_1", name: "bash" }), false);
   assert.equal(shouldEmitToolPreview({ id: "call_1", name: "exec" }), false);
+});
+
+// ── shouldWarnDegraded / clearDegraded (capability-warning dedupe) ─────
+test("shouldWarnDegraded: warns on the first failure, stays silent after", () => {
+  const warned = new Set<string>();
+  assert.equal(shouldWarnDegraded(warned, "models"), true);
+  assert.equal(shouldWarnDegraded(warned, "models"), false);
+  assert.equal(shouldWarnDegraded(warned, "models"), false);
+});
+
+test("shouldWarnDegraded: tracks each capability independently", () => {
+  const warned = new Set<string>();
+  assert.equal(shouldWarnDegraded(warned, "models"), true);
+  assert.equal(shouldWarnDegraded(warned, "history"), true);
+  assert.equal(shouldWarnDegraded(warned, "models"), false);
+});
+
+test("clearDegraded: recovery re-arms the warning for that capability only", () => {
+  const warned = new Set<string>();
+  shouldWarnDegraded(warned, "usage");
+  shouldWarnDegraded(warned, "history");
+  clearDegraded(warned, "usage");
+  assert.equal(shouldWarnDegraded(warned, "usage"), true, "usage re-armed after recovery");
+  assert.equal(shouldWarnDegraded(warned, "history"), false, "history still suppressed");
 });

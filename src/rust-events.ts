@@ -144,6 +144,24 @@ export function dropQueuedMessage(steering: string[], followUp: string[], text: 
 }
 
 /**
+ * Decide whether to surface a "capability degraded" warning for `cap`. A Rust
+ * capability RPC (model list, history, usage, …) failing must not be silent, but
+ * it also must not spam after every turn — so warn only the FIRST time a given
+ * capability fails (recorded in `warned`) until it recovers and clearDegraded()
+ * resets it. Mutates `warned`; returns true when the caller should emit.
+ */
+export function shouldWarnDegraded(warned: Set<string>, cap: string): boolean {
+  if (warned.has(cap)) { return false; }
+  warned.add(cap);
+  return true;
+}
+
+/** Mark capability `cap` healthy again so a future failure warns once more. */
+export function clearDegraded(warned: Set<string>, cap: string): void {
+  warned.delete(cap);
+}
+
+/**
  * Whether to emit a streaming `fromMessage` tool-start preview for a tool call
  * extracted from a (possibly partial) assistant message. Skip when:
  * - the id hasn't streamed in yet — previewing an id-less call orphans an empty
