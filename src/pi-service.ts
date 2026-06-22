@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
-import { RUST_RPC } from "./rust-process.js";
+import { RUST_RPC, type RustResponse } from "./rust-process.js";
 import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
@@ -1966,24 +1966,29 @@ export class PiService {
     }
   }
 
+  /** Run a Rust RPC for a user action, surfacing any failure — an RPC rejection
+   *  (timeout / process exit) OR a {success:false} reply — as a one-line chat
+   *  error prefixed with `label`, and returning null so the caller bails. Dedupes
+   *  the identical error handling across setModel/cycleModel/setThinkingLevel.
+   *  request() (correlated by id), not send(): the binary returns the outcome only
+   *  in the response, which RustProcess drops if nothing awaits the id. */
+  private async rustRequestOrError(command: string, payload: Record<string, unknown>, label: string): Promise<RustResponse | null> {
+    if (!this._rust) { return null; }
+    const fail = (m: string): null => { this.emit({ type: "custom-message", data: { customType: "error", content: `${label}: ${m}`, timestamp: Date.now() } }); return null; };
+    const resp = await this._rust.request(command, payload, 15000)
+      .catch((e: unknown) => fail(e instanceof Error ? e.message : String(e)));
+    if (!resp) { return null; }
+    if (!resp.success) { return fail(resp.error ?? "unknown error"); }
+    return resp;
+  }
+
   async setModel(provider: string, modelId: string): Promise<void> {
     if (this._backendKind === "rust") {
-      if (!this._rust) { return; }
-      // request() not send(): the binary returns the new model (with its real
-      // contextWindow) and any failure ONLY in the response, which RustProcess
-      // drops if nothing awaits the id. Apply the reply so a bad switch surfaces
-      // and the budget clamp / context-% reflect the new model immediately.
-      // .catch() because request() rejects on RPC timeout / process exit — a user
-      // action like a model switch must surface that, not become an unhandled
-      // rejection in the webview message handler (which doesn't wrap this call).
-      const resp = await this._rust.request(RUST_RPC.setModel, { provider, modelId }, 15000)
-        .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
+      // Apply the reply so a bad switch surfaces and the budget clamp / context-%
+      // reflect the new model (with its real contextWindow) immediately.
+      const resp = await this.rustRequestOrError(RUST_RPC.setModel, { provider, modelId }, `Could not switch model to ${modelId}`);
       if (!resp) { return; }
-      if (!resp.success) {
-        this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
-        return;
-      }
-      this._rust.applyState({ model: resp.data });
+      this._rust?.applyState({ model: resp.data });
       this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
       if (this.cycleIndex === -1) { this.cycleIndex = 0; }
       this.reportStatus();
@@ -2026,17 +2031,11 @@ export class PiService {
         vscode.window.showWarningMessage("No models available. Configure an API key first.");
         return;
       }
-      if (!this._rust) { return; }
       this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
       const next = this.cycleModels[this.cycleIndex];
-      const resp = await this._rust.request(RUST_RPC.setModel, { provider: next.provider, modelId: next.id }, 15000)
-        .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
+      const resp = await this.rustRequestOrError(RUST_RPC.setModel, { provider: next.provider, modelId: next.id }, `Could not switch model to ${next.id}`);
       if (!resp) { return; }
-      if (!resp.success) {
-        this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
-        return;
-      }
-      this._rust.applyState({ model: resp.data });
+      this._rust?.applyState({ model: resp.data });
       vscode.window.showInformationMessage(`Model: ${next.id}`);
       this.reportStatus();
       return;
@@ -2067,21 +2066,15 @@ export class PiService {
 
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
-      if (!this._rust) { return; }
-      const resp = await this._rust.request(RUST_RPC.setThinkingLevel, { level }, 15000)
-        .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
+      const resp = await this.rustRequestOrError(RUST_RPC.setThinkingLevel, { level }, "Could not set thinking level");
       if (!resp) { return; }
-      if (!resp.success) {
-        this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
-        return;
-      }
       // The binary clamps the level to the model's capability (a non-reasoning
       // model forces "off") and returns no value, so re-read state to reflect
       // what was actually applied rather than what was requested.
       this._thinkingLevel = level;
       try {
-        const st = await this._rust.request(RUST_RPC.getState, {}, 8000);
-        if (st.success) { this._rust.applyState(st.data); }
+        const st = await this._rust?.request(RUST_RPC.getState, {}, 8000);
+        if (st?.success) { this._rust?.applyState(st.data); }
       } catch { /* keep optimistic level */ }
       // The binary clamps thinking to "off" for non-reasoning models. We override
       // its model list with the Pi catalog (correct reasoning flags), so a clamp

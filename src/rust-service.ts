@@ -15,7 +15,7 @@
 import * as vscode from "vscode";
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse } from "./rust-process.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, shouldWarnDegraded, clearDegraded } from "./rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
@@ -245,7 +245,7 @@ export class RustService {
 
     try {
       const models = await proc.request(RUST_RPC.getAvailableModels, {}, 15000);
-      const list = this.modelList(models.data);
+      const list = parseRustModels(models.data);
       if (models.success && list.length > 0) { this.host.setCycleModels(list); this.recordCapOk("models"); }
       else { this.warnDegraded("models", "Rust Pi returned no model list — model switching (/model) may be unavailable this session."); }
     } catch (e: unknown) {
@@ -255,7 +255,7 @@ export class RustService {
 
     try {
       const msgs = await proc.request(RUST_RPC.getMessages, {}, 15000);
-      const entries = this.entriesFromMessages(msgs.data);
+      const entries = parseRustEntries(msgs.data);
       this.entries = entries;
       this.captureContextFromMessages(msgs.data);
       this.host.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
@@ -271,7 +271,7 @@ export class RustService {
     // them in the slash-command list instead of the TypeScript SDK's.
     try {
       const cmds = await proc.request(RUST_RPC.getCommands, {}, 8000);
-      if (cmds.success) { this.slashCommands = this.slashCommandsFrom(cmds.data); this.recordCapOk("commands"); }
+      if (cmds.success) { this.slashCommands = parseRustSlashCommands(cmds.data); this.recordCapOk("commands"); }
     } catch (e: unknown) {
       piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("commands", "Couldn't load Rust Pi's slash commands — its session-specific commands may be missing from the list.");
@@ -494,7 +494,7 @@ export class RustService {
     if (!this.process) { return; }
     try {
       const msgs = await this.process.request(RUST_RPC.getMessages, {}, 8000);
-      if (msgs.success) { this.entries = this.entriesFromMessages(msgs.data); this.recordCapOk("history"); }
+      if (msgs.success) { this.entries = parseRustEntries(msgs.data); this.recordCapOk("history"); }
     } catch (e: unknown) {
       piWarn(`refreshEntries failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("history", "Couldn't refresh this session's history from Rust Pi — the Open Sessions list may not reflect the latest turn.");
@@ -593,44 +593,8 @@ export class RustService {
     if (typeof d.sessionFile === "string") { this.sessionPath = d.sessionFile; }
   }
 
-  /** Normalize a Rust `get_available_models` response to {provider, id} pairs. */
-  private modelList(data: unknown): CycleModel[] {
-    const d = data as { models?: unknown } | undefined;
-    const raw = Array.isArray(d?.models) ? d.models : (Array.isArray(data) ? data : []);
-    return raw
-      .filter((m) => m && typeof m.provider === "string" && typeof m.id === "string")
-      .map((m) => ({
-        provider: m.provider,
-        id: m.id,
-        name: typeof m.name === "string" ? m.name : undefined,
-        contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
-        cost: m.cost && typeof m.cost.input === "number" ? { input: m.cost.input, output: m.cost.output } : undefined,
-      }));
-  }
-
-  /** Wrap a Rust `get_messages` response as session-entry shapes for sendInitialMessages. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private entriesFromMessages(data: unknown): any[] {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const d = data as { messages?: any[] } | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const messages: any[] = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? (data) : []);
-    return messages.map((m, i) => ({ type: "message", message: m, id: m?.id ?? `rust-${i}` }));
-  }
-
-  /** Map a Rust `get_commands` response to slash-command entries. */
-  private slashCommandsFrom(data: unknown): Array<{ cmd: string; desc: string; source: string }> {
-    const list = (data as { commands?: unknown })?.commands;
-    if (!Array.isArray(list)) { return []; }
-    const out: Array<{ cmd: string; desc: string; source: string }> = [];
-    for (const c of list as Array<Record<string, unknown>>) {
-      const name = String(c.invocationName ?? c.name ?? c.command ?? c.id ?? "").replace(/^\/+/, "");
-      if (!name) { continue; }
-      const src = c.source ?? (c.sourceInfo as { source?: unknown } | undefined)?.source;
-      out.push({ cmd: `/${name}`, desc: String(c.description ?? c.desc ?? ""), source: src ? `rust (${String(src)})` : "rust" });
-    }
-    return out;
-  }
+  // Response parsing (parseRustModels/parseRustEntries/parseRustSlashCommands)
+  // lives in rust-events.ts so it's pure + unit-tested.
 
   // ── Synthetic steer/follow-up queue ────────────────────
 
@@ -693,7 +657,7 @@ export class RustService {
    *  degraded session (no model list, no history, no usage readout) isn't silent.
    *  Warns once per capability per session until recordCapOk(cap) clears it. */
   private warnDegraded(cap: string, message: string): void {
-    if (shouldWarnDegraded(this.degradedWarned, cap)) {
+    if (checkAndRecordDegraded(this.degradedWarned, cap)) {
       this.host.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${message}`, timestamp: Date.now() } });
     }
   }
@@ -752,6 +716,10 @@ export class RustService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getEntries(): any[] { return this.entries; }
   getSlashCommands(): Array<{ cmd: string; desc: string; source: string }> { return this.slashCommands; }
+  /** The on-disk session file, or null. CONTRACT: a fresh Rust session has no
+   *  file until the binary writes its first turn (it's captured from get_state's
+   *  `sessionFile`), so this is null between init and the first turn — callers
+   *  persisting it must tolerate null rather than recording a stale path. */
   getSessionPath(): string | null { return this.sessionPath; }
   getUsage(): RustUsage {
     return this.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: this.contextWindow };

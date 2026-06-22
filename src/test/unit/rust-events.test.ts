@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, shouldWarnDegraded, clearDegraded } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "../../rust-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {
@@ -158,26 +158,78 @@ test("shouldEmitToolPreviewUpdate: respects a custom interval", () => {
   assert.equal(shouldEmitToolPreviewUpdate(0, 100, 100), true);
 });
 
-// ── shouldWarnDegraded / clearDegraded (capability-warning dedupe) ─────
-test("shouldWarnDegraded: warns on the first failure, stays silent after", () => {
+// ── checkAndRecordDegraded / clearDegraded (capability-warning dedupe) ─
+test("checkAndRecordDegraded: warns on the first failure, stays silent after", () => {
   const warned = new Set<string>();
-  assert.equal(shouldWarnDegraded(warned, "models"), true);
-  assert.equal(shouldWarnDegraded(warned, "models"), false);
-  assert.equal(shouldWarnDegraded(warned, "models"), false);
+  assert.equal(checkAndRecordDegraded(warned, "models"), true);
+  assert.equal(checkAndRecordDegraded(warned, "models"), false);
+  assert.equal(checkAndRecordDegraded(warned, "models"), false);
 });
 
-test("shouldWarnDegraded: tracks each capability independently", () => {
+test("checkAndRecordDegraded: tracks each capability independently", () => {
   const warned = new Set<string>();
-  assert.equal(shouldWarnDegraded(warned, "models"), true);
-  assert.equal(shouldWarnDegraded(warned, "history"), true);
-  assert.equal(shouldWarnDegraded(warned, "models"), false);
+  assert.equal(checkAndRecordDegraded(warned, "models"), true);
+  assert.equal(checkAndRecordDegraded(warned, "history"), true);
+  assert.equal(checkAndRecordDegraded(warned, "models"), false);
 });
 
 test("clearDegraded: recovery re-arms the warning for that capability only", () => {
   const warned = new Set<string>();
-  shouldWarnDegraded(warned, "usage");
-  shouldWarnDegraded(warned, "history");
+  checkAndRecordDegraded(warned, "usage");
+  checkAndRecordDegraded(warned, "history");
   clearDegraded(warned, "usage");
-  assert.equal(shouldWarnDegraded(warned, "usage"), true, "usage re-armed after recovery");
-  assert.equal(shouldWarnDegraded(warned, "history"), false, "history still suppressed");
+  assert.equal(checkAndRecordDegraded(warned, "usage"), true, "usage re-armed after recovery");
+  assert.equal(checkAndRecordDegraded(warned, "history"), false, "history still suppressed");
+});
+
+// ── parseRustModels / parseRustEntries / parseRustSlashCommands ────────
+// Pure deserializers for the handshake replies. Shapes mirror real rust-pi output.
+test("parseRustModels: reads {models:[…]} and {provider,id} pairs", () => {
+  const out = parseRustModels({ models: [
+    { provider: "deepseek", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextWindow: 1000000, cost: { input: 1, output: 2 } },
+    { provider: "anthropic", id: "claude" },
+  ] });
+  assert.equal(out.length, 2);
+  assert.deepEqual(out[0], { provider: "deepseek", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", contextWindow: 1000000, cost: { input: 1, output: 2 } });
+  assert.deepEqual(out[1], { provider: "anthropic", id: "claude", name: undefined, contextWindow: undefined, cost: undefined });
+});
+
+test("parseRustModels: accepts a bare array and drops malformed entries", () => {
+  const out = parseRustModels([{ provider: "x", id: "y" }, null, { provider: "z" }, { id: "w" }]);
+  assert.deepEqual(out.map((m) => m.id), ["y"]);
+});
+
+test("parseRustModels: null/garbage → []", () => {
+  assert.deepEqual(parseRustModels(null), []);
+  assert.deepEqual(parseRustModels({}), []);
+  assert.deepEqual(parseRustModels(42), []);
+});
+
+test("parseRustEntries: wraps messages and synthesizes ids when missing", () => {
+  const out = parseRustEntries({ messages: [{ id: "m1", role: "user" }, { role: "assistant" }] });
+  assert.deepEqual(out[0], { type: "message", message: { id: "m1", role: "user" }, id: "m1" });
+  assert.equal(out[1].id, "rust-1");
+});
+
+test("parseRustEntries: bare array and null/garbage", () => {
+  assert.equal(parseRustEntries([{ id: "a" }]).length, 1);
+  assert.deepEqual(parseRustEntries(null), []);
+  assert.deepEqual(parseRustEntries({}), []);
+});
+
+test("parseRustSlashCommands: maps names, strips leading slashes, tags source", () => {
+  const out = parseRustSlashCommands({ commands: [
+    { name: "tldr", description: "summarize", source: "extension" },
+    { invocationName: "/foo" },
+    { command: "bar", desc: "d" },
+  ] });
+  assert.deepEqual(out[0], { cmd: "/tldr", desc: "summarize", source: "rust (extension)" });
+  assert.deepEqual(out[1], { cmd: "/foo", desc: "", source: "rust" });
+  assert.equal(out[2].cmd, "/bar");
+});
+
+test("parseRustSlashCommands: skips nameless entries; null/garbage → []", () => {
+  assert.deepEqual(parseRustSlashCommands({ commands: [{ description: "no name" }] }), []);
+  assert.deepEqual(parseRustSlashCommands(null), []);
+  assert.deepEqual(parseRustSlashCommands({ commands: "nope" }), []);
 });

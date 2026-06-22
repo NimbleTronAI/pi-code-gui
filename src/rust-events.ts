@@ -166,13 +166,14 @@ export function shouldEmitToolPreviewUpdate(lastEmit: number | undefined, now: n
 }
 
 /**
- * Decide whether to surface a "capability degraded" warning for `cap`. A Rust
+ * Claim the one-time "capability degraded" warning slot for `cap`. A Rust
  * capability RPC (model list, history, usage, …) failing must not be silent, but
  * it also must not spam after every turn — so warn only the FIRST time a given
  * capability fails (recorded in `warned`) until it recovers and clearDegraded()
- * resets it. Mutates `warned`; returns true when the caller should emit.
+ * resets it. NOTE: this both decides AND records — it MUTATES `warned` and
+ * returns true only on the first failure, so the caller should emit then.
  */
-export function shouldWarnDegraded(warned: Set<string>, cap: string): boolean {
+export function checkAndRecordDegraded(warned: Set<string>, cap: string): boolean {
   if (warned.has(cap)) { return false; }
   warned.add(cap);
   return true;
@@ -195,4 +196,59 @@ export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | 
   if (!tc.id) { return false; }
   if (tc.name === "bash" || tc.name === "exec") { return false; }
   return true;
+}
+
+// ── Rust RPC response parsers ─────────────────────────────────────────
+// Pure, shape-tolerant deserializers for the handshake/refresh replies. The Rust
+// binary's JSON has no shared schema with the extension, so these tolerate the
+// known shape variants and degenerate inputs (null/missing/array-vs-{list}); they
+// live here (vscode-free) so the parsing — the part most likely to break when
+// rust-pi changes its payloads — is unit-tested rather than locked in RustService.
+
+/** A model entry for the model-cycle list (mirrors PiService.cycleModels). */
+export interface RustModelEntry {
+  provider: string;
+  id: string;
+  name?: string;
+  cost?: { input: number; output: number };
+  contextWindow?: number;
+}
+
+/** Normalize a Rust `get_available_models` reply to {provider, id, …} pairs. */
+export function parseRustModels(data: unknown): RustModelEntry[] {
+  const d = data as { models?: unknown } | undefined;
+  const raw = Array.isArray(d?.models) ? d.models : (Array.isArray(data) ? data : []);
+  return raw
+    .filter((m) => m && typeof m.provider === "string" && typeof m.id === "string")
+    .map((m) => ({
+      provider: m.provider,
+      id: m.id,
+      name: typeof m.name === "string" ? m.name : undefined,
+      contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
+      cost: m.cost && typeof m.cost.input === "number" ? { input: m.cost.input, output: m.cost.output } : undefined,
+    }));
+}
+
+/** Wrap a Rust `get_messages` reply as session-entry shapes for sendInitialMessages. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function parseRustEntries(data: unknown): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const d = data as { messages?: any[] } | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const messages: any[] = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? (data) : []);
+  return messages.map((m, i) => ({ type: "message", message: m, id: m?.id ?? `rust-${i}` }));
+}
+
+/** Map a Rust `get_commands` reply to slash-command entries. */
+export function parseRustSlashCommands(data: unknown): Array<{ cmd: string; desc: string; source: string }> {
+  const list = (data as { commands?: unknown })?.commands;
+  if (!Array.isArray(list)) { return []; }
+  const out: Array<{ cmd: string; desc: string; source: string }> = [];
+  for (const c of list as Array<Record<string, unknown>>) {
+    const name = String(c.invocationName ?? c.name ?? c.command ?? c.id ?? "").replace(/^\/+/, "");
+    if (!name) { continue; }
+    const src = c.source ?? (c.sourceInfo as { source?: unknown } | undefined)?.source;
+    out.push({ cmd: `/${name}`, desc: String(c.description ?? c.desc ?? ""), source: src ? `rust (${String(src)})` : "rust" });
+  }
+  return out;
 }

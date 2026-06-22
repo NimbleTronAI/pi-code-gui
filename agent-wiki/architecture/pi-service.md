@@ -61,33 +61,49 @@ independently, leading to duplicated init logic and inconsistent error handling.
 
 `_backendKind: Runtime` (`"typescript" | "rust"`) records which path a session
 uses. `initialize()` dispatches to either the SDK init sequence or
-`initializeRust()`, and most action methods branch on `_backendKind` (early-return
-the Rust path, fall through to the SDK path). Notable Rust-path details:
+`initializeRust()`, which constructs a **`RustService`** (`src/rust-service.ts`)
+and delegates to it. The out-of-process runtime — process lifecycle, RPC
+handshake, event translation, synthetic queue, and the usage/entries/commands
+caches — lives entirely in `RustService`; PiService holds a single
+`_rust: RustService | null` and delegates the Rust branch of each backend-aware
+method to it. The coupling is the explicit **`RustHost`** interface: every piece
+of shared PiService state RustService reads/writes (model, thinking level,
+session id, cycle models, streaming/run flags, auto-compaction/retry) and every
+core call it makes (`emit`, `handleAgentEvent`, `reportStatus`,
+`sendInitialMessages`, `showDialog`) passes through a `makeRustHost()` closure.
+Notable Rust-path details:
 
-- **Spawn + handshake** (`initializeRust` → `spawnRust`) — launches `pi --mode rpc`
-  via `RustProcess` (`src/rust-process.ts`), then handshakes `get_state` →
-  `get_available_models` → `get_messages` → `get_commands`. `get_state` doubles
-  as a **liveness check**: if the subprocess died during/after spawn, init fails
-  here instead of returning success on a dead process (`RustProcess.isAlive()`).
-- **Event ingress** (`handleRustEvent`) — raw RPC events are normalized
+- **Spawn + handshake** (`RustService.initialize` → `spawn`) — launches
+  `pi --mode rpc` via `RustProcess` (`src/rust-process.ts`), then handshakes
+  `get_state` → `get_available_models` → `get_messages` → `get_commands`.
+  `get_state` doubles as a **liveness check**: if the subprocess died
+  during/after spawn, init fails here instead of returning success on a dead
+  process (`RustProcess.isAlive()`). Failed init nulls `_rust`, so `initialized`
+  reports false. Replies are parsed by the pure `parseRust*` helpers in
+  `src/rust-events.ts` (unit-tested), not inline.
+- **Event ingress** (`RustService.handleEvent`) — raw RPC events are normalized
   (`normalizeRustEvent` in `src/rust-events.ts`) to the shapes the shared Zod
   schema expects (the Rust runtime sends `null` where the SDK sends objects/
-  strings), then routed through the same `handleAgentEvent` as the SDK path.
+  strings), the dispatch decision is computed by the pure `routeRustEvent`, then
+  the event is routed back through PiService's shared `handleAgentEvent` via the
+  host (the Rust event shapes mirror the SDK's).
 - **Typed RPC commands** — all `request()`/`send()` calls use `RUST_RPC.*`
   constants (no bare strings), so a typo is a compile error, not a silent timeout.
 - **Synthetic steer/follow-up queue** — rust-pi 0.1.18 emits no `queue_update`,
-  so PiService tracks the pending queue itself (`_rustSteering`/`_rustFollowUp`),
-  emits `queue-update` on send, and clears an entry when the binary folds it into
-  a user turn. See [Runtime Selection](runtime-selection.md) for the trade-offs.
+  so `RustService` tracks the pending queue itself, emits `queue-update` on send,
+  and clears an entry when the binary folds it into a user turn. See
+  [Runtime Selection](runtime-selection.md) for the trade-offs.
 - **Settings over RPC** — `toggleAutoCompaction`/`toggleAutoRetry` call
   `set_auto_compaction`/`set_auto_retry` on the Rust path (the binary owns the
   setting; there is no in-process session to mutate).
 - **Duplicate `agent_end` guard** — rust-pi can emit `agent_end` twice on the
-  abort/error path; `_agentRunActive` dedupes it.
+  abort/error path; `_agentRunActive` (still on PiService, shared with the SDK
+  path) dedupes it.
 
-State that the SDK exposes via its session object is mirrored in `_rust*` fields
-for the out-of-process runtime: `_rustSessionPath`, `_rustUsage`,
-`_rustContextWindow`, `_rustEntries`, `_rustSlashCommands`.
+State the SDK exposes via its session object is instead owned by `RustService`
+for the out-of-process runtime — session path, usage, context window, cached
+entries, and slash commands — which PiService reads through accessors
+(`getUsage()`, `getEntries()`, `getSessionPath()`, `getSlashCommands()`).
 
 ## Related
 
