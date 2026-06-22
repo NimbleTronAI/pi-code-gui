@@ -292,6 +292,7 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 
 - VS Code 1.118+
 - **A Pi runtime** — TypeScript Pi (needs Node.js + npm) or Rust Pi (a standalone binary). The extension detects what's installed and, if neither is, asks you to choose; install is on-demand. See [Choosing a runtime](#choosing-a-runtime).
+  - **Rust Pi tool dependencies** — Rust Pi's `find` and `grep` tools shell out to [`fd`](https://github.com/sharkdp/fd) and [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`), which must be on your `PATH` (a documented `pi_agent_rust` prerequisite). Install with `apt install fd-find ripgrep` (Linux; Debian names fd `fdfind`, so also `ln -s "$(command -v fdfind)" ~/.local/bin/fd`) or `brew install fd ripgrep` (macOS). After a managed Rust install the extension detects these and offers to install them for you.
 - At least one API key (Anthropic, OpenAI, DeepSeek, Gemini, etc.) — run **PiGui: Set Up API Key / Login** or see the [Pi quickstart](https://pi.dev/docs/latest/quickstart)
 
 ## Development

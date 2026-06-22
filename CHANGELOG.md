@@ -1,5 +1,10 @@
 # Change Log
 
+## [Unreleased]
+
+### Added
+- **Rust runtime tool dependencies surfaced + auto-offered.** Rust Pi's `find` and `grep` tools require the external `fd` and `ripgrep` (`rg`) binaries on `PATH` — a documented `pi_agent_rust` prerequisite that its installer does not install. After a managed Rust install, the extension now detects whether they're present and offers a one-click install (`apt install fd-find ripgrep` on Linux incl. the `fdfind`→`fd` symlink, `brew install fd ripgrep` on macOS); otherwise the `find`/`grep` tools fail at runtime. See [Requirements](README.md#requirements).
+
 ## [0.1.1]
 
 ### Added
