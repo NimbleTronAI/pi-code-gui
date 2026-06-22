@@ -23,6 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { piLog } from "./logger.js";
+import { resolveMaxOutputTokens } from "./rust-catalog.js";
 import registryData from "./model-registry.generated.json";
 
 interface RegistryModel {
@@ -62,29 +63,44 @@ function ensureDir(dir: string): void {
 }
 
 /** Write the bundled catalog into models.json, overriding the binary's built-ins.
- *  contextWindow is clamped to the context budget so auto-compaction fires there. */
-function writeModelsJson(file: string, contextBudget: number): void {
+ *  contextWindow is clamped to the context budget so auto-compaction fires there;
+ *  a model's maxTokens is written only when it's a real output limit (rust-pi
+ *  0.1.20 forwards maxTokens to the API verbatim, so the pi-ai placeholder values
+ *  that copy the context window 400 as a silent empty turn — those are omitted so
+ *  the provider's own default applies). Returns how many maxTokens were omitted. */
+function writeModelsJson(file: string, contextBudget: number): number {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const providers: Record<string, any> = {};
+  let omittedCount = 0;
   for (const [provId, prov] of Object.entries(registry.providers)) {
     providers[provId] = {
       baseUrl: prov.baseUrl,
       api: prov.api,
       // No apiKey: the binary resolves provider keys from the environment by
       // convention (verified), so omitting it lets standard env vars just work.
-      models: prov.models.map((m) => ({
-        id: m.id,
-        name: m.name,
-        contextWindow: contextBudget > 0 ? Math.min(m.contextWindow, contextBudget) : m.contextWindow,
-        maxTokens: m.maxTokens,
-        input: m.input,
-        ...(m.cost ? { cost: m.cost } : {}),
-        ...(m.reasoning ? { reasoning: true } : {}),
-      })),
+      models: prov.models.map((m) => {
+        // Decide maxTokens against the model's REAL context window (provider
+        // validity is judged against the true window, not the budget-clamped one
+        // written for compaction). A real sub-window limit is kept verbatim so
+        // genuine large outputs survive (e.g. deepseek 384000); a placeholder
+        // (>= window) or garbage value is omitted → provider default applies.
+        const maxTokens = resolveMaxOutputTokens(m.maxTokens, m.contextWindow);
+        if (maxTokens === undefined) { omittedCount++; }
+        return {
+          id: m.id,
+          name: m.name,
+          contextWindow: contextBudget > 0 ? Math.min(m.contextWindow, contextBudget) : m.contextWindow,
+          ...(maxTokens !== undefined ? { maxTokens } : {}),
+          input: m.input,
+          ...(m.cost ? { cost: m.cost } : {}),
+          ...(m.reasoning ? { reasoning: true } : {}),
+        };
+      }),
     };
   }
   try { fs.writeFileSync(file, JSON.stringify({ providers }, null, 2) + "\n"); }
   catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. The Rust model catalog won't be available.`); }
+  return omittedCount;
 }
 
 /** True if `file` holds parseable, non-empty auth JSON. A 0-byte or corrupt
@@ -131,9 +147,9 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   const budget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
   const dir = resolveAgentDir(_ctx);
   ensureDir(dir);
-  writeModelsJson(path.join(dir, "models.json"), budget);
+  const omitted = writeModelsJson(path.join(dir, "models.json"), budget);
   const w = seedAuth(dir);
   if (w) { warnings.push(w); }
-  piLog(`Rust model catalog: ${Object.keys(registry.providers).length} providers from pi-ai ${registry.piAiVersion} → ${dir}/models.json (budget=${budget})`);
+  piLog(`Rust model catalog: ${Object.keys(registry.providers).length} providers from pi-ai ${registry.piAiVersion} → ${dir}/models.json (budget=${budget}, ${omitted} placeholder maxTokens omitted → provider default)`);
   return { piEnv: { PI_CODING_AGENT_DIR: dir }, warnings };
 }
