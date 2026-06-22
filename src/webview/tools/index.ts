@@ -714,6 +714,14 @@ export function handleToolStart(data: any) {
       inBashBlocks: !!state.bashBlocks[callId],
     });
 
+    // Ignore preview tool-starts that arrive before the tool call's id is known
+    // (partial streaming): an empty id can't be reconciled with the real
+    // execution and would leave an orphaned "{} null" placeholder block.
+    if (!callId) {
+      logEvent("tool-start:SKIP-EMPTY-ID", { toolName: data.toolName, fromMessage: data.fromMessage });
+      return;
+    }
+
     // Guard against duplicates — check BOTH trackers (#fix: bash blocks
     // created by handleBashStart were invisible to this dedup, causing
     // orphaned duplicate DOM nodes that never finalize).

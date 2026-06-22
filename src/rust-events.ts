@@ -77,3 +77,17 @@ export function dropQueuedMessage(steering: string[], followUp: string[], text: 
   if (i >= 0) { followUp.splice(i, 1); return true; }
   return false;
 }
+
+/**
+ * Whether to emit a streaming `fromMessage` tool-start preview for a tool call
+ * extracted from a (possibly partial) assistant message. Skip when:
+ * - the id hasn't streamed in yet — previewing an id-less call orphans an empty
+ *   "{} null" placeholder block the webview can never reconcile; and
+ * - it's bash/exec — those have their own bash-start/output/end render path, and
+ *   generic tool events would leak JSON args into the bash output div.
+ */
+export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | null }): boolean {
+  if (!tc.id) { return false; }
+  if (tc.name === "bash" || tc.name === "exec") { return false; }
+  return true;
+}

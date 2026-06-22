@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview } from "../../rust-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {
@@ -116,4 +116,22 @@ test("dropQueuedMessage: removes only the first matching entry", () => {
   const s = ["dup", "dup"]; const f: string[] = [];
   assert.equal(dropQueuedMessage(s, f, "dup"), true);
   assert.deepEqual(s, ["dup"]);
+});
+
+// ── shouldEmitToolPreview (the "{} null" orphan-placeholder guard) ─────
+test("shouldEmitToolPreview: requires a non-empty id (partial stream)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "read" }), true);
+  assert.equal(shouldEmitToolPreview({ id: "", name: "read" }), false);
+  assert.equal(shouldEmitToolPreview({ id: undefined, name: "read" }), false);
+  assert.equal(shouldEmitToolPreview({ id: null, name: "read" }), false);
+});
+
+test("shouldEmitToolPreview: id-less call with no name yet is skipped (the exact '{} null' case)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "", name: "" }), false);
+  assert.equal(shouldEmitToolPreview({}), false);
+});
+
+test("shouldEmitToolPreview: bash/exec skipped even with an id (own render path)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "bash" }), false);
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "exec" }), false);
 });

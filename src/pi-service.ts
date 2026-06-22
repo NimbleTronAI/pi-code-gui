@@ -7,7 +7,7 @@ import { piLog, piWarn } from "./logger.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { RustProcess, RUST_RPC, type RustEvent } from "./rust-process.js";
-import { normalizeRustEvent, dropQueuedMessage } from "./rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview } from "./rust-events.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
@@ -1937,11 +1937,11 @@ export class PiService {
         if (event.message?.role === "assistant" && event.message?.content) {
           const toolCalls = this.extractToolCallsFromContent(event.message.content);
           for (const tc of toolCalls) {
-            // Skip bash/exec tools — they have their own rendering path
-            // (bash-start/bash-output/bash-end) and don't need generic
-            // tool-start/tool-update events that would leak JSON args into
-            // the bash output div as {}{}{}{} artifacts.
-            if (tc.name === "bash" || tc.name === "exec") { continue; }
+            // Skip tool calls that shouldn't be previewed: ones still missing a
+            // stable id (partial stream — a preview would orphan an empty
+            // "{} null" placeholder the webview can't reconcile), and bash/exec
+            // (own bash render path; generic tool events leak JSON into it).
+            if (!shouldEmitToolPreview(tc)) { continue; }
             if (!this.currentAssistantToolCalls.has(tc.id)) {
               this.currentAssistantToolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments });
               this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments ?? {}, fromMessage: true } });
