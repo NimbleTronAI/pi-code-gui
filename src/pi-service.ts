@@ -7,7 +7,7 @@ import { piLog, piWarn } from "./logger.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { RustProcess, RUST_RPC, type RustEvent } from "./rust-process.js";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview } from "./rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, routeRustEvent, extractMessageText } from "./rust-events.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
@@ -1071,32 +1071,34 @@ export class PiService {
     await this.rust.spawn();
   }
 
-  /** Route a raw Rust RPC event: intercept UI/errors, delegate the rest to handleAgentEvent. */
+  /** Route a raw Rust RPC event: intercept UI/errors, delegate the rest to
+   *  handleAgentEvent. The routing/dedupe/queue-clear DECISIONS live in the pure,
+   *  unit-tested routeRustEvent (src/rust-events.ts); this shell just executes
+   *  the resulting plan against vscode/PiService state. */
   private handleRustEvent(event: RustEvent): void {
     normalizeRustEvent(event);
+    const queueNonEmpty = this._rustSteering.length > 0 || this._rustFollowUp.length > 0;
+    // routeRustEvent reads _agentRunActive BEFORE handleAgentEvent clears it, so
+    // the isRealAgentEnd dedupe sees the pre-delegate flag — a duplicate
+    // agent_end won't trigger a second state re-sync.
+    const routing = routeRustEvent(event, queueNonEmpty, this._agentRunActive);
     // rust-pi never emits queue_update; when it consumes a queued steer/
     // follow-up the message reappears here as a user turn — drop it from the
     // synthetic queue so the pending indicator clears.
-    if ((this._rustSteering.length || this._rustFollowUp.length) &&
-        event?.type === "message_start" && event.message?.role === "user") {
-      if (this.dropRustQueued(this.extractTextFromContent(event.message?.content))) {
-        this.emitRustQueue();
-      }
+    if (routing.dropQueuedText !== null && this.dropRustQueued(routing.dropQueuedText)) {
+      this.emitRustQueue();
     }
-    switch (event?.type) {
-      case "extension_ui_request":
+    if (routing.captureSessionId) { this.sessionId = routing.captureSessionId; }
+    switch (routing.action) {
+      case "ui-request":
         void this.handleRustUiRequest(event);
         return;
-      case "extension_error":
+      case "extension-error":
         this.emit({ type: "custom-message", data: { customType: "error", content: `Extension error: ${event.error ?? ""}`, timestamp: Date.now() } });
         return;
-      case "agent_start":
-        if (typeof event.sessionId === "string") { this.sessionId = event.sessionId; }
+      case "delegate":
         break;
     }
-    // Capture before handleAgentEvent (which clears the flag) so a duplicate
-    // agent_end doesn't trigger a second state re-sync.
-    const realAgentEnd = event?.type === "agent_end" && this._agentRunActive;
     try {
       this.handleAgentEvent(event);
     } catch (e: unknown) {
@@ -1104,7 +1106,7 @@ export class PiService {
     }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
-    if (realAgentEnd) { void this.refreshRustState(); }
+    if (routing.isRealAgentEnd) { void this.refreshRustState(); }
   }
 
   /** Re-query Rust `get_state` (e.g. after a turn) to capture sessionFile/model/settings. */
@@ -1802,17 +1804,7 @@ export class PiService {
   /** Extract plain text from a message content (string or array) */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private extractTextFromContent(content: any): string {
-    if (!content) { return ""; }
-    if (typeof content === "string") { return content; }
-    if (Array.isArray(content)) {
-      return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((c: any) => c.type === "text")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((c: any) => c.text)
-        .join("\n");
-    }
-    return "";
+    return extractMessageText(content);
   }
 
   /** Extract thinking content blocks from an assistant message content array */

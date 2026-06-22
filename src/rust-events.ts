@@ -63,6 +63,71 @@ export function normalizeRustEvent(event: RustEvent): void {
 }
 
 /**
+ * Extract the plain-text portion of a message `content` payload. Mirrors the
+ * runtime-agnostic extraction PiService uses on both the TS-SDK and Rust paths:
+ * a bare string is returned as-is; an array yields the joined `text` blocks;
+ * anything else (incl. null/undefined) yields "". Kept here (vscode-free) so the
+ * Rust ingress router can decide queue-drops without reaching into PiService.
+ */
+export function extractMessageText(content: unknown): string {
+  if (!content) { return ""; }
+  if (typeof content === "string") { return content; }
+  if (Array.isArray(content)) {
+    return content
+      .filter((c) => c && typeof c === "object" && (c as { type?: string }).type === "text")
+      .map((c) => (c as { text?: unknown }).text ?? "")
+      .join("\n");
+  }
+  return "";
+}
+
+/** A declarative plan for how PiService should dispatch one raw Rust RPC event,
+ *  computed without any vscode/PiService state mutation so it is unit-testable. */
+export interface RustEventRouting {
+  /** Candidate text to drop from the synthetic queue (a user `message_start`
+   *  while the queue is non-empty); null when no drop should be attempted. The
+   *  caller still confirms via dropQueuedMessage before clearing the indicator. */
+  dropQueuedText: string | null;
+  /** Session id to capture from an `agent_start` event, if present. */
+  captureSessionId: string | null;
+  /** True only for the FIRST `agent_end` of an active run — the dedupe against
+   *  rust-pi emitting `agent_end` twice on the abort/error path. */
+  isRealAgentEnd: boolean;
+  /** How the caller should dispatch the event after the above side-effects:
+   *  - "ui-request"      → handle as an extension_ui_request (no delegate)
+   *  - "extension-error" → surface as an error message (no delegate)
+   *  - "delegate"        → route through the shared handleAgentEvent path */
+  action: "ui-request" | "extension-error" | "delegate";
+}
+
+/**
+ * Decide how to dispatch a (already normalized) Rust RPC event. Pure: depends
+ * only on the event and the two pieces of PiService state passed in, mutates
+ * nothing, and returns a plan the caller executes. This isolates the quirky,
+ * Rust-only routing — synthetic-queue clearing, ui-request/error short-circuits,
+ * sessionId capture, and the double-`agent_end` dedupe — from the vscode-coupled
+ * shell so it can be tested headlessly.
+ */
+export function routeRustEvent(event: RustEvent, queueNonEmpty: boolean, agentRunActive: boolean): RustEventRouting {
+  const type = event?.type;
+  const msg = (event as { message?: { role?: string; content?: unknown } }).message;
+  const dropQueuedText =
+    queueNonEmpty && type === "message_start" && msg?.role === "user"
+      ? extractMessageText(msg?.content)
+      : null;
+  let action: RustEventRouting["action"] = "delegate";
+  let captureSessionId: string | null = null;
+  if (type === "extension_ui_request") {
+    action = "ui-request";
+  } else if (type === "extension_error") {
+    action = "extension-error";
+  } else if (type === "agent_start" && typeof event.sessionId === "string") {
+    captureSessionId = event.sessionId;
+  }
+  return { dropQueuedText, captureSessionId, isRealAgentEnd: type === "agent_end" && agentRunActive, action };
+}
+
+/**
  * Drop the first queued steer/follow-up message matching `text`. rust-pi (0.1.18)
  * emits no queue_update, so PiService tracks the pending queue itself and clears
  * an entry when the binary folds it into a user turn (which arrives with the same
