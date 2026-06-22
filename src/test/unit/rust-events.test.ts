@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, shouldWarnDegraded, clearDegraded } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, shouldWarnDegraded, clearDegraded } from "../../rust-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {
@@ -134,6 +134,28 @@ test("shouldEmitToolPreview: id-less call with no name yet is skipped (the exact
 test("shouldEmitToolPreview: bash/exec skipped even with an id (own render path)", () => {
   assert.equal(shouldEmitToolPreview({ id: "call_1", name: "bash" }), false);
   assert.equal(shouldEmitToolPreview({ id: "call_1", name: "exec" }), false);
+});
+
+// ── shouldEmitToolPreviewUpdate (streaming tool-arg preview throttle) ──
+test("shouldEmitToolPreviewUpdate: always emits the first update (no prior emit)", () => {
+  assert.equal(shouldEmitToolPreviewUpdate(undefined, 1000), true);
+});
+
+test("shouldEmitToolPreviewUpdate: suppresses updates within the throttle window", () => {
+  const t0 = 100000;
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + TOOL_PREVIEW_THROTTLE_MS - 1), false);
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + 5), false);
+});
+
+test("shouldEmitToolPreviewUpdate: emits again once the interval has elapsed", () => {
+  const t0 = 100000;
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + TOOL_PREVIEW_THROTTLE_MS), true);
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + 1000), true);
+});
+
+test("shouldEmitToolPreviewUpdate: respects a custom interval", () => {
+  assert.equal(shouldEmitToolPreviewUpdate(0, 50, 100), false);
+  assert.equal(shouldEmitToolPreviewUpdate(0, 100, 100), true);
 });
 
 // ── shouldWarnDegraded / clearDegraded (capability-warning dedupe) ─────

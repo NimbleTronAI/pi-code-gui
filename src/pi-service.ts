@@ -5,7 +5,7 @@ import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
 import { RUST_RPC } from "./rust-process.js";
-import { shouldEmitToolPreview, extractMessageText } from "./rust-events.js";
+import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
@@ -337,7 +337,7 @@ export class PiService {
   private cycleIndex = 0;
 
   // Track current assistant message content (for toolCall stubs during message_update)
-  private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any }> = new Map();
+  private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any; lastPreviewEmit?: number }> = new Map();
 
   // Widget activity timer (cleared on dispose to prevent leaks)
   private _widgetTimer: ReturnType<typeof setInterval> | null = null;
@@ -1411,13 +1411,21 @@ export class PiService {
             // (own bash render path; generic tool events leak JSON into it).
             if (!shouldEmitToolPreview(tc)) { continue; }
             if (!this.currentAssistantToolCalls.has(tc.id)) {
-              this.currentAssistantToolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments });
+              this.currentAssistantToolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments, lastPreviewEmit: Date.now() });
               this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments ?? {}, fromMessage: true } });
             } else {
               const existing = this.currentAssistantToolCalls.get(tc.id);
               if (existing) {
                 existing.args = tc.arguments;
-                this.emit({ type: "tool-update", data: { toolCallId: tc.id, toolName: tc.name, partialResult: { content: [{ type: "text", text: JSON.stringify(tc.arguments, null, 2) }] } } });
+                // Throttle the streaming preview: rust-pi emits a toolcall_delta
+                // per token (tens of thousands for a large write), and re-emitting
+                // the full re-serialized args on each would flood the webview O(n²)
+                // and freeze it. The final args still arrive via tool_execution_start.
+                const now = Date.now();
+                if (shouldEmitToolPreviewUpdate(existing.lastPreviewEmit, now)) {
+                  existing.lastPreviewEmit = now;
+                  this.emit({ type: "tool-update", data: { toolCallId: tc.id, toolName: tc.name, partialResult: { content: [{ type: "text", text: JSON.stringify(tc.arguments, null, 2) }] } } });
+                }
               }
             }
           }

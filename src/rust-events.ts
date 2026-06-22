@@ -143,6 +143,28 @@ export function dropQueuedMessage(steering: string[], followUp: string[], text: 
   return false;
 }
 
+/** Minimum gap between streaming tool-arg preview updates for one tool call.
+ *  ~5 updates/s: comfortably "live" to the eye, while halving the webview render
+ *  churn vs a tighter cap — each preview re-renders the full (growing) args, so
+ *  the cost scales with BOTH the update rate and the args size, and a large write
+ *  is exactly where both are biggest. Raise it further only if huge writes still
+ *  churn; the next lever after that is capping the preview payload size. */
+export const TOOL_PREVIEW_THROTTLE_MS = 200;
+
+/**
+ * Throttle the streaming `tool-update` previews emitted as a tool call's args
+ * accumulate. rust-pi streams a `toolcall_delta` per token — tens of thousands
+ * for a large `write` — each carrying the full growing args; re-emitting a
+ * preview (with the whole re-serialized args) on every one floods the webview
+ * O(n²) and freezes it until the backlog drains. Capping the rate keeps the
+ * preview live without the flood; the FINAL, authoritative args still arrive via
+ * tool_execution_start (fromMessage:false), so nothing is lost by skipping
+ * intermediate frames. Returns true when enough time has passed to emit again.
+ */
+export function shouldEmitToolPreviewUpdate(lastEmit: number | undefined, now: number, intervalMs: number = TOOL_PREVIEW_THROTTLE_MS): boolean {
+  return lastEmit === undefined || (now - lastEmit) >= intervalMs;
+}
+
 /**
  * Decide whether to surface a "capability degraded" warning for `cap`. A Rust
  * capability RPC (model list, history, usage, …) failing must not be silent, but
