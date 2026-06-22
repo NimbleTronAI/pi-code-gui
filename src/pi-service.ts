@@ -4,11 +4,9 @@ import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
-import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
-import { setupRustModels } from "./rust-models.js";
-import { RustProcess, RUST_RPC, type RustEvent } from "./rust-process.js";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, routeRustEvent, extractMessageText, shouldWarnDegraded, clearDegraded } from "./rust-events.js";
-import { resolveRustSessionDir } from "./rust-sessions.js";
+import { RUST_RPC } from "./rust-process.js";
+import { shouldEmitToolPreview, extractMessageText } from "./rust-events.js";
+import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
 
@@ -315,39 +313,11 @@ export class PiService {
 
   // ── Runtime selection: in-process TypeScript SDK vs out-of-process Rust ──
   private _backendKind: Runtime = "typescript";
-  private rust: RustProcess | null = null;
-  /** True while initializeRust is spawning, so a failed-spawn exit is handled by
-   *  the init path (return value) rather than the "exited unexpectedly" handler. */
-  private _rustInitializing = false;
-  /** Session file path for a Rust session (the SDK SessionManager owns this for TS). */
-  private _rustSessionPath: string | null = null;
-  /** Cumulative usage for a Rust session (from get_session_stats) — the TS SDK's
-   *  sessionManager/getContextUsage that getUsageStats() normally reads aren't
-   *  available for an out-of-process runtime. */
-  private _rustUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextPercent: number | null; contextWindow: number } | null = null;
-  private _rustContextWindow = 0;
-  /** Latest turn's input+cacheRead tokens (≈ current context fill) → context %. */
-  private _rustLastContextTokens = 0;
-  /** Slash commands the live Rust session reports (its own extensions/templates/skills). */
-  private _rustSlashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
-  /** Cached session entries for a Rust session (from get_messages). The TS SDK's
-   *  sessionManager.getEntries() isn't available out-of-process, so the Open
-   *  Sessions tree reads this instead. Refreshed on init and each turn end. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _rustEntries: any[] = [];
-  /** Synthetic steer/follow-up queue for the Rust runtime. rust-pi (0.1.18)
-   *  never emits queue_update, so the webview's pending indicator — which is
-   *  driven entirely by that event — would never appear. We mirror queued
-   *  messages here, emit queue-update ourselves on send, and clear entries when
-   *  the binary consumes them (they reappear as a user turn) or the run ends. */
-  private _rustSteering: string[] = [];
-  private _rustFollowUp: string[] = [];
-  /** Capability keys (models/history/usage/status/commands) for which a "this
-   *  Rust capability is degraded" warning has already been surfaced this session.
-   *  A post-init RPC failing silently strips model-switching, history, or the
-   *  usage readout; we surface it once per capability (until it recovers) so the
-   *  degradation isn't invisible — without spamming after every turn. */
-  private _rustDegradedWarned = new Set<string>();
+  /** The out-of-process Rust runtime (process lifecycle, RPC handshake, event
+   *  translation, synthetic queue, usage/entries). Non-null only for a Rust
+   *  session; PiService delegates the Rust branch of each backend-aware method
+   *  here. See src/rust-service.ts (and the RustHost contract it consumes). */
+  private _rust: RustService | null = null;
 
   // SDK root path (for re-importing individual modules)
   private _piRoot: string | null = null;
@@ -886,272 +856,37 @@ export class PiService {
    */
   private async initializeRust(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     this._backendKind = "rust";
-    this._rustInitializing = true;
-    try {
-      return await this.initializeRustInner(opts);
-    } finally {
-      this._rustInitializing = false;
-    }
+    this._rust = new RustService(this.makeRustHost());
+    const result = await this._rust.initialize(opts);
+    // Mirror the pre-extraction contract: a failed init leaves no live runtime
+    // (the old code nulled `this.rust`), so `initialized` reports false.
+    if (!result.success) { this._rust = null; }
+    return result;
   }
 
-  private async initializeRustInner(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
-    const fresh = opts.fresh ?? false;
-    const openPath = opts.openPath;
-    // Reset per-session usage so a re-init (e.g. /new) starts clean.
-    this._rustUsage = null;
-    this._rustLastContextTokens = 0;
-    this._rustSteering = [];
-    this._rustFollowUp = [];
-    this._rustDegradedWarned.clear();
-
-    const status = detectRustBinary();
-    if (!status.installed || !status.binaryPath) {
-      return { success: false, error: status.error ?? "Rust Pi binary not found." };
-    }
-
-    const cwd = resolveWorkspaceCwd();
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-
-    // Build RPC args (flags verified against the v0.1.18 binary's README).
-    const args = ["--mode", "rpc", "--session-dir", resolveRustSessionDir()];
-    if (openPath) { args.push("--session", openPath); }
-    else if (!fresh) { args.push("--continue"); }
-    const provider = cfg.get<string>("defaultModelProvider")?.trim();
-    const modelId = cfg.get<string>("defaultModelId")?.trim();
-    // Apply the DEFAULT model only to a fresh session. A restored (--session) or
-    // continued (--continue) session carries its own recorded provider/model in
-    // its file; overriding with the setting would silently switch its model on
-    // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
-    const restoring = !!openPath || !fresh;
-    if (!restoring) {
-      if (provider) { args.push("--provider", provider); }
-      if (modelId) { args.push("--model", modelId); }
-    }
-    const thinking = cfg.get<string>("defaultThinkingLevel")?.trim();
-    if (thinking && thinking !== "off") { args.push("--thinking", thinking); }
-    const extPolicy = cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced";
-    args.push("--extension-policy", extPolicy);
-
-    // Extension discovery. The Rust binary aborts `--mode rpc` startup when it
-    // meets the workspace's TypeScript-SDK `.pi/` extensions (it wants its own
-    // tool-manifest shape: `missing field 'parameters'`). Per the rustExtensions
-    // setting we disable discovery up front ("disabled", or "auto" when those
-    // extensions are detected); the catch below is the safety net for the rest.
-    let noExtensions = shouldDisableRustExtensions(cwd);
-    if (noExtensions) { args.push("--no-extensions"); }
-
-    // Inherit env + runtime API-key overrides so Rust can authenticate.
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    const anthropicKey = cfg.get<string>("anthropicApiKey");
-    if (anthropicKey) { env.ANTHROPIC_API_KEY = anthropicKey; }
-    const openaiKey = cfg.get<string>("openaiApiKey");
-    if (openaiKey) { env.OPENAI_API_KEY = openaiKey; }
-
-    // Model catalog: override the Rust binary's stale built-in model list with the
-    // bundled Pi catalog (writes models.json in the relocated agent home). Never
-    // silent — fatal problems (unwritable dir) become a loud error + notification;
-    // softer ones (an auth-seed miss) become chat warnings.
-    try {
-      const { piEnv, warnings } = setupRustModels();
-      Object.assign(env, piEnv);
-      for (const w of warnings) {
-        this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${w}`, timestamp: Date.now() } });
-      }
-    } catch (e: unknown) {
-      const m = e instanceof Error ? e.message : String(e);
-      piWarn(`Rust custom-models setup failed: ${m}`);
-      this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ Custom models for Rust couldn't be configured — ${m}`, timestamp: Date.now() } });
-      void vscode.window.showErrorMessage(`Pi Code Gui: ${m}`);
-      // Continue: built-in models still work; an unresolved model is caught below.
-    }
-
-    this._thinkingLevel = thinking || "off";
-
-    let warning: string | undefined;
-    try {
-      await this.spawnRust(status.binaryPath, args, cwd, env);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // Recover only from the extension-parse conflict, and only when we did NOT
-      // already disable extensions. In "auto" mode we self-heal (retry with
-      // discovery off + warn); when the user explicitly set "enabled" we respect
-      // that and surface an actionable error that points to the setting.
-      if (isRustExtensionConflict(msg) && !noExtensions && rustExtensionsMode() === "auto") {
-        piWarn("Rust start hit a TS-extension conflict; retrying with --no-extensions");
-        args.push("--no-extensions");
-        noExtensions = true;
-        warning = "rust-extensions-auto-disabled";
-        try {
-          await this.spawnRust(status.binaryPath, args, cwd, env);
-        } catch (e2: unknown) {
-          const msg2 = e2 instanceof Error ? e2.message : String(e2);
-          this.rust = null;
-          return { success: false, error: `Failed to start Rust Pi: ${msg2}`, errorKind: isRustExtensionConflict(msg2) ? "rust-extension-conflict" : undefined };
-        }
-      } else {
-        this.rust = null;
-        return { success: false, error: `Failed to start Rust Pi: ${msg}`, errorKind: isRustExtensionConflict(msg) ? "rust-extension-conflict" : undefined };
-      }
-    }
-
-    this._rustSessionPath = openPath ?? null;
-
-    // spawnRust succeeded above, so the process is live for the handshake.
-    const rust = this.rust!;
-
-    // Handshake: state → models → history.
-    // get_state doubles as the liveness check: if the process crashed during or
-    // right after spawn, its pending request is rejected (or the call times out),
-    // and we fail init here instead of returning success on a dead subprocess.
-    // (handleRustExit swallows the crash itself while _rustInitializing is set.)
-    try {
-      const state = await rust.request(RUST_RPC.getState, {}, 15000);
-      if (state.success) { this.applyRustState(state.data); }
-    } catch (e: unknown) {
-      const m = e instanceof Error ? e.message : String(e);
-      piWarn(`Rust get_state failed: ${m}`);
-      this.rust?.dispose();
-      this.rust = null;
-      return { success: false, error: `Rust Pi started but did not respond (${m}). The binary may have crashed on startup — check the Pi Code Gui output channel.` };
-    }
-    if (!rust.isAlive()) {
-      piWarn("Rust process exited during initialization handshake");
-      this.rust?.dispose();
-      this.rust = null;
-      return { success: false, error: "Rust Pi exited during initialization. Check the Pi Code Gui output channel for the binary's stderr." };
-    }
-
-    try {
-      const models = await rust.request(RUST_RPC.getAvailableModels, {}, 15000);
-      const list = this.rustModelList(models.data);
-      if (models.success && list.length > 0) { this.cycleModels = list; this.recordRustCapOk("models"); }
-      else { this.warnRustDegraded("models", "Rust Pi returned no model list — model switching (/model) may be unavailable this session."); }
-    } catch (e: unknown) {
-      piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnRustDegraded("models", "Couldn't load the Rust model list — model switching (/model) may be unavailable this session.");
-    }
-
-    try {
-      const msgs = await rust.request(RUST_RPC.getMessages, {}, 15000);
-      const entries = this.rustEntriesFromMessages(msgs.data);
-      this._rustEntries = entries;
-      this.captureRustContextFromMessages(msgs.data);
-      this.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
-      await this.sendInitialMessages(entries);
-      this.emit({ type: "batch-end", data: { hasEntries: entries.length > 0 } });
-      this.recordRustCapOk("history");
-    } catch (e: unknown) {
-      piWarn(`Rust get_messages failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnRustDegraded("history", "Couldn't load this session's history from Rust Pi — earlier messages may not be shown (the session file on disk is intact).");
-    }
-
-    // The Rust session advertises its own commands/templates/skills — surface
-    // them in the slash-command list instead of the TypeScript SDK's.
-    try {
-      const cmds = await rust.request(RUST_RPC.getCommands, {}, 8000);
-      if (cmds.success) { this._rustSlashCommands = this.rustSlashCommandsFrom(cmds.data); this.recordRustCapOk("commands"); }
-    } catch (e: unknown) {
-      piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnRustDegraded("commands", "Couldn't load Rust Pi's slash commands — its session-specific commands may be missing from the list.");
-    }
-
-    await this.refreshRustUsage();
-    this.reportStatus();
-    try { this.emitScopedModels(); this.emitSettings(); this.emitSlashCommands(); }
-    catch (e: unknown) { piWarn(`Post-init emissions failed: ${e instanceof Error ? e.message : String(e)}`); }
-
-    // Loud failure on an unresolved model. An invalid `defaultModelId` (e.g. the
-    // non-existent "deepseek-v4-pro") leaves the Rust session with no active model
-    // and otherwise SILENTLY inert — every prompt/command no-ops. Surface it.
-    if (!this._model) {
-      const valid = this.cycleModels.slice(0, 8).map((m) => m.id).join(", ");
-      const want = restoring
-        ? "this session's recorded model"
-        : (modelId ? `"${modelId}"${provider ? ` (provider "${provider}")` : ""}` : "your configured model");
-      const content = `⚠ No model is active — ${want} could not be resolved, so this Rust session can't run. Pick a valid model with \`/model\`${valid ? ` (e.g. ${valid})` : ""}, or fix the \`pi-code-gui.defaultModelId\` setting.`;
-      piWarn(`Rust session has no resolved model (configured: ${provider ?? "?"}/${modelId ?? "?"})`);
-      this.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
-    }
-
-    return { success: true, warning };
-  }
-
-  /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
-  private async spawnRust(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
-    this.rust?.dispose();
-    this.rust = new RustProcess({
-      binaryPath, args, cwd, env,
-      onEvent: (e: RustEvent) => this.handleRustEvent(e),
-      onExit: (code: number | null) => this.handleRustExit(code),
-      // Confirm startup by a real get_state round-trip rather than a blind timer.
-      readyCommand: RUST_RPC.getState,
-    });
-    await this.rust.spawn();
-  }
-
-  /** Route a raw Rust RPC event: intercept UI/errors, delegate the rest to
-   *  handleAgentEvent. The routing/dedupe/queue-clear DECISIONS live in the pure,
-   *  unit-tested routeRustEvent (src/rust-events.ts); this shell just executes
-   *  the resulting plan against vscode/PiService state. */
-  private handleRustEvent(event: RustEvent): void {
-    normalizeRustEvent(event);
-    const queueNonEmpty = this._rustSteering.length > 0 || this._rustFollowUp.length > 0;
-    // routeRustEvent reads _agentRunActive BEFORE handleAgentEvent clears it, so
-    // the isRealAgentEnd dedupe sees the pre-delegate flag — a duplicate
-    // agent_end won't trigger a second state re-sync.
-    const routing = routeRustEvent(event, queueNonEmpty, this._agentRunActive);
-    // rust-pi never emits queue_update; when it consumes a queued steer/
-    // follow-up the message reappears here as a user turn — drop it from the
-    // synthetic queue so the pending indicator clears.
-    if (routing.dropQueuedText !== null && this.dropRustQueued(routing.dropQueuedText)) {
-      this.emitRustQueue();
-    }
-    if (routing.captureSessionId) { this.sessionId = routing.captureSessionId; }
-    switch (routing.action) {
-      case "ui-request":
-        void this.handleRustUiRequest(event);
-        return;
-      case "extension-error":
-        this.emit({ type: "custom-message", data: { customType: "error", content: `Extension error: ${event.error ?? ""}`, timestamp: Date.now() } });
-        return;
-      case "delegate":
-        break;
-    }
-    try {
-      this.handleAgentEvent(event);
-    } catch (e: unknown) {
-      piWarn(`handleRustEvent(${event?.type}): ${e instanceof Error ? e.message : String(e)}`);
-    }
-    // After a turn, re-sync state so the (now-written) session file path,
-    // model, and settings are captured for status + reload persistence.
-    if (routing.isRealAgentEnd) { void this.refreshRustState(); }
-  }
-
-  /** Re-query Rust `get_state` (e.g. after a turn) to capture sessionFile/model/settings. */
-  private async refreshRustState(): Promise<void> {
-    if (!this.rust) { return; }
-    try {
-      const state = await this.rust.request(RUST_RPC.getState, {}, 8000);
-      if (state.success) { this.applyRustState(state.data); this.recordRustCapOk("status"); }
-    } catch (e: unknown) {
-      piWarn(`refreshRustState failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnRustDegraded("status", "Couldn't sync Rust Pi's status — the model/context readout may be stale.");
-    }
-    await this.refreshRustUsage();
-    await this.refreshRustEntries();
-    this.reportStatus();
-  }
-
-  /** Re-pull the Rust session's entries so the Open Sessions tree reflects new turns. */
-  private async refreshRustEntries(): Promise<void> {
-    if (!this.rust) { return; }
-    try {
-      const msgs = await this.rust.request(RUST_RPC.getMessages, {}, 8000);
-      if (msgs.success) { this._rustEntries = this.rustEntriesFromMessages(msgs.data); this.recordRustCapOk("history"); }
-    } catch (e: unknown) {
-      piWarn(`refreshRustEntries failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnRustDegraded("history", "Couldn't refresh this session's history from Rust Pi — the Open Sessions list may not reflect the latest turn.");
-    }
+  /** Build the RustHost callback surface RustService writes through — the explicit
+   *  contract for the shared PiService state and capabilities the Rust subsystem
+   *  needs (see src/rust-service.ts). Created fresh per Rust session. */
+  private makeRustHost(): RustHost {
+    return {
+      emit: (e) => this.emit(e),
+      handleAgentEvent: (e) => this.handleAgentEvent(e),
+      reportStatus: () => this.reportStatus(),
+      sendInitialMessages: (entries) => this.sendInitialMessages(entries),
+      emitPostInitState: () => { this.emitScopedModels(); this.emitSettings(); this.emitSlashCommands(); },
+      showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
+      getAgentRunActive: () => this._agentRunActive,
+      setAgentRunActive: (v) => { this._agentRunActive = v; },
+      setStreaming: (v) => { this._isStreaming = v; },
+      getModel: () => this._model,
+      setModel: (m) => { this._model = m; },
+      setThinkingLevel: (level) => { this._thinkingLevel = level; },
+      setSessionId: (id) => { this.sessionId = id; },
+      getCycleModels: () => this.cycleModels,
+      setCycleModels: (list) => { this.cycleModels = list; },
+      setAutoCompactionEnabled: (v) => { this._autoCompactionEnabled = v; },
+      setAutoRetryEnabled: (v) => { this._autoRetryEnabled = v; },
+    };
   }
 
   /** Runtime-agnostic session entries for the Open Sessions tree. The TS SDK
@@ -1159,285 +894,8 @@ export class PiService {
    *  runtime supplies them through the cached get_messages reply. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getDisplayEntries(): any[] {
-    if (this._backendKind === "rust") { return this._rustEntries; }
+    if (this._backendKind === "rust") { return this._rust?.getEntries() ?? []; }
     return this.sessionManager?.getEntries?.() ?? [];
-  }
-
-  /** Pull cumulative token/cost usage from the Rust subprocess (get_session_stats). */
-  private async refreshRustUsage(): Promise<void> {
-    if (!this.rust) { return; }
-    try {
-      const r = await this.rust.request(RUST_RPC.getSessionStats, {}, 8000);
-      if (r.success) { this.applyRustUsage(r.data); this.recordRustCapOk("usage"); }
-    } catch (e: unknown) {
-      piWarn(`refreshRustUsage failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnRustDegraded("usage", "Couldn't read Rust Pi's token/cost usage — the usage readout may be missing or stale.");
-    }
-  }
-
-  private applyRustUsage(data: unknown): void {
-    if (!data || typeof data !== "object") { return; }
-    const d = data as Record<string, unknown>;
-    const t = (d.tokens && typeof d.tokens === "object" ? d.tokens : {}) as Record<string, unknown>;
-    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
-    const cw = this._rustContextWindow;
-    const ctx = this._rustLastContextTokens;
-    this._rustUsage = {
-      input: n(t.input), output: n(t.output),
-      cacheRead: n(t.cacheRead), cacheWrite: n(t.cacheWrite),
-      cost: n(d.cost),
-      contextWindow: cw,
-      // Current context fill = latest turn's input(+cacheRead) over the window.
-      contextPercent: (cw > 0 && ctx > 0) ? Math.min(100, (ctx / cw) * 100) : null,
-    };
-  }
-
-  /** Record the latest turn's input(+cacheRead) tokens as the current context fill. */
-  private captureRustContext(usage: unknown): void {
-    if (!usage || typeof usage !== "object") { return; }
-    const u = usage as Record<string, unknown>;
-    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
-    const ctx = n(u.input) + n(u.cacheRead);
-    if (ctx > 0) { this._rustLastContextTokens = ctx; }
-  }
-
-  /** On resume, seed the context fill from the last assistant message's usage. */
-  private captureRustContextFromMessages(data: unknown): void {
-    const d = data as { messages?: unknown } | undefined;
-    const messages = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? data : []);
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i] as { role?: string; usage?: unknown } | undefined;
-      if (m?.role === "assistant" && m.usage) { this.captureRustContext(m.usage); return; }
-    }
-  }
-
-  /** Map a Rust `extension_ui_request` onto the existing webview dialog/widget bridge. */
-  private async handleRustUiRequest(req: RustEvent): Promise<void> {
-    const method = String(req.method ?? "");
-    const id = typeof req.id === "string" ? req.id : undefined;
-    try {
-      switch (method) {
-        case "notify": {
-          const isError = req.notifyType === "error" || req.notifyType === "warning";
-          this.emit({ type: "custom-message", data: { customType: isError ? "error" : "extension-notify", content: String(req.message ?? ""), timestamp: Date.now() } });
-          return;
-        }
-        case "setStatus": {
-          const text = req.statusText;
-          const empty = text === null || text === undefined;
-          this.emit({ type: "widget-update", data: { key: `status-${req.statusKey}`, content: empty ? null : `**${req.statusKey}** ${text}` } });
-          return;
-        }
-        case "setWidget": {
-          const lines = Array.isArray(req.widgetLines) ? (req.widgetLines as string[]) : [];
-          this.emit({ type: "widget-update", data: { key: String(req.widgetKey ?? "widget"), content: lines.length ? lines.join("\n") : null } });
-          return;
-        }
-        case "select":
-        case "confirm":
-        case "input":
-        case "editor": {
-          const dialogType = method === "editor" ? "input" : method;
-          const prompt = String(req.title ?? req.message ?? "");
-          // Normalize select options: a Rust extension may send plain strings or
-          // {value,label} objects. Show labels, but map the choice back to the
-          // option's `value` so the binary's extension_ui_response matcher (which
-          // compares the reply against an option's value/label) accepts it.
-          let optionLabels: string[] | undefined;
-          // Preserve each option's ORIGINAL value type (number/bool/string): the
-          // binary matches the reply against the raw JSON value, so String()-
-          // coercing a numeric/bool value would make Number(1) != "1" and the pick
-          // would be rejected. (Duplicate labels collapse to the last value — a
-          // degenerate input the pre-fix code failed on entirely.)
-          const labelToValue = new Map<string, unknown>();
-          if (Array.isArray(req.options)) {
-            optionLabels = req.options.map((o) => {
-              if (o && typeof o === "object") {
-                const obj = o as Record<string, unknown>;
-                const label = String(obj.label ?? obj.value ?? "");
-                labelToValue.set(label, obj.value ?? obj.label ?? label);
-                return label;
-              }
-              const s = String(o);
-              labelToValue.set(s, s);
-              return s;
-            });
-          }
-          const pending = this._showDialog(dialogType, prompt, {
-            options: optionLabels,
-            defaultValue: (req.defaultValue ?? req.prefill) as string | undefined,
-          });
-          const chosen = pending ? await pending : undefined;
-          if (id) {
-            if (chosen === undefined || chosen === null) {
-              this.rust?.send(RUST_RPC.extensionUiResponse, { id, cancelled: true });
-            } else if (method === "confirm") {
-              this.rust?.send(RUST_RPC.extensionUiResponse, { id, confirmed: !!chosen });
-            } else {
-              const value = labelToValue.has(String(chosen)) ? labelToValue.get(String(chosen)) : chosen;
-              this.rust?.send(RUST_RPC.extensionUiResponse, { id, value });
-            }
-          }
-          return;
-        }
-        default:
-          // setTitle / set_editor_text and other fire-and-forget methods: no-op for v1.
-          return;
-      }
-    } catch (e: unknown) {
-      piWarn(`handleRustUiRequest(${method}) failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  /** Surface an unexpected Rust subprocess exit in the chat. */
-  private handleRustExit(code: number | null): void {
-    // A spawn failure during initialization (e.g. the extension-parse conflict)
-    // is reported through initializeRust's return value — don't also surface the
-    // generic "exited unexpectedly" message, which would race the recovery path.
-    if (this._rustInitializing) {
-      piWarn(`Rust process exited during init (code ${code ?? "?"})`);
-      return;
-    }
-    this._isStreaming = false;
-    this._agentRunActive = false;
-    // Clear any pending steer/queue indicator — the process that owned it is gone.
-    if (this._rustSteering.length || this._rustFollowUp.length) {
-      this._rustSteering = [];
-      this._rustFollowUp = [];
-      this.emitRustQueue();
-    }
-    const file = this._rustSessionPath;
-    this.emit({ type: "custom-message", data: { customType: "error", content: `Rust Pi exited unexpectedly (code ${code ?? "?"}).${file ? "" : " Start a new session to continue."}`, timestamp: Date.now() } });
-    this.reportStatus();
-    // The session JSONL persists on disk and rust-pi self-exits on stdin EOF (so
-    // this is a real crash, not host teardown). Offer one-click recovery into a
-    // fresh window via the existing resume flow — avoids in-place re-init (which
-    // would replay history into the dead tab) and crash-loops (user-initiated).
-    if (file) {
-      void vscode.window
-        .showWarningMessage(`Rust Pi exited unexpectedly (code ${code ?? "?"}).`, "Reopen session")
-        .then((choice) => {
-          if (choice === "Reopen session") {
-            void vscode.commands.executeCommand("pi-code-gui.resumePastSession", file);
-          }
-        });
-    }
-  }
-
-  /** Apply a Rust `get_state` response to local model/thinking/session fields. */
-  private applyRustState(data: unknown): void {
-    if (!data || typeof data !== "object") { return; }
-    const d = data as Record<string, unknown>;
-    const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string; contextWindow?: number } | undefined;
-    if (model && typeof model === "object") {
-      this._model = { id: model.id, name: model.name, provider: model.provider };
-      if (typeof model.contextWindow === "number") {
-        // Clamp the displayed context window to the user's context budget so the
-        // context-% readout honours the budget for EVERY Rust model — including
-        // built-in (static-registry) models, which never pass through models.json
-        // and so can't be clamped at the source the way custom models are.
-        //
-        // Limitation / compromise: this clamp only affects the GUI's context-%
-        // display. The binary's real auto-compaction trigger is should_compact()
-        // = contextTokens > contextWindow − reserveTokens, evaluated against the
-        // model's OWN contextWindow inside the Rust process. For CUSTOM models we
-        // also bake the budget into models.json (see rust-models.ts applyManaged-
-        // Models), so the binary compacts at the budget too — full parity with TS.
-        // For BUILT-IN models we cannot lower that window without writing a
-        // models.json entry that SHADOWS the built-in (which would replace the
-        // provider's other models), so the binary keeps auto-compacting at the
-        // registry window. Net result: the budget governs the % display
-        // everywhere and real compaction for custom models; built-in models' real
-        // compaction remains at their registry window. This was a deliberate
-        // trade-off to avoid shadowing built-ins for a display-parity gain.
-        const budget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
-        this._rustContextWindow = budget > 0 ? Math.min(model.contextWindow, budget) : model.contextWindow;
-      }
-    } else if (typeof d.modelId === "string") {
-      this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
-    }
-    const thinking = (d.thinkingLevel ?? d.thinking) as string | undefined;
-    if (typeof thinking === "string") { this._thinkingLevel = thinking; }
-    if (typeof d.sessionId === "string") { this.sessionId = d.sessionId; }
-    // Field names verified against the real binary's get_state response.
-    if (typeof d.autoCompactionEnabled === "boolean") { this._autoCompactionEnabled = d.autoCompactionEnabled; }
-    if (typeof d.autoRetryEnabled === "boolean") { this._autoRetryEnabled = d.autoRetryEnabled; }
-    // Capture the on-disk session file (may be null until the first turn writes it)
-    // so fresh Rust sessions can be persisted and restored on reload.
-    if (typeof d.sessionFile === "string") { this._rustSessionPath = d.sessionFile; }
-  }
-
-  /** Normalize a Rust `get_available_models` response to {provider, id} pairs. */
-  private rustModelList(data: unknown): Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }> {
-    const d = data as { models?: unknown } | undefined;
-    const raw = Array.isArray(d?.models) ? d.models : (Array.isArray(data) ? data : []);
-    return raw
-      .filter((m) => m && typeof m.provider === "string" && typeof m.id === "string")
-      .map((m) => ({
-        provider: m.provider,
-        id: m.id,
-        name: typeof m.name === "string" ? m.name : undefined,
-        contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
-        cost: m.cost && typeof m.cost.input === "number" ? { input: m.cost.input, output: m.cost.output } : undefined,
-      }));
-  }
-
-  /** Wrap a Rust `get_messages` response as session-entry shapes for sendInitialMessages. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private rustEntriesFromMessages(data: unknown): any[] {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const d = data as { messages?: any[] } | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const messages: any[] = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? (data) : []);
-    return messages.map((m, i) => ({ type: "message", message: m, id: m?.id ?? `rust-${i}` }));
-  }
-
-  /** Send a prompt/steer/follow-up to the Rust subprocess. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async sendPromptRust(text: string, images?: any[], mode?: string): Promise<void> {
-    if (!this.rust) { throw new Error("Rust Pi session not initialized"); }
-    const imgs = images && images.length > 0 ? images : undefined;
-    const payload: Record<string, unknown> = { message: text };
-    if (imgs) { payload.images = imgs; }
-    if (mode === "steer") {
-      this.rust.send(RUST_RPC.steer, payload);
-      // rust-pi never echoes queue_update, so surface the pending message
-      // ourselves; it clears when the binary folds it into a user turn.
-      this._rustSteering.push(text);
-      this.emitRustQueue();
-    } else if (mode === "queue") {
-      this.rust.send(RUST_RPC.followUp, payload);
-      this._rustFollowUp.push(text);
-      this.emitRustQueue();
-    } else {
-      this.rust.send(RUST_RPC.prompt, payload);
-    }
-  }
-
-  /** Emit the synthetic Rust steer/follow-up queue to the webview pending UI. */
-  private emitRustQueue(): void {
-    this.emit({ type: "queue-update", data: { steering: [...this._rustSteering], followUp: [...this._rustFollowUp] } });
-  }
-
-  /** Drop the first queued steer/follow-up matching `text` once the binary
-   *  consumes it (rust-pi has no queue_update to tell us). Returns true if one
-   *  was removed. */
-  private dropRustQueued(text: string): boolean {
-    return dropQueuedMessage(this._rustSteering, this._rustFollowUp, text);
-  }
-
-  /** Surface a one-line, deduped warning when a Rust capability RPC fails, so a
-   *  degraded session (no model list, no history, no usage readout) isn't silent.
-   *  Warns once per capability per session until recordRustCapOk(cap) clears it. */
-  private warnRustDegraded(cap: string, message: string): void {
-    if (shouldWarnDegraded(this._rustDegradedWarned, cap)) {
-      this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${message}`, timestamp: Date.now() } });
-    }
-  }
-
-  /** Mark a Rust capability healthy again so a later failure warns once more. */
-  private recordRustCapOk(cap: string): void {
-    clearDegraded(this._rustDegradedWarned, cap);
   }
 
   // ── Extension UI Bridge ────────────────────────────
@@ -1633,7 +1091,7 @@ export class PiService {
     // runtime advertises only the commands it can service.
     if (isRust) {
       // The Rust runtime reports its own extensions / templates / skills over RPC.
-      result.push(...this._rustSlashCommands);
+      result.push(...(this._rust?.getSlashCommands() ?? []));
     } else {
       // TypeScript SDK: extension-registered commands + builtin prompt templates.
       try {
@@ -1692,19 +1150,6 @@ export class PiService {
   }
 
   /** Map a Rust `get_commands` reply into slash-command entries (tolerant of field naming). */
-  private rustSlashCommandsFrom(data: unknown): Array<{ cmd: string; desc: string; source: string }> {
-    const list = (data as { commands?: unknown })?.commands;
-    if (!Array.isArray(list)) { return []; }
-    const out: Array<{ cmd: string; desc: string; source: string }> = [];
-    for (const c of list as Array<Record<string, unknown>>) {
-      const name = String(c.invocationName ?? c.name ?? c.command ?? c.id ?? "").replace(/^\/+/, "");
-      if (!name) { continue; }
-      const src = c.source ?? (c.sourceInfo as { source?: unknown } | undefined)?.source;
-      out.push({ cmd: `/${name}`, desc: String(c.description ?? c.desc ?? ""), source: src ? `rust (${String(src)})` : "rust" });
-    }
-    return out;
-  }
-
   /** Emit all registered slash commands to the webview for autocomplete. */
   emitSlashCommands(): void {
     const all = this.getAllSlashCommands();
@@ -1908,11 +1353,7 @@ export class PiService {
         this.currentAssistantToolCalls.clear();
         this.turnIndex = 0;
         // Safety net: clear any synthetic queue entries the consume-path missed.
-        if (this._backendKind === "rust" && (this._rustSteering.length || this._rustFollowUp.length)) {
-          this._rustSteering = [];
-          this._rustFollowUp = [];
-          this.emitRustQueue();
-        }
+        if (this._backendKind === "rust") { this._rust?.clearQueueIfAny(); }
         this.emit({ type: "agent-end", data: { messages: event.messages } });
         this.reportStatus();
         break;
@@ -1988,7 +1429,7 @@ export class PiService {
         if (event.message?.role === "user") { break; }
         if (event.message?.role === "assistant") {
           // Rust: the turn's input(+cacheRead) ≈ current context fill → context %.
-          if (this._backendKind === "rust") { this.captureRustContext(event.message.usage); }
+          if (this._backendKind === "rust") { this._rust?.captureContext(event.message.usage); }
           const toolCalls = this.extractToolCallsFromContent(event.message.content);
           this.emit({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
           this.reportStatus();
@@ -2138,7 +1579,10 @@ export class PiService {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
-    if (this._backendKind === "rust") { return this.sendPromptRust(text, images, mode); }
+    if (this._backendKind === "rust") {
+      if (!this._rust) { throw new Error("Rust Pi session not initialized"); }
+      return this._rust.sendPrompt(text, images, mode);
+    }
     if (!this.session) { throw new Error("Pi session not initialized"); }
 
     // Handle slash commands at the PiService level before forwarding to
@@ -2314,8 +1758,7 @@ export class PiService {
 
   async abort(): Promise<void> {
     if (this._backendKind === "rust") {
-      this.rust?.send(RUST_RPC.abortBash);
-      this.rust?.send(RUST_RPC.abort);
+      this._rust?.abort();
       return;
     }
     if (!this.session) {
@@ -2340,32 +1783,7 @@ export class PiService {
   async compact(): Promise<void> {
     piLog(`compact() invoked (backend=${this._backendKind})`);
     if (this._backendKind === "rust") {
-      if (!this.rust) { return; }
-      // Use request() (correlated by id) — NOT send() — so the reply isn't
-      // dropped. Compaction replies (success OR errors like "Compaction not
-      // available") come back as a {type:"response"}, which RustProcess discards
-      // unless a pending id is awaiting it. Render the outcome either way.
-      try {
-        const resp = await this.rust.request(RUST_RPC.compact, {}, 120000);
-        if (resp.success) {
-          await this.refreshRustState();
-          this.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Context compacted.", timestamp: Date.now() } });
-        } else {
-          const err = resp.error ?? "";
-          // The Rust runtime gates compaction behind its auto-compaction
-          // threshold (contextTokens > contextWindow − reserveTokens) — manual
-          // /compact won't summarize a conversation that still fits. That is
-          // NOT a failure, so explain it honestly rather than flag a red error.
-          // (The TypeScript runtime has no such gate and compacts on demand.)
-          if (/not available|missing ids|already compacted|too little history|nothing to compact/i.test(err)) {
-            this.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Nothing to compact yet. The Rust runtime compacts automatically as the conversation approaches the model's context limit — it won't compact one that still fits comfortably (unlike the TypeScript runtime, which compacts on demand).", timestamp: Date.now() } });
-          } else {
-            this.emit({ type: "custom-message", data: { customType: "error", content: `Compact failed: ${err || "unknown error"}`, timestamp: Date.now() } });
-          }
-        }
-      } catch (e: unknown) {
-        this.emit({ type: "custom-message", data: { customType: "error", content: `Compact failed: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } });
-      }
+      await this._rust?.compact();
       return;
     }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2542,7 +1960,7 @@ export class PiService {
 
   async setModel(provider: string, modelId: string): Promise<void> {
     if (this._backendKind === "rust") {
-      if (!this.rust) { return; }
+      if (!this._rust) { return; }
       // request() not send(): the binary returns the new model (with its real
       // contextWindow) and any failure ONLY in the response, which RustProcess
       // drops if nothing awaits the id. Apply the reply so a bad switch surfaces
@@ -2550,14 +1968,14 @@ export class PiService {
       // .catch() because request() rejects on RPC timeout / process exit — a user
       // action like a model switch must surface that, not become an unhandled
       // rejection in the webview message handler (which doesn't wrap this call).
-      const resp = await this.rust.request(RUST_RPC.setModel, { provider, modelId }, 15000)
+      const resp = await this._rust.request(RUST_RPC.setModel, { provider, modelId }, 15000)
         .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
       if (!resp) { return; }
       if (!resp.success) {
         this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${modelId}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
         return;
       }
-      this.applyRustState({ model: resp.data });
+      this._rust.applyState({ model: resp.data });
       this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
       if (this.cycleIndex === -1) { this.cycleIndex = 0; }
       this.reportStatus();
@@ -2600,17 +2018,17 @@ export class PiService {
         vscode.window.showWarningMessage("No models available. Configure an API key first.");
         return;
       }
-      if (!this.rust) { return; }
+      if (!this._rust) { return; }
       this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
       const next = this.cycleModels[this.cycleIndex];
-      const resp = await this.rust.request(RUST_RPC.setModel, { provider: next.provider, modelId: next.id }, 15000)
+      const resp = await this._rust.request(RUST_RPC.setModel, { provider: next.provider, modelId: next.id }, 15000)
         .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
       if (!resp) { return; }
       if (!resp.success) {
         this.emit({ type: "custom-message", data: { customType: "error", content: `Could not switch model to ${next.id}: ${resp.error ?? "unknown error"}`, timestamp: Date.now() } });
         return;
       }
-      this.applyRustState({ model: resp.data });
+      this._rust.applyState({ model: resp.data });
       vscode.window.showInformationMessage(`Model: ${next.id}`);
       this.reportStatus();
       return;
@@ -2641,8 +2059,8 @@ export class PiService {
 
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
-      if (!this.rust) { return; }
-      const resp = await this.rust.request(RUST_RPC.setThinkingLevel, { level }, 15000)
+      if (!this._rust) { return; }
+      const resp = await this._rust.request(RUST_RPC.setThinkingLevel, { level }, 15000)
         .catch((e: unknown) => { this.emit({ type: "custom-message", data: { customType: "error", content: `Could not set thinking level: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } }); return null; });
       if (!resp) { return; }
       if (!resp.success) {
@@ -2654,8 +2072,8 @@ export class PiService {
       // what was actually applied rather than what was requested.
       this._thinkingLevel = level;
       try {
-        const st = await this.rust.request(RUST_RPC.getState, {}, 8000);
-        if (st.success) { this.applyRustState(st.data); }
+        const st = await this._rust.request(RUST_RPC.getState, {}, 8000);
+        if (st.success) { this._rust.applyState(st.data); }
       } catch { /* keep optimistic level */ }
       // The binary clamps thinking to "off" for non-reasoning models. We override
       // its model list with the Pi catalog (correct reasoning flags), so a clamp
@@ -2905,10 +2323,10 @@ export class PiService {
     if (this._backendKind === "rust") {
       // The Rust runtime owns this setting; toggle it over RPC (the GUI toggle
       // was previously a no-op here since there's no in-process session). Flip
-      // local state only on success — applyRustState re-syncs it from get_state.
+      // local state only on success — RustService.applyState re-syncs it from get_state.
       const next = !this._autoCompactionEnabled;
       try {
-        const r = await this.rust?.request(RUST_RPC.setAutoCompaction, { enabled: next }, 8000);
+        const r = await this._rust?.request(RUST_RPC.setAutoCompaction, { enabled: next }, 8000);
         if (r?.success) { this._autoCompactionEnabled = next; }
         else { piWarn(`set_auto_compaction rejected: ${r?.error ?? "no response"}`); }
       } catch (e: unknown) { piWarn(`set_auto_compaction failed: ${e instanceof Error ? e.message : String(e)}`); }
@@ -2928,7 +2346,7 @@ export class PiService {
     if (this._backendKind === "rust") {
       const next = !this._autoRetryEnabled;
       try {
-        const r = await this.rust?.request(RUST_RPC.setAutoRetry, { enabled: next }, 8000);
+        const r = await this._rust?.request(RUST_RPC.setAutoRetry, { enabled: next }, 8000);
         if (r?.success) { this._autoRetryEnabled = next; }
         else { piWarn(`set_auto_retry rejected: ${r?.error ?? "no response"}`); }
       } catch (e: unknown) { piWarn(`set_auto_retry failed: ${e instanceof Error ? e.message : String(e)}`); }
@@ -3009,9 +2427,9 @@ export class PiService {
     contextWindow: number;
   } {
     // Rust runs out-of-process (no SDK sessionManager) — usage comes from its
-    // get_session_stats RPC, cached in _rustUsage and refreshed at init + each turn.
+    // get_session_stats RPC, cached in RustService and refreshed at init + each turn.
     if (this._backendKind === "rust") {
-      return this._rustUsage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: this._rustContextWindow };
+      return this._rust?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
     }
 
     if (!this.sessionManager) {
@@ -3075,9 +2493,7 @@ export class PiService {
     if (this._backendKind === "rust") {
       // rust-pi has already accepted these (it auto-processes steers), so this
       // only clears the local pending indicator.
-      this._rustSteering = [];
-      this._rustFollowUp = [];
-      this.emitRustQueue();
+      this._rust?.clearQueueAndEmit();
       return;
     }
     if (!this.session) { return; }
@@ -3089,10 +2505,10 @@ export class PiService {
   get sessionManagerInstance(): any { return this.sessionManager; }
   /** The file path of the session file on disk (for persistence across reloads). */
   get sessionFilePath(): string | null {
-    return this.sessionManager?.getSessionFile?.() ?? this._rustSessionPath;
+    return this.sessionManager?.getSessionFile?.() ?? this._rust?.getSessionPath() ?? null;
   }
   get sessionIdValue(): string | null { return this.sessionId; }
-  get initialized(): boolean { return this.session !== null || this.rust !== null; }
+  get initialized(): boolean { return this.session !== null || this._rust !== null; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get rawSession(): any { return this.session; }
   /** Expose the model registry for dynamic model pickers in the webview */
@@ -3550,10 +2966,8 @@ export class PiService {
     // Rust runtime: tear down the subprocess (it owns its own persistence).
     if (this._backendKind === "rust") {
       if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
-      this._rustSteering = [];
-      this._rustFollowUp = [];
-      this.rust?.dispose();
-      this.rust = null;
+      this._rust?.dispose();
+      this._rust = null;
       return;
     }
 
