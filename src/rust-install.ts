@@ -64,12 +64,16 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
     return false;
   }
   return vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Installing Rust Pi…", cancellable: false },
-    async (progress) => {
+    { location: vscode.ProgressLocation.Notification, title: "Installing Rust Pi…", cancellable: true },
+    async (progress, token) => {
+      // Abort in-flight network requests when the user cancels (and the socket
+      // timeout backstops a silent stall — see NET_TIMEOUT_MS).
+      const ac = new AbortController();
+      token.onCancellationRequested(() => ac.abort());
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rustpi-"));
       try {
         progress.report({ message: `Resolving release ${pinnedRust.tag}…` });
-        const release = await fetchJson(RELEASES_API);
+        const release = await fetchJson(RELEASES_API, ac.signal);
         const tag = String(release.tag_name ?? pinnedRust.tag);
         const assets = (release.assets ?? []) as Array<{ name: string; browser_download_url: string }>;
         const binAsset = assets.find((a) => a.name === asset.archive);
@@ -78,7 +82,7 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
 
         const archivePath = path.join(tmp, asset.archive);
         progress.report({ message: `Downloading ${asset.archive}…` });
-        await download(binAsset.browser_download_url, archivePath);
+        await download(binAsset.browser_download_url, archivePath, ac.signal);
 
         // A release with no SHA256SUMS asset must be a hard failure, not a silent
         // skip: the managed-install path promises a verified binary, so running an
@@ -88,7 +92,7 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         }
         progress.report({ message: "Verifying checksum…" });
         const sumsPath = path.join(tmp, "SHA256SUMS");
-        await download(sumsAsset.browser_download_url, sumsPath);
+        await download(sumsAsset.browser_download_url, sumsPath, ac.signal);
         if (!verifyChecksum(archivePath, asset.archive, sumsPath)) {
           throw new Error("Checksum verification failed — aborting.");
         }
@@ -192,36 +196,45 @@ async function detectAndRefresh(): Promise<boolean> {
 
 // ── Low-level helpers ──────────────────────────────────
 
+// Per-request inactivity timeout so a stalled CDN / hung TCP connection can't
+// freeze the install dialog indefinitely. `signal` lets the cancellable progress
+// abort an in-flight request.
+const NET_TIMEOUT_MS = 15000;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fetchJson(url: string): Promise<any> {
+function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { "User-Agent": "pi-code-gui", Accept: "application/vnd.github+json" } }, (res) => {
+    const req = https.get(url, { headers: { "User-Agent": "pi-code-gui", Accept: "application/vnd.github+json" }, signal }, (res) => {
       if (res.statusCode !== 200) { res.resume(); reject(new Error(`HTTP ${res.statusCode} for ${url}`)); return; }
       let data = "";
       res.setEncoding("utf-8");
       res.on("data", (c) => (data += c));
       res.on("end", () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
-    }).on("error", reject);
+    });
+    req.setTimeout(NET_TIMEOUT_MS, () => req.destroy(new Error(`Timed out fetching ${url}`)));
+    req.on("error", reject);
   });
 }
 
-function download(url: string, dest: string, redirects = 5): Promise<void> {
+function download(url: string, dest: string, signal?: AbortSignal, redirects = 5): Promise<void> {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
-    https.get(url, { headers: { "User-Agent": "pi-code-gui" } }, (res) => {
+    const req = https.get(url, { headers: { "User-Agent": "pi-code-gui" }, signal }, (res) => {
       const code = res.statusCode ?? 0;
       if (code >= 300 && code < 400 && res.headers.location) {
         res.resume();
         file.close();
         if (redirects <= 0) { reject(new Error("Too many redirects")); return; }
-        download(res.headers.location, dest, redirects - 1).then(resolve, reject);
+        download(res.headers.location, dest, signal, redirects - 1).then(resolve, reject);
         return;
       }
       if (code !== 200) { res.resume(); file.close(); reject(new Error(`HTTP ${code} for ${url}`)); return; }
       res.pipe(file);
       file.on("finish", () => file.close(() => resolve()));
       file.on("error", (e) => { file.close(); reject(e); });
-    }).on("error", (e) => { file.close(); reject(e); });
+    });
+    req.setTimeout(NET_TIMEOUT_MS, () => req.destroy(new Error(`Timed out downloading ${url}`)));
+    req.on("error", (e) => { file.close(); reject(e); });
   });
 }
 

@@ -176,7 +176,10 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "error":               handleError(msg.data); break;
 
       // UI commands from extension host
-      case "sessionReset":        resetChat(); break;
+      // Clear the indicators' setInterval timers BEFORE resetChat() wipes the
+      // DOM — otherwise the working/compaction/retry spinners keep firing against
+      // removed elements (engine.ts can't reach these helpers: circular dep).
+      case "sessionReset":        removeWorkingIndicator(); removeCompactionIndicator(); removeRetryIndicator(); resetChat(); break;
       case "insertCommand":       handleInsertCommand(msg.command); break;
 
       // Slash commands from installed extensions

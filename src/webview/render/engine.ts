@@ -15,14 +15,9 @@ import { ThinkingBlock } from "../components/thinking-block.js";
 
 // ═══ Utilities ══════════════════════════════════════════════
 
-export function formatTokens(count: number): string {
-  if (!count || count === 0) {return "0";}
-  if (count < 1000) {return count.toString();}
-  if (count < 10000) {return (count / 1000).toFixed(1) + "k";}
-  if (count < 100000) {return Math.round(count / 1000) + "k";}
-  if (count < 1000000) {return (count / 1000000).toFixed(1) + "M";}
-  return Math.round(count / 1000000) + "M";
-}
+// DOM-free text/format helpers live in src/shared/webview-format.ts so they can
+// be unit-tested headlessly; re-exported here to keep existing import sites.
+export { formatTokens, getLangFromPath, getCompactReadLabel, formatToolError } from "../../shared/webview-format.js";
 
 export function escapeHtml(text: string): string {
   const div = document.createElement("div");
@@ -38,77 +33,6 @@ export function truncate(text: string, maxLen: number): string {
 export function shortenPath(filePath: string): string {
   if (!filePath) {return "";}
   return filePath;
-}
-
-export function getLangFromPath(filePath: string): string | undefined {
-  if (!filePath) {return undefined;}
-  const ext = filePath.split(".").pop()!.toLowerCase();
-  const extToLang: Record<string, string> = {
-    ts: "typescript", tsx: "typescript",
-    js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-    py: "python", rs: "rust", go: "go", java: "java",
-    c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp",
-    cs: "csharp", sh: "bash", bash: "bash", zsh: "bash",
-    html: "html", htm: "html", css: "css", scss: "scss", less: "less",
-    json: "json", yaml: "yaml", yml: "yaml", toml: "toml",
-    xml: "xml", svg: "svg", md: "markdown", markdown: "markdown",
-    sql: "sql", php: "php", rb: "ruby", swift: "swift",
-    kt: "kotlin", lua: "lua", r: "r", scala: "scala",
-    hs: "haskell", ex: "elixir", exs: "elixir", erl: "erlang",
-    dockerfile: "dockerfile", makefile: "makefile",
-    proto: "protobuf", graphql: "graphql",
-    tf: "hcl", hcl: "hcl", ps1: "powershell",
-  };
-  return extToLang[ext];
-}
-
-export function getCompactReadLabel(filePath: string): { kind: string; label: string } | undefined {
-  if (!filePath) {return undefined;}
-  const name = filePath.split("/").pop() || filePath;
-  if (name === "SKILL.md") {
-    const parts = filePath.split("/");
-    const parent = parts.length >= 2 ? parts[parts.length - 2] : name;
-    return { kind: "skill", label: parent };
-  }
-  if (name === "AGENTS.md" || name === "AGENTS.MD" || name === "CLAUDE.md" || name === "CLAUDE.MD") {
-    return { kind: "resource", label: filePath };
-  }
-  if (name === "README.md" || filePath.indexOf("docs/") !== -1 || filePath.indexOf("examples/") !== -1) {
-    return { kind: "docs", label: filePath };
-  }
-  return undefined;
-}
-
-export function formatToolError(text: string, toolName: string): string {
-  if (!text) {return text;}
-  if (text.indexOf("Validation failed for tool") !== -1) {
-    const issues = [];
-    const missingRe = /must have required propert(?:y|ies) (\w+)/g;
-    let match;
-    while ((match = missingRe.exec(text)) !== null) {
-      issues.push("missing \u201C" + match[1] + "\u201D");
-    }
-    const extraRe = /must not have additional propert(?:y|ies)/g;
-    if (extraRe.test(text)) {
-      const extraMatch = text.match(/additional properties.*?(\w+)/g);
-      if (!extraMatch) {issues.push("unexpected field(s)");}
-    }
-    const hint = issues.length > 0 ? " (" + issues.join(", ") + ")" : "";
-    return "\u26A0 Argument structure mismatch" + hint + " \u2014 the agent will self-correct.";
-  }
-  if (/abort|aborted|cancell?ed/i.test(text)) {
-    return "\u2717 Operation cancelled.";
-  }
-  if (/permission denied|EACCES|not permitted/i.test(text)) {
-    return "\u26D4 Permission denied \u2014 cannot access the file.";
-  }
-  if (/no such file|ENOENT|not found/i.test(text) && text.indexOf("Validation") === -1) {
-    return "\uD83D\uDD0D File not found \u2014 check the path.";
-  }
-  if (/timed?\s*out/i.test(text)) {
-    return "\u23F0 Command timed out.";
-  }
-  return text;
 }
 
 // ═══ Tool Renderer Registry ═════════════════════════════════
