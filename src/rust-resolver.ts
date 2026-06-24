@@ -13,6 +13,10 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import * as vscode from "vscode";
 import { piLog, piWarn } from "./logger.js";
+// Pure interop gates live in a vscode-free module so they can be unit-tested;
+// re-exported here to keep the existing `./rust-resolver.js` import surface.
+import { workspaceHasTsPiExtensions, isRustExtensionConflict } from "./rust-interop.js";
+export { workspaceHasTsPiExtensions, isRustExtensionConflict };
 
 export interface RustInstallStatus {
   installed: boolean;
@@ -137,28 +141,6 @@ export function detectRustBinary(): RustInstallStatus {
  */
 export type RustExtensionsMode = "auto" | "enabled" | "disabled";
 
-/**
- * Detect whether the workspace declares TypeScript-SDK Pi extensions under
- * `.pi/` that the Rust runtime cannot parse. The breaking mechanism is the npm
- * package install path: a non-empty `packages` array in `.pi/settings.json`,
- * or a `.pi/npm` install directory. Rust's own native extensions live in the
- * GLOBAL packages dir, so only the PROJECT `.pi/` is inspected here.
- */
-export function workspaceHasTsPiExtensions(cwd: string): boolean {
-  try {
-    const piDir = path.join(cwd, ".pi");
-    if (fs.existsSync(path.join(piDir, "npm"))) { return true; }
-    const settingsPath = path.join(piDir, "settings.json");
-    if (fs.existsSync(settingsPath)) {
-      const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as { packages?: unknown };
-      if (Array.isArray(parsed.packages) && parsed.packages.length > 0) { return true; }
-    }
-  } catch (e: unknown) {
-    piWarn(`workspaceHasTsPiExtensions(${cwd}): ${e instanceof Error ? e.message : String(e)}`);
-  }
-  return false;
-}
-
 /** The resolved `pi-code-gui.rustExtensions` mode (defaults to "auto"). */
 export function rustExtensionsMode(): RustExtensionsMode {
   const v = vscode.workspace.getConfiguration("pi-code-gui").get<string>("rustExtensions");
@@ -179,13 +161,3 @@ export function shouldDisableRustExtensions(cwd: string): boolean {
   return workspaceHasTsPiExtensions(cwd);
 }
 
-/**
- * True when a Rust `--mode rpc` startup failure is the TypeScript-format
- * extension parse conflict (`JSON error: missing field 'parameters'`), so the
- * caller can recover by disabling extension discovery rather than surfacing a
- * raw, confusing error.
- */
-export function isRustExtensionConflict(message: string): boolean {
-  const m = message.toLowerCase();
-  return m.includes("missing field") && m.includes("parameters");
-}
