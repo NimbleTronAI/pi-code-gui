@@ -145,12 +145,18 @@ export class RustService {
     // its file; overriding with the setting would silently switch its model on
     // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
     const restoring = !!openPath || !fresh;
+    const thinking = cfg.get<string>("defaultThinkingLevel")?.trim() || "off";
     if (!restoring) {
       if (provider) { args.push("--provider", provider); }
       if (modelId) { args.push("--model", modelId); }
+      // Always pass --thinking for a FRESH session, INCLUDING "off": rust-pi
+      // defaults a reasoning model to "high" when the flag is absent (verified
+      // live against 0.1.20), so omitting it for "off" would start the model
+      // thinking at "high" against the configured default. A restored/continued
+      // session carries its own recorded level (like model/provider above) and
+      // get_state then syncs the display — so don't force the flag there.
+      args.push("--thinking", thinking);
     }
-    const thinking = cfg.get<string>("defaultThinkingLevel")?.trim();
-    if (thinking && thinking !== "off") { args.push("--thinking", thinking); }
     const extPolicy = cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced";
     args.push("--extension-policy", extPolicy);
 
@@ -187,7 +193,7 @@ export class RustService {
       // Continue: built-in models still work; an unresolved model is caught below.
     }
 
-    this.host.setThinkingLevel(thinking || "off");
+    this.host.setThinkingLevel(thinking);
 
     let warning: string | undefined;
     try {

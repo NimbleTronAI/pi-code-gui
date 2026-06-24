@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Rust sessions now honor the configured default thinking level.** A fresh Rust session passed `--thinking` to the binary only when the default was *not* `off`, but rust-pi defaults a reasoning model to `high` when the flag is absent (verified live) — so a configured default of `off` silently started the model at `high` while the status bar showed `off`. Fresh sessions now always pass `--thinking` (including `off`); restored sessions keep their own recorded level, as before.
+
 ### Changed
 - **Honest thinking-level control under Rust.** A model's thinking *level* only affects generation on provider transports that actually transmit it (`anthropic-messages`, `openai-responses`, `google-generative-ai`). On OpenAI-compatible chat APIs (`openai-completions` — including **DeepSeek**) the level is never sent on the wire (the model self-allocates its reasoning), so picking one was a silent no-op the binary still reported as success. The status bar now shows a read-only **reasoning: on/off** badge for those providers instead of a graded "thinking: …" picker. Verified against rust-pi 0.1.20 (provider request body + live `get_state`).
 
