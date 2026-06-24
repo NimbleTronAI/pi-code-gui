@@ -9,6 +9,7 @@ import { extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { thinkingLevelIsLive } from "./rust-catalog.js";
+import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls } from "./agent-events.js";
 
@@ -70,60 +71,30 @@ type EventListener = (event: PiServiceEvent) => void;
 // ── SDK Resolution ───────────────────────────────────────
 
 export function resolvePiPackagePath(): string {
-  const pkgSuffix = path.join("node_modules", "@earendil-works", "pi-coding-agent");
-  const candidates: Set<string> = new Set();
-
-  // 1. Project-local install
-  candidates.add(path.resolve(path.join(".pi", "npm", pkgSuffix)));
-
-  // 2. Universal PATH scan — derive npm global prefixes from $PATH entries
-  const pathEnv = process.env.PATH || "";
-  const separator = process.platform === "win32" ? ";" : ":";
-  const seenPrefixes = new Set<string>();
-  for (const binDir of pathEnv.split(separator)) {
-    if (!binDir) { continue; }
-    let normBin = path.normalize(binDir);
-    if (normBin.endsWith(path.sep)) { normBin = normBin.slice(0, -1); }
-    const prefix = path.dirname(normBin);
-    if (seenPrefixes.has(normBin)) { continue; }
-    seenPrefixes.add(normBin);
-    candidates.add(path.join(prefix, "lib", pkgSuffix));
-    if (process.platform === "win32") {
-      candidates.add(path.join(prefix, pkgSuffix));
-    }
-  }
-
-
-  // 3. Windows AppData (npm default on Windows)
-  const appData = process.env.APPDATA || "";
-  if (appData) {
-    candidates.add(path.join(appData, "npm", pkgSuffix));
-  }
-
-
-  // 4. Legacy hardcoded fallbacks (for GUI-launched VS Code with incomplete $PATH)
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  if (home) {
-    candidates.add(path.join(home, ".npm-global", "lib", pkgSuffix));
-    candidates.add(path.join(home, ".local", "lib", pkgSuffix));
-  }
-  if (process.env.NVM_DIR) {
+  // List the NVM node versions (the only fs read needed to build candidates);
+  // ordering/dedup/priority live in the pure, tested buildPiPackageCandidates.
+  let nvmVersions: string[] = [];
+  const nvmDir = process.env.NVM_DIR;
+  if (nvmDir) {
     try {
-      const versionsDir = path.join(process.env.NVM_DIR, "versions", "node");
-      if (fs.existsSync(versionsDir)) {
-        for (const version of fs.readdirSync(versionsDir)) {
-          candidates.add(path.join(versionsDir, version, "lib", pkgSuffix));
-        }
-      }
+      const versionsDir = path.join(nvmDir, "versions", "node");
+      if (fs.existsSync(versionsDir)) { nvmVersions = fs.readdirSync(versionsDir); }
     } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
   }
 
-  for (const candidate of candidates) {
-    try {
-      const pkgPath = path.join(candidate, "package.json");
-      if (fs.existsSync(pkgPath)) { return candidate; }
-    } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
-  }
+  const candidates = buildPiPackageCandidates({
+    platform: process.platform,
+    pathEnv: process.env.PATH || "",
+    appData: process.env.APPDATA,
+    home: process.env.HOME || process.env.USERPROFILE,
+    nvmDir,
+    nvmVersions,
+  });
+
+  const found = pickPiPackagePath(candidates, (pkgJson) => {
+    try { return fs.existsSync(pkgJson); } catch { return false; }
+  });
+  if (found) { return found; }
 
   throw new Error(
     "Pi coding agent SDK not found. Please install it:\n" +

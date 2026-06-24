@@ -6,6 +6,7 @@ import { PiService } from "./pi-service.js";
 import { detectRustBinary, type RustInstallStatus } from "./rust-resolver.js";
 import type { Runtime } from "./types.js";
 import { piLog } from "./logger.js";
+import { pickDefaultRuntime } from "./runtime-pick.js";
 
 export interface DetectedRuntimes {
   ts: boolean;
@@ -41,13 +42,10 @@ export function cachedRuntimes(): DetectedRuntimes | null {
  * once the user installs it.
  */
 export function resolveEffectiveDefaultRuntime(detected: DetectedRuntimes): Runtime | null {
-  const setting = (vscode.workspace
+  const setting = vscode.workspace
     .getConfiguration("pi-code-gui")
-    .get<string>("defaultRuntime") ?? "typescript") as Runtime;
-  if (detected.ts && detected.rust) { return setting === "rust" ? "rust" : "typescript"; }
-  if (detected.ts) { return "typescript"; }
-  if (detected.rust) { return "rust"; }
-  return null;
+    .get<string>("defaultRuntime") ?? "typescript";
+  return pickDefaultRuntime(detected, setting);
 }
 
 /** Set the context keys used by runtime-aware menu `when` clauses. */
