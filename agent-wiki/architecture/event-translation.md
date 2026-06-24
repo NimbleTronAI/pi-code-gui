@@ -2,10 +2,21 @@
 
 > **Status:** evolving
 
-The Event Translation Layer (`src/pi-service.ts`, the `handleAgentEvent()` method
-and surrounding helpers) translates raw Pi SDK agent events into typed
+The Event Translation Layer translates raw Pi SDK / Rust agent events into typed
 `PiServiceEvent` emissions that the webview panel and extension commands consume.
-It is the bridge between the SDK's internal event model and the VS Code UI layer.
+It is the bridge between the runtime's internal event model and the VS Code UI layer.
+
+The decision logic is a **pure, vscode-free function** —
+`translateAgentEvent(event, state) → { events, mutations, effects }` in
+[`src/agent-events.ts`](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/agent-events.ts).
+`PiService.handleAgentEvent()` is now a thin shell that builds the state snapshot,
+calls `translateAgentEvent`, applies the returned scalar mutations, emits the
+events, then runs the trailing effects (Rust subprocess calls before the data
+emits; `reportStatus` after). BOTH runtimes flow through this one function (TS SDK
+directly; Rust via `RustService.handleEvent` → `RustHost.handleAgentEvent`), so it
+is the single highest-leverage hot path — which is why it was extracted into a
+module with a per-event-type unit suite (`src/test/unit/agent-events.test.ts`).
+Precedent: `routeRustEvent` (rust-events.ts).
 
 ## Why it exists
 
@@ -62,4 +73,5 @@ the prompt. Previously they were silently dropped.
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-05-27 — added turn-end, message_update error, clarified user message_end
+> **Last updated:** 2026-06-24 — extracted the decision logic into the pure `translateAgentEvent` (`src/agent-events.ts`) with a per-event-type unit suite; `handleAgentEvent` is now a thin apply-mutations/emit/effects shell
+> **Earlier:** 2026-05-27 — added turn-end, message_update error, clarified user message_end

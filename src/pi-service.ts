@@ -5,18 +5,11 @@ import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
 import { RUST_RPC, type RustResponse } from "./rust-process.js";
-import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, extractMessageText } from "./rust-events.js";
+import { extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
-
-/** Find the last element matching predicate (ES2023 findLast polyfill). */
-function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
-  for (let i = arr.length - 1; i >= 0; i--) {
-    if (pred(arr[i])) { return arr[i]; }
-  }
-  return undefined;
-}
+import { translateAgentEvent, extractToolCalls } from "./agent-events.js";
 
 /**
  * Dynamic import with retry — handles the race where npm is still populating
@@ -1302,15 +1295,11 @@ export class PiService {
     return "";
   }
 
-  /** Extract tool call content blocks from an assistant message */
+  /** Extract tool call content blocks from an assistant message. Delegates to
+   *  the shared pure helper (single source of truth with translateAgentEvent). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private extractToolCallsFromContent(content: any[]): Array<{ name: string; id: string; arguments: any }> {
-    if (!content) { return []; }
-    return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((c: any) => c.type === "toolCall")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((c: any) => ({ name: c.name, id: c.id, arguments: c.arguments }));
+    return extractToolCalls(content);
   }
 
   /** Get entries once per event, plus pre-built lookups to avoid O(n²) scans. */
@@ -1335,237 +1324,59 @@ export class PiService {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handleAgentEvent(event: any): void {
-    switch (event.type) {
-      case "agent_start":
-        this._agentRunActive = true;
-        this._isStreaming = true;
-        this.currentAssistantToolCalls.clear();
-        this.turnIndex = 0;
-        this.emit({ type: "agent-start" });
-        break;
+    // The decision logic lives in the pure, unit-tested translateAgentEvent
+    // (src/agent-events.ts). This shell builds the state snapshot, applies the
+    // returned mutations, emits the events, then runs the trailing effects in
+    // the original order: Rust subprocess effects before the data emits
+    // (rust queue-clear emits its own queue-update first; captureContext feeds
+    // the % reportStatus emits), and reportStatus after, reflecting post-event state.
+    const r = translateAgentEvent(event, {
+      backendKind: this._backendKind,
+      agentRunActive: this._agentRunActive,
+      lookups: this.getEntriesWithLookups(),
+      userMessages: this._userMessages,
+      toolCalls: this.currentAssistantToolCalls,
+      now: Date.now(),
+      prepareArgs: (toolName, args) => this._prepareToolArgs(toolName, args),
+    });
 
-      case "agent_end":
-        // rust-pi can emit agent_end twice for one run (seen on the abort/error
-        // path); ignore the duplicate so we don't double-emit or double-refresh.
-        if (this._backendKind === "rust" && !this._agentRunActive) { break; }
-        this._agentRunActive = false;
-        this._isStreaming = false;
-        this.currentAssistantToolCalls.clear();
-        this.turnIndex = 0;
-        // Safety net: clear any synthetic queue entries the consume-path missed.
-        if (this._backendKind === "rust") { this._rust?.clearQueueIfAny(); }
-        this.emit({ type: "agent-end", data: { messages: event.messages } });
-        this.reportStatus();
-        break;
+    if (r.setAgentRunActive !== undefined) { this._agentRunActive = r.setAgentRunActive; }
+    if (r.setStreaming !== undefined) { this._isStreaming = r.setStreaming; }
+    if (r.setThinkingLevel !== undefined) { this._thinkingLevel = r.setThinkingLevel; }
+    if (r.turnIndex === "reset") { this.turnIndex = 0; }
+    else if (r.turnIndex === "increment") { this.turnIndex++; }
+    if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
 
-      case "turn_start":
-        this.emit({ type: "turn-start" });
-        break;
+    if (r.effects.rustClearQueue) { this._rust?.clearQueueIfAny(); }
+    if (r.effects.captureContext) { this._rust?.captureContext(r.effects.captureUsage); }
 
-      case "turn_end":
-        this.emit({ type: "turn-end", data: { message: event.message, toolResults: event.toolResults } });
-        this.turnIndex++;
-        break;
+    for (const ev of r.events) { this.emit(ev); }
 
-      case "message_start": {
-        const { byMessageId } = this.getEntriesWithLookups();
-        if (event.message?.role === "user") {
-          const text = this.extractTextFromContent(event.message.content);
-          if (text) {
-            this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text, timestamp: event.message.timestamp ?? Date.now() });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            const entry = byMessageId.get(event.message.id);
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry?.id ?? event.message.id } });
-          }
-        } else if (event.message?.role === "assistant") {
-          this.currentAssistantToolCalls.clear();
-          const entry = byMessageId.get(event.message.id);
-          this.emit({ type: "assistant-start", data: { messageId: event.message.id, entryId: entry?.id ?? event.message.id } });
-        }
-        break;
-      }
-
-      case "message_update": {
-        const d = event.assistantMessageEvent;
-        switch (d?.type) {
-          case "text_delta":
-            this.emit({ type: "stream-delta", data: { delta: d.delta } });
-            break;
-          case "thinking_delta":
-            this.emit({ type: "thinking-delta", data: { delta: d.delta } });
-            break;
-          case "thinking_end":
-            this.emit({ type: "thinking-delta", data: { delta: "", done: true } });
-            break;
-          case "error":
-            this.emit({ type: "error", data: { message: d.error ?? "Unknown error" } });
-            break;
-        }
-
-        if (event.message?.role === "assistant" && event.message?.content) {
-          const toolCalls = this.extractToolCallsFromContent(event.message.content);
-          for (const tc of toolCalls) {
-            // Skip tool calls that shouldn't be previewed: ones still missing a
-            // stable id (partial stream — a preview would orphan an empty
-            // "{} null" placeholder the webview can't reconcile), and bash/exec
-            // (own bash render path; generic tool events leak JSON into it).
-            if (!shouldEmitToolPreview(tc)) { continue; }
-            if (!this.currentAssistantToolCalls.has(tc.id)) {
-              this.currentAssistantToolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments, lastPreviewEmit: Date.now() });
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments ?? {}, fromMessage: true } });
-            } else {
-              const existing = this.currentAssistantToolCalls.get(tc.id);
-              if (existing) {
-                existing.args = tc.arguments;
-                // Throttle the streaming preview: rust-pi emits a toolcall_delta
-                // per token (tens of thousands for a large write), and re-emitting
-                // the full re-serialized args on each would flood the webview O(n²)
-                // and freeze it. The final args still arrive via tool_execution_start.
-                const now = Date.now();
-                if (shouldEmitToolPreviewUpdate(existing.lastPreviewEmit, now)) {
-                  existing.lastPreviewEmit = now;
-                  this.emit({ type: "tool-update", data: { toolCallId: tc.id, toolName: tc.name, partialResult: { content: [{ type: "text", text: JSON.stringify(tc.arguments, null, 2) }] } } });
-                }
-              }
-            }
-          }
-        }
-        break;
-      }
-
-      case "message_end":
-        if (event.message?.role === "user") { break; }
-        if (event.message?.role === "assistant") {
-          // Rust: the turn's input(+cacheRead) ≈ current context fill → context %.
-          if (this._backendKind === "rust") { this._rust?.captureContext(event.message.usage); }
-          const toolCalls = this.extractToolCallsFromContent(event.message.content);
-          this.emit({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
-          this.reportStatus();
-        } else if (event.message?.role === "custom") {
-          const { entries } = this.getEntriesWithLookups();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const custEntry = reverseFind(entries, (e: any) => e.type === "message" && e.message?.role === "custom");
-          this.emit({ type: "custom-message", data: { customType: event.message.customType, content: event.message.content, display: event.message.display, details: event.message.details, timestamp: event.message.timestamp, entryId: custEntry?.id ?? event.message.id } });
-        }
-        break;
-
-      case "tool_execution_start": {
-        const { byToolCallId } = this.getEntriesWithLookups();
-        const tcEntry = byToolCallId.get(event.toolCallId);
-        const tcEntryId = tcEntry?.id ?? event.toolCallId;
-
-        // Apply the tool's prepareArguments hook so the webview receives
-        // validated/transformed args (e.g. legacy oldText/newText → edits[]
-        // for the edit tool).  The SDK runs prepareArguments internally but
-        // only after emitting this event, so raw LLM args leak through.
-        let args = event.args;
-        try {
-          const tools = this.session?.agent?.state?.tools;
-          if (tools) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const toolDef = (tools as any[]).find((t: any) => t.name === event.toolName);
-            if (toolDef?.prepareArguments) {
-              args = toolDef.prepareArguments(args);
-            }
-          }
-        } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
-
-        if (event.toolName === "bash" || event.toolName === "exec") {
-          this.emit({ type: "bash-start", data: { toolCallId: event.toolCallId, command: args?.command ?? "", entryId: tcEntryId } });
-        } else {
-          this.emit({ type: "tool-start", data: { toolCallId: event.toolCallId, toolName: event.toolName, args: args ?? {}, fromMessage: false, entryId: tcEntryId } });
-        }
-        break;
-      }
-
-      case "tool_execution_update":
-        if (event.toolName === "bash" || event.toolName === "exec") {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const text = event.partialResult?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-          this.emit({ type: "bash-output", data: { toolCallId: event.toolCallId, output: text ?? "" } });
-        } else {
-          this.emit({ type: "tool-update", data: { toolCallId: event.toolCallId, toolName: event.toolName, partialResult: event.partialResult } });
-        }
-        break;
-
-      case "tool_execution_end": {
-        const { byToolCallId } = this.getEntriesWithLookups();
-        const tcEntry = byToolCallId.get(event.toolCallId);
-        const tcEntryId = tcEntry?.id ?? event.toolCallId;
-
-        if (event.toolName === "bash" || event.toolName === "exec") {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const text = event.result?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-          this.emit({ type: "bash-end", data: { toolCallId: event.toolCallId, command: event.args?.command ?? "", exitCode: event.isError ? 1 : 0, cancelled: false, output: text ?? "", isError: event.isError, entryId: tcEntryId } });
-        } else {
-          this.emit({ type: "tool-end", data: { toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: event.isError, entryId: tcEntryId } });
-        }
-        break;
-      }
-
-      case "session_info_changed":
-        this.reportStatus();
-        break;
-
-      case "thinking_level_changed":
-        this._thinkingLevel = event.level;
-        this.emit({ type: "thinking-level-changed", data: { level: event.level } });
-        this.reportStatus();
-        break;
-
-      case "queue_update":
-        piLog(`queue_update: steering=${event.steering?.length ?? 0}, followUp=${event.followUp?.length ?? 0}`);
-        this.emit({ type: "queue-update", data: { steering: Array.from(event.steering ?? []), followUp: Array.from(event.followUp ?? []) } });
-        break;
-
-      case "compaction_start":
-        this.emit({ type: "compaction-start", data: { reason: event.reason } });
-        break;
-
-      case "compaction_end":
-        this.emit({ type: "compaction-end", data: { reason: event.reason, aborted: event.aborted, willRetry: event.willRetry, result: event.result, errorMessage: event.errorMessage } });
-        if (event.result) {
-          const { entries } = this.getEntriesWithLookups();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const compactEntry = reverseFind(entries, (e: any) => e.type === "compaction");
-          // Under Rust, getEntriesWithLookups() is empty (no sessionManager), so
-          // compactEntry is undefined and entryId would be undefined — leaving the
-          // summary message unaddressable. Fall back to a synthetic id. (Scoped to
-          // compaction_end only; message/tool entryIds already align via id-space.)
-          const compactionEntryId = compactEntry?.id ?? `compaction-${Date.now()}`;
-          this.emit({ type: "compaction-summary-message", data: { summary: event.result.summary, tokensBefore: event.result.tokensBefore, timestamp: Date.now(), entryId: compactionEntryId } });
-        }
-        break;
-
-      case "auto_retry_start":
-        this.emit({ type: "auto-retry-start", data: { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage } });
-        break;
-
-      case "auto_retry_end":
-        this.emit({ type: "auto-retry-end", data: { success: event.success, attempt: event.attempt, finalError: event.finalError } });
-        break;
-
-      default:
-        // Surface unknown events so they aren't silently lost. An unhandled type
-        // usually means upstream protocol drift (a renamed/new Rust or SDK event),
-        // so log it loudly to the output channel — once per type, since a renamed
-        // streaming event (e.g. message_update) would otherwise flood. The
-        // diagnostic emit keeps the in-webview signal. Add a case above once handled.
-        if (event?.type && !this._warnedUnknownEvents.has(event.type)) {
-          this._warnedUnknownEvents.add(event.type);
-          piWarn(`Unhandled agent event "${event.type}" — possible upstream protocol drift (logged once).`);
-        }
-        this.emit({
-          type: "custom-message",
-          data: {
-            customType: "pi-gui-diagnostic",
-            display: false,
-            content: `Unhandled agent event: ${event.type}`,
-            timestamp: Date.now(),
-          },
-        });
-        break;
+    if (r.effects.reportStatus) { this.reportStatus(); }
+    if (r.effects.unknownType && !this._warnedUnknownEvents.has(r.effects.unknownType)) {
+      this._warnedUnknownEvents.add(r.effects.unknownType);
+      piWarn(`Unhandled agent event "${r.effects.unknownType}" — possible upstream protocol drift (logged once).`);
     }
+  }
+
+  /**
+   * Apply a tool's prepareArguments hook so the webview receives
+   * validated/transformed args (e.g. the edit tool's legacy oldText/newText →
+   * edits[]). The SDK runs prepareArguments internally but only AFTER emitting
+   * tool_execution_start, so raw LLM args would otherwise leak through. Returns
+   * args unchanged when there is no matching tool def (e.g. under Rust).
+   */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _prepareToolArgs(toolName: string, args: any): any {
+    try {
+      const tools = this.session?.agent?.state?.tools;
+      if (tools) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const toolDef = (tools as any[]).find((t: any) => t.name === toolName);
+        if (toolDef?.prepareArguments) { return toolDef.prepareArguments(args); }
+      }
+    } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
+    return args;
   }
 
   private reportStatus(): void {

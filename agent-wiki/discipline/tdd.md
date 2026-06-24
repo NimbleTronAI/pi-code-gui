@@ -26,9 +26,10 @@ The project runs two tiers of tests:
 - **Headless unit tests (primary, default).** `pnpm run test:unit` →
   `compile-tests` (tsc → `out/`) then `node --test out/test/unit/*.test.js`.
   These use the Node built-in test runner (`node:test`), need no VS Code or DOM,
-  and run in seconds. As of 2026-06, there are **82 tests across 6 files** in
+  and run in seconds. As of 2026-06, there are **123 tests across 7 files** in
   `src/test/unit/` (rust-events, rust-ingress, rust-process, rust-catalog,
-  session-format, rust-deps). This is the suite to run before presenting work.
+  session-format, rust-deps, agent-events). This is the suite to run before
+  presenting work.
 - **Integration tests.** `pnpm test` → `@vscode/test-cli` +
   `@vscode/test-electron` launches the Extension Development Host against real
   VS Code APIs (`out/test/**/*.test.js`, config in `.vscode-test.mjs`).
