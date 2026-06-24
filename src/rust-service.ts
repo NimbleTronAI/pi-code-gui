@@ -72,7 +72,7 @@ export interface RustHost {
   setAgentRunActive(v: boolean): void;
   setStreaming(v: boolean): void;
   getModel(): { id?: string; name?: string; provider?: string } | null;
-  setModel(m: { id?: string; name?: string; provider?: string }): void;
+  setModel(m: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean }): void;
   setThinkingLevel(level: string): void;
   setSessionId(id: string): void;
   getCycleModels(): CycleModel[];
@@ -554,9 +554,12 @@ export class RustService {
   applyState(data: unknown): void {
     if (!data || typeof data !== "object") { return; }
     const d = data as Record<string, unknown>;
-    const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string; contextWindow?: number } | undefined;
+    const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string; contextWindow?: number; api?: string; reasoning?: boolean } | undefined;
     if (model && typeof model === "object") {
-      this.host.setModel({ id: model.id, name: model.name, provider: model.provider });
+      // Carry `api` (the provider transport) and `reasoning` through: the GUI uses
+      // them to tell whether the thinking level is actually transmitted on this
+      // transport (only some serialize it) vs a display-only no-op.
+      this.host.setModel({ id: model.id, name: model.name, provider: model.provider, api: model.api, reasoning: model.reasoning });
       if (typeof model.contextWindow === "number") {
         // Clamp the displayed context window to the user's context budget so the
         // context-% readout honours the budget for EVERY Rust model — including

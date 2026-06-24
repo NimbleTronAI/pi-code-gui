@@ -760,6 +760,12 @@
         flex: 1; cursor: default; pointer-events: none;
         &:hover { background: none; }
       }
+
+      /* Read-only reasoning badge (thinking level is a no-op on this transport). */
+      &.sb-readonly {
+        cursor: default;
+        &:hover { background: none; }
+      }
     }
   }
 

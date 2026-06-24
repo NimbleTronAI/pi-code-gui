@@ -176,6 +176,11 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
         effort: z.string().optional(),
+        // Whether the active transport actually transmits the thinking level
+        // (false → webview shows a read-only "reasoning: on/off" badge instead of
+        // a graded "thinking: <level>"). `reasoning` is the model's fixed flag.
+        thinkingLive: z.boolean().optional(),
+        reasoning: z.boolean().optional(),
         usage: z
           .object({
             input: z.number(),
@@ -199,6 +204,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
         effort: z.string().optional(),
+        thinkingLive: z.boolean().optional(),
+        reasoning: z.boolean().optional(),
         ready: z.boolean().optional(),
         runtime: z.enum(["typescript", "rust"]).optional(),
       })

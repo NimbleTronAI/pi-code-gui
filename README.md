@@ -73,6 +73,8 @@ The catalog stays current on its own. Dependabot tracks `@earendil-works/pi-ai`,
 
 > **Context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps each catalog model's effective `contextWindow` to your budget in `models.json`, so the Rust runtime's auto-compaction (and manual `/compact`) trigger at the budget rather than only near the model's full window — matching the TypeScript runtime.
 
+> **Thinking level vs. reasoning (by provider):** a model's *thinking level* (off → xhigh) only changes generation on transports that send it — Anthropic (`anthropic-messages`), the OpenAI Responses API (`openai-responses`), and Google. On OpenAI-compatible chat APIs (`openai-completions`, including **DeepSeek**) the level isn't transmitted; the model self-allocates its reasoning, so under Rust the status bar shows a read-only **reasoning: on/off** badge instead of an adjustable level rather than letting you set one that does nothing.
+
 Nothing fails silently: an unwritable agent directory surfaces as a clear error in the chat (and a notification for fatal cases).
 
 ## Features

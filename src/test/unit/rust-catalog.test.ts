@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens } from "../../rust-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive } from "../../rust-catalog.js";
 
 test("a real limit below the context window is kept verbatim", () => {
   assert.equal(resolveMaxOutputTokens(8192, 200000), 8192);
@@ -54,4 +54,23 @@ test("a kept value is always a positive integer", () => {
     const out = resolveMaxOutputTokens(mt, cw);
     assert.ok(out !== undefined && Number.isInteger(out) && out >= 1, `expected positive int, got ${out} for (${mt}, ${cw})`);
   }
+});
+
+// ── thinkingLevelIsLive (which transports actually transmit the thinking level) ──
+test("thinkingLevelIsLive: true for transports that serialize a reasoning field", () => {
+  assert.equal(thinkingLevelIsLive("anthropic-messages"), true);
+  assert.equal(thinkingLevelIsLive("openai-responses"), true);
+  assert.equal(thinkingLevelIsLive("google-generative-ai"), true);
+});
+
+test("thinkingLevelIsLive: false for openai-completions (DeepSeek et al.) — level is a no-op there", () => {
+  assert.equal(thinkingLevelIsLive("openai-completions"), false);
+});
+
+test("thinkingLevelIsLive: fails safe to false for unknown/unverified and empty transports", () => {
+  assert.equal(thinkingLevelIsLive("mistral-conversations"), false);
+  assert.equal(thinkingLevelIsLive("totally-new-api"), false);
+  assert.equal(thinkingLevelIsLive(""), false);
+  assert.equal(thinkingLevelIsLive(undefined), false);
+  assert.equal(thinkingLevelIsLive(null), false);
 });

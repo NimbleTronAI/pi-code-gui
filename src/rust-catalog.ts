@@ -31,3 +31,34 @@ export function resolveMaxOutputTokens(maxTokens: number, contextWindow: number)
   if (cw > 0 && mt >= cw) { return undefined; }
   return mt;
 }
+
+/**
+ * Provider transports whose request body actually carries a thinking/reasoning
+ * control, so the chosen thinking *level* has a real effect on generation.
+ *
+ * Verified against rust-pi 0.1.20's provider layer: the `openai-completions`
+ * transport (DeepSeek, chat-completions OpenAI, Groq, OpenRouter, …) serializes
+ * NO reasoning field at all — its request body is only model/messages/max_tokens/
+ * temperature/tools/stream — so a thinking level set on those models is stored and
+ * displayed but never transmitted (a silent no-op; the model self-allocates its
+ * own reasoning, which rust-pi merely parses back from `reasoning_content`). Only
+ * the transports below emit a thinking/effort/budget field on the wire:
+ *  - `anthropic-messages`     → `thinking: {budget_tokens}` (level → token budget)
+ *  - `openai-responses`       → `reasoning_effort` (level → effort category)
+ *  - `google-generative-ai`   → thinking config
+ * `mistral-conversations` and anything unknown are treated as NOT live until
+ * confirmed, which fails safe (we under-claim control rather than overstate it).
+ */
+const THINKING_LIVE_TRANSPORTS: ReadonlySet<string> = new Set([
+  "anthropic-messages",
+  "openai-responses",
+  "google-generative-ai",
+]);
+
+/** True when the model's transport (`api`) actually transmits the thinking level,
+ *  so a graded picker is meaningful. False for `openai-completions` (DeepSeek et al.)
+ *  and unknown transports, where the level is a no-op and only reasoning on/off
+ *  (a property of the model, not an adjustable knob) is real. */
+export function thinkingLevelIsLive(api: string | null | undefined): boolean {
+  return typeof api === "string" && THINKING_LIVE_TRANSPORTS.has(api);
+}

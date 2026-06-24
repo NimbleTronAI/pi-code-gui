@@ -8,6 +8,7 @@ import { RUST_RPC, type RustResponse } from "./rust-process.js";
 import { extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
+import { thinkingLevelIsLive } from "./rust-catalog.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls } from "./agent-events.js";
 
@@ -291,7 +292,7 @@ export class PiService {
   private session: any = null;
   private unsubscribe: (() => void) | null = null;
   private listeners: EventListener[] = [];
-  private _model: { id?: string; name?: string; provider?: string } | null = null;
+  private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
   private _thinkingLevel = "off";
   private _effort = "auto";
   private _isStreaming = false;
@@ -1389,6 +1390,11 @@ export class PiService {
         model: this._model?.id ?? this._model?.name ?? "pi",
         thinkingLevel: this._thinkingLevel,
         effort: this._effort,
+        // Whether the active transport actually transmits the thinking level. Under
+        // Rust this depends on the provider api (openai-completions = no-op); the TS
+        // SDK handles thinking per-provider in-process, so keep it "live" there.
+        thinkingLive: this._backendKind === "rust" ? thinkingLevelIsLive(this._model?.api) : true,
+        reasoning: this._model?.reasoning,
         isStreaming: this._isStreaming,
         sessionId: this.sessionId ?? undefined,
         usage: stats,
@@ -1808,6 +1814,15 @@ export class PiService {
 
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
+      // Some provider transports (e.g. openai-completions — DeepSeek et al.) never
+      // serialize the thinking level on the wire, so changing it would be a silent
+      // no-op the binary still reports as success. Don't pretend: reasoning is a
+      // fixed on/off property of the model there, not an adjustable depth.
+      if (!thinkingLevelIsLive(this._model?.api)) {
+        const on = this._model?.reasoning ?? false;
+        vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
+        return;
+      }
       const resp = await this.rustRequestOrError(RUST_RPC.setThinkingLevel, { level }, "Could not set thinking level");
       if (!resp) { return; }
       // The binary clamps the level to the model's capability (a non-reasoning
@@ -2002,6 +2017,13 @@ export class PiService {
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
   async pickThinkingLevel(): Promise<boolean> {
+    // Under Rust on a transport that doesn't transmit the level, a graded picker
+    // would be a no-op — surface the honest reasoning on/off state instead.
+    if (this._backendKind === "rust" && !thinkingLevelIsLive(this._model?.api)) {
+      const on = this._model?.reasoning ?? false;
+      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
+      return false;
+    }
     const levels = [
       { label: "off", description: "No thinking" },
       { label: "minimal", description: "Minimal thinking" },

@@ -634,6 +634,24 @@ export function setSbDot(state: string) {
     sbDot.textContent = state === "streaming" ? "\u25CF" : "\u25CB";
   }
 
+// Render the thinking indicator. On transports that actually transmit the level
+// (thinkingLive !== false) it's the graded, clickable "thinking: <level>". When
+// the level is a no-op on the active transport (thinkingLive === false, e.g.
+// openai-completions / DeepSeek under Rust) it becomes a read-only "reasoning:
+// on/off" badge \u2014 the only real axis there. Undefined thinkingLive (e.g. the
+// init "status" event) keeps the graded form; status-update corrects it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderThinkingBadge(data: any) {
+    if (!sbThinking) {return;}
+    if (data.thinkingLive === false) {
+      sbThinking.textContent = "reasoning: " + (data.reasoning ? "on" : "off");
+      sbThinking.classList.add("sb-readonly");
+    } else {
+      sbThinking.textContent = "thinking: " + (data.thinkingLevel || "off");
+      sbThinking.classList.remove("sb-readonly");
+    }
+  }
+
 export function sbModelText(modelId: string) {
     var short = modelId || "Pi";
     // Shorten known prefixes for compact display
@@ -651,9 +669,7 @@ export function handleStatusUpdate(data: any) {
     if (sbModel && data.model) {
       sbModel.textContent = sbModelText(data.model);
     }
-    if (sbThinking) {
-      sbThinking.textContent = "thinking: " + (data.thinkingLevel || "off");
-    }
+    renderThinkingBadge(data);
     if (sbEffort) {
       sbEffort.textContent = "effort: " + (data.effort || "auto");
     }
@@ -679,9 +695,7 @@ export function handleStatus(data: any) {
       if (sbModel && data.model) {
         sbModel.textContent = sbModelText(data.model);
       }
-      if (sbThinking) {
-        sbThinking.textContent = "thinking: " + (data.thinkingLevel || "off");
-      }
+      renderThinkingBadge(data);
       if (sbEffort) {
         sbEffort.textContent = "effort: " + (data.effort || "auto");
       }
@@ -1336,6 +1350,8 @@ export function sendPrompt(): void {
   }
   if (sbThinking) {
     sbThinking.addEventListener("click", function () {
+      // Read-only reasoning badge (no-op transport): not clickable.
+      if (sbThinking && sbThinking.classList.contains("sb-readonly")) {return;}
       window.__vscode.postMessage({ type: "pickThinkingLevel" });
     });
   }
