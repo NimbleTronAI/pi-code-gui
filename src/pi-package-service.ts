@@ -4,6 +4,7 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 import type { Runtime } from "./types.js";
 import { detectRustBinary } from "./rust-resolver.js";
 import { rustListInstalled, rustInstall, rustRemove, rustUpdate, rustActiveSources, rustInfo, rustLoadability, type RustPackageInfo, type RustLoadability } from "./rust-packages.js";
+import { isPiMarketplacePackage } from "./pi-package-filter.js";
 
 export type { RustPackageInfo, RustLoadability } from "./rust-packages.js";
 
@@ -90,6 +91,12 @@ export class PiPackageService {
   private lastSearchTime = 0;
   private lastSearchPromise: Promise<MarketplacePackage[]> | null = null;
   private defaultResults: MarketplacePackage[] | null = null;
+
+  // enrichInstalledPackages: name-keyed TTL cache so repeated tree refreshes
+  // don't re-hit the npm registry N times (429-burst guard). null = looked up,
+  // no match (negative-cached too, so a missing package isn't re-fetched every refresh).
+  private enrichCache = new Map<string, { value: MarketplacePackage | null; ts: number }>();
+  private static readonly ENRICH_TTL_MS = 5 * 60 * 1000;
 
   /**
    * Initialize the package manager. Prefers the TypeScript SDK's
@@ -331,15 +338,7 @@ export class PiPackageService {
           const keywords: string[] = pkgObj.keywords ?? [];
           const publisher = (pkgObj.publisher?.username ?? "").toLowerCase();
 
-          const isPiPkg =
-            name.startsWith("pi-") ||
-            name.includes("-pi-") ||
-            keywords.some((k: string) => k.toLowerCase().includes("pi")) ||
-            desc.includes("pi coding agent") ||
-            desc.includes("pi agent") ||
-            desc.includes("pi extension");
-
-          if (!isPiPkg) { return false; }
+          if (!isPiMarketplacePackage(pkgObj)) { return false; }
 
           if (qLower) {
             return (
@@ -426,22 +425,36 @@ export class PiPackageService {
     const npmPackages = packages.filter((p) => p.source.startsWith("npm:"));
     if (npmPackages.length === 0) { return enriched; }
 
+    // Serve fresh cache entries; only the misses hit the network (429-burst guard).
+    const now = Date.now();
+    const ttl = PiPackageService.ENRICH_TTL_MS;
+    const toFetch: Array<{ source: string; name: string }> = [];
+    for (const pkg of npmPackages) {
+      const name = pkg.source.slice(4); // remove "npm:"
+      const cached = this.enrichCache.get(name);
+      if (cached && now - cached.ts < ttl) {
+        if (cached.value) { enriched.set(pkg.source, cached.value); }
+        continue;
+      }
+      toFetch.push({ source: pkg.source, name });
+    }
+    if (toFetch.length === 0) { return enriched; }
+
     try {
-      // Batch lookup: fetch each npm package's metadata
       const results = await Promise.allSettled(
-        npmPackages.map(async (pkg) => {
-          const name = pkg.source.slice(4); // remove "npm:"
+        toFetch.map(async ({ name }) => {
           const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(name)}&size=1`;
           const response = await fetch(url, {
             headers: { "Accept": "application/json" },
             signal: AbortSignal.timeout(5000),
           });
           if (!response.ok) { return null; }
- 
+
           const data = (await response.json());
-          const obj = data?.objects?.[0];
-          if (!obj) { return null; }
-          const p = obj.package;
+          const p = data?.objects?.[0]?.package;
+          // Name-equality guard: the search API ranks by relevance, so objects[0]
+          // can be a DIFFERENT package — never attach another package's metadata.
+          if (!p || p.name !== name) { return null; }
           return {
             name: p.name,
             version: p.version,
@@ -450,7 +463,7 @@ export class PiPackageService {
             npmPackage: p.name,
             date: p.date ?? "",
             keywords: p.keywords ?? [],
-            downloads: obj.downloads?.weekly ?? 0,
+            downloads: data?.objects?.[0]?.downloads?.weekly ?? 0,
             homepage: p.links?.homepage ?? p.links?.npm ?? "",
             repository: p.links?.repository ? normalizeRepoUrl(p.links.repository) : "",
             license: p.license ?? "",
@@ -460,9 +473,11 @@ export class PiPackageService {
 
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
-        if (result.status === "fulfilled" && result.value) {
-          enriched.set(npmPackages[i].source, result.value);
-        }
+        const value = result.status === "fulfilled" ? result.value : null;
+        // Cache hits AND misses (negative cache) so a package without a
+        // marketplace match isn't re-fetched on every refresh.
+        this.enrichCache.set(toFetch[i].name, { value, ts: now });
+        if (value) { enriched.set(toFetch[i].source, value); }
       }
     } catch { /* ignore */ }
 

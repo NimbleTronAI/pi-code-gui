@@ -12,6 +12,16 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { detectRustBinary, shouldDisableRustExtensions } from "./rust-resolver.js";
 import { piLog, piWarn } from "./logger.js";
+import { parseDoctorVerdict } from "./rust-doctor.js";
+
+// TTL cache for `rust-pi doctor` verdicts, keyed by installedPath. Without it,
+// every Packages-view refresh spawned one doctor subprocess PER installed
+// package, in parallel and uncached. A package's loadability only changes on
+// (re)install/update/remove — which clear the cache — so the TTL just bounds
+// staleness from out-of-band edits.
+const DOCTOR_CACHE_TTL_MS = 60_000;
+const doctorCache = new Map<string, { result: boolean; ts: number }>();
+function clearDoctorCache(): void { doctorCache.clear(); }
 
 const execFileAsync = promisify(execFile);
 
@@ -102,7 +112,7 @@ export async function rustInstall(source: string, local: boolean): Promise<{ suc
   const args = ["install", source];
   if (local) { args.push("--local"); }
   const { code, stdout, stderr } = await runRust(args, 180000);
-  if (code === 0) { return { success: true }; }
+  if (code === 0) { clearDoctorCache(); return { success: true }; }
   return { success: false, error: (stderr || stdout || `rust-pi install exited ${code}`).trim().slice(0, 500) };
 }
 
@@ -111,7 +121,7 @@ export async function rustRemove(source: string, local: boolean): Promise<{ succ
   const args = ["remove", source];
   if (local) { args.push("--local"); }
   const { code, stdout, stderr } = await runRust(args, 60000);
-  if (code === 0) { return { success: true }; }
+  if (code === 0) { clearDoctorCache(); return { success: true }; }
   return { success: false, error: (stderr || stdout || `rust-pi remove exited ${code}`).trim().slice(0, 500) };
 }
 
@@ -119,7 +129,7 @@ export async function rustRemove(source: string, local: boolean): Promise<{ succ
 export async function rustUpdate(source?: string): Promise<{ success: boolean; error?: string }> {
   const args = source ? ["update", source] : ["update"];
   const { code, stdout, stderr } = await runRust(args, 180000);
-  if (code === 0) { return { success: true }; }
+  if (code === 0) { clearDoctorCache(); return { success: true }; }
   return { success: false, error: (stderr || stdout || `rust-pi update exited ${code}`).trim().slice(0, 500) };
 }
 
@@ -129,12 +139,12 @@ export async function rustUpdate(source?: string): Promise<{ success: boolean; e
  * (the TypeScript-format manifests behind our interop fix). Warnings still load.
  */
 async function rustDoctorCompatible(installedPath: string): Promise<boolean> {
+  const cached = doctorCache.get(installedPath);
+  if (cached && Date.now() - cached.ts < DOCTOR_CACHE_TTL_MS) { return cached.result; }
   const { code, stdout } = await runRust(["doctor", installedPath], 20000);
-  if (/\[FAIL\]/.test(stdout)) { return false; }
-  if (/incompatible/i.test(stdout)) { return false; }
-  if (/compatible/i.test(stdout)) { return true; }
-  // No explicit verdict (e.g. doctor errored): trust the exit code.
-  return code === 0;
+  const result = parseDoctorVerdict(stdout, code);
+  doctorCache.set(installedPath, { result, ts: Date.now() });
+  return result;
 }
 
 /** Parse the `Safety:` / `Signals:` / `License:` rows out of `rust-pi info`. */
