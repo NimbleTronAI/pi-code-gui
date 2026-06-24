@@ -4,8 +4,9 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { isRustSessionHeader } from "../../session-format.js";
+import { join, relative } from "node:path";
+import { mkdirSync } from "node:fs";
+import { isRustSessionHeader, collectJsonlFiles, summarizeSessionFile } from "../../session-format.js";
 
 // Real headers (see ~/.pi/agent/sessions-rust vs ~/.pi/agent/sessions).
 const RUST_HEADER = '{"type":"session","version":3,"id":"6f051218","timestamp":"2026-06-06T15:04:01.670Z","cwd":"/home/node","provider":"deepseek","modelId":"deepseek-v4-pro","thinkingLevel":"off"}';
@@ -52,4 +53,72 @@ test("missing file returns false (no throw)", () => {
 
 test("header with provider but no modelId is not enough", () => {
   assert.equal(isRustSessionHeader(write("partial.jsonl", '{"type":"session","provider":"deepseek"}\n')), false);
+});
+
+// ── collectJsonlFiles ────────────────────────────────────────────────
+test("collectJsonlFiles: finds .jsonl files and recurses up to maxDepth", () => {
+  const root = mkdtempSync(join(tmpdir(), "collect-"));
+  writeFileSync(join(root, "a.jsonl"), "");
+  writeFileSync(join(root, "skip.txt"), "");
+  mkdirSync(join(root, "sub"));
+  writeFileSync(join(root, "sub", "b.jsonl"), "");
+  mkdirSync(join(root, "sub", "deep"));
+  writeFileSync(join(root, "sub", "deep", "c.jsonl"), "");
+
+  // depth 1: root's a.jsonl + sub/b.jsonl, but NOT sub/deep/c.jsonl
+  const depth1 = collectJsonlFiles(root, 1).map((p) => relative(root, p)).sort();
+  assert.deepEqual(depth1, ["a.jsonl", join("sub", "b.jsonl")].sort());
+
+  const depth2 = collectJsonlFiles(root, 2);
+  assert.equal(depth2.length, 3); // now includes sub/deep/c.jsonl
+  assert.ok(depth2.every((p) => p.endsWith(".jsonl")));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("collectJsonlFiles: missing directory returns [] (no throw)", () => {
+  assert.deepEqual(collectJsonlFiles(join(dir, "nope"), 2), []);
+});
+
+// ── summarizeSessionFile ─────────────────────────────────────────────
+test("summarizeSessionFile: extracts name, cwd, counts, and first user message", () => {
+  const content = [
+    '{"type":"session","timestamp":"2026-06-06T15:04:01.670Z","name":"My Session","cwd":"/work/proj"}',
+    '{"type":"message","message":{"role":"user","content":"first question"}}',
+    '{"type":"message","message":{"role":"assistant","content":"answer"}}',
+    '{"type":"message","message":{"role":"user","content":"second"}}',
+  ].join("\n") + "\n";
+  const r = summarizeSessionFile(write("summary.jsonl", content));
+  assert.ok(r);
+  assert.equal(r.cwd, "/work/proj");
+  assert.equal(r.summary.name, "My Session");
+  assert.equal(r.summary.messageCount, 3);
+  assert.equal(r.summary.firstMessage, "first question");
+  assert.equal(r.summary.runtime, "rust");
+  assert.equal(r.summary.created, Date.parse("2026-06-06T15:04:01.670Z"));
+});
+
+test("summarizeSessionFile: reads the first user message from a content-block array", () => {
+  const content = [
+    '{"type":"session","timestamp":"2026-06-06T15:04:01.670Z"}',
+    '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"block text"}]}}',
+  ].join("\n") + "\n";
+  const r = summarizeSessionFile(write("blocks.jsonl", content));
+  assert.equal(r!.summary.firstMessage, "block text");
+});
+
+test("summarizeSessionFile: session_info name overrides; skips malformed lines", () => {
+  const content = [
+    '{"type":"session","timestamp":"2026-06-06T15:04:01.670Z"}',
+    "not json — skipped",
+    '{"type":"session_info","name":"Renamed"}',
+    '{"type":"message","message":{"role":"user","content":"q"}}',
+  ].join("\n") + "\n";
+  const r = summarizeSessionFile(write("info.jsonl", content));
+  assert.equal(r!.summary.name, "Renamed");
+  assert.equal(r!.summary.messageCount, 1);
+});
+
+test("summarizeSessionFile: empty file → null; missing file → null (no throw)", () => {
+  assert.equal(summarizeSessionFile(write("blank.jsonl", "   \n")), null);
+  assert.equal(summarizeSessionFile(join(dir, "ghost.jsonl")), null);
 });

@@ -12,12 +12,11 @@
 // Rust storage directory directly, tolerant of any per-file parse error, and
 // filter by each session header's recorded `cwd`.
 
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSummary } from "./types.js";
-import { piWarn } from "./logger.js";
+import { collectJsonlFiles, summarizeSessionFile } from "./session-format.js";
 
 /** The Rust agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent). */
 function rustAgentDir(): string {
@@ -50,87 +49,6 @@ export function isRustSessionPath(p: string): boolean {
     return path.resolve(p).startsWith(base);
   } catch {
     return false;
-  }
-}
-
-/** Recursively collect *.jsonl files under `dir` up to `maxDepth` levels. */
-function collectJsonlFiles(dir: string, maxDepth: number): string[] {
-  const out: string[] = [];
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    const full = path.join(dir, e.name);
-    if (e.isFile() && e.name.endsWith(".jsonl")) {
-      out.push(full);
-    } else if (e.isDirectory() && maxDepth > 0) {
-      out.push(...collectJsonlFiles(full, maxDepth - 1));
-    }
-  }
-  return out;
-}
-
-/** Read one JSONL session file into a SessionSummary (best-effort). Returns the
- *  recorded cwd alongside so callers can filter by workspace. */
-function summarizeSessionFile(filePath: string): { summary: SessionSummary; cwd?: string } | null {
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    const lines = raw.split("\n").filter((l) => l.trim());
-    if (lines.length === 0) { return null; }
-
-    let name: string | undefined;
-    let firstMessage: string | undefined;
-    let messageCount = 0;
-    let created: number | undefined;
-    let cwd: string | undefined;
-
-    for (const line of lines) {
-      let entry: Record<string, unknown>;
-      try { entry = JSON.parse(line); } catch { continue; }
-      const type = entry.type as string | undefined;
-      if (type === "session") {
-        const ts = entry.timestamp;
-        if (typeof ts === "string") { created = Date.parse(ts); }
-        else if (typeof ts === "number") { created = ts; }
-        if (typeof entry.name === "string") { name = entry.name; }
-        if (typeof entry.cwd === "string") { cwd = entry.cwd; }
-      } else if (type === "session_info" && typeof entry.name === "string") {
-        name = entry.name;
-      } else if (type === "message") {
-        messageCount++;
-        const msg = entry.message as Record<string, unknown> | undefined;
-        if (!firstMessage && msg?.role === "user") {
-          const content = msg.content;
-          if (typeof content === "string") { firstMessage = content; }
-          else if (Array.isArray(content)) {
-            const textBlock = content.find((c: { type?: string }) => c?.type === "text") as { text?: string } | undefined;
-            if (textBlock?.text) { firstMessage = textBlock.text; }
-          }
-        }
-      }
-    }
-
-    let modified: number | undefined;
-    try { modified = fs.statSync(filePath).mtimeMs; } catch { /* ignore */ }
-
-    return {
-      summary: {
-        name,
-        path: filePath,
-        firstMessage: firstMessage?.slice(0, 200),
-        messageCount,
-        created,
-        modified,
-        runtime: "rust",
-      },
-      cwd,
-    };
-  } catch (e: unknown) {
-    piWarn(`summarizeSessionFile(${filePath}) failed: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
   }
 }
 
