@@ -16,14 +16,18 @@ function safeRegister(context: vscode.ExtensionContext, command: string, callbac
 
 export function registerPhase3Commands(
   context: vscode.ExtensionContext,
-  piService: PiService,
+  // Resolve the live target PiService on each invocation. These commands are
+  // registered once per host lifetime; binding to the first session's service
+  // would leave them pointing at a disposed session after a tab change/close.
+  resolve: () => PiService | undefined,
 ): void {
   // NOTE: pickModel / exportSession are registered directly in extension.ts
   // (active-session aware). They are intentionally NOT registered here — doing so
   // duplicated those ids and only produced "already registered" log noise.
 
   safeRegister(context, "pi-code-gui.cycleModel", async () => {
-    if (!piService.initialized) {
+    const piService = resolve();
+    if (!piService?.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
     }
@@ -36,7 +40,8 @@ export function registerPhase3Commands(
   });
 
   safeRegister(context, "pi-code-gui.pickThinkingLevel", async () => {
-    if (!piService.initialized) {
+    const piService = resolve();
+    if (!piService?.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
     }
@@ -44,7 +49,8 @@ export function registerPhase3Commands(
   });
 
   safeRegister(context, "pi-code-gui.cycleThinkingLevel", async () => {
-    if (!piService.initialized) {
+    const piService = resolve();
+    if (!piService?.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
     }

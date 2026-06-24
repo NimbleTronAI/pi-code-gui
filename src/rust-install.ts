@@ -156,15 +156,18 @@ async function ensureRustToolDeps(): Promise<void> {
   }
 }
 
-function curlInstallRust(): Promise<boolean> {
+async function curlInstallRust(): Promise<boolean> {
   const term = vscode.window.createTerminal("Rust Pi Install");
   term.show();
   term.sendText(`curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" | bash`);
   term.sendText('echo "Rust Pi installer finished. Reload VS Code to use it."');
+  // rust-pi's find/grep tools also need fd/rg, which it doesn't install. Offer
+  // them now (independent of the curl install running in the terminal above).
+  await ensureRustToolDeps();
   void vscode.window
     .showInformationMessage("Installing Rust Pi… Reload VS Code after the terminal finishes.", "Reload Now")
     .then((a) => { if (a === "Reload Now") { void vscode.commands.executeCommand("workbench.action.reloadWindow"); } });
-  return Promise.resolve(true);
+  return true;
 }
 
 async function manualInstallRust(): Promise<boolean> {
@@ -178,6 +181,9 @@ async function detectAndRefresh(): Promise<boolean> {
   if (status.installed) {
     await refreshRuntimeContext(true);
     vscode.window.showInformationMessage(`Rust Pi ${status.version ?? ""} detected.`);
+    // Covers both the detect path and the manual path (which routes here): make
+    // sure rust-pi's find/grep deps (fd, rg) are present, same as managed install.
+    await ensureRustToolDeps();
     return true;
   }
   vscode.window.showWarningMessage("No Rust Pi binary found. Set `pi-code-gui.rustBinaryPath` or install it.");

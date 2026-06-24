@@ -1599,8 +1599,11 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   // primary-session init just threw "already registered" and logged noise).
   if (!phaseCommandsRegistered && sw === primarySession()) {
     phaseCommandsRegistered = true;
-    registerPhase3Commands(context, sw.piService);
-    registerPhase4Commands(context, sw.piService);
+    // Resolve the live target each invocation — binding to sw.piService would
+    // point these global commands at the first session even after it's disposed.
+    const resolvePiService = (): PiService | undefined => (activeSessionWindow ?? primarySession())?.piService;
+    registerPhase3Commands(context, resolvePiService);
+    registerPhase4Commands(context, resolvePiService);
   }
 
   // Ensure tree provider is registered (safe to call multiple times)
