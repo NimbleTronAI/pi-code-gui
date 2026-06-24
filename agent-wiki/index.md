@@ -19,7 +19,7 @@ reference; follow the links for depth.
 - [Runtime Selection](architecture/runtime-selection.md) — TypeScript vs Rust runtimes, `backendKind` branching, RPC, install/detection
 - [Runtime Switching UX](architecture/runtime-switching-ux.md) — per-session runtime pickers, switch command, indicators, install dialogs
 - [Webview Panel](architecture/webview-panel.md) — Webview creation, bidirectional messaging, tab indicators
-- [Bridge Tools](architecture/bridge-tools.md) — 17 VS Code API tools for the AI agent
+- [Bridge Tools](architecture/bridge-tools.md) — 16 VS Code API tools for the AI agent
 - [Event Translation](architecture/event-translation.md) — SDK agent events → PiServiceEvent types
 - [Extension UI Bridge](architecture/extension-ui-bridge.md) — TUI widgets → webview via Proxy
 - [Syntax Highlighting](architecture/syntax-highlighting.md) — highlight.js integration replacing hand-rolled regex
@@ -28,10 +28,7 @@ reference; follow the links for depth.
 - [Custom Message Renderer](architecture/custom-message-renderer.md) — Inline interactive cards, renderer registry, action buttons
 - [Webview Frontend](architecture/webview-frontend.md) — Chat UI, streaming, TypeScript modules, typed protocol
 - [Tree Views](architecture/tree-views.md) — Sessions and Packages sidebar trees
-
-## Roadmap
-
-- [Component System Proposal](architecture/component-system-proposal.md) — 3-layer architectural upgrade: typed protocol, safe HTML builder, micro-component system
+- [Component System Proposal](architecture/component-system-proposal.md) — 3-layer architecture (typed protocol, safe HTML builder, micro-component system) — all 7 steps shipped; kept as the design record
 
 ## Operations
 

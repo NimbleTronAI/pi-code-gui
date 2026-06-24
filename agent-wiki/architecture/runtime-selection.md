@@ -1,7 +1,8 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-06-21 — added "Design decisions & trade-offs" (ADR notes); verified live against rust-pi 0.1.18 (no `queue_update`; tool-skip-on-queued-message; duplicate `agent_end`)
+> **Last updated:** 2026-06-24 — corrected event-routing path to `RustService.handleEvent` → `normalizeRustEvent`/`routeRustEvent` → `RustHost.handleAgentEvent`; added `src/rust-service.ts` + `src/rust-events.ts` to the file inventory
+> **Earlier:** 2026-06-21 — added "Design decisions & trade-offs" (ADR notes); verified live against rust-pi 0.1.18 (no `queue_update`; tool-skip-on-queued-message; duplicate `agent_end`)
 > **Verified:** the RPC integration was driven against a locally-built
 > `pi_agent_rust` v0.1.18 — `get_state` / `get_available_models` / `get_messages`
 > response shapes confirmed, and a real streaming turn (DeepSeek) round-tripped
@@ -36,14 +37,29 @@ under Rust).
 
 - `initialize({runtime})` → `initializeRust()` for Rust, else the existing
   TS path. `get runtime()` exposes `_backendKind`.
-- Rust events are routed through `handleRustEvent()`, which intercepts
-  `extension_ui_request` / `extension_error` then **delegates everything else to
-  the existing `handleAgentEvent()`** — the Rust event shapes (`agent_start`,
+- Rust events are routed through `RustService.handleEvent()`
+  (`src/rust-service.ts:328`), a thin shell: it `normalizeRustEvent()`s the raw
+  event, then asks the **pure, unit-tested `routeRustEvent()`**
+  (`src/rust-events.ts:111`) for the routing / dedupe / queue-clear decision, and
+  finally **delegates everything non-UI to the existing `handleAgentEvent()`** via
+  the `RustHost.handleAgentEvent` callback. The Rust event shapes (`agent_start`,
   `message_update` with `assistantMessageEvent`, `tool_execution_*`, etc.) mirror
   the TS SDK's, so no parallel translator is needed.
 
 ## New files
 
+- `src/rust-service.ts` (~727 LOC) — `RustService`: owns the entire Rust runtime
+  lifecycle, extracted from the `PiService` god class. Spawn + `get_state`
+  handshake/init, the `--no-extensions` self-heal, model & slash-command queries,
+  prompt/abort/steer, capability-degradation surfacing. It does **not** translate
+  events itself — `handleEvent()` delegates to the shared `handleAgentEvent()`
+  through a `RustHost` callback interface (see *Internal branching* above).
+- `src/rust-events.ts` (~254 LOC) — the pure, vscode-free core for the Rust path,
+  fully unit-tested: `normalizeRustEvent`, `routeRustEvent` (routing / dedupe /
+  queue-clear decisions), the `TOOL_PREVIEW_THROTTLE_MS = 200` tool-arg-preview
+  throttle (`shouldEmitToolPreviewUpdate`), degraded-capability tracking
+  (`checkAndRecordDegraded`/`clearDegraded`), and the `parseRust*` response
+  parsers (`parseRustModels`/`parseRustEntries`/`parseRustSlashCommands`).
 - `src/rust-process.ts` — `RustProcess`: spawns `pi --mode rpc`, LF-framed JSONL
   stdin/stdout with **partial-line buffering**, request/response correlation by
   `id`, fire-and-forget `send()`, raw-event emitter, SIGTERM→SIGKILL `dispose()`.

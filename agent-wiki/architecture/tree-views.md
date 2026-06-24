@@ -82,8 +82,15 @@ installs still manage the same store. Search stays on the npm registry
 
 Key design decisions:
 - Marketplace search is debounced (2s minimum) with result caching
-- Banner images fetched from GitHub READMEs in background
-- Update availability checked via `checkForUpdates()` on refresh (SDK backend only)
+- Banner image URLs are resolved from GitHub READMEs in the background, but **do
+  not currently render** in the tree: the tooltip `MarkdownString` is not marked
+  `isTrusted`, so VS Code strips the `![]()` images. Treat banners as
+  non-functional until a trusted MarkdownString is wired.
+- Update availability is checked via `checkForUpdates()` on refresh. **This is
+  SDK-backend only** — under the Rust backend `checkForUpdates()` returns `[]`
+  unconditionally, so "Update All" reports "all up to date" even when updates
+  exist (a known parity gap, tracked separately). Per-package `update()` works on
+  both backends.
 - Installed packages enriched with marketplace metadata for richer display
 
 ## Related
@@ -92,4 +99,5 @@ Key design decisions:
 - [Runtime Selection](runtime-selection.md) — shared package ecosystem; per-runtime active state
 - [PiPackageService](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/pi-package-service.ts) — the data source for installed and marketplace packages
 
-> **Last updated:** 2026-06-05 — runtime-aware Packages view: shared catalog, available vs active, Rust binary backend, safety signals
+> **Last updated:** 2026-06-24 — noted banner images are non-functional (no `isTrusted` MarkdownString) and the Rust "Update All" false-positive (`checkForUpdates` returns `[]`)
+> **Earlier:** 2026-06-05 — runtime-aware Packages view: shared catalog, available vs active, Rust binary backend, safety signals

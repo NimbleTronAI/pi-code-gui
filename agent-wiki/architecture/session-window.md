@@ -39,9 +39,15 @@ tracks all open sessions; `activeSessionWindow` tracks the currently focused one
    `piService.dispose()`, removes the session from the array, refreshes the
    past sessions list, and persists remaining open sessions to workspace state.
 
-4. **Restore** — `restoreAdditionalSessions()` reads open session paths from
-   `workspaceState` and re-creates `SessionWindow` instances for each, skipping
-   the primary session (which already loaded via `continueRecent`).
+4. **Restore** — on activation, `activate()` (extension.ts) reads the saved
+   open-session refs (`{path, runtime}`) from `workspaceState` and replays them
+   in a **single loop**, re-creating one `SessionWindow` per ref on its origin
+   runtime via `createSessionWindow()` + `initSessionInBackground({openPath})`.
+   The first restored window is set active, then `restoreActiveSession()`
+   re-selects the saved active tab. With no saved sessions, the `else` branch
+   instead opens one fresh session on the effective default runtime. (There is no
+   `restoreAdditionalSessions()` and no `continueRecent` — those were earlier
+   designs.)
 
 ## Runtime tracking
 
@@ -64,4 +70,5 @@ See [Runtime Selection](runtime-selection.md) and
 - [Webview Panel](webview-panel.md) — the UI panel paired with PiService
 - [Tree Views](tree-views.md) — how sessions appear in the sidebar
 
-> **Last updated:** 2026-06-21 — documented the `runtime` field, mixed-runtime tabs, and resume-follows-origin runtime resolution (`lookupSessionRuntime`)
+> **Last updated:** 2026-06-24 — corrected the Restore step: single loop in `activate()` (no `restoreAdditionalSessions()`/`continueRecent`)
+> **Earlier:** 2026-06-21 — documented the `runtime` field, mixed-runtime tabs, and resume-follows-origin runtime resolution (`lookupSessionRuntime`)
