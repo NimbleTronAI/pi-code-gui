@@ -15,7 +15,7 @@
 import * as vscode from "vscode";
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse } from "./rust-process.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
@@ -649,6 +649,16 @@ export class RustService {
       this.followUp = [];
       this.emitQueue();
     }
+  }
+
+  /** Promote a queued follow-up to a steering message. rust-pi auto-processes
+   *  steers (no real server-side queue), so we send the text over the steer
+   *  channel and reflect the move in the local synthetic queue indicator. */
+  promoteToSteer(text: string): void {
+    if (!this.process) { return; }
+    if (!promoteQueuedToSteer(this.steering, this.followUp, text)) { return; }
+    this.process.send(RUST_RPC.steer, { message: text });
+    this.emitQueue();
   }
 
   // ── Capability-degradation warnings ────────────────────

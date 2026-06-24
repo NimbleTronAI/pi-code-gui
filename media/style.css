@@ -1080,6 +1080,9 @@
     &.muted   { color: var(--vscode-descriptionForeground); }
   }
 
+  /* "Show images" toggle (settings): hide chat-message images when off. */
+  body.pi-hide-images .message-content img { display: none; }
+
   /* ═══ Queue / steer indicator ════════════════════════ */
 
   .queue-indicator {

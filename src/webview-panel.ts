@@ -541,6 +541,13 @@ export class PiWebviewPanel {
   /** Open VS Code quick pick to pick effort */
   async triggerEffortPicker(): Promise<void> {
     const ps = this.piService;
+    // rust-pi 0.1.20 exposes no set_effort RPC, so changing effort under Rust
+    // would be a silent display-only no-op. Disable the picker honestly, the
+    // same way the /tools picker is disabled for Rust sessions.
+    if (ps.runtime === "rust") {
+      vscode.window.showInformationMessage("Effort level isn't adjustable for Rust sessions — rust-pi has no set_effort control.");
+      return;
+    }
     const levels = [
       { label: "auto", description: "Let the model decide" },
       { label: "none", description: "No effort" },

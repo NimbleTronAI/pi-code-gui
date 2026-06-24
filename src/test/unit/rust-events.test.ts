@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "../../rust-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {
@@ -116,6 +116,42 @@ test("dropQueuedMessage: removes only the first matching entry", () => {
   const s = ["dup", "dup"]; const f: string[] = [];
   assert.equal(dropQueuedMessage(s, f, "dup"), true);
   assert.deepEqual(s, ["dup"]);
+});
+
+// ── promoteQueuedToSteer (follow-up → steering, Rust path) ────────────
+test("promoteQueuedToSteer: moves a follow-up entry into steering", () => {
+  const s: string[] = []; const f = ["do this next"];
+  assert.equal(promoteQueuedToSteer(s, f, "do this next"), true);
+  assert.deepEqual(f, []);
+  assert.deepEqual(s, ["do this next"]);
+});
+
+test("promoteQueuedToSteer: promotes text not currently queued (adds to steering only)", () => {
+  const s: string[] = []; const f = ["other"];
+  assert.equal(promoteQueuedToSteer(s, f, "fresh steer"), true);
+  assert.deepEqual(f, ["other"]);
+  assert.deepEqual(s, ["fresh steer"]);
+});
+
+test("promoteQueuedToSteer: does not duplicate an entry already in steering", () => {
+  const s = ["already"]; const f = ["already"];
+  assert.equal(promoteQueuedToSteer(s, f, "already"), true);
+  assert.deepEqual(f, []);
+  assert.deepEqual(s, ["already"]);
+});
+
+test("promoteQueuedToSteer: trims whitespace before matching", () => {
+  const s: string[] = []; const f = ["  trim me  "];
+  assert.equal(promoteQueuedToSteer(s, f, "trim me"), true);
+  assert.deepEqual(f, []);
+  assert.deepEqual(s, ["trim me"]);
+});
+
+test("promoteQueuedToSteer: empty/blank text returns false and mutates nothing", () => {
+  const s = ["a"]; const f = ["b"];
+  assert.equal(promoteQueuedToSteer(s, f, "   "), false);
+  assert.deepEqual(s, ["a"]);
+  assert.deepEqual(f, ["b"]);
 });
 
 // ── shouldEmitToolPreview (the "{} null" orphan-placeholder guard) ─────

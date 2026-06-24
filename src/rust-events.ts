@@ -143,6 +143,19 @@ export function dropQueuedMessage(steering: string[], followUp: string[], text: 
   return false;
 }
 
+/** Promote a queued message to steering in the synthetic queue (Rust path):
+ *  remove it from follow-up if present, then ensure it's in steering exactly
+ *  once. Mutates both arrays in place. Returns false for empty/blank text (no
+ *  change). The caller is responsible for sending the actual steer RPC. */
+export function promoteQueuedToSteer(steering: string[], followUp: string[], text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t) { return false; }
+  const fi = followUp.findIndex((m) => m.trim() === t);
+  if (fi >= 0) { followUp.splice(fi, 1); }
+  if (!steering.some((m) => m.trim() === t)) { steering.push(text); }
+  return true;
+}
+
 /** Minimum gap between streaming tool-arg preview updates for one tool call.
  *  ~5 updates/s: comfortably "live" to the eye, while halving the webview render
  *  churn vs a tighter cap — each preview re-renders the full (growing) args, so

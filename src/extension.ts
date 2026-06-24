@@ -1073,17 +1073,28 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // Update all packages
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-code-gui.updateAllPackages", async () => {
-      const updates = await packageService?.checkForUpdates();
-      if (!updates || updates.length === 0) {
-        vscode.window.showInformationMessage("All packages are up to date.");
-        return;
+      // The Rust CLI has no dry-run, so checkForUpdates() returns [] under it —
+      // reporting "all up to date" would be a lie. Be honest: tell the user we
+      // can't pre-check and offer to update everything anyway.
+      const isRust = packageService?.backend === "rust";
+      if (!isRust) {
+        const updates = await packageService?.checkForUpdates();
+        if (!updates || updates.length === 0) {
+          vscode.window.showInformationMessage("All packages are up to date.");
+          return;
+        }
+        const confirm = await vscode.window.showInformationMessage(
+          `${updates.length} package(s) have updates available. Update all?`,
+          "Update All",
+        );
+        if (confirm !== "Update All") { return; }
+      } else {
+        const confirm = await vscode.window.showInformationMessage(
+          "Rust Pi can't pre-check which packages have updates. Update all installed packages now?",
+          "Update All",
+        );
+        if (confirm !== "Update All") { return; }
       }
-
-      const confirm = await vscode.window.showInformationMessage(
-        `${updates.length} package(s) have updates available. Update all?`,
-        "Update All",
-      );
-      if (confirm !== "Update All") { return; }
 
       try {
         await packageService!.update();

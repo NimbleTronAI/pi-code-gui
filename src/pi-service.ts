@@ -2411,6 +2411,10 @@ export class PiService {
 
   /** Promote a follow-up message to a steering message. */
   async promoteToSteer(text: string): Promise<void> {
+    if (this._backendKind === "rust") {
+      this._rust?.promoteToSteer(text);
+      return;
+    }
     if (!this.session) { return; }
     var existingSteer = this.session.getSteeringMessages ? [...this.session.getSteeringMessages()] : [];
     this.session.clearQueue();

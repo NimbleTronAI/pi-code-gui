@@ -1598,6 +1598,10 @@ export function closeUserMsgSelector() {
 export function handleSettingsUpdate(data: any) {
     if (data) {
       state.settingsState = data;
+      // Consume the showImages toggle at render time: hide chat-message images
+      // via a body class (CSS in media/style.css). Without this the toggle was
+      // wired end-to-end but never affected what the user saw.
+      document.body.classList.toggle("pi-hide-images", data.showImages === false);
       renderSettingsPanel();
     }
   }
