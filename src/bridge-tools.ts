@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { resolveWorkspaceCwd } from "./workspace.js";
+import { boundedJson } from "./bridge-limits.js";
 
 /**
  * Creates the VS Code bridge tools that give the AI agent visibility into
@@ -13,31 +14,6 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 export function createBridgeTools(defineTool: Function, Type: any): any[] {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: any[] = [];
-
-  // Helper: truncate text to reasonable limits
-  const truncateText = (text: string, maxLines = 2000, maxBytes = 50 * 1024): string => {
-    const lines = text.split("\n");
-    let output = lines.length > maxLines ? lines.slice(0, maxLines).join("\n") : text;
-    if (Buffer.byteLength(output, "utf8") > maxBytes) {
-      output = Buffer.from(output, "utf8").subarray(0, maxBytes).toString("utf8");
-    }
-    return output;
-  };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const boundedJson = (value: any): string => {
-    const text = JSON.stringify(value) ?? "null";
-    const lineCount = text.split("\n").length;
-    const byteCount = Buffer.byteLength(text, "utf8");
-    if (lineCount <= 2000 && byteCount <= 50 * 1024) { return text; }
-    return JSON.stringify({
-      truncated: true,
-      message: "Result exceeded output limits.",
-      originalBytes: byteCount,
-      originalLines: lineCount,
-      resultJsonPrefix: truncateText(text),
-    });
-  };
 
   const getWorkspaceFolders = (): Array<{ uri: string; name: string; index: number }> =>
     (vscode.workspace.workspaceFolders ?? []).map((f) => ({
