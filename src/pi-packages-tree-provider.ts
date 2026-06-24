@@ -533,13 +533,4 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     this.marketError = message;
     this._onDidChangeTreeData.fire();
   }
-
-  private fmtSrc(source: string): string {
-    if (source.startsWith("npm:")) { return source.slice(4); }
-    if (source.startsWith("git:")) {
-      const parts = source.slice(4).split("@")[0];
-      return parts.split("/").pop() ?? source;
-    }
-    return source;
-  }
 }

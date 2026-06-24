@@ -361,9 +361,11 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
         }
         const uri = vscode.Uri.file(resolved);
         const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === uri.fsPath);
-        if (doc && doc.isDirty) { await doc.save(); }
+        // Capture dirtiness before saving — doc.isDirty flips to false once save() resolves.
+        const wasDirty = doc?.isDirty ?? false;
+        if (doc && wasDirty) { await doc.save(); }
         return {
-          content: [{ type: "text", text: boundedJson({ saved: resolved, wasDirty: doc?.isDirty ?? false }) }],
+          content: [{ type: "text", text: boundedJson({ saved: resolved, wasDirty }) }],
           details: {},
         };
       },

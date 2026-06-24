@@ -1528,7 +1528,12 @@ export class PiService {
           const { entries } = this.getEntriesWithLookups();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const compactEntry = reverseFind(entries, (e: any) => e.type === "compaction");
-          this.emit({ type: "compaction-summary-message", data: { summary: event.result.summary, tokensBefore: event.result.tokensBefore, timestamp: Date.now(), entryId: compactEntry?.id } });
+          // Under Rust, getEntriesWithLookups() is empty (no sessionManager), so
+          // compactEntry is undefined and entryId would be undefined — leaving the
+          // summary message unaddressable. Fall back to a synthetic id. (Scoped to
+          // compaction_end only; message/tool entryIds already align via id-space.)
+          const compactionEntryId = compactEntry?.id ?? `compaction-${Date.now()}`;
+          this.emit({ type: "compaction-summary-message", data: { summary: event.result.summary, tokensBefore: event.result.tokensBefore, timestamp: Date.now(), entryId: compactionEntryId } });
         }
         break;
 
@@ -1559,7 +1564,6 @@ export class PiService {
             timestamp: Date.now(),
           },
         });
-        piWarn(`Unhandled agent event type: ${event.type}`);
         break;
     }
   }
@@ -1876,79 +1880,6 @@ export class PiService {
     try { await this.session?.agent.waitForIdle(); } catch (e: any) { piWarn(`waitForIdle() failed: ${e?.message ?? e}`); }
     this.dispose();
     return this.initialize({ openPath: filePath });
-  }
-
-  /** After a branch/fork operation, re-emit the branched entries to the webview */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  replayBranchEntries(path: any[]): void {
-    this._userMessages = [];
-
-    // Pre-index tool results by call ID
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toolResultsById = new Map<string, any>();
-    for (const e of path) {
-      if (e.type === "message" && e.message?.role === "toolResult") {
-        toolResultsById.set(e.message.toolCallId, e);
-      }
-    }
-
-    for (const entry of path) {
-      if (entry.type === "message" && entry.message) {
-        const msg = entry.message;
-        if (msg.role === "user") {
-          const text = this.extractTextFromContent(msg.content);
-          if (text) {
-            this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry.id } });
-          }
-        } else if (msg.role === "assistant") {
-          const text = this.extractTextFromContent(msg.content);
-          const thinking = this.extractThinkingFromContent(msg.content);
-          const toolCalls = this.extractToolCallsFromContent(msg.content);
-
-          // Always emit assistant messages — even tool-only ones with no text.
-          // Skipping them makes tool executions invisible on reload/resume.
-          this.emit({ type: "assistant-start", data: { messageId: msg.id, entryId: entry.id } });
-          // Emit thinking content first, then text
-          if (thinking) {
-            this.emit({ type: "thinking-delta", data: { delta: thinking } });
-            this.emit({ type: "thinking-delta", data: { delta: "", done: true } });
-          }
-          if (text) {
-            this.emit({ type: "stream-delta", data: { delta: text } });
-          }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this.emit({ type: "assistant-end", data: { stopReason: msg.stopReason, errorMessage: msg.errorMessage, toolCalls: toolCalls.map((tc: any) => tc.id) } });
-
-          for (const tc of toolCalls) {
-            const toolResultEntry = toolResultsById.get(tc.id);
-            if (tc.name === "bash" || tc.name === "exec") {
-              this.emit({ type: "bash-start", data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", entryId: toolResultEntry?.id } });
-              const outputText = toolResultEntry?.message ? this.extractTextFromContent(toolResultEntry.message.content) : "";
-              this.emit({ type: "bash-end", data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", exitCode: 0, cancelled: false, output: outputText, isError: false, entryId: toolResultEntry?.id } });
-            } else {
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments, fromMessage: true, entryId: toolResultEntry?.id } });
-              if (toolResultEntry?.message) {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: toolResultEntry.message, isError: false, entryId: toolResultEntry?.id } });
-              } else {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: { content: [{ type: "text", text: "(forked)" }] }, isError: false, entryId: toolResultEntry?.id } });
-              }
-            }
-          }
-        } else if (msg.role === "custom") {
-          this.emit({ type: "custom-message", data: { customType: msg.customType, content: msg.content, display: msg.display, details: msg.details, timestamp: msg.timestamp, entryId: entry.id } });
-        } else if (msg.role === "bashExecution") {
-          const bashEntryId = entry.id ?? `bash-${Date.now()}`;
-          this.emit({ type: "bash-start", data: { toolCallId: bashEntryId, command: msg.command ?? "", entryId: entry.id } });
-          this.emit({ type: "bash-end", data: { toolCallId: bashEntryId, command: msg.command ?? "", exitCode: msg.exitCode, cancelled: msg.cancelled, output: msg.output ?? "", isError: msg.exitCode !== 0 && msg.exitCode !== null, entryId: entry.id } });
-        }
-      } else if (entry.type === "compaction") {
-        this.emit({ type: "compaction-summary-message", data: { summary: entry.summary ?? "", tokensBefore: entry.tokensBefore ?? 0, timestamp: this._toTimestamp(entry.timestamp), entryId: entry.id } });
-      }
-    }
-
-    this.reportStatus();
   }
 
   /** Write a session entry directly to the session file, bypassing SDK _persist quirks. */
@@ -2964,6 +2895,13 @@ export class PiService {
   // ── Cleanup ────────────────────────────────────────────
 
   dispose(): void {
+    // Resolve any in-flight interactive dialogs with undefined so awaiting SDK
+    // coroutines unblock and fall back to text prompts instead of hanging forever.
+    for (const { resolve } of this._pendingDialogs.values()) {
+      try { resolve(undefined); } catch { /* listener already gone */ }
+    }
+    this._pendingDialogs.clear();
+
     // Rust runtime: tear down the subprocess (it owns its own persistence).
     if (this._backendKind === "rust") {
       if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }

@@ -108,11 +108,6 @@ export interface AppState {
   settingsOverlay: HTMLElement;
   slashAutocomplete: HTMLElement;
   livePanel: HTMLElement;
-  sbDot: HTMLElement;
-  sbModel: HTMLElement;
-  sbThinking: HTMLElement;
-  sbEffort: HTMLElement;
-  sbUsage: HTMLElement;
 }
 
 export const state: AppState = {
@@ -205,11 +200,6 @@ export const state: AppState = {
   settingsOverlay: null!,
   slashAutocomplete: null!,
   livePanel: null!,
-  sbDot: null!,
-  sbModel: null!,
-  sbThinking: null!,
-  sbEffort: null!,
-  sbUsage: null!,
 };
 
 /** Populate DOM refs from document. Call once on startup. */
@@ -225,11 +215,6 @@ export function initState(doc: Document): void {
   state.settingsOverlay = doc.getElementById("settings-overlay")!;
   state.slashAutocomplete = doc.getElementById("slash-autocomplete")!;
   state.livePanel = doc.getElementById("live-panel")!;
-  state.sbDot = doc.getElementById("pi-sb-dot")!;
-  state.sbModel = doc.getElementById("pi-sb-model")!;
-  state.sbThinking = doc.getElementById("pi-sb-thinking")!;
-  state.sbEffort = doc.getElementById("pi-sb-effort")!;
-  state.sbUsage = doc.getElementById("pi-sb-usage")!;
 
   if (typeof marked !== "undefined") {
     state._markedAvailable = true;
