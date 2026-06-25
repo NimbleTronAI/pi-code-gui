@@ -18,6 +18,7 @@ import { ThinkingBlock } from "../components/thinking-block.js";
 // DOM-free text/format helpers live in src/shared/webview-format.ts so they can
 // be unit-tested headlessly; re-exported here to keep existing import sites.
 export { formatTokens, getLangFromPath, getCompactReadLabel, formatToolError } from "../../shared/webview-format.js";
+import { isRenderableImageSrc } from "../../shared/webview-format.js";
 
 export function escapeHtml(text: string): string {
   const div = document.createElement("div");
@@ -324,9 +325,18 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
       case "del":
         result += html`<del>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</del>`;
         break;
-      case "image":
-        result += html`<img src="${t.href as string}" alt="${t.text as string}">`;
+      case "image": {
+        // Only emit an <img> for a src that can actually load in this webview;
+        // a relative path (e.g. an image referenced in a session message) would
+        // 403 against the webview origin and external http(s) is CSP-blocked, so
+        // fall back to the alt text instead of a broken/noisy image request.
+        const imgHref = (t.href as string) ?? "";
+        const imgAlt = (t.text as string) ?? "";
+        result += isRenderableImageSrc(imgHref)
+          ? html`<img src="${imgHref}" alt="${imgAlt}">`
+          : html`<span class="img-fallback">${imgAlt || imgHref}</span>`;
         break;
+      }
       case "br":
         result += "<br>";
         break;

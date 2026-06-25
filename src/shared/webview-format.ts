@@ -57,6 +57,17 @@ export function getCompactReadLabel(filePath: string): { kind: string; label: st
   return undefined;
 }
 
+/** Whether an `<img src>` can actually load inside the chat webview, whose CSP is
+ *  `img-src <cspSource> blob: data:`. Only data:/blob: URIs and already-resolved
+ *  webview resource URIs load; a bare relative path (e.g. an image referenced in
+ *  a session message) resolves to the webview origin and 403s, and external
+ *  http(s) is CSP-blocked. When this returns false the renderer should fall back
+ *  to the image's alt text instead of emitting a broken/403'ing `<img>`. */
+export function isRenderableImageSrc(href: string | undefined | null): boolean {
+  if (!href) { return false; }
+  return /^(data:|blob:|vscode-webview:|vscode-resource:|https:\/\/[a-z0-9-]+\.vscode-cdn\.net\/)/i.test(href.trim());
+}
+
 /** Turn a raw tool-error string into a friendly one-liner; passes text through
  *  unchanged when no known pattern matches. `toolName` is reserved for future
  *  per-tool messages. */

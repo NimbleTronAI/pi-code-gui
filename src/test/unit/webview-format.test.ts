@@ -4,7 +4,21 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatTokens, getLangFromPath, getCompactReadLabel, formatToolError } from "../../shared/webview-format.js";
+import { formatTokens, getLangFromPath, getCompactReadLabel, formatToolError, isRenderableImageSrc } from "../../shared/webview-format.js";
+
+test("isRenderableImageSrc: only loadable webview schemes pass; relative/external fall back", () => {
+  // loadable in the webview (CSP img-src cspSource blob: data:)
+  assert.equal(isRenderableImageSrc("data:image/png;base64,AAAA"), true);
+  assert.equal(isRenderableImageSrc("blob:vscode-webview://abc/123"), true);
+  assert.equal(isRenderableImageSrc("vscode-webview://abc/media/x.png"), true);
+  assert.equal(isRenderableImageSrc("https://aaa.vscode-cdn.net/x.png"), true);
+  // NOT loadable -> caller shows alt text instead of a 403'ing <img>
+  assert.equal(isRenderableImageSrc("pi_agent_rust_illustration.webp"), false); // the real 403 case
+  assert.equal(isRenderableImageSrc("./diagram.png"), false);
+  assert.equal(isRenderableImageSrc("https://example.com/x.png"), false);       // CSP-blocked
+  assert.equal(isRenderableImageSrc(""), false);
+  assert.equal(isRenderableImageSrc(null), false);
+});
 
 test("formatTokens: thresholds and unit suffixes", () => {
   assert.equal(formatTokens(0), "0");
