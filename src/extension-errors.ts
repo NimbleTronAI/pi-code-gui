@@ -62,6 +62,16 @@ export function classifyProviderConfigError(message: string | undefined | null):
   };
 }
 
+/**
+ * Compose a multi-line, user-facing message for a provider-key error, or null
+ * when `raw` isn't one. Callers use `humanizeProviderError(raw) ?? raw` to
+ * upgrade the message in place without changing the event shape.
+ */
+export function humanizeProviderError(raw: string | undefined | null): string | null {
+  const e = classifyProviderConfigError(raw);
+  return e ? `${e.title}\n\n${e.detail}\n\n${e.remediation}` : null;
+}
+
 export type RustLoadErrorKind = "digest-mismatch" | "unsupported-module" | "load-failed";
 
 export interface RustLoadError {

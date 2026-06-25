@@ -122,6 +122,14 @@ test("message_update thinking_delta / thinking_end / error", () => {
   assert.equal((err.events[0] as any).data.message, "boom");
 });
 
+test("message_update error: a provider-key failure is humanized in place", () => {
+  const raw = 'Failed to resolve API key for provider "deepseek" from environment variable: ENV';
+  const r = translateAgentEvent({ type: "message_update", assistantMessageEvent: { type: "error", error: raw } }, makeState());
+  const message = (r.events[0] as any).data.message as string;
+  assert.match(message, /deepseek: API key could not be resolved/);
+  assert.match(message, /\$\{DEEPSEEK_API_KEY\}/);  // actionable remediation, not the raw SDK string
+});
+
 test("message_update: a new tool call records state and emits tool-start (fromMessage)", () => {
   const st = makeState();
   const content = [{ type: "toolCall", id: "t1", name: "write", arguments: { path: "a" } }];

@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn } from "./logger.js";
+import { humanizeProviderError } from "./extension-errors.js";
 import { RUST_RPC, type RustResponse } from "./rust-process.js";
 import { extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
@@ -1490,11 +1491,12 @@ export class PiService {
         // during streaming — surface the error rather than swallowing it.
         const msg = e?.message ?? String(e);
         piWarn(`sendPrompt ${mode} failed: ${msg}`);
+        const friendly = humanizeProviderError(msg);
         this.emit({
           type: "custom-message",
           data: {
             customType: "error",
-            content: `${mode === "steer" ? "Steer" : "Queue"} failed: ${msg}`,
+            content: friendly ?? `${mode === "steer" ? "Steer" : "Queue"} failed: ${msg}`,
             timestamp: Date.now(),
           },
         });

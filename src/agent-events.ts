@@ -15,6 +15,7 @@
 
 import type { PiServiceEvent, Runtime } from "./types.js";
 import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, extractMessageText } from "./rust-events.js";
+import { humanizeProviderError } from "./extension-errors.js";
 
 /** Streaming tool-call preview state, tracked across message_update deltas. */
 export interface ToolCallState { toolName: string; toolCallId: string; args: any; lastPreviewEmit?: number; }
@@ -154,7 +155,7 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
         case "text_delta": events.push({ type: "stream-delta", data: { delta: d.delta } }); break;
         case "thinking_delta": events.push({ type: "thinking-delta", data: { delta: d.delta } }); break;
         case "thinking_end": events.push({ type: "thinking-delta", data: { delta: "", done: true } }); break;
-        case "error": events.push({ type: "error", data: { message: d.error ?? "Unknown error" } }); break;
+        case "error": events.push({ type: "error", data: { message: humanizeProviderError(d.error) ?? d.error ?? "Unknown error" } }); break;
       }
 
       if (event.message?.role === "assistant" && event.message?.content) {

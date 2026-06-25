@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyProviderConfigError, classifyRustLoadError } from "../../extension-errors.js";
+import { classifyProviderConfigError, classifyRustLoadError, humanizeProviderError } from "../../extension-errors.js";
 
 test("provider key: the deepseek $ENV legacy-syntax failure", () => {
   const r = classifyProviderConfigError(
@@ -40,6 +40,15 @@ test("provider key: unrelated messages return null", () => {
     classifyProviderConfigError("Failed to resolve header X-Api from environment variable: FOO"),
     null,
   );
+});
+
+test("humanizeProviderError: composes title + detail + remediation, else null", () => {
+  const out = humanizeProviderError('Failed to resolve API key for provider "deepseek" from environment variable: ENV');
+  assert.ok(out);
+  assert.match(out, /deepseek: API key could not be resolved/);
+  assert.match(out, /not set/);
+  assert.match(out, /\$\{DEEPSEEK_API_KEY\}/);
+  assert.equal(humanizeProviderError("some unrelated error"), null);
 });
 
 test("rust load: digest mismatch extracts package + remediation", () => {
