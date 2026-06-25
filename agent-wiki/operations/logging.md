@@ -23,7 +23,7 @@ persists to on-disk log files that ride along in bug reports.
 |--------|---------------|---------|
 | `piDebug(msg)` | `debug` | Routine lifecycle / diagnostic chatter — session restore, runtime detection, catalog writes, subprocess spawn/exit, "session … ready", tool selection. **Hidden at the default Info level.** |
 | `piLog(msg)` | `info` | The few notable, low-volume events worth seeing by default. Reserved for the startup version banner and the rare managed-Rust-install notice. |
-| `piWarn(msg)` | `warn` | Problems and recoverable failures, including the Rust binary's own stderr (`[rust-stderr] …`), surfaced verbatim. |
+| `piWarn(msg)` | `warn` | Problems and recoverable failures, including the Rust binary's own stderr (`[rust-stderr] …`). Recognized extension-load failures are classified, deduped, and surfaced elegantly instead — see [Error Surfacing](error-surfacing.md). |
 
 The guiding rule: **the Output channel stays quiet at the default Info level.**
 `piLog` therefore means "worth everyone seeing"; everything operational is
@@ -51,7 +51,10 @@ latch-off.
 - [Build Pipeline](build-pipeline.md) — where the bundle that emits these logs is produced
 - [PiService](../architecture/pi-service.md) — the heaviest logging caller
 - [Runtime Selection](../architecture/runtime-selection.md) — the `[rust-stderr]` source
+- [Error Surfacing](error-surfacing.md) — classified failures that bypass the raw `piWarn` path
 
-> **Last updated:** 2026-06-25 — initial page: console writes removed; logging
-> routes solely through the `LogOutputChannel` with `piDebug`/`piLog`/`piWarn`
-> level discipline (routine chatter demoted to `debug`).
+> **Last updated:** 2026-06-25 — recognized extension-load failures are now
+> classified/deduped/surfaced (see Error Surfacing) rather than raw-`piWarn`'d.
+> **Earlier:** 2026-06-25 — initial page: console writes removed; logging routes
+> solely through the `LogOutputChannel` with `piDebug`/`piLog`/`piWarn` level
+> discipline (routine chatter demoted to `debug`).
