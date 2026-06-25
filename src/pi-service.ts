@@ -10,6 +10,13 @@ import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { thinkingLevelIsLive } from "./rust-catalog.js";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
+import { isOlderThan } from "./version-compare.js";
+
+/** The pi-ai SDK version this extension targets (the 0.80 model-API redesign:
+ *  createModels()/providers-all). Below this we still run via a legacy fallback,
+ *  but warn the user once per host to update. */
+const SUPPORTED_PI_AI_VERSION = "0.80.0";
+let _piAiVersionWarned = false;
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls } from "./agent-events.js";
 
@@ -490,6 +497,38 @@ export class PiService {
       }
       return { success: false, error: `Failed to load pi-ai: ${msg}` };
     }
+
+    // pi-ai 0.80 redesigned the model API: the static catalog reads (getModel /
+    // getModels) and `complete` were removed from the root entrypoint — new code
+    // uses createModels()/builtin factories (see pi-ai README "Migrating from the
+    // Old Global API"). We load whichever pi-coding-agent is installed globally,
+    // so on a 0.80+ SDK every AI.getModel(...) threw "is not a function". When the
+    // root entrypoint lacks getModel, adapt AI to the durable providers/all
+    // entrypoint (getBuiltinModel + a builtinModels() instance) — NOT the
+    // deprecated /compat surface, which upstream will delete. Purely additive: on
+    // 0.79.x getModel/complete are already present and this branch is skipped.
+    await this._warnIfPiAiOutdated();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (typeof (this.AI as any).getModel !== "function") {
+      try {
+        const providersAll = await importWithRetry(
+          path.join(this._piRoot, "node_modules/@earendil-works/pi-ai/dist/providers/all.js"), 5, 500,
+        );
+        const models = providersAll.builtinModels();
+        // providersAll / models are `any` (dynamic import), so binding their
+        // methods needs no explicit annotations and preserves the instance `this`.
+        this.AI = {
+          ...this.AI,
+          getModel: providersAll.getBuiltinModel,
+          getModels: models.getModels.bind(models),
+          complete: models.complete.bind(models),
+        } as PiAi;
+        piLog("pi-ai >=0.80 detected — adapted AI to the providers/all entrypoint (getBuiltinModel + builtinModels()).");
+      } catch (e: unknown) {
+        return { success: false, error: `pi-ai >=0.80 is installed but its providers/all entrypoint could not load (${e instanceof Error ? e.message : String(e)}). Update @earendil-works/pi-coding-agent, or pin it to a 0.79.x release.` };
+      }
+    }
+
     // Load typebox for defineTool usage (with retry — npm install may still
     // be populating node_modules when the extension host first activates).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1328,6 +1367,35 @@ export class PiService {
     if (r.effects.unknownType && !this._warnedUnknownEvents.has(r.effects.unknownType)) {
       this._warnedUnknownEvents.add(r.effects.unknownType);
       piWarn(`Unhandled agent event "${r.effects.unknownType}" — possible upstream protocol drift (logged once).`);
+    }
+  }
+
+  /** Warn once per host if the resolved pi-ai SDK is older than the version this
+   *  extension targets. We still run on older SDKs (legacy getModel path), but the
+   *  0.80 model-API redesign is what we're built against, so nudge the user. */
+  private async _warnIfPiAiOutdated(): Promise<void> {
+    if (_piAiVersionWarned || !this._piRoot) { return; }
+    try {
+      const pkgPath = path.join(this._piRoot, "node_modules", "@earendil-works", "pi-ai", "package.json");
+      const installed = (JSON.parse(await fs.promises.readFile(pkgPath, "utf-8")) as { version?: string }).version ?? "";
+      if (!installed || !isOlderThan(installed, SUPPORTED_PI_AI_VERSION)) { return; }
+      _piAiVersionWarned = true;
+      piWarn(`pi-ai ${installed} is older than the supported ${SUPPORTED_PI_AI_VERSION}.`);
+      const UPDATE = "Update";
+      void vscode.window.showWarningMessage(
+        `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${SUPPORTED_PI_AI_VERSION}+. ` +
+        `It still works, but update for full compatibility.`,
+        UPDATE,
+      ).then((choice) => {
+        if (choice === UPDATE) {
+          const term = vscode.window.createTerminal("Update Pi SDK");
+          term.show();
+          // Typed, not executed — the user reviews and runs it (modifies global npm).
+          term.sendText("npm install -g @earendil-works/pi-coding-agent", false);
+        }
+      });
+    } catch (e: unknown) {
+      piWarn(`pi-ai version check skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
