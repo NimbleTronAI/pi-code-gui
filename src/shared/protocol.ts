@@ -391,6 +391,7 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("toggleAutoCompaction") }),
   z.object({ type: z.literal("toggleAutoRetry") }),
   z.object({ type: z.literal("toggleShowImages") }),
+  z.object({ type: z.literal("switchRuntime") }),
   z.object({ type: z.literal("openUrl"), url: z.string() }),
   z.object({ type: z.literal("openFile"), path: z.string() }),
   z.object({ type: z.literal("promoteToSteer"), text: z.string() }),

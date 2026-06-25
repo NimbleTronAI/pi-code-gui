@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
-import { validateExtensionToWebview, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
+import { validateExtensionToWebview, validateWebviewToExtension, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
+import { piWarn } from "./logger.js";
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
@@ -127,6 +128,13 @@ export class PiWebviewPanel {
 
     this.panel.webview.onDidReceiveMessage(
       async (message) => {
+        // Warn-only inbound validation: surface webview→extension protocol drift
+        // (an unknown/malformed message type) without blocking dispatch. The switch
+        // below already ignores unhandled types; this just makes drift visible.
+        const inbound = validateWebviewToExtension(message);
+        if (!inbound.success) {
+          piWarn(`webview→extension message failed validation (type "${(message as { type?: unknown })?.type}"): ${inbound.error}`);
+        }
         switch (message.type) {
           case "prompt": {
  
@@ -144,18 +152,6 @@ export class PiWebviewPanel {
 
           case "abort":
             await this.piService.abort();
-            break;
-
-          case "cycleModel":
-            await this.piService.cycleModel();
-            break;
-
-          case "setThinkingLevel":
-            await this.piService.setThinkingLevel(message.level);
-            break;
-
-          case "setEffort":
-            await this.piService.setEffort(message.effort);
             break;
 
           case "pickModel":
@@ -198,14 +194,6 @@ export class PiWebviewPanel {
 
           case "toggleShowImages":
             await this.piService.toggleShowImages();
-            break;
-
-          // Request user messages list (#2)
-          case "getUserMessages":
-            this.postMessage({
-              type: "user-messages-list",
-              data: { messages: this.piService.userMessages.slice(-20) },
-            });
             break;
 
           // Request settings state (#3)
@@ -341,9 +329,10 @@ export class PiWebviewPanel {
 
   postMessage(message: ExtensionToWebview | WebviewToExtension): void {
     // ── Layer 1: Validate extension→webview messages before posting ──
-    // Webview-to-extension messages are validated on receipt by the extension host.
-    // For extension→webview, we validate here to catch malformed events early.
-    // We check if "type" is an extension→webview type (has data or is command).
+    // The reverse direction (webview→extension) is validated warn-only on receipt
+    // in onDidReceiveMessage. Here we validate extension→webview to catch malformed
+    // events early, skipping the webview→extension command types that also flow
+    // through this typed method but belong to the other schema.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const msgType = (message as any).type;
     if (msgType && msgType !== "prompt" && msgType !== "abort" && msgType !== "slashCommand" &&

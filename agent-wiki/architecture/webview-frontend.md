@@ -47,7 +47,7 @@ and `main.ts` in order. esbuild bundles everything into a single IIFE.
 Message types are defined in `src/shared/protocol.ts` as Zod-validated schemas
 with derived TypeScript types:
 - `ExtensionToWebview` — 38 event types from extension to webview
-- `WebviewToExtension` — 17 command types from webview to extension
+- `WebviewToExtension` — 18 command types from webview to extension
 - `PiServiceEvent` — alias for `ExtensionToWebview` (all events through `emit()`)
 
 Runtime validation via Zod is wired on the **extension→webview** direction only,
@@ -60,11 +60,11 @@ at all three of its hops (`validateExtensionToWebview`):
   against the schema; unknown fields are stripped (Zod v4 default)
 
 This catches protocol drift on the outbound path with visible diagnostic
-notifications. **The inbound webview→extension boundary is NOT yet validated:**
-`validateWebviewToExtension` is defined and exported in `protocol.ts` but is
-**never called** at `onDidReceiveMessage` (webview-panel.ts) — wiring it
-(warn-only) is tracked as a later hardening step. Don't describe the inbound
-direction as Zod-checked until that lands.
+notifications. The **inbound webview→extension** boundary is also validated, but
+**warn-only**: `onDidReceiveMessage` (webview-panel.ts) calls
+`validateWebviewToExtension(message)` and `piWarn`s on a schema miss, then
+dispatches anyway (the switch already ignores unknown types). So both directions
+are Zod-checked — outbound blocks-with-notify, inbound logs-and-continues.
 
 ## Key rendering patterns
 
@@ -137,5 +137,6 @@ the entire class of HTML injection and CSS token leakage bugs.
 - [Streaming Pipeline](streaming-pipeline.md) — RAF-batched rendering
 - [Component System Proposal](component-system-proposal.md) — proposed architectural upgrade
 
-> **Last updated:** 2026-06-24 — corrected schema counts (38 events / 17 commands) and removed the false "webview→extension is Zod-validated" claim (inbound `validateWebviewToExtension` is unwired)
+> **Last updated:** 2026-06-25 — inbound `validateWebviewToExtension` is now wired (warn-only) at `onDidReceiveMessage`; schema is 38 events / 18 commands (added `switchRuntime`)
+> **Earlier:** 2026-06-24 — corrected schema counts (38 events / 17 commands) and removed the false "webview→extension is Zod-validated" claim
 > **Earlier:** 2026-05-19 — All 7 steps complete (Zod, safe HTML, components, dialogs, status bar)

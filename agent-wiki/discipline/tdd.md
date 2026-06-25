@@ -24,12 +24,16 @@ Before presenting work as done, the project's test suite must pass.
 The project runs two tiers of tests:
 
 - **Headless unit tests (primary, default).** `pnpm run test:unit` →
-  `compile-tests` (tsc → `out/`) then `node --test out/test/unit/*.test.js`.
-  These use the Node built-in test runner (`node:test`), need no VS Code or DOM,
-  and run in seconds. As of 2026-06, there are **123 tests across 7 files** in
-  `src/test/unit/` (rust-events, rust-ingress, rust-process, rust-catalog,
-  session-format, rust-deps, agent-events). This is the suite to run before
-  presenting work.
+  `compile-tests` (tsc → `out/`), then `compile-tests:webview` (compiles
+  `src/webview` + `src/shared` to `out/` via `tsconfig.test-webview.json` for the
+  jsdom seam), then `node --test out/test/unit/*.test.js`. The Node built-in test
+  runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
+  exception being the jsdom dispatch seam (see below). As of 2026-06, there are
+  **182 tests across 16 files** in `src/test/unit/` (rust-events, rust-ingress,
+  rust-process, rust-catalog, session-format, rust-deps, agent-events,
+  rust-interop, bridge-limits, pi-package-path, runtime-pick, pi-package-filter,
+  rust-doctor, webview-format, version-compare, dispatch). This is the suite to
+  run before presenting work.
 - **Integration tests.** `pnpm test` → `@vscode/test-cli` +
   `@vscode/test-electron` launches the Extension Development Host against real
   VS Code APIs (`out/test/**/*.test.js`, config in `.vscode-test.mjs`).
@@ -41,12 +45,22 @@ The project runs two tiers of tests:
 
 `pi-service.ts`, `extension.ts`, and the webview frontend **cannot load
 headlessly** — they import `vscode` or touch the DOM, so a `node:test` file that
-imports them fails at import. The proven recipe, used for every one of the 82
+imports them fails at import. The proven recipe, used for nearly all of the unit
 tests, is: **extract the decision logic into a pure, vscode-free module, then
-unit-test that module.** Precedents: `routeRustEvent`/`normalizeRustEvent`
-(`src/rust-events.ts`), the `parseRust*` parsers, and `summarizeSessionFile`
-(session formatting). When adding behavior to an untestable file, pull the new
-logic into a pure helper first — that is what creates the test net.
+unit-test that module.** Precedents: `routeRustEvent`/`normalizeRustEvent` and
+`translateAgentEvent` (`src/agent-events.ts`), the `parseRust*` parsers,
+`summarizeSessionFile`, and the DOM-free webview helpers in
+`src/shared/webview-format.ts`. When adding behavior to an untestable file, pull
+the new logic into a pure helper first — that is what creates the test net.
+
+**The jsdom seam (for genuinely DOM-coupled paths).** Some logic can't be pulled
+out of the DOM — e.g. the webview's streaming dispatch (`handleStreamDelta` /
+`handleToolStart` / `handleToolEnd`). For those, `src/test/unit/dispatch.test.ts`
+stands up a jsdom DOM, stubs the `<script>` globals (`marked`/`morphdom`/`hljs`),
+and dynamically imports the real handlers (compiled to `out/` by
+`tsconfig.test-webview.json`) with a **variable specifier** so the main `tsc`
+doesn't type-check excluded webview code. Reach for this only when extraction
+genuinely can't isolate the logic from the DOM.
 
 ## Untested code
 
@@ -73,4 +87,5 @@ silently add full module coverage beyond the scope of the change.
 - [Think Before Acting](think-before-acting.md) — the plan phase before TDD
 - [Verify, Don't Assume](verify-dont-assume.md) — what "tests pass" actually means
 
-> **Last updated:** 2026-06-24 — corrected stale "single skeleton test" claim: 82 headless `node:test` unit tests via `pnpm run test:unit`; documented the extract-then-test pattern
+> **Last updated:** 2026-06-25 — refreshed the count to 182 tests across 16 files; documented the jsdom dispatch seam (`tsconfig.test-webview.json` + variable-specifier import)
+> **Earlier:** 2026-06-24 — corrected stale "single skeleton test" claim: 82 headless `node:test` unit tests via `pnpm run test:unit`; documented the extract-then-test pattern

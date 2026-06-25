@@ -96,6 +96,8 @@ export class RustService {
   private steering: string[] = [];
   private followUp: string[] = [];
   private degradedWarned = new Set<string>();
+  /** Guard against overlapping refreshState() runs — see refreshState(). */
+  private _refreshing = false;
 
   constructor(private readonly host: RustHost) {}
 
@@ -482,17 +484,26 @@ export class RustService {
 
   /** Re-query Rust `get_state` (e.g. after a turn) to capture sessionFile/model/settings. */
   async refreshState(): Promise<void> {
-    if (!this.process) { return; }
+    // Concurrency guard: refreshState() fires post-turn (fire-and-forget on
+    // agent_end) AND from compact(); without this they can overlap, and a stale
+    // get_state's applyState could clobber a newer one. Skip a redundant refresh
+    // while one is already in flight (the in-flight run captures the latest state).
+    if (!this.process || this._refreshing) { return; }
+    this._refreshing = true;
     try {
-      const state = await this.process.request(RUST_RPC.getState, {}, 8000);
-      if (state.success) { this.applyState(state.data); this.recordCapOk("status"); }
-    } catch (e: unknown) {
-      piWarn(`refreshState failed: ${e instanceof Error ? e.message : String(e)}`);
-      this.warnDegraded("status", "Couldn't sync Rust Pi's status — the model/context readout may be stale.");
+      try {
+        const state = await this.process.request(RUST_RPC.getState, {}, 8000);
+        if (state.success) { this.applyState(state.data); this.recordCapOk("status"); }
+      } catch (e: unknown) {
+        piWarn(`refreshState failed: ${e instanceof Error ? e.message : String(e)}`);
+        this.warnDegraded("status", "Couldn't sync Rust Pi's status — the model/context readout may be stale.");
+      }
+      await this.refreshUsage();
+      await this.refreshEntries();
+      this.host.reportStatus();
+    } finally {
+      this._refreshing = false;
     }
-    await this.refreshUsage();
-    await this.refreshEntries();
-    this.host.reportStatus();
   }
 
   /** Re-pull the Rust session's entries so the Open Sessions tree reflects new turns. */

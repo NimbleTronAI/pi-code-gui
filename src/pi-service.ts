@@ -862,8 +862,11 @@ export class PiService {
     this._backendKind = "rust";
     this._rust = new RustService(this.makeRustHost());
     const result = await this._rust.initialize(opts);
-    // Mirror the pre-extraction contract: a failed init leaves no live runtime
+    // Mirror the pre-extraction contract: a failed init nulls the live runtime
     // (the old code nulled `this.rust`), so `initialized` reports false.
+    // INVARIANT: `_backendKind` deliberately STAYS "rust" on failure (not reset to
+    // "typescript") so a retry — e.g. the user reopening the session — re-enters
+    // this Rust path rather than silently switching the session to the TS SDK.
     if (!result.success) { this._rust = null; }
     return result;
   }
@@ -2795,6 +2798,11 @@ export class PiService {
     const sm = this.sessionManager;
     if (sm && !sm.flushed && typeof sm._rewriteFile === "function") {
       try { sm._rewriteFile(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
+    } else if (sm && !sm.flushed) {
+      // _rewriteFile is a private SDK member reached through an `any` cast. If it's
+      // gone, the SDK internals changed under us — warn loudly (a rename canary),
+      // since an unflushed session may then silently fail to persist on dispose.
+      piWarn("SessionManager._rewriteFile is missing — the private Pi SDK API may have changed; unflushed session entries could be lost on dispose.");
     }
     // Kill any running bash processes before tearing down the session.
     // Without this, processes orphaned by session close survive as zombies.
