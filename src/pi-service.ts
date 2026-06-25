@@ -18,7 +18,7 @@ import { isOlderThan } from "./version-compare.js";
 const SUPPORTED_PI_AI_VERSION = "0.80.0";
 let _piAiVersionWarned = false;
 import { resolveWorkspaceCwd } from "./workspace.js";
-import { translateAgentEvent, extractToolCalls } from "./agent-events.js";
+import { translateAgentEvent, extractToolCalls, normalizeToolArgs } from "./agent-events.js";
 
 /**
  * Dynamic import with retry — handles the race where npm is still populating
@@ -1252,7 +1252,7 @@ export class PiService {
                 data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", exitCode: 0, cancelled: false, output: outputText, isError: false, entryId: toolResultEntry?.id },
               });
             } else {
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments, fromMessage: true, entryId: toolResultEntry?.id } });
+              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: normalizeToolArgs(tc.arguments), fromMessage: true, entryId: toolResultEntry?.id } });
               if (toolResultEntry?.message) {
                 this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: toolResultEntry.message, isError: false, entryId: toolResultEntry?.id } });
               } else {

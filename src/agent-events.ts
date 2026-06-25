@@ -75,6 +75,19 @@ export function extractToolCalls(content: any): Array<{ name: string; id: string
 }
 
 /**
+ * Coerce tool-call arguments to a plain record for the `tool-start` event's
+ * `args` field (the protocol schema requires a record). Historical sessions —
+ * especially replayed Rust ones — can carry `arguments: null` for a param-less
+ * tool, which would otherwise fail outbound validation. Anything that isn't a
+ * plain object (null, array, primitive) collapses to `{}`.
+ */
+export function normalizeToolArgs(args: unknown): Record<string, unknown> {
+  return (args && typeof args === "object" && !Array.isArray(args))
+    ? (args as Record<string, unknown>)
+    : {};
+}
+
+/**
  * Translate one agent stream event into the webview events to emit plus the
  * state mutations / side-effects the shell must apply. Pure and deterministic
  * given (event, state) — the only mutations are in-place on state.userMessages
@@ -153,7 +166,7 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
           if (!shouldEmitToolPreview(tc)) { continue; }
           if (!state.toolCalls.has(tc.id)) {
             state.toolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments, lastPreviewEmit: state.now });
-            events.push({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments ?? {}, fromMessage: true } });
+            events.push({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: normalizeToolArgs(tc.arguments), fromMessage: true } });
           } else {
             const existing = state.toolCalls.get(tc.id);
             if (existing) {
@@ -196,7 +209,7 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       if (event.toolName === "bash" || event.toolName === "exec") {
         events.push({ type: "bash-start", data: { toolCallId: event.toolCallId, command: args?.command ?? "", entryId: tcEntryId } });
       } else {
-        events.push({ type: "tool-start", data: { toolCallId: event.toolCallId, toolName: event.toolName, args: args ?? {}, fromMessage: false, entryId: tcEntryId } });
+        events.push({ type: "tool-start", data: { toolCallId: event.toolCallId, toolName: event.toolName, args: normalizeToolArgs(args), fromMessage: false, entryId: tcEntryId } });
       }
       break;
     }

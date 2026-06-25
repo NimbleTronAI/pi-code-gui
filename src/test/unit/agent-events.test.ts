@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { translateAgentEvent, extractToolCalls, type AgentTranslateState } from "../../agent-events.js";
+import { translateAgentEvent, extractToolCalls, normalizeToolArgs, type AgentTranslateState } from "../../agent-events.js";
 
 function makeState(over: Partial<AgentTranslateState> = {}): AgentTranslateState {
   return {
@@ -302,4 +302,21 @@ test("extractToolCalls: filters toolCall blocks, maps to {name,id,arguments}", (
 test("extractToolCalls: null/empty content → []", () => {
   assert.deepEqual(extractToolCalls(null), []);
   assert.deepEqual(extractToolCalls([]), []);
+});
+
+test("normalizeToolArgs: passes a plain record through unchanged", () => {
+  const args = { path: "a.ts", n: 1 };
+  assert.equal(normalizeToolArgs(args), args); // same reference, not a copy
+});
+
+test("normalizeToolArgs: null/undefined → {} (the historical-replay bug)", () => {
+  assert.deepEqual(normalizeToolArgs(null), {});
+  assert.deepEqual(normalizeToolArgs(undefined), {});
+});
+
+test("normalizeToolArgs: non-record junk (array, primitive) → {}", () => {
+  assert.deepEqual(normalizeToolArgs([1, 2]), {});
+  assert.deepEqual(normalizeToolArgs("nope"), {});
+  assert.deepEqual(normalizeToolArgs(42), {});
+  assert.deepEqual(normalizeToolArgs(true), {});
 });
