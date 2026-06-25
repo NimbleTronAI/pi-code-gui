@@ -1260,7 +1260,6 @@ export function renderAttachments(): void {
   // ── Send prompt ───────────────────────────────────────
 
 export function sendPrompt(): void {
-    console.log("[pi-gui] sendPrompt called");
     var text = state.promptInput.value.trim();
     if (!text && state.attachments.length === 0) {return;}
 
