@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
-import { piLog, piWarn } from "./logger.js";
+import { piDebug, piWarn } from "./logger.js";
 import { RUST_RPC, type RustResponse } from "./rust-process.js";
 import { extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
@@ -429,7 +429,7 @@ export class PiService {
       const cfg = vscode.workspace.getConfiguration("pi-code-gui");
       const sessionDir = cfg.get<string>("sessionDir")?.trim() || undefined;
       const sessions = await SDK.SessionManager.list(cwd, sessionDir);
-      piLog(`listSessions: found ${sessions.length} past sessions in ${cwd}`);
+      piDebug(`listSessions: found ${sessions.length} past sessions in ${cwd}`);
       return sessions;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -523,7 +523,7 @@ export class PiService {
           getModels: models.getModels.bind(models),
           complete: models.complete.bind(models),
         } as PiAi;
-        piLog("pi-ai >=0.80 detected — adapted AI to the providers/all entrypoint (getBuiltinModel + builtinModels()).");
+        piDebug("pi-ai >=0.80 detected — adapted AI to the providers/all entrypoint (getBuiltinModel + builtinModels()).");
       } catch (e: unknown) {
         return { success: false, error: `pi-ai >=0.80 is installed but its providers/all entrypoint could not load (${e instanceof Error ? e.message : String(e)}). Update @earendil-works/pi-coding-agent, or pin it to a 0.79.x release.` };
       }
@@ -668,7 +668,7 @@ export class PiService {
 
       // Report discovered resources
       const { skills: discoveredSkills } = this.resourceLoader.getSkills();
-      piLog(`Extensions: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
+      piDebug(`Extensions: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
     } catch (e: unknown) {
       piWarn(`ResourceLoader setup warning: ${e instanceof Error ? e.message : String(e)}`);
       // Non-fatal: ResourceLoader is optional, session can work without it
@@ -730,7 +730,7 @@ export class PiService {
     if (isResuming) {
       const entries = this.sessionManager.getEntries?.();
       if (Array.isArray(entries)) {
-        piLog(`Restoring model/thinking from session: ${entries.length} entries`);
+        piDebug(`Restoring model/thinking from session: ${entries.length} entries`);
         // Walk entries in reverse to find the last model_change and thinking_level_change
         for (let i = entries.length - 1; i >= 0; i--) {
           const e = entries[i];
@@ -740,14 +740,14 @@ export class PiService {
             if (found) {
               resumeModel = found;
               foundSessionModel = true;
-              piLog(`Restored model from session: ${e.provider}/${e.modelId}`);
+              piDebug(`Restored model from session: ${e.provider}/${e.modelId}`);
             } else {
               // Fallback: try getModel
               const m = AI.getModel(e.provider, e.modelId);
               if (m) {
                 resumeModel = m;
                 foundSessionModel = true;
-                piLog(`Restored model from session (fallback): ${e.provider}/${e.modelId}`);
+                piDebug(`Restored model from session (fallback): ${e.provider}/${e.modelId}`);
               } else {
                 piWarn(`Could not resolve session model: ${e.provider}/${e.modelId}`);
               }
@@ -756,16 +756,16 @@ export class PiService {
           if (!foundSessionThinking && e.type === "thinking_level_change" && e.thinkingLevel) {
             resumeThinkingLevel = e.thinkingLevel;
             foundSessionThinking = true;
-            piLog(`Restored thinking from session: ${e.thinkingLevel}`);
+            piDebug(`Restored thinking from session: ${e.thinkingLevel}`);
           }
           // Stop early once both are resolved
           if (foundSessionModel && foundSessionThinking) { break; }
         }
-        if (!foundSessionModel) { piLog("No model_change entry found in session"); }
-        if (!foundSessionThinking) { piLog("No thinking_level_change entry found in session"); }
+        if (!foundSessionModel) { piDebug("No model_change entry found in session"); }
+        if (!foundSessionThinking) { piDebug("No thinking_level_change entry found in session"); }
       }
     } else {
-      piLog(`Skipping session restore (fresh=${fresh}, hasSessionManager=${!!this.sessionManager})`);
+      piDebug(`Skipping session restore (fresh=${fresh}, hasSessionManager=${!!this.sessionManager})`);
     }
 
     // ── Step 9: Create agent session ───────────────────
@@ -1070,11 +1070,11 @@ export class PiService {
           piWarn(`Extension error [${extensionPath}]: ${error?.message ?? error}`);
         },
       });
-      piLog("Extension UI context bound");
+      piDebug("Extension UI context bound");
       // Log which extensions have handlers registered
       if (this.session?._extensionRunner) {
         const paths = this.session._extensionRunner.getExtensionPaths?.() ?? [];
-        piLog(`Loaded extensions: ${paths.length > 0 ? paths.join(", ") : "none"}`);
+        piDebug(`Loaded extensions: ${paths.length > 0 ? paths.join(", ") : "none"}`);
       }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -1175,11 +1175,11 @@ export class PiService {
     let entries: any[];
     if (providedEntries) {
       entries = providedEntries;
-      piLog(`sendInitialMessages: ${entries.length} provided entries`);
+      piDebug(`sendInitialMessages: ${entries.length} provided entries`);
     } else {
       try {
         entries = this.sessionManager.getEntries();
-        piLog(`sendInitialMessages: ${entries?.length ?? 0} entries`);
+        piDebug(`sendInitialMessages: ${entries?.length ?? 0} entries`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         piWarn(`sendInitialMessages: getEntries failed: ${e.message}`);
@@ -1652,7 +1652,7 @@ export class PiService {
    * unchanged).
    */
   async compact(): Promise<void> {
-    piLog(`compact() invoked (backend=${this._backendKind})`);
+    piDebug(`compact() invoked (backend=${this._backendKind})`);
     if (this._backendKind === "rust") {
       await this._rust?.compact();
       return;
@@ -2364,7 +2364,7 @@ export class PiService {
     this.session.setActiveToolsByName(toolNames);
     // Verify the update took effect
     const actualNames = this.session.getActiveToolNames();
-    piLog(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
+    piDebug(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
     // Force-persist the tool selection so it survives session close/reopen
     this._forcePersistEntry({
       type: "tools_active_change",
@@ -2373,7 +2373,7 @@ export class PiService {
       timestamp: new Date().toISOString(),
       toolNames,
     });
-    piLog(`setActiveTools: ${toolNames.length} tools active`);
+    piDebug(`setActiveTools: ${toolNames.length} tools active`);
   }
 
   /** Walk session entries in reverse to find and apply the last tools_active_change. */
@@ -2384,7 +2384,7 @@ export class PiService {
       const e = entries[i];
       if (e.type === "tools_active_change" && Array.isArray(e.toolNames) && e.toolNames.length > 0) {
         this.session.setActiveToolsByName(e.toolNames);
-        piLog(`Restored active tools from session: ${e.toolNames.join(", ")}`);
+        piDebug(`Restored active tools from session: ${e.toolNames.join(", ")}`);
         return;
       }
     }
@@ -2408,7 +2408,7 @@ export class PiService {
     }
 
     const activeNames = new Set(this.getActiveToolNames());
-    piLog(`pickActiveTools: ${activeNames.size} active tools — ${[...activeNames].join(", ") || "(none)"}`);
+    piDebug(`pickActiveTools: ${activeNames.size} active tools — ${[...activeNames].join(", ") || "(none)"}`);
 
     // Group by source for a cleaner pick list
     const builtinTools = allTools.filter((t) => t.source === "builtin");

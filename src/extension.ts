@@ -6,7 +6,7 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
-import { initLogger, disposeLogger, piLog, piWarn } from "./logger.js";
+import { initLogger, disposeLogger, piLog, piDebug, piWarn } from "./logger.js";
 import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
@@ -198,7 +198,6 @@ async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promi
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extContext = context;
-  console.log("Pi Code Gui extension activating...");
 
   // Create output channel for diagnostics (View → Output → Pi Code Gui)
   const outputChannel = vscode.window.createOutputChannel("Pi Code Gui", { log: true });
@@ -211,7 +210,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Without this guard, we fall back to process.cwd() which on remote servers
   // is the server root, loading sessions from the wrong project.
   if (!vscode.workspace.workspaceFolders?.length) {
-    piLog("Waiting for workspace folders...");
+    piDebug("Waiting for workspace folders...");
     await new Promise<void>((resolve) => {
       let settled = false;
       let sub: vscode.Disposable | undefined;
@@ -234,7 +233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Race guard: folders may have populated between the check and this point.
       if (vscode.workspace.workspaceFolders?.length) { finish(); }
     });
-    piLog(`Workspace ready: ${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "(none — using fallback cwd)"}`);
+    piDebug(`Workspace ready: ${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "(none — using fallback cwd)"}`);
   }
 
   // Catch unhandled rejections/exceptions so we can see what crashes the
@@ -458,7 +457,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       tempPi.dispose();
     }
 
-    piLog(`doForkFromOpenEntry: forked to ${forkedPath}`);
+    piDebug(`doForkFromOpenEntry: forked to ${forkedPath}`);
     await openForkedSession(forkedPath);
   }
 
@@ -912,7 +911,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       sessionCounter = savedCounter;
     }
     // Restore every session that was open, in order, on its origin runtime.
-    piLog(`Restoring ${savedRefs.length} open sessions...`);
+    piDebug(`Restoring ${savedRefs.length} open sessions...`);
     for (let i = 0; i < savedRefs.length; i++) {
       const ref = savedRefs[i];
       const sw = createSessionWindow(context, ref.runtime);
@@ -968,7 +967,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   context.subscriptions.push(packagesTreeView);
 
   if (!result.success) {
-    console.log(`[pi-gui] Packages view: package service init failed: ${result.error}`);
+    piWarn(`Packages view: package service init failed: ${result.error}`);
     // Show the error in the tree view itself (init only fails when neither
     // runtime is available — the SDK and the Rust binary are both absent).
     packagesTreeProvider.showError(result.error ?? "No Pi runtime available for package management.");
@@ -1130,7 +1129,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
     }),
   );
 
-  console.log("[pi-gui] Packages view ready");
+  piDebug("Packages view ready");
 }
 
 /** Resolve a tree item from either a direct argument or the tree view selection. */
@@ -1435,9 +1434,9 @@ async function refreshPastSessionsList(): Promise<void> {
     piWarn("refreshPastSessionsList: sessionTreeProvider is null, skipping");
     return;
   }
-  piLog(`refreshPastSessionsList: loading past sessions for cwd=${cwd}`);
+  piDebug(`refreshPastSessionsList: loading past sessions for cwd=${cwd}`);
   await sessionTreeProvider.refreshPastSessions(cwd);
-  piLog(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
+  piDebug(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
 }
 
 async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<void> {
@@ -1670,7 +1669,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   // Persist open session list so this session is restored on reload.
   void saveOpenSessionPaths();
 
-  console.log(`Pi Code Gui session ${sw.id} ready`);
+  piDebug(`Pi Code Gui session ${sw.id} ready`);
 }
 
 function removeSession(sw: SessionWindow): void {
@@ -1797,7 +1796,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       }
       merged.sort((a, b) => (b.modified ?? b.created ?? 0) - (a.modified ?? a.created ?? 0));
       this._pastSessions = merged;
-      piLog(`refreshPastSessions: ${tsSessions.length} TS + ${rustSessions.length} Rust (scope=${scope})`);
+      piDebug(`refreshPastSessions: ${tsSessions.length} TS + ${rustSessions.length} Rust (scope=${scope})`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       piWarn(`refreshPastSessions failed: ${e.message ?? e}`);

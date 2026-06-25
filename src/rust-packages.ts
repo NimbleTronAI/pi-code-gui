@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { detectRustBinary, shouldDisableRustExtensions } from "./rust-resolver.js";
-import { piLog, piWarn } from "./logger.js";
+import { piDebug, piWarn } from "./logger.js";
 import { parseDoctorVerdict } from "./rust-doctor.js";
 
 // TTL cache for `rust-pi doctor` verdicts, keyed by installedPath. Without it,
@@ -210,7 +210,7 @@ export async function rustLoadability(cwd: string, installedPath?: string): Prom
  */
 export async function rustActiveSources(cwd: string, installed: Array<{ source: string; installedPath?: string }>): Promise<Set<string>> {
   if (shouldDisableRustExtensions(cwd)) {
-    piLog("rustActiveSources: extension discovery disabled for this workspace — 0 active");
+    piDebug("rustActiveSources: extension discovery disabled for this workspace — 0 active");
     return new Set();
   }
   const active = new Set<string>();

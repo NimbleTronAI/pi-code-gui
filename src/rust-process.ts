@@ -6,7 +6,7 @@
 // since the Rust event shapes mirror the TypeScript SDK's.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { piLog, piWarn } from "./logger.js";
+import { piDebug, piWarn } from "./logger.js";
 
 export interface RustResponse {
   type: "response";
@@ -75,7 +75,7 @@ export class RustProcess {
    *  (timer fallback); reject on immediate failure. */
   async spawn(): Promise<void> {
     const { binaryPath, args, cwd, env } = this.opts;
-    piLog(`RustProcess: spawn ${binaryPath} ${args.join(" ")}`);
+    piDebug(`RustProcess: spawn ${binaryPath} ${args.join(" ")}`);
     const child = spawn(binaryPath, args, {
       cwd,
       env: env ?? process.env,
@@ -92,7 +92,7 @@ export class RustProcess {
       this.failAllPending(err);
     });
     child.on("exit", (code, signal) => {
-      piLog(`RustProcess: exited code=${code} signal=${signal}`);
+      piDebug(`RustProcess: exited code=${code} signal=${signal}`);
       this.failAllPending(new Error(`Rust process exited (code ${code ?? "?"})`));
       if (!this.disposed) { this.opts.onExit(code, signal); }
     });

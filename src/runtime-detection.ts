@@ -5,7 +5,7 @@ import * as vscode from "vscode";
 import { PiService } from "./pi-service.js";
 import { detectRustBinary, type RustInstallStatus } from "./rust-resolver.js";
 import type { Runtime } from "./types.js";
-import { piLog } from "./logger.js";
+import { piDebug } from "./logger.js";
 import { pickDefaultRuntime } from "./runtime-pick.js";
 
 export interface DetectedRuntimes {
@@ -22,7 +22,7 @@ export async function detectRuntimes(force = false): Promise<DetectedRuntimes> {
   const ts = (await PiService.checkInstall()).installed;
   const rustStatus = detectRustBinary();
   cached = { ts, rust: rustStatus.installed, rustStatus };
-  piLog(`detectRuntimes: ts=${ts} rust=${rustStatus.installed}${rustStatus.version ? ` (${rustStatus.version})` : ""}`);
+  piDebug(`detectRuntimes: ts=${ts} rust=${rustStatus.installed}${rustStatus.version ? ` (${rustStatus.version})` : ""}`);
   return cached;
 }
 

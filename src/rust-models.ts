@@ -22,7 +22,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { piLog } from "./logger.js";
+import { piDebug } from "./logger.js";
 import { resolveMaxOutputTokens } from "./rust-catalog.js";
 import registryData from "./model-registry.generated.json";
 
@@ -150,6 +150,6 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   const omitted = writeModelsJson(path.join(dir, "models.json"), budget);
   const w = seedAuth(dir);
   if (w) { warnings.push(w); }
-  piLog(`Rust model catalog: ${Object.keys(registry.providers).length} providers from pi-ai ${registry.piAiVersion} → ${dir}/models.json (budget=${budget}, ${omitted} placeholder maxTokens omitted → provider default)`);
+  piDebug(`Rust model catalog: ${Object.keys(registry.providers).length} providers from pi-ai ${registry.piAiVersion} → ${dir}/models.json (budget=${budget}, ${omitted} placeholder maxTokens omitted → provider default)`);
   return { piEnv: { PI_CODING_AGENT_DIR: dir }, warnings };
 }

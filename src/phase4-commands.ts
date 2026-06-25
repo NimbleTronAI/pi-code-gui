@@ -1,11 +1,12 @@
 import * as vscode from "vscode";
 import type { PiService } from "./pi-service.js";
+import { piDebug } from "./logger.js";
 
 function safeRegister(context: vscode.ExtensionContext, command: string, callback: (...args: unknown[]) => unknown): void {
   try {
     context.subscriptions.push(vscode.commands.registerCommand(command, callback));
   } catch (e: unknown) {
-    console.log(`[pi-gui] Command "${command}" already registered, skipping phase-4 duplicate: ${e instanceof Error ? e.message : String(e)}`);
+    piDebug(`Command "${command}" already registered, skipping phase-4 duplicate: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

@@ -87,7 +87,7 @@ export class PiWebviewPanel {
 
   private setupWebviewHandlers(): void {
     if (!this.panel) {
-      console.error("[pi-gui] setupWebviewHandlers called with no panel — webview messages will be lost");
+      piWarn("setupWebviewHandlers called with no panel — webview messages will be lost");
       return;
     }
 
@@ -343,7 +343,7 @@ export class PiWebviewPanel {
         msgType !== "resendUserMessage") {
       const result = validateExtensionToWebview(message);
       if (!result.success) {
-        console.error(`[pi-gui] postMessage validation failed for type "${msgType}": ${result.error}`);
+        piWarn(`postMessage validation failed for type "${msgType}": ${result.error}`);
       }
     }
     this.panel?.webview.postMessage(message);

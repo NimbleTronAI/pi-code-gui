@@ -12,7 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import * as vscode from "vscode";
-import { piLog, piWarn } from "./logger.js";
+import { piDebug, piWarn } from "./logger.js";
 // Pure interop gates live in a vscode-free module so they can be unit-tested;
 // re-exported here to keep the existing `./rust-resolver.js` import surface.
 import { workspaceHasTsPiExtensions, isRustExtensionConflict } from "./rust-interop.js";
@@ -122,7 +122,7 @@ export function detectRustBinary(): RustInstallStatus {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
-      piLog(`detectRustBinary: found Rust pi at ${resolved} (${version})`);
+      piDebug(`detectRustBinary: found Rust pi at ${resolved} (${version})`);
       return { installed: true, binaryPath: resolved, version };
     } catch (e: unknown) {
       piWarn(`detectRustBinary: ${resolved} failed --version: ${e instanceof Error ? e.message : String(e)}`);
