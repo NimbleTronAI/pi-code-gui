@@ -67,11 +67,21 @@ The translation layer:
 `customType: "pi-gui-diagnostic"` that renders as a visible notification above
 the prompt. Previously they were silently dropped.
 
+**`tool-start` args are always a record.** The protocol schema requires
+`data.args` to be a record, but a param-less tool persists `arguments: null` —
+which historical-session replay (including Rust sessions, whose `get_messages`
+entries flow through `PiService.sendInitialMessages`) would otherwise emit as
+`null`, tripping outbound validation on every tool. `normalizeToolArgs(args)`
+(in `agent-events.ts`) collapses `null`/`undefined`/array/primitive to `{}`; all
+three `tool-start` emit sites — the two live ones and the replay loop in
+`pi-service.ts` — route through it so the guard can't drift apart.
+
 ## Related
 
 - [PiService](pi-service.md) — owns this translation layer
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-06-24 — extracted the decision logic into the pure `translateAgentEvent` (`src/agent-events.ts`) with a per-event-type unit suite; `handleAgentEvent` is now a thin apply-mutations/emit/effects shell
+> **Last updated:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical/Rust replay)
+> **Earlier:** 2026-06-24 — extracted the decision logic into the pure `translateAgentEvent` (`src/agent-events.ts`) with a per-event-type unit suite; `handleAgentEvent` is now a thin apply-mutations/emit/effects shell
 > **Earlier:** 2026-05-27 — added turn-end, message_update error, clarified user message_end

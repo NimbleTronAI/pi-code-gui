@@ -34,6 +34,7 @@ reference; follow the links for depth.
 
 - [SDK Resolution & Init](operations/sdk-resolution.md) — Finding Pi SDK on disk, the 11-step init sequence
 - [Build Pipeline](operations/build-pipeline.md) — esbuild, tsc, ESLint, VSIX packaging, CI publish
+- [Logging](operations/logging.md) — single logger → "Pi Code Gui" Output channel; `piDebug`/`piLog`/`piWarn` levels; no console writes
 
 ## Meta
 
