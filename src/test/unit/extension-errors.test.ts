@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyProviderConfigError, classifyRustLoadError, humanizeProviderError } from "../../extension-errors.js";
+import { classifyProviderConfigError, classifyRustLoadError, humanizeProviderError, formatRustLoadError, humanizeRustLoadError } from "../../extension-errors.js";
 
 test("provider key: the deepseek $ENV legacy-syntax failure", () => {
   const r = classifyProviderConfigError(
@@ -74,6 +74,21 @@ test("rust load: unsupported module specifier extracts module + package", () => 
   assert.equal(r.kind, "unsupported-module");
   assert.equal(r.packageName, "pi-web-access");
   assert.match(r.detail, /node:dns\/promises/);
+});
+
+test("formatRustLoadError / humanizeRustLoadError: one-line user message", () => {
+  const digestLine =
+    "Warning: Failed to load extensions: [digest_mismatch]: digest changed for npm:pi-web-access: expected a, got b";
+  const out = humanizeRustLoadError(digestLine);
+  assert.ok(out);
+  assert.match(out, /Pi extension "pi-web-access" failed to load \(digest-mismatch\)/);
+  assert.match(out, /pi remove pi-web-access/);
+  // direct format from a structured value (no package)
+  assert.equal(
+    formatRustLoadError({ kind: "load-failed", detail: "Failed to load themes: bad" }),
+    "A Pi extension failed to load (load-failed): Failed to load themes: bad",
+  );
+  assert.equal(humanizeRustLoadError("ordinary stderr noise"), null);
 });
 
 test("rust load: generic load failure + non-load lines return null", () => {

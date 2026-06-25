@@ -7,6 +7,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { piDebug, piWarn } from "./logger.js";
+import { classifyRustLoadError, formatRustLoadError, type RustLoadError } from "./extension-errors.js";
 
 export interface RustResponse {
   type: "response";
@@ -51,6 +52,10 @@ export interface RustProcessOpts {
   onEvent: (e: RustEvent) => void;
   /** Called once when the process exits unexpectedly (not via dispose()). */
   onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+  /** Called the first time a given extension-load failure (digest mismatch,
+   *  unsupported module, …) appears on stderr — deduped per (kind, package) so
+   *  the host can surface it once, elegantly, instead of per repeated line. */
+  onLoadError?: (e: RustLoadError) => void;
   /** If set, `spawn()` resolves only when this RPC command first responds — a
    *  real readiness signal (the binary emits no startup event), replacing the
    *  old fixed timer. Omit to fall back to a short "did it crash immediately?"
@@ -67,6 +72,9 @@ export class RustProcess {
   private seq = 0;
   private pending = new Map<string, { resolve: (r: RustResponse) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private disposed = false;
+  /** (kind:package) keys already reported, so a repeated load failure on stderr
+   *  is logged once at warn level and thereafter only at debug. */
+  private readonly seenLoadErrors = new Set<string>();
   private readonly opts: RustProcessOpts;
 
   constructor(opts: RustProcessOpts) { this.opts = opts; }
@@ -139,9 +147,30 @@ export class RustProcess {
     while ((idx = this.stderrBuf.indexOf("\n")) >= 0) {
       const line = this.stderrBuf.slice(0, idx);
       this.stderrBuf = this.stderrBuf.slice(idx + 1);
-      if (line.trim()) { piWarn(`[rust-stderr] ${line}`); }
+      this.handleStderrLine(line);
     }
     if (this.stderrBuf.length > 8192) { this.stderrBuf = this.stderrBuf.slice(-4096); }
+  }
+
+  /** Route one stderr line. Recognized extension-load failures (and pi's own
+   *  multi-line "Remediation:" hint) are caught: the first of each unique
+   *  failure is reported once via onLoadError + a clean warning, repeats and the
+   *  raw remediation hint go to debug. Everything else is genuine stderr. */
+  private handleStderrLine(line: string): void {
+    if (!line.trim()) { return; }
+    const diag = classifyRustLoadError(line);
+    if (diag) {
+      const key = `${diag.kind}:${diag.packageName ?? ""}`;
+      if (this.seenLoadErrors.has(key)) { piDebug(`[rust-stderr] ${line}`); return; }
+      this.seenLoadErrors.add(key);
+      piWarn(formatRustLoadError(diag));
+      this.opts.onLoadError?.(diag);
+      return;
+    }
+    // pi prints its own "Remediation: …" hint after a load failure; we emit our
+    // own remediation, so keep the raw hint out of the warning stream.
+    if (/^\s*Remediation:/i.test(line)) { piDebug(`[rust-stderr] ${line}`); return; }
+    piWarn(`[rust-stderr] ${line}`);
   }
 
   private dispatchLine(line: string): void {

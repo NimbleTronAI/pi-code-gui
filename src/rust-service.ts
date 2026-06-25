@@ -15,6 +15,7 @@
 import * as vscode from "vscode";
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse } from "./rust-process.js";
+import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
@@ -313,6 +314,13 @@ export class RustService {
       binaryPath, args, cwd, env,
       onEvent: (e: RustEvent) => this.handleEvent(e),
       onExit: (code: number | null) => this.handleExit(code),
+      // Surface a failed extension/skill load once, as an in-chat notice — users
+      // can't be expected to read raw stderr, and we can't control which
+      // extensions they have installed. Deduped upstream in RustProcess.
+      onLoadError: (e) => this.host.emit({
+        type: "custom-message",
+        data: { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
+      }),
       // Confirm startup by a real get_state round-trip rather than a blind timer.
       readyCommand: RUST_RPC.getState,
     });

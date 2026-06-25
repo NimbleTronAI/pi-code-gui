@@ -82,6 +82,18 @@ export interface RustLoadError {
   remediation?: string;
 }
 
+/** One-line, user-facing message for a classified Rust extension-load failure. */
+export function formatRustLoadError(e: RustLoadError): string {
+  const who = e.packageName ? `Pi extension "${e.packageName}"` : "A Pi extension";
+  return `${who} failed to load (${e.kind}): ${e.detail}${e.remediation ? ` ${e.remediation}` : ""}`;
+}
+
+/** classify + format a raw Rust-stderr line in one step, or null if not a load failure. */
+export function humanizeRustLoadError(line: string | undefined | null): string | null {
+  const e = classifyRustLoadError(line);
+  return e ? formatRustLoadError(e) : null;
+}
+
 const NODE_MODULES_PKG_RE = /node_modules\/((?:@[^/]+\/)?[^/'"]+)/;
 
 /**
