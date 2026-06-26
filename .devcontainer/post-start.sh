@@ -56,3 +56,18 @@ if command -v pi &>/dev/null; then
 else
     echo "    warn: pi not found — skipping package updates"
 fi
+
+# ── rust-pi (TEMPORARY local build) ──────────────────
+# The extension resolves rust-pi at ~/.local/bin/rust-pi, which lives on the
+# container layer and is WIPED on every rebuild. We're temporarily running a
+# locally-built rust-pi (pi_agent_rust 6c5f43b3 — the DeepSeek thinking-level
+# fix, ahead of the upstream release). It's stashed in the persistent ~/.pi
+# volume; restore it here so the extension survives rebuilds.
+# REVERT once upstream pi_agent_rust ships the fix: delete this block, remove
+# /home/node/.pi/rust-pi-6c5f43b3, and install the published rust-pi.
+if [ -x /home/node/.pi/rust-pi-6c5f43b3 ]; then
+    echo "==> rust-pi (local 6c5f43b3)"
+    mkdir -p /home/node/.local/bin
+    cp /home/node/.pi/rust-pi-6c5f43b3 /home/node/.local/bin/rust-pi
+    echo "    restored $(/home/node/.local/bin/rust-pi --version 2>/dev/null | head -1)"
+fi
