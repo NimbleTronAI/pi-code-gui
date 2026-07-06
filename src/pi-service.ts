@@ -2,7 +2,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as vscode from "vscode";
 
-import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
+import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn } from "./logger.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import { RUST_RPC, type RustResponse } from "./rust-process.js";
@@ -21,6 +21,7 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessageText } from "./agent-events.js";
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
+import { detectMissingRustTools, installCommandForPlatform } from "./rust-deps.js";
 import type { BackendCapabilities } from "./pi-backend.js";
 
 export interface InstallStatus {
@@ -263,6 +264,7 @@ export class PiService {
     if (runtime === "rust") {
       return this.initializeRust({ fresh, openPath: openPath ?? undefined });
     }
+    if (runtime !== "typescript") { assertNever(runtime, "runtime"); }
     this._backendKind = "typescript";
     // Re-init replaces any prior session: drop the stale reference NOW so a failed
     // init reports `initialized === false` instead of pointing at the abandoned
@@ -382,6 +384,11 @@ export class PiService {
       },
       showError: (message) => { void vscode.window.showErrorMessage(message); },
       exportHtml: (sessionFile, outputPath) => rustExportHtml(sessionFile, outputPath),
+      detectMissingTools: async () => {
+        const missing = await detectMissingRustTools();
+        if (missing.length === 0) { return null; }
+        return { names: missing.map((m) => m.cmds[0]), installHint: installCommandForPlatform(missing, process.platform) };
+      },
       offerReopen: (sessionFile) => {
         // The session JSONL persists on disk; offer one-click recovery into a fresh
         // window via the existing resume flow — avoids in-place re-init (which would

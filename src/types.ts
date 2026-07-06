@@ -15,6 +15,13 @@ export interface ImageContent {
  */
 export type Runtime = "typescript" | "rust";
 
+/** Compile-time exhaustiveness guard. Placing `assertNever(x)` in the default/else of a
+ *  discriminated switch makes adding a third runtime a TYPE error at every unhandled
+ *  branch, instead of silently falling through to the TypeScript path. */
+export function assertNever(x: never, context = "value"): never {
+  throw new Error(`Unhandled ${context}: ${JSON.stringify(x)}`);
+}
+
 /** Summary of a past session as returned by session listing. */
 export interface SessionSummary {
   name?: string;

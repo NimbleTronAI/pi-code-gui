@@ -118,6 +118,7 @@ function makeDeps(mode: string, overrides?: Partial<RustDeps>): RustDeps {
     showError: () => { /* noop */ },
     offerReopen: () => { /* noop */ },
     exportHtml: async (_s, out) => out,
+    detectMissingTools: async () => null,
     // The fake is a node script: prepend it to the args RustService built, and
     // carry FAKE_MODE through the env RustService assembled.
     createProcess: (opts: RustProcessOpts) => new RustProcess({

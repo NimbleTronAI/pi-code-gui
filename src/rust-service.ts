@@ -117,6 +117,9 @@ export interface RustDeps {
   offerReopen(sessionFile: string): void;
   /** Export a session JSONL to HTML by shelling out to `pi --export`. */
   exportHtml(sessionFile: string, outputPath: string): Promise<string>;
+  /** Detect rust-pi's external tool prerequisites (fd, ripgrep). Returns the missing
+   *  tools' display names + a platform install hint, or null if all present. */
+  detectMissingTools(): Promise<{ names: string[]; installHint: string | null } | null>;
   /** Test seam: wrap/replace RustProcess construction (defaults to the real one). */
   createProcess?(opts: RustProcessOpts): RustProcess;
 }
@@ -144,6 +147,9 @@ export class RustService {
   // covering some connection drops (e.g. "closed before headers") is tracked upstream.
   /** Guard against overlapping refreshState() runs — see refreshState(). */
   private _refreshing = false;
+  /** One-shot guard for the get_state RPC-shape-drift warning (a permanent structural
+   *  mismatch, distinct from transient capability degradation). */
+  private _shapeProbeWarned = false;
 
   constructor(private readonly host: RustHost, private readonly deps: RustDeps) {}
 
@@ -286,8 +292,12 @@ export class RustService {
         // tested version (0.1.18–87b70f74) carries, the shape has drifted — say so
         // once instead of degrading into scattered per-capability oddities.
         const d = (state.data ?? {}) as { model?: { id?: unknown }; activeModel?: unknown; thinkingLevel?: unknown; thinking?: unknown };
-        if (!(d.model?.id ?? d.activeModel) || (d.thinkingLevel ?? d.thinking) === undefined) {
-          this.warnDegraded("status", "Rust Pi's get_state reply is missing expected fields (model/thinkingLevel) — the binary's RPC shape may have drifted from the version this extension was tested against. Status readouts may be wrong; consider matching the pinned Rust Pi version.");
+        // A drifted RPC SHAPE is a permanent structural mismatch, not a transient
+        // capability degradation (which can recover and re-warn) — so it uses its own
+        // one-shot flag rather than the warnDegraded/recordCapOk tracker.
+        if (!this._shapeProbeWarned && (!(d.model?.id ?? d.activeModel) || (d.thinkingLevel ?? d.thinking) === undefined)) {
+          this._shapeProbeWarned = true;
+          this.host.emit({ type: "custom-message", data: { customType: "error", content: "Rust Pi's get_state reply is missing expected fields (model/thinkingLevel) — the binary's RPC shape may have drifted from the version this extension was tested against. Status readouts may be wrong; consider matching the pinned Rust Pi version.", timestamp: Date.now() } });
         }
       }
     } catch (e: unknown) {
@@ -365,8 +375,27 @@ export class RustService {
       this.host.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
     }
 
+    // Proactively surface missing external tool prerequisites (fd/ripgrep) once per
+    // host — rust-pi's find/grep tools shell out to them, and a manual install (not the
+    // managed one, which checks) would otherwise only fail mid-session as a raw tool
+    // error. Fire-and-forget so it never delays session readiness.
+    if (!RustService._toolDepsWarned) {
+      void this.deps.detectMissingTools().then((missing) => {
+        if (!missing || RustService._toolDepsWarned) { return; }
+        RustService._toolDepsWarned = true;
+        this.host.emit({ type: "custom-message", data: { customType: "info", content:
+          `ℹ️ Rust Pi's \`find\`/\`grep\` tools need ${missing.names.join(" and ")} installed. They're missing, so those tools will fail until you install ${missing.names.length > 1 ? "them" : "it"}${missing.installHint ? `: \`${missing.installHint}\`` : "."}`,
+          timestamp: Date.now() } });
+      }).catch(() => { /* detection is best-effort */ });
+    }
+
     return { success: true, warning };
   }
+
+  /** One-per-host guard for the missing-fd/rg proactive notice. */
+  private static _toolDepsWarned = false;
+  /** One-per-host guard: show the full "/compact differs under Rust" explanation once. */
+  private static _compactGateExplained = false;
 
   /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
   private async spawn(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
@@ -890,7 +919,14 @@ export class RustService {
         // explain it honestly rather than flag a red error. (The TypeScript
         // runtime has no such gate and compacts on demand.)
         if (/not available|missing ids|already compacted|too little history|nothing to compact/i.test(err)) {
-          this.host.emit({ type: "custom-message", data: { customType: "info", content: "Nothing to compact yet. The Rust runtime compacts automatically as the conversation approaches the model's context limit — it won't compact one that still fits comfortably (unlike the TypeScript runtime, which compacts on demand).", timestamp: Date.now() } });
+          // Explain the runtime difference in FULL the first time it's hit this host,
+          // terse afterwards — so a user who /compacts a small conversation isn't told
+          // the whole paragraph every time, but always understands why nothing happened.
+          const content = RustService._compactGateExplained
+            ? "Nothing to compact yet — the conversation still fits comfortably."
+            : "Nothing to compact yet. The Rust runtime compacts automatically as the conversation approaches the model's context limit — it won't compact one that still fits comfortably (unlike the TypeScript runtime, which compacts on demand).";
+          RustService._compactGateExplained = true;
+          this.host.emit({ type: "custom-message", data: { customType: "info", content, timestamp: Date.now() } });
         } else {
           this.host.emit({ type: "custom-message", data: { customType: "info", content: `⚠️ Compact failed: ${err || "unknown error"}`, timestamp: Date.now() } });
         }
