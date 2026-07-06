@@ -19,7 +19,8 @@ import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.j
 
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessageText } from "./agent-events.js";
-import { SdkService, importWithRetry, type PiSdk, type PiAi } from "./sdk-service.js";
+import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
+import { createBridgeTools } from "./bridge-tools.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -287,7 +288,7 @@ export class PiService {
     this._sdk = new SdkService({
       emit: (e) => this.emit(e),
       resolvePiRoot: () => resolvePiPackagePath(),
-    });
+    }, this.makeSdkDeps());
     const init = await this._sdk.initialize({ fresh, openPath });
     if (!init.success || !this.session) {
       return { success: false, error: init.error ?? "SDK initialization produced no session.", errorKind: init.errorKind, warning: init.warning };
@@ -390,6 +391,46 @@ export class PiService {
               void vscode.commands.executeCommand("pi-code-gui.resumePastSession", sessionFile);
             }
           });
+      },
+    };
+  }
+
+  /** Real (vscode-backed) implementations of SdkService's environment deps.
+   *  SdkService is vscode-free so its resolve→load→session init sequence can be
+   *  driven headlessly in unit tests with stubbed deps (see sdk-service.test.ts). */
+  private makeSdkDeps(): SdkDeps {
+    return {
+      workspaceCwd: () => resolveWorkspaceCwd(),
+      config: () => {
+        const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+        return {
+          anthropicApiKey: cfg.get<string>("anthropicApiKey"),
+          openaiApiKey: cfg.get<string>("openaiApiKey"),
+          defaultModelProvider: cfg.get<string>("defaultModelProvider"),
+          defaultModelId: cfg.get<string>("defaultModelId"),
+          defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
+          contextBudget: cfg.get<number>("contextBudget") ?? 0,
+          sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
+        };
+      },
+      importModule: (absPath) => importWithRetry(absPath, 5, 500),
+      fileExists: (p) => fs.existsSync(p),
+      readFileUtf8: (p) => fs.promises.readFile(p, "utf-8"),
+      buildBridgeTools: (defineTool, typebox) => createBridgeTools(defineTool, typebox),
+      catalogProviders: () => this.bundledProviders,
+      notifyOutdatedPiAi: (installed, supported) => {
+        const UPDATE = "Update";
+        void vscode.window.showWarningMessage(
+          `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${supported}+. It still works, but update for full compatibility.`,
+          UPDATE,
+        ).then((choice) => {
+          if (choice === UPDATE) {
+            const term = vscode.window.createTerminal("Update Pi SDK");
+            term.show();
+            // Typed, not executed — the user reviews and runs it (modifies global npm).
+            term.sendText("npm install -g @earendil-works/pi-coding-agent", false);
+          }
+        });
       },
     };
   }

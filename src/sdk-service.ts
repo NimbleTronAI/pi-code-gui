@@ -10,16 +10,21 @@
 // subscription, extension binding, history replay — the old Steps 10–12), and all
 // per-method runtime branching still lives there, reaching the SDK objects through
 // thin getters over this service.
+// This module is vscode-free (like RustService): every environment dependency —
+// config reads, workspace cwd, dynamic module import, filesystem, the outdated-SDK
+// UI nudge — is injected through `SdkDeps`, so the whole resolve→load→session init
+// sequence is driven headlessly in unit tests (see sdk-service.test.ts). The real
+// vscode-backed deps are built by PiService.makeSdkDeps().
 import * as path from "node:path";
 import * as fs from "node:fs";
-import * as vscode from "vscode";
 import { piDebug, piWarn } from "./logger.js";
-import { createBridgeTools } from "./bridge-tools.js";
 import { isOlderThan } from "./version-compare.js";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
-import bundledRegistry from "./model-registry.generated.json";
-import { resolveWorkspaceCwd } from "./workspace.js";
 import type { PiServiceEvent } from "./types.js";
+
+/** The bundled pi-ai catalog providers map shape (a subset of
+ *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
+export type CatalogProviders = Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }>;
 
 /** The pi-ai SDK version this extension targets (the 0.80 model-API redesign:
  *  createModels()/providers-all). Below this we still run via a legacy fallback,
@@ -236,6 +241,39 @@ export interface SdkHost {
   resolvePiRoot(): string;
 }
 
+/** The pi-code-gui settings SdkService reads at init (snapshot, not cached). */
+export interface SdkConfig {
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  defaultModelProvider?: string;
+  defaultModelId?: string;
+  defaultThinkingLevel: string;
+  contextBudget: number;
+  sessionDir?: string;
+}
+
+/** Environment dependencies SdkService needs, injected so its init/handshake is
+ *  headlessly testable (mirrors RustDeps). The real vscode-backed impl lives in
+ *  PiService.makeSdkDeps(); tests supply stubs. */
+export interface SdkDeps {
+  workspaceCwd(): string;
+  config(): SdkConfig;
+  /** Dynamic module import with retry. Test seam: stubs return fake SDK/AI objects. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  importModule(absPath: string): Promise<any>;
+  fileExists(p: string): boolean;
+  readFileUtf8(p: string): Promise<string>;
+  /** Surface the "installed pi-ai is older than supported" nudge (UI; no-op in tests). */
+  notifyOutdatedPiAi(installed: string, supported: string): void;
+  /** Build the vscode_* bridge tools (keeps the vscode-coupled bridge-tools module
+   *  out of this file, so SdkService stays headlessly importable). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  buildBridgeTools(defineTool: Function, typebox: any): any[];
+  /** The bundled pi-ai catalog providers (authoritative capability/cost source).
+   *  Injected rather than imported so this module needs no JSON import (headless). */
+  catalogProviders(): CatalogProviders | undefined;
+}
+
 /** The shared state PiService applies after a successful SDK init. */
 export interface SdkInitOutcome {
   success: boolean;
@@ -266,13 +304,7 @@ export class SdkService {
   public session: any = null;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-  constructor(private readonly host: SdkHost) {}
-
-  /** The bundled pi-ai catalog providers map — the authoritative capability
-   *  source of record (same data PiService consults for the pickers). */
-  private get bundledProviders(): Record<string, { models: Array<ThinkingModel & { id: string }> }> | undefined {
-    return (bundledRegistry as { providers?: Record<string, { models: Array<ThinkingModel & { id: string }> }> }).providers;
-  }
+  constructor(private readonly host: SdkHost, private readonly deps: SdkDeps) {}
 
   /** Resolve, load, and wire the TypeScript SDK up to a live agent session
    *  (the former PiService init Steps 1–9). Never throws; failures come back as
@@ -290,18 +322,14 @@ export class SdkService {
 
     // ── Step 2: Load SDK modules ───────────────────────
     try {
-      this.SDK = (await importWithRetry(
-        path.join(this.piRoot, "dist/index.js"), 5, 500
-      )) as PiSdk;
+      this.SDK = (await this.deps.importModule(path.join(this.piRoot, "dist/index.js"))) as PiSdk;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       return { success: false, error: `Failed to load pi-coding-agent: ${e.message ?? e}` };
     }
 
     try {
-      this.AI = (await importWithRetry(
-        path.join(this.piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"), 5, 500
-      )) as PiAi;
+      this.AI = (await this.deps.importModule(path.join(this.piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"))) as PiAi;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const msg = e.message ?? String(e);
@@ -334,9 +362,7 @@ export class SdkService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof (this.AI as any).getModel !== "function") {
       try {
-        const providersAll = await importWithRetry(
-          path.join(this.piRoot, "node_modules/@earendil-works/pi-ai/dist/providers/all.js"), 5, 500,
-        );
+        const providersAll = await this.deps.importModule(path.join(this.piRoot, "node_modules/@earendil-works/pi-ai/dist/providers/all.js"));
         const models = providersAll.builtinModels();
         // providersAll / models are `any` (dynamic import), so binding their
         // methods needs no explicit annotations and preserves the instance `this`.
@@ -357,11 +383,7 @@ export class SdkService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let Type: any;
     try {
-      const Typebox = await importWithRetry(
-        path.join(this.piRoot, "node_modules/typebox/build/index.mjs"),
-        5,  // max attempts
-        500 // delay ms between attempts
-      );
+      const Typebox = await this.deps.importModule(path.join(this.piRoot, "node_modules/typebox/build/index.mjs"));
       Type = Typebox.Type ?? Typebox;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -369,21 +391,19 @@ export class SdkService {
     }
 
     const SDK = this.SDK;
-    const cwd = resolveWorkspaceCwd();
+    const cfg = this.deps.config();
+    const cwd = this.deps.workspaceCwd();
 
     // ── Step 3: Auth & model registry ──────────────────
     try {
       this.authStorage = SDK.AuthStorage.create();
 
       // Runtime API key override from VS Code secrets or env
-      const config = vscode.workspace.getConfiguration("pi-code-gui");
-      const anthropicKey = config.get<string>("anthropicApiKey");
-      if (anthropicKey) {
-        this.authStorage.setRuntimeApiKey("anthropic", anthropicKey);
+      if (cfg.anthropicApiKey) {
+        this.authStorage.setRuntimeApiKey("anthropic", cfg.anthropicApiKey);
       }
-      const openaiKey = config.get<string>("openaiApiKey");
-      if (openaiKey) {
-        this.authStorage.setRuntimeApiKey("openai", openaiKey);
+      if (cfg.openaiApiKey) {
+        this.authStorage.setRuntimeApiKey("openai", cfg.openaiApiKey);
       }
 
       this.modelRegistry = SDK.ModelRegistry.create(this.authStorage);
@@ -444,18 +464,14 @@ export class SdkService {
     }
 
     // ── Override with user's default model from VS Code settings ──
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    const defProvider = cfg.get<string>("defaultModelProvider");
-    const defModelId = cfg.get<string>("defaultModelId");
-    if (defProvider && defModelId) {
-      const defModel = this.modelRegistry.find(defProvider, defModelId) ?? AI.getModel(defProvider, defModelId);
+    if (cfg.defaultModelProvider && cfg.defaultModelId) {
+      const defModel = this.modelRegistry.find(cfg.defaultModelProvider, cfg.defaultModelId) ?? AI.getModel(cfg.defaultModelProvider, cfg.defaultModelId);
       if (defModel) { model = defModel; }
     }
 
     // ── Override context budget from VS Code settings ──
-    const contextBudget = cfg.get<number>("contextBudget") ?? 0;
-    if (contextBudget > 0) {
-      model = { ...model, contextWindow: contextBudget };
+    if (cfg.contextBudget > 0) {
+      model = { ...model, contextWindow: cfg.contextBudget };
     }
 
     // ── Step 5: ResourceLoader ─────────────────────────
@@ -502,7 +518,7 @@ export class SdkService {
     try {
       tools = [
         ...SDK.createCodingTools(cwd),
-        ...createBridgeTools(SDK.defineTool, Type),
+        ...this.deps.buildBridgeTools(SDK.defineTool, Type),
       ];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -511,8 +527,7 @@ export class SdkService {
 
     // ── Step 7: Session manager ─────────────────────
     try {
-      const cfg2 = vscode.workspace.getConfiguration("pi-code-gui");
-      const sessionDir = cfg2.get<string>("sessionDir")?.trim() || undefined;
+      const sessionDir = cfg.sessionDir;
       if (openPath) {
         this.sessionManager = SDK.SessionManager.open(openPath, sessionDir);
       } else if (fresh) {
@@ -524,7 +539,7 @@ export class SdkService {
         // the path is free so the first user message can't fail.
         for (let i = 0; i < 8; i++) {
           const f: string | undefined = this.sessionManager?.getSessionFile?.();
-          if (!f || !fs.existsSync(f)) { break; }
+          if (!f || !this.deps.fileExists(f)) { break; }
           piWarn(`Fresh session path already exists, regenerating: ${f}`);
           this.sessionManager = SDK.SessionManager.create(cwd, sessionDir);
         }
@@ -545,7 +560,7 @@ export class SdkService {
     //        continueRecent (restoring after VS Code restart).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let resumeModel: any = model;
-    let resumeThinkingLevel = cfg.get<string>("defaultThinkingLevel") ?? "off";
+    let resumeThinkingLevel = cfg.defaultThinkingLevel;
     let foundSessionModel = false;
     let foundSessionThinking = false;
     const isResuming = !fresh && this.sessionManager;
@@ -597,14 +612,15 @@ export class SdkService {
     // clampThinkingLevel(model, level), and getSupportedThinkingLevels(this.model) for
     // the picker) see reasoning:true — otherwise the default level (e.g. xhigh) silently
     // clamps to "off" at session open.
+    const catalog = this.deps.catalogProviders();
     if (resumeModel?.provider && resumeModel?.id) {
-      resumeModel = reconcileThinkingCapability(this.bundledProviders, resumeModel.provider, resumeModel.id, resumeModel);
+      resumeModel = reconcileThinkingCapability(catalog, resumeModel.provider, resumeModel.id, resumeModel);
       // Restore cost rates too: a stripped ~/.pi/agent/models.json entry that omits
       // `cost` makes the SDK default it to zeros, so pi-ai's calculateCost yields
       // exactly $0 (model.cost.input/1e6 × tokens) and the status bar hides cost. The
       // catalog carries the model owner's published rates. Only fill when absent/zero.
       if (!resumeModel.cost?.input) {
-        const realCost = findCatalogModelCost(this.bundledProviders, resumeModel.provider, resumeModel.id);
+        const realCost = findCatalogModelCost(catalog, resumeModel.provider, resumeModel.id);
         if (realCost) { resumeModel = { ...resumeModel, cost: realCost }; }
       }
     }
@@ -677,23 +693,11 @@ export class SdkService {
     if (_piAiVersionWarned || !this.piRoot) { return; }
     try {
       const pkgPath = path.join(this.piRoot, "node_modules", "@earendil-works", "pi-ai", "package.json");
-      const installed = (JSON.parse(await fs.promises.readFile(pkgPath, "utf-8")) as { version?: string }).version ?? "";
+      const installed = (JSON.parse(await this.deps.readFileUtf8(pkgPath)) as { version?: string }).version ?? "";
       if (!installed || !isOlderThan(installed, SUPPORTED_PI_AI_VERSION)) { return; }
       _piAiVersionWarned = true;
       piWarn(`pi-ai ${installed} is older than the supported ${SUPPORTED_PI_AI_VERSION}.`);
-      const UPDATE = "Update";
-      void vscode.window.showWarningMessage(
-        `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${SUPPORTED_PI_AI_VERSION}+. ` +
-        `It still works, but update for full compatibility.`,
-        UPDATE,
-      ).then((choice) => {
-        if (choice === UPDATE) {
-          const term = vscode.window.createTerminal("Update Pi SDK");
-          term.show();
-          // Typed, not executed — the user reviews and runs it (modifies global npm).
-          term.sendText("npm install -g @earendil-works/pi-coding-agent", false);
-        }
-      });
+      this.deps.notifyOutdatedPiAi(installed, SUPPORTED_PI_AI_VERSION);
     } catch (e: unknown) {
       piWarn(`pi-ai version check skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
