@@ -29,13 +29,24 @@ The project runs two tiers of tests:
   jsdom seam), then `node --test out/test/unit/*.test.js`. The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
   exception being the jsdom dispatch seam (see below). As of 2026-07, there are
-  **260 tests across 20 files** in `src/test/unit/` (rust-events, rust-ingress,
-  rust-process, rust-service, model-catalog, panel-restore, session-format,
-  rust-deps, agent-events, rust-interop, bridge-limits, pi-package-path,
-  runtime-pick, pi-package-filter, rust-doctor, webview-format, version-compare,
-  dispatch, logger, extension-errors). This is the suite to run before presenting
-  work. `rust-service.test.ts` drives the REAL RustService init/handshake against
-  a fake rust-pi subprocess (RustService is vscode-free via injected RustDeps).
+  **267 tests across 21 files** in `src/test/unit/` (rust-events, rust-ingress,
+  rust-process, rust-service, sdk-service, model-catalog, panel-restore,
+  session-format, rust-deps, agent-events, rust-interop, bridge-limits,
+  pi-package-path, runtime-pick, pi-package-filter, rust-doctor, webview-format,
+  version-compare, dispatch, logger, extension-errors). This is the suite to run
+  before presenting work.
+
+  **Both runtimes' init is now headlessly tested.** `rust-service.test.ts` drives the
+  REAL RustService init/handshake against a fake rust-pi subprocess (RustService is
+  vscode-free via injected RustDeps). `sdk-service.test.ts` (added 2026-07-06, the
+  tenth-audit's #1 gap) drives the REAL `SdkService.initialize()` — resolve → load →
+  pi-ai-version adapt → auth → model → resources → tools → session — against fake
+  SDK/AI modules + stubbed `SdkDeps` (config, cwd, module import, fs, bridge-tool
+  assembly, catalog providers, UI nudge all injected, so SdkService is vscode-free
+  AND json-import-free). Coverage matrix — headlessly tested: the pure decision
+  modules + BOTH service init paths + the RustProcess transport. Not unit-tested
+  (vscode-coupled UI shells): PiService orchestration/pickers, extension.ts,
+  rust-install/rust-packages interactive flows.
   There is also an opt-in REAL-binary contract probe: `pnpm run test:rust-smoke`
   (scripts/rust-smoke.mjs) — get_state round-trip against PI_RUST_BIN or
   ~/.local/bin/rust-pi; skips cleanly when no binary is present.

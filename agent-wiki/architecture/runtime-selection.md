@@ -203,11 +203,22 @@ isn't installed, so Rust-only setups can still manage packages.
 Short rationale for the non-obvious choices, so they aren't "fixed" back into a
 rejected alternative. (Lightweight, in lieu of formal ADRs.)
 
-- **Internal branching over a `PiBackend` interface.** A polymorphic backend was
-  considered and rejected: ~85% of PiService is runtime-agnostic, and a shared
-  interface would force the in-process-only custom-card renderer into an
-  abstraction with no out-of-process equivalent. Branching keeps the shared part
-  shared (see *Internal branching* above).
+- **`PiBackend` interface for the divergent primitives + `BackendCapabilities` for
+  feature gates (superseded the earlier "internal branching only" ADR, 2026-07-06).**
+  The tenth-audit remediation formalized the ~15% that genuinely diverges into
+  `src/pi-backend.ts`: PiService delegates PRIMITIVE operations (sendPrompt, abort,
+  compact, setModel, setThinkingLevel, setAuto*, exportToHtml, getUsage, getEntries)
+  to the active backend, and reads `capabilities` (bridgeTools / customCards /
+  toolsPicker / fork / reloadContext / exportHtml / rename / interceptSlashCommands /
+  thinkingLevelLive) instead of hard-coding `_backendKind === "rust"`. The ~85%
+  runtime-agnostic ORCHESTRATION (cycleModel, toggle*, the pickers, slash-command
+  dispatch, status formatting) stays in PiService and calls the primitives — so the
+  shared part stays shared while the interface removes the per-method branch and the
+  null-returning SDK getters. The old objection (a polymorphic backend forcing the
+  in-process-only custom-card renderer into a leaky abstraction) is answered by
+  `capabilities.customCards`: it's a data flag, not an interface method every backend
+  must implement. Both `SdkService` and `RustService` expose `capabilities` + the
+  primitives; delegation is landing incrementally, each step green.
 - **Pinned managed binary, not `latest`.** The managed download installs a fixed,
   tested release (`src/rust-pi-version.json`), never upstream `latest` —
   auto-pulling a brand-new release behind the extension would break the

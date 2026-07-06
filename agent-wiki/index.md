@@ -36,6 +36,7 @@ reference; follow the links for depth.
 - [Build Pipeline](operations/build-pipeline.md) — esbuild, tsc, ESLint, VSIX packaging, CI publish
 - [Logging](operations/logging.md) — single logger → "Pi Code Gui" Output channel; `piDebug`/`piLog`/`piWarn` levels; no console writes
 - [Error Surfacing](operations/error-surfacing.md) — `extension-errors.ts` classifiers turn provider-key / Rust-load failures into clear, deduped, in-chat diagnostics
+- [Runtime Debugging](operations/runtime-debugging.md) — per-runtime diagnostic checklist (Output channel, binary/SDK version, session pools, tool deps, capabilities)
 
 ## Meta
 
