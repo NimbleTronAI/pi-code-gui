@@ -22,7 +22,7 @@ import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessag
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools, installCommandForPlatform } from "./rust-deps.js";
-import type { BackendCapabilities } from "./pi-backend.js";
+import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -101,6 +101,15 @@ export class PiService {
    *  session; PiService delegates the Rust branch of each backend-aware method
    *  here. See src/rust-service.ts (and the RustHost contract it consumes). */
   private _rust: RustService | null = null;
+
+  /** The active runtime as a PiBackend (in-process SDK or out-of-process Rust), or
+   *  null before init / after a failed init. PiService delegates the primitive,
+   *  runtime-divergent operations (sendPrompt, abort, compact, setModel, …) here
+   *  instead of branching on `_backendKind` at each call site. Orchestration and UI
+   *  (pickers, slash dispatch, status/cost formatting) stay in PiService. */
+  private get backend(): PiBackend | null {
+    return this._backendKind === "rust" ? this._rust : this._sdk;
+  }
 
   // SDK state — owned by SdkService; exposed under the legacy names as getters.
   private get _piRoot(): string | null { return this._sdk?.piRoot ?? null; }
@@ -475,8 +484,7 @@ export class PiService {
    *  runtime supplies them through the cached get_messages reply. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getDisplayEntries(): any[] {
-    if (this._backendKind === "rust") { return this._rust?.getEntries() ?? []; }
-    return this.sessionManager?.getEntries?.() ?? [];
+    return this.backend?.getEntries() ?? [];
   }
 
   // ── Extension UI Bridge ────────────────────────────
@@ -1235,37 +1243,21 @@ export class PiService {
   }
 
   async abort(): Promise<void> {
-    if (this._backendKind === "rust") {
-      this._rust?.abort();
-      return;
-    }
-    if (!this.session) {
-      piWarn("abort() called but session not initialized — nothing to abort");
-      return;
-    }
-    // Kill running bash processes first — agent.abort() only stops the LLM call,
-    // not child processes.  Without this, long-running commands (npm install,
-    // test suites, etc.) become orphaned/zombie processes on the system.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    try { this.session.agent.abort(); } catch (e: any) { piWarn(`abort() failed: ${e?.message ?? e}`); }
+    // Both backends kill any running bash before stopping the LLM turn (agent.abort
+    // alone would orphan child processes). See SdkService.abort / RustService.abort.
+    // Both impls are synchronous (send / local calls); the union return is voided.
+    void this.backend?.abort();
   }
 
   /**
-   * Compact the conversation context. Runtime-aware: the Rust RPC has an explicit
-   * `compact` command, whereas the TypeScript path uses the SDK session (the same
-   * call the command-palette `pi-code-gui.compact` uses, so TS behaviour is
-   * unchanged).
+   * Compact the conversation context. Delegated to the active backend: the Rust RPC
+   * has an explicit `compact` command (with the auto-compaction-gate explanation);
+   * the SDK path calls the in-process session (same call as the command-palette
+   * `pi-code-gui.compact`). PiService no longer branches.
    */
   async compact(): Promise<void> {
     piDebug(`compact() invoked (backend=${this._backendKind})`);
-    if (this._backendKind === "rust") {
-      await this._rust?.compact();
-      return;
-    }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    try { await this.rawSession?.compact?.(); } catch (e: any) { piWarn(`compact() failed: ${e?.message ?? e}`); }
+    await this.backend?.compact();
   }
 
   /**
@@ -1783,41 +1775,23 @@ export class PiService {
   }
 
   async toggleAutoCompaction(): Promise<boolean> {
-    if (this._backendKind === "rust") {
-      // The Rust runtime owns this setting; toggle it over RPC (the GUI toggle
-      // was previously a no-op here since there's no in-process session). Flip
-      // local state only on success — RustService.applyState re-syncs it from get_state.
-      const next = !this._autoCompactionEnabled;
-      try {
-        const r = await this._rust?.request(RUST_RPC.setAutoCompaction, { enabled: next }, 8000);
-        if (r?.success) { this._autoCompactionEnabled = next; }
-        else { piWarn(`set_auto_compaction rejected: ${r?.error ?? "no response"}`); }
-      } catch (e: unknown) { piWarn(`set_auto_compaction failed: ${e instanceof Error ? e.message : String(e)}`); }
-      this.emitSettings();
-      return this._autoCompactionEnabled;
-    }
-    if (!this.session) { return this._autoCompactionEnabled; }
-    this._autoCompactionEnabled = !this._autoCompactionEnabled;
-    if (typeof this.session.setAutoCompactionEnabled === "function") {
-      await this.session.setAutoCompactionEnabled(this._autoCompactionEnabled);
-    }
+    const next = !this._autoCompactionEnabled;
+    // State-flip policy is the one genuine divergence: the Rust RPC flips PiService
+    // state via the RustHost callback only on success (optimistic-safe); the SDK
+    // flips eagerly then pushes to the session. The wire call itself is now the
+    // backend primitive (setAutoCompaction), not inline RPC/session plumbing.
+    if (this._backendKind !== "rust") { this._autoCompactionEnabled = next; }
+    await this.backend?.setAutoCompaction(next);
     this.emitSettings();
     return this._autoCompactionEnabled;
   }
 
   async toggleAutoRetry(): Promise<boolean> {
-    if (this._backendKind === "rust") {
-      const next = !this._autoRetryEnabled;
-      try {
-        const r = await this._rust?.request(RUST_RPC.setAutoRetry, { enabled: next }, 8000);
-        if (r?.success) { this._autoRetryEnabled = next; }
-        else { piWarn(`set_auto_retry rejected: ${r?.error ?? "no response"}`); }
-      } catch (e: unknown) { piWarn(`set_auto_retry failed: ${e instanceof Error ? e.message : String(e)}`); }
-      this.emitSettings();
-      return this._autoRetryEnabled;
-    }
-    if (!this.session) { return this._autoRetryEnabled; }
-    this._autoRetryEnabled = !this._autoRetryEnabled;
+    const next = !this._autoRetryEnabled;
+    // Same flip policy as auto-compaction. setAutoRetry is a no-op on the SDK (no
+    // session toggle); Rust applies it over RPC and echoes state via the host callback.
+    if (this._backendKind !== "rust") { this._autoRetryEnabled = next; }
+    await this.backend?.setAutoRetry(next);
     this.emitSettings();
     return this._autoRetryEnabled;
   }
@@ -1891,53 +1865,20 @@ export class PiService {
     contextPercent: number | null;
     contextWindow: number;
   } {
-    // Rust runs out-of-process (no SDK sessionManager) — token usage comes from its
-    // get_session_stats RPC, but the binary reports cost:0 (it doesn't compute cost),
-    // so we derive cost here from the binary's tokens × the catalog's published rates.
+    // Raw token counts + context come from the active backend primitive
+    // (SdkService sums its session entries; RustService caches get_session_stats).
+    // The COST POLICY is the genuine runtime divergence kept here: the Rust binary
+    // reports cost:0 (it doesn't compute cost), so we derive it from tokens × the
+    // catalog's published rates; the SDK computes its own per-turn cost (u.cost).
+    const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+    const rates = this.activeCostRates();
     if (this._backendKind === "rust") {
-      const u = this._rust?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-      const rates = this.activeCostRates();
       return { ...u, cost: rates ? computeTokenCost(u, rates) : 0, costKnown: rates !== null };
     }
-
-    if (!this.sessionManager) {
-      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costKnown: false, contextPercent: null, contextWindow: 0 };
-    }
-
-    const entries = this.sessionManager.getEntries();
-    let totalInput = 0;
-    let totalOutput = 0;
-    let totalCacheRead = 0;
-    let totalCacheWrite = 0;
-    let totalCost = 0;
-
-    for (const entry of entries) {
-      if (entry.type === "message" && entry.message?.role === "assistant") {
-        const usage = entry.message.usage;
-        if (usage) {
-          totalInput += usage.input ?? 0;
-          totalOutput += usage.output ?? 0;
-          totalCacheRead += usage.cacheRead ?? 0;
-          totalCacheWrite += usage.cacheWrite ?? 0;
-          totalCost += usage.cost?.total ?? 0;
-        }
-      }
-    }
-
-    let contextPercent: number | null = null;
-    let contextWindow = 0;
-    try {
-      const contextUsage = this.session?.getContextUsage?.();
-      if (contextUsage) {
-        contextPercent = contextUsage.percent;
-        contextWindow = contextUsage.contextWindow;
-      }
-    } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
-
     // Known when the SDK actually computed a cost, or we hold rates for the model
     // (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
-    const costKnown = totalCost > 0 || this.activeCostRates() !== null;
-    return { input: totalInput, output: totalOutput, cacheRead: totalCacheRead, cacheWrite: totalCacheWrite, cost: totalCost, costKnown, contextPercent, contextWindow };
+    const costKnown = u.cost > 0 || rates !== null;
+    return { ...u, costKnown };
   }
 
   // ── Getters ────────────────────────────────────────────
@@ -1966,31 +1907,17 @@ export class PiService {
     };
   }
 
-  /** Promote a follow-up message to a steering message. */
+  /** Promote a follow-up message to a steering message. Delegated to the backend:
+   *  the SDK re-queues its steers then appends; Rust moves it in the synthetic queue
+   *  and re-sends over the steer channel (it auto-processes steers). */
   async promoteToSteer(text: string): Promise<void> {
-    if (this._backendKind === "rust") {
-      this._rust?.promoteToSteer(text);
-      return;
-    }
-    if (!this.session) { return; }
-    var existingSteer = this.session.getSteeringMessages ? [...this.session.getSteeringMessages()] : [];
-    this.session.clearQueue();
-    for (var i = 0; i < existingSteer.length; i++) {
-      this.session.steer(existingSteer[i]);
-    }
-    this.session.steer(text);
+    this.backend?.promoteToSteer(text);
   }
 
-  /** Clear all queued messages. */
+  /** Clear all queued messages. The SDK clears the session queue; Rust clears only
+   *  its local pending indicator (rust-pi has already accepted/auto-processed them). */
   async clearQueue(): Promise<void> {
-    if (this._backendKind === "rust") {
-      // rust-pi has already accepted these (it auto-processes steers), so this
-      // only clears the local pending indicator.
-      this._rust?.clearQueueAndEmit();
-      return;
-    }
-    if (!this.session) { return; }
-    this.session.clearQueue();
+    await this.backend?.clearQueue();
   }
   get sdkRoot(): string | null { return this._piRoot; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
