@@ -116,7 +116,13 @@ function writeModelsJson(file: string, contextBudget: number): number {
       }),
     };
   }
-  try { fs.writeFileSync(file, JSON.stringify({ providers }, null, 2) + "\n"); }
+  const payload = JSON.stringify({ providers }, null, 2) + "\n";
+  // Skip the write when the on-disk catalog is already byte-identical — this runs
+  // on EVERY Rust session init, and the content only changes on an extension
+  // update (new bundled registry) or a contextBudget change.
+  try { if (fs.readFileSync(file, "utf-8") === payload) { return omittedCount; } }
+  catch { /* absent/unreadable → write below */ }
+  try { fs.writeFileSync(file, payload); }
   catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. The Rust model catalog won't be available.`); }
   return omittedCount;
 }

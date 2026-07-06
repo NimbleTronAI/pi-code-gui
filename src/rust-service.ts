@@ -243,7 +243,17 @@ export class RustService {
     // (handleExit swallows the crash itself while `initializing` is set.)
     try {
       const state = await proc.request(RUST_RPC.getState, {}, 15000);
-      if (state.success) { this.applyState(state.data); }
+      if (state.success) {
+        this.applyState(state.data);
+        // Shape probe: the extension is coupled to the pinned binary's RPC field
+        // names with no version negotiation. If the reply lacks the fields every
+        // tested version (0.1.18–87b70f74) carries, the shape has drifted — say so
+        // once instead of degrading into scattered per-capability oddities.
+        const d = (state.data ?? {}) as { model?: { id?: unknown }; activeModel?: unknown; thinkingLevel?: unknown; thinking?: unknown };
+        if (!(d.model?.id ?? d.activeModel) || (d.thinkingLevel ?? d.thinking) === undefined) {
+          this.warnDegraded("status", "Rust Pi's get_state reply is missing expected fields (model/thinkingLevel) — the binary's RPC shape may have drifted from the version this extension was tested against. Status readouts may be wrong; consider matching the pinned Rust Pi version.");
+        }
+      }
     } catch (e: unknown) {
       const m = e instanceof Error ? e.message : String(e);
       piWarn(`Rust get_state failed: ${m}`);
@@ -286,7 +296,16 @@ export class RustService {
     // them in the slash-command list instead of the TypeScript SDK's.
     try {
       const cmds = await proc.request(RUST_RPC.getCommands, {}, 8000);
-      if (cmds.success) { this.slashCommands = parseRustSlashCommands(cmds.data); this.recordCapOk("commands"); }
+      if (cmds.success) {
+        this.slashCommands = parseRustSlashCommands(cmds.data);
+        // A non-empty reply that parses to zero commands means rust-pi changed its
+        // command shape (parseRustSlashCommands tolerates the known variants) —
+        // surface the drift instead of silently showing an empty command list.
+        if (this.slashCommands.length === 0 && cmds.data && Object.keys(cmds.data as object).length > 0) {
+          piWarn("get_commands returned a non-empty reply that parsed to 0 slash commands — rust-pi's command shape may have drifted (see parseRustSlashCommands).");
+        }
+        this.recordCapOk("commands");
+      }
     } catch (e: unknown) {
       piWarn(`Rust get_commands failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("commands", "Couldn't load Rust Pi's slash commands — its session-specific commands may be missing from the list.");
@@ -389,9 +408,6 @@ export class RustService {
     }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
-    if (event?.type === "agent_end") {
-      piDebug(`[usage] agent_end: agentRunActive=${this.host.getAgentRunActive()} isRealAgentEnd=${routing.isRealAgentEnd} → ${routing.isRealAgentEnd ? "refreshState()" : "SKIPPED (no usage refresh)"}`);
-    }
     if (routing.isRealAgentEnd) { void this.refreshState(); }
   }
 
@@ -516,10 +532,7 @@ export class RustService {
     // agent_end) AND from compact(); without this they can overlap, and a stale
     // get_state's applyState could clobber a newer one. Skip a redundant refresh
     // while one is already in flight (the in-flight run captures the latest state).
-    if (!this.process || this._refreshing) {
-      if (this._refreshing) { piDebug("[usage] refreshState SKIPPED — already refreshing (guard); next turn's status may stay stale"); }
-      return;
-    }
+    if (!this.process || this._refreshing) { return; }
     this._refreshing = true;
     try {
       try {
@@ -562,13 +575,7 @@ export class RustService {
     if (!this.process) { return; }
     try {
       const r = await this.process.request(RUST_RPC.getSessionStats, {}, 8000);
-      if (r.success) {
-        const d = (r.data ?? {}) as { tokens?: Record<string, unknown>; cost?: unknown; assistantMessages?: unknown; pendingMessageCount?: unknown };
-        piDebug(`[usage] get_session_stats OK: tokens=${JSON.stringify(d.tokens)} cost=${JSON.stringify(d.cost)} assistantMessages=${JSON.stringify(d.assistantMessages)} pending=${JSON.stringify(d.pendingMessageCount)}`);
-        this.applyUsage(r.data); this.recordCapOk("usage");
-      } else {
-        piDebug(`[usage] get_session_stats returned success=false: ${JSON.stringify(r.error ?? r)}`);
-      }
+      if (r.success) { this.applyUsage(r.data); this.recordCapOk("usage"); }
     } catch (e: unknown) {
       piWarn(`refreshUsage failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("usage", "Couldn't read Rust Pi's token/cost usage — the usage readout may be missing or stale.");
@@ -616,6 +623,11 @@ export class RustService {
   applyState(data: unknown): void {
     if (!data || typeof data !== "object") { return; }
     const d = data as Record<string, unknown>;
+    // Field-name tolerance, annotated per version so future drift is diagnosable:
+    // every live-tested binary (0.1.18 → 87b70f74) sends `model` and `thinkingLevel`
+    // (verified via get_state probes). The `activeModel`/`thinking` alternates have
+    // NOT been observed in any tested version — they are pure drift tolerance, and
+    // the init-time shape probe warns when neither primary field is present.
     const model = (d.model ?? d.activeModel) as { id?: string; name?: string; provider?: string; contextWindow?: number; api?: string; reasoning?: boolean } | undefined;
     if (model && typeof model === "object") {
       // Carry `api` (the provider transport) and `reasoning` through: the GUI uses

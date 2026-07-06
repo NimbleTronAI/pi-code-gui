@@ -460,6 +460,17 @@ export class PiService {
       return this.initializeRust({ fresh, openPath: openPath ?? undefined });
     }
     this._backendKind = "typescript";
+    // Re-init replaces any prior session: drop the stale reference NOW so a failed
+    // init reports `initialized === false` instead of pointing at the abandoned
+    // session (the getter can't otherwise distinguish "init succeeded" from
+    // "stale leftover"). A live Rust runtime here is unexpected (runtimes never
+    // hot-swap within a session window) — dispose it rather than leak the subprocess.
+    this.session = null;
+    if (this._rust) {
+      piWarn("TypeScript init found a live Rust runtime on this service (unexpected) — disposing it");
+      this._rust.dispose();
+      this._rust = null;
+    }
 
     // ── Step 1: Resolve SDK ────────────────────────────
     try {

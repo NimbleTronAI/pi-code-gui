@@ -127,21 +127,11 @@ export function routeRustEvent(event: RustEvent, queueNonEmpty: boolean, agentRu
   return { dropQueuedText, captureSessionId, isRealAgentEnd: type === "agent_end" && agentRunActive, action };
 }
 
-/** True when a provider/agent error message looks TRANSIENT — a network/connection
- *  drop, timeout, rate limit, or 5xx — i.e. worth an automatic retry. DELIBERATELY
- *  excludes client errors (400/401/403/404, invalid request, auth, model-not-found):
- *  retrying those just repeats the failure. The "connection closed before headers"
- *  class is the motivating case — rust-pi's own retry classifier doesn't cover it,
- *  so the turn dies; we retry it extension-side. Pure + unit-testable. */
-export function isTransientProviderError(message: string | null | undefined): boolean {
-  if (!message) { return false; }
-  const m = message.toLowerCase();
-  // Never retry unambiguous client/permanent errors, even if other words match.
-  if (/\b(400|401|403|404|invalid request|invalid_request|unauthorized|forbidden|authentication|api key|model (not found|no longer exists)|not found)\b/.test(m)) {
-    return false;
-  }
-  return /connection (closed|reset|refused|aborted|error)|closed before headers|before headers|incomplete (message|chunked)|broken pipe|timed? ?out|timeout|temporarily unavailable|overloaded|rate.?limit|too many requests|\b429\b|\b50[234]\b|bad gateway|service unavailable|gateway timeout|econnreset|econnrefused|epipe|etimedout|enetunreach|socket hang up|network error|stream (error|closed|interrupted)/.test(m);
-}
+// NOTE: isTransientProviderError used to live here, driving an extension-side
+// reprompt-retry. Both were removed: re-sending the prompt after a mid-tool-call
+// drop corrupts the conversation (dangling assistant tool_calls → provider 400),
+// and pi_agent_rust ≥ ad719ad3 classifies transient connection errors from the
+// typed error (gh #118) and re-drives the request in place — the correct layer.
 
 /**
  * Drop the first queued steer/follow-up message matching `text`. rust-pi (0.1.18)
@@ -265,7 +255,16 @@ export function parseRustEntries(data: unknown): any[] {
   const d = data as { messages?: any[] } | undefined;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? (data) : []);
-  return messages.map((m, i) => ({ type: "message", message: m, id: m?.id ?? `rust-${i}` }));
+  return messages.map((m, i) => {
+    // Pass through items that are already session-ENTRY-shaped (an entry `type`
+    // and no message `role`) — e.g. a compaction summary, should rust-pi ever
+    // emit one via get_messages. Wrapping such an item as {type:"message"} would
+    // bury it: the replay loop dispatches on entry.type and would render nothing.
+    if (m && typeof m === "object" && typeof m.type === "string" && m.role === undefined) {
+      return { id: m.id ?? `rust-${i}`, ...m };
+    }
+    return { type: "message", message: m, id: m?.id ?? `rust-${i}` };
+  });
 }
 
 /** Map a Rust `get_commands` reply to slash-command entries. */

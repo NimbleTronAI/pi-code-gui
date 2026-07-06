@@ -2,27 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, isTransientProviderError } from "../../rust-events.js";
-
-// ── isTransientProviderError (drives extension-side retry) ────────────
-test("isTransientProviderError: retries network/connection/5xx/429 — incl. the motivating 'closed before headers'", () => {
-  for (const m of [
-    "API error: HTTP connection closed before headers",
-    "connection reset by peer", "socket hang up", "request timed out",
-    "429 Too Many Requests", "503 Service Unavailable", "502 Bad Gateway",
-    "Overloaded", "ECONNRESET", "stream interrupted",
-  ]) { assert.equal(isTransientProviderError(m), true, m); }
-});
-
-test("isTransientProviderError: does NOT retry permanent client errors", () => {
-  for (const m of [
-    "400 Bad Request", "401 Unauthorized", "403 Forbidden", "404 Not Found",
-    "invalid request: bad parameter", "authentication failed: bad api key",
-    "model no longer exists",
-  ]) { assert.equal(isTransientProviderError(m), false, m); }
-  assert.equal(isTransientProviderError(""), false);
-  assert.equal(isTransientProviderError(undefined), false);
-});
+import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "../../rust-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {
@@ -271,6 +251,18 @@ test("parseRustEntries: bare array and null/garbage", () => {
   assert.equal(parseRustEntries([{ id: "a" }]).length, 1);
   assert.deepEqual(parseRustEntries(null), []);
   assert.deepEqual(parseRustEntries({}), []);
+});
+
+test("parseRustEntries: an entry-shaped item (type, no role) passes through instead of being buried in a message wrapper", () => {
+  const compaction = { type: "compaction", summary: "…", tokensBefore: 9000, timestamp: 1 };
+  const out = parseRustEntries({ messages: [{ id: "m1", role: "user" }, compaction] });
+  assert.equal(out[0].type, "message");
+  assert.equal(out[1].type, "compaction");           // NOT wrapped as {type:"message"}
+  assert.equal(out[1].summary, "…");
+  assert.equal(out[1].id, "rust-1");                 // id synthesized
+  // A message whose role exists is still wrapped even if it carries a type field.
+  const typedMsg = parseRustEntries({ messages: [{ type: "weird", role: "assistant", content: [] }] });
+  assert.equal(typedMsg[0].type, "message");
 });
 
 test("parseRustSlashCommands: maps names, strips leading slashes, tags source", () => {
