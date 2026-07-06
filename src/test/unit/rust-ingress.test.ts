@@ -10,7 +10,8 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RustProcess, type RustEvent } from "../../rust-process.js";
-import { normalizeRustEvent, routeRustEvent, extractMessageText, dropQueuedMessage } from "../../rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage } from "../../rust-events.js";
+import { extractMessageText } from "../../agent-events.js";
 
 // ── extractMessageText (pure) ─────────────────────────────────────────
 test("extractMessageText: bare string passes through", () => {

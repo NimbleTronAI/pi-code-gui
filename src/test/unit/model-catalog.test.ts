@@ -1,4 +1,4 @@
-// Headless tests for the catalog maxTokens resolver (rust-catalog.ts). rust-pi
+// Headless tests for the catalog maxTokens resolver (model-catalog.ts). rust-pi
 // 0.1.20 forwards a model's maxTokens to the provider verbatim, so the bundled
 // registry's placeholder values (a copy of contextWindow) must be OMITTED — not
 // sent — while genuine sub-window limits are kept. Boundaries are anchored on a
@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, computeTokenCost, buildThinkingCompat } from "../../rust-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, computeTokenCost, buildThinkingCompat } from "../../model-catalog.js";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro

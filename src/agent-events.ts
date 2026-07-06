@@ -14,7 +14,62 @@
 // dropQueuedMessage/promoteQueuedToSteer in rust-events.ts.
 
 import type { PiServiceEvent, Runtime } from "./types.js";
-import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, extractMessageText } from "./rust-events.js";
+// (These shared helpers live HERE — the runtime-agnostic translator — and are
+// imported by the Rust-specific modules, never the reverse. They were moved out
+// of rust-events.ts, whose name wrongly implied Rust-only ownership.)
+
+/**
+ * Extract the plain-text portion of a message `content` payload. Runtime-agnostic:
+ * a bare string is returned as-is; an array yields the joined `text` blocks;
+ * anything else (incl. null/undefined) yields "".
+ */
+export function extractMessageText(content: unknown): string {
+  if (!content) { return ""; }
+  if (typeof content === "string") { return content; }
+  if (Array.isArray(content)) {
+    return content
+      .filter((c) => c && typeof c === "object" && (c as { type?: string }).type === "text")
+      .map((c) => (c as { text?: unknown }).text ?? "")
+      .join("\n");
+  }
+  return "";
+}
+
+/** Minimum gap between streaming tool-arg preview updates for one tool call.
+ *  ~5 updates/s: comfortably "live" to the eye, while halving the webview render
+ *  churn vs a tighter cap — each preview re-renders the full (growing) args, so
+ *  the cost scales with BOTH the update rate and the args size, and a large write
+ *  is exactly where both are biggest. Raise it further only if huge writes still
+ *  churn; the next lever after that is capping the preview payload size. */
+export const TOOL_PREVIEW_THROTTLE_MS = 200;
+
+/**
+ * Throttle the streaming `tool-update` previews emitted as a tool call's args
+ * accumulate. rust-pi streams a `toolcall_delta` per token — tens of thousands
+ * for a large `write` — each carrying the full growing args; re-emitting a
+ * preview (with the whole re-serialized args) on every one floods the webview
+ * O(n²) and freezes it until the backlog drains. Capping the rate keeps the
+ * preview live without the flood; the FINAL, authoritative args still arrive via
+ * tool_execution_start (fromMessage:false), so nothing is lost by skipping
+ * intermediate frames. Returns true when enough time has passed to emit again.
+ */
+export function shouldEmitToolPreviewUpdate(lastEmit: number | undefined, now: number, intervalMs: number = TOOL_PREVIEW_THROTTLE_MS): boolean {
+  return lastEmit === undefined || (now - lastEmit) >= intervalMs;
+}
+
+/**
+ * Whether to emit a streaming `fromMessage` tool-start preview for a tool call
+ * extracted from a (possibly partial) assistant message. Skip when:
+ * - the id hasn't streamed in yet — previewing an id-less call orphans an empty
+ *   "{} null" placeholder block the webview can never reconcile; and
+ * - it's bash/exec — those have their own bash-start/output/end render path, and
+ *   generic tool events would leak JSON args into the bash output div.
+ */
+export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | null }): boolean {
+  if (!tc.id) { return false; }
+  if (tc.name === "bash" || tc.name === "exec") { return false; }
+  return true;
+}
 import { humanizeProviderError } from "./extension-errors.js";
 
 /** Coerce a raw error value to a display string. rust-pi/DeepSeek can deliver an error

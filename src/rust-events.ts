@@ -1,7 +1,9 @@
 // Pure, vscode-free helpers for handling raw Rust RPC events. Kept separate from
-// PiService so they can be unit-tested headlessly (see src/test/unit/). No runtime
-// imports — the only import is a type, which is erased at compile time.
+// PiService so they can be unit-tested headlessly (see src/test/unit/). Imports
+// only a type (erased) and the shared text extractor from agent-events — the
+// dependency points rust-specific → shared, never the other way around.
 import type { RustEvent } from "./rust-process.js";
+import { extractMessageText } from "./agent-events.js";
 
 /**
  * Coerce Rust RPC payloads to the shapes the shared protocol schema requires.
@@ -60,25 +62,6 @@ export function normalizeRustEvent(event: RustEvent): void {
       break;
     }
   }
-}
-
-/**
- * Extract the plain-text portion of a message `content` payload. Mirrors the
- * runtime-agnostic extraction PiService uses on both the TS-SDK and Rust paths:
- * a bare string is returned as-is; an array yields the joined `text` blocks;
- * anything else (incl. null/undefined) yields "". Kept here (vscode-free) so the
- * Rust ingress router can decide queue-drops without reaching into PiService.
- */
-export function extractMessageText(content: unknown): string {
-  if (!content) { return ""; }
-  if (typeof content === "string") { return content; }
-  if (Array.isArray(content)) {
-    return content
-      .filter((c) => c && typeof c === "object" && (c as { type?: string }).type === "text")
-      .map((c) => (c as { text?: unknown }).text ?? "")
-      .join("\n");
-  }
-  return "";
 }
 
 /** A declarative plan for how PiService should dispatch one raw Rust RPC event,
@@ -162,28 +145,6 @@ export function promoteQueuedToSteer(steering: string[], followUp: string[], tex
   return true;
 }
 
-/** Minimum gap between streaming tool-arg preview updates for one tool call.
- *  ~5 updates/s: comfortably "live" to the eye, while halving the webview render
- *  churn vs a tighter cap — each preview re-renders the full (growing) args, so
- *  the cost scales with BOTH the update rate and the args size, and a large write
- *  is exactly where both are biggest. Raise it further only if huge writes still
- *  churn; the next lever after that is capping the preview payload size. */
-export const TOOL_PREVIEW_THROTTLE_MS = 200;
-
-/**
- * Throttle the streaming `tool-update` previews emitted as a tool call's args
- * accumulate. rust-pi streams a `toolcall_delta` per token — tens of thousands
- * for a large `write` — each carrying the full growing args; re-emitting a
- * preview (with the whole re-serialized args) on every one floods the webview
- * O(n²) and freezes it until the backlog drains. Capping the rate keeps the
- * preview live without the flood; the FINAL, authoritative args still arrive via
- * tool_execution_start (fromMessage:false), so nothing is lost by skipping
- * intermediate frames. Returns true when enough time has passed to emit again.
- */
-export function shouldEmitToolPreviewUpdate(lastEmit: number | undefined, now: number, intervalMs: number = TOOL_PREVIEW_THROTTLE_MS): boolean {
-  return lastEmit === undefined || (now - lastEmit) >= intervalMs;
-}
-
 /**
  * Claim the one-time "capability degraded" warning slot for `cap`. A Rust
  * capability RPC (model list, history, usage, …) failing must not be silent, but
@@ -201,20 +162,6 @@ export function checkAndRecordDegraded(warned: Set<string>, cap: string): boolea
 /** Mark capability `cap` healthy again so a future failure warns once more. */
 export function clearDegraded(warned: Set<string>, cap: string): void {
   warned.delete(cap);
-}
-
-/**
- * Whether to emit a streaming `fromMessage` tool-start preview for a tool call
- * extracted from a (possibly partial) assistant message. Skip when:
- * - the id hasn't streamed in yet — previewing an id-less call orphans an empty
- *   "{} null" placeholder block the webview can never reconcile; and
- * - it's bash/exec — those have their own bash-start/output/end render path, and
- *   generic tool events would leak JSON args into the bash output div.
- */
-export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | null }): boolean {
-  if (!tc.id) { return false; }
-  if (tc.name === "bash" || tc.name === "exec") { return false; }
-  return true;
 }
 
 // ── Rust RPC response parsers ─────────────────────────────────────────

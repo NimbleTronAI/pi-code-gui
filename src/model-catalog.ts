@@ -1,6 +1,8 @@
-// Pure, vscode-free helpers for shaping the bundled model catalog before it's
-// written to the Rust binary's models.json. Kept separate from rust-models.ts
-// (which imports vscode) so they can be unit-tested headlessly.
+// Pure, vscode-free model-catalog helpers SHARED BY BOTH RUNTIMES: thinking-level
+// capability (picker/clamp/reconcile), cost computation, and the maxTokens/compat
+// shaping used when writing the Rust binary's models.json. Formerly rust-catalog.ts —
+// renamed because that name wrongly implied Rust-only ownership (audit finding).
+// Kept separate from rust-models.ts (which imports vscode) for headless testing.
 
 /**
  * Resolve the `maxTokens` to write for a catalog model — or `undefined` to OMIT

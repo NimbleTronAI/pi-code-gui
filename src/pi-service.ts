@@ -6,13 +6,13 @@ import { type PiServiceEvent, type Runtime, validateExtensionToWebview } from ".
 import { piDebug, piWarn } from "./logger.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import { RUST_RPC, type RustResponse } from "./rust-process.js";
-import { extractMessageText } from "./rust-events.js";
+
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./rust-catalog.js";
+import { thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 import { isOlderThan } from "./version-compare.js";
@@ -23,7 +23,7 @@ import { isOlderThan } from "./version-compare.js";
 const SUPPORTED_PI_AI_VERSION = "0.80.0";
 let _piAiVersionWarned = false;
 import { resolveWorkspaceCwd } from "./workspace.js";
-import { translateAgentEvent, extractToolCalls, normalizeToolArgs } from "./agent-events.js";
+import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessageText } from "./agent-events.js";
 
 /**
  * Dynamic import with retry — handles the race where npm is still populating

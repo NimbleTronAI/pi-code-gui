@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { piDebug } from "./logger.js";
-import { resolveMaxOutputTokens, buildThinkingCompat } from "./rust-catalog.js";
+import { resolveMaxOutputTokens, buildThinkingCompat } from "./model-catalog.js";
 import registryData from "./model-registry.generated.json";
 
 interface RegistryModel {
