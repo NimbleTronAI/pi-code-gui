@@ -30,7 +30,8 @@ export const RUST_TOOL_DEPS: RustToolDep[] = [
   { tool: "grep", cmds: ["rg"], docs: "https://github.com/BurntSushi/ripgrep#installation" },
 ];
 
-/** Build the one-time "missing fd/rg prerequisites" chat notice — docs-only.
+/** Build the one-time "missing fd/rg prerequisites" chat notice — docs-only, with
+ *  each guide as a clickable markdown link.
  *
  *  We name the missing tools and link each one's authoritative per-OS install guide
  *  rather than a synthesized shell command. Two reasons: (1) correctness — the tools'
@@ -38,14 +39,20 @@ export const RUST_TOOL_DEPS: RustToolDep[] = [
  *  command is Debian/macOS-only and breaks on Fedora/Arch/Alpine/root-without-sudo.
  *  (2) copy-paste safety — no shell command means nothing to mangle when this card
  *  renders before the webview's `marked` bundle loads (the earlier bug: a
- *  backtick-wrapped apt command pasted as bash command substitution). The bare URLs
- *  carry no markdown-special characters, so they render/copy cleanly in both the
- *  marked (auto-linked) and escaped-fallback paths. */
+ *  backtick-wrapped apt command pasted as bash command substitution).
+ *
+ *  Links use explicit `[label](url)` markdown, NOT bare URLs: the webview's marked
+ *  renderer doesn't autolink bare URLs, so a raw URL renders as dead text. An explicit
+ *  link always becomes an `<a href>`, and the webview's global click handler routes it
+ *  to vscode.env.openExternal (see handlers/index.ts + the `openUrl` command). No
+ *  markdown-special characters beyond the link syntax, so if this card ever renders in
+ *  the pre-`marked` escaped fallback it degrades to visible `[label](url)` text — the
+ *  URL is still legible, just not clickable that once. */
 export function formatMissingToolsNotice(missing: Array<{ name: string; docs: string }>): string {
   const names = missing.map((m) => m.name).join(" and ");
   const them = missing.length > 1 ? "them" : "it";
-  const guides = missing.map((m) => `${m.name} — ${m.docs}`).join("\n");
-  return `ℹ️ Rust Pi's find/grep tools need ${names} installed. They're missing, so those tools will fail until you install ${them}. Install guide for your OS:\n\n${guides}`;
+  const guides = missing.map((m) => `${m.name} — [install guide](${m.docs})`).join("\n");
+  return `ℹ️ Rust Pi's find/grep tools need ${names} installed. They're missing, so those tools will fail until you install ${them}. Each tool's install guide covers every OS:\n\n${guides}`;
 }
 
 /** Probe which deps are missing. A tool counts as present if ANY of its command

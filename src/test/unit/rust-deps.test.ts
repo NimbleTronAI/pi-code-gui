@@ -14,13 +14,13 @@ test("dep table covers find->fd and grep->rg with authoritative install-guide UR
   assert.equal(grep.docs, "https://github.com/BurntSushi/ripgrep#installation");
 });
 
-// ── formatMissingToolsNotice — docs-only ──────────────────────────────
-// The notice names the missing tools and links each tool's own per-OS install guide.
-// No synthesized shell command: correct on every OS, and nothing to mangle when the
-// card renders before the webview's `marked` bundle loads (the earlier apt-in-backticks
-// paste bug). It must carry NO markdown code markers and NO package-manager command.
+// ── formatMissingToolsNotice — docs-only, clickable links ─────────────
+// The notice names the missing tools and links each tool's own per-OS install guide
+// as an explicit `[label](url)` markdown link (bare URLs don't autolink in the webview,
+// so they'd render as dead text). No synthesized shell command: correct on every OS,
+// and nothing to mangle in the pre-`marked` fallback. No markdown code markers.
 
-test("notice links both tools' install guides, no shell command, no code markers", () => {
+test("notice uses clickable [install guide](url) links, no shell command, no code markers", () => {
   const msg = formatMissingToolsNotice([
     { name: "fd", docs: find.docs },
     { name: "rg", docs: grep.docs },
@@ -28,22 +28,22 @@ test("notice links both tools' install guides, no shell command, no code markers
   assert.ok(!msg.includes("`"), "no markdown code markers");
   assert.ok(!/apt-get|brew install|sudo /.test(msg), "no synthesized package-manager command");
   assert.match(msg, /fd and rg/);
-  assert.ok(msg.includes(find.docs) && msg.includes(grep.docs), "both install-guide URLs present");
-  assert.match(msg, /Install guide for your OS:/);
+  assert.ok(msg.includes(`[install guide](${find.docs})`), "fd guide is an explicit markdown link");
+  assert.ok(msg.includes(`[install guide](${grep.docs})`), "rg guide is an explicit markdown link");
 });
 
-test("notice lists one 'name — url' guide line per missing tool", () => {
+test("notice lists one 'name — [install guide](url)' line per missing tool", () => {
   const msg = formatMissingToolsNotice([
     { name: "fd", docs: find.docs },
     { name: "rg", docs: grep.docs },
   ]);
   const lines = msg.split("\n");
-  assert.equal(lines[lines.length - 2], `fd — ${find.docs}`);
-  assert.equal(lines[lines.length - 1], `rg — ${grep.docs}`);
+  assert.equal(lines[lines.length - 2], `fd — [install guide](${find.docs})`);
+  assert.equal(lines[lines.length - 1], `rg — [install guide](${grep.docs})`);
 });
 
-test("single missing tool -> 'it' (not 'them'), one guide line", () => {
+test("single missing tool -> 'it' (not 'them'), one guide link", () => {
   const msg = formatMissingToolsNotice([{ name: "rg", docs: grep.docs }]);
-  assert.match(msg, /install it\. Install guide/);
-  assert.ok(msg.trimEnd().endsWith(`rg — ${grep.docs}`));
+  assert.match(msg, /install it\. Each tool's install guide/);
+  assert.ok(msg.trimEnd().endsWith(`rg — [install guide](${grep.docs})`));
 });
