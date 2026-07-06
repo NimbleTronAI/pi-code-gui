@@ -28,12 +28,17 @@ The project runs two tiers of tests:
   `src/webview` + `src/shared` to `out/` via `tsconfig.test-webview.json` for the
   jsdom seam), then `node --test out/test/unit/*.test.js`. The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
-  exception being the jsdom dispatch seam (see below). As of 2026-06, there are
-  **199 tests across 18 files** in `src/test/unit/` (rust-events, rust-ingress,
-  rust-process, rust-catalog, session-format, rust-deps, agent-events,
-  rust-interop, bridge-limits, pi-package-path, runtime-pick, pi-package-filter,
-  rust-doctor, webview-format, version-compare, dispatch, logger,
-  extension-errors). This is the suite to run before presenting work.
+  exception being the jsdom dispatch seam (see below). As of 2026-07, there are
+  **260 tests across 20 files** in `src/test/unit/` (rust-events, rust-ingress,
+  rust-process, rust-service, model-catalog, panel-restore, session-format,
+  rust-deps, agent-events, rust-interop, bridge-limits, pi-package-path,
+  runtime-pick, pi-package-filter, rust-doctor, webview-format, version-compare,
+  dispatch, logger, extension-errors). This is the suite to run before presenting
+  work. `rust-service.test.ts` drives the REAL RustService init/handshake against
+  a fake rust-pi subprocess (RustService is vscode-free via injected RustDeps).
+  There is also an opt-in REAL-binary contract probe: `pnpm run test:rust-smoke`
+  (scripts/rust-smoke.mjs) — get_state round-trip against PI_RUST_BIN or
+  ~/.local/bin/rust-pi; skips cleanly when no binary is present.
 - **Integration tests.** `pnpm test` → `@vscode/test-cli` +
   `@vscode/test-electron` launches the Extension Development Host against real
   VS Code APIs (`out/test/**/*.test.js`, config in `.vscode-test.mjs`).

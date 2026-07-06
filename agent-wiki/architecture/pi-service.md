@@ -60,9 +60,20 @@ independently, leading to duplicated init logic and inconsistent error handling.
 ## Dual runtime (TypeScript SDK vs Rust binary)
 
 `_backendKind: Runtime` (`"typescript" | "rust"`) records which path a session
-uses. `initialize()` dispatches to either the SDK init sequence or
-`initializeRust()`, which constructs a **`RustService`** (`src/rust-service.ts`)
-and delegates to it. The out-of-process runtime — process lifecycle, RPC
+uses, and **each runtime sits behind its own service** (symmetric since the
+2026-07-06 extraction): `initialize()` dispatches to `initializeRust()` →
+**`RustService`** (`src/rust-service.ts`), or constructs an
+**`SdkService`** (`src/sdk-service.ts`) that owns the entire TS SDK plumbing —
+module resolution/loading, pi-ai ≥0.80 adaptation, auth/registry/settings,
+model selection (default → resume → capability reconcile → thinking clamp),
+ResourceLoader, tools, SessionManager, and `createAgentSession` (the former
+init Steps 1–9). PiService applies the returned shared state (model, cycle
+list, thinking level, resume flag), wires the session to the UI (event
+subscription, extension binding, history replay — Steps 10–12), and keeps the
+legacy SDK field names (`session`, `SDK`, `AI`, `authStorage`, `modelRegistry`,
+`settingsManager`, `sessionManager`, `resourceLoader`, `_piRoot`) as **thin
+getters over `_sdk`**, so the class's many read sites are untouched by the
+extraction. The out-of-process runtime — process lifecycle, RPC
 handshake, event translation, synthetic queue, and the usage/entries/commands
 caches — lives entirely in `RustService`; PiService holds a single
 `_rust: RustService | null` and delegates the Rust branch of each backend-aware

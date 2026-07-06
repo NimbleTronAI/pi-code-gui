@@ -1,7 +1,8 @@
 # Wiki Log
 
 Append-only chronological record of all wiki operations. Every entry
-starts with `## [YYYY-MM-DD] <action> | <description>`. Actions:
+starts with `## [2026-07-06] update | Audit-remediation pass (consolidated ninth dual-runtime audits, both runtimes' findings verified & filtered) — (1) hygiene: temp [usage] diagnostics removed; dead `isTransientProviderError` deleted (binary owns transient retry, gh #118); `parseRustEntries` passes entry-shaped items through (latent compaction-replay bug); `initialized` getter honesty on failed re-init; `get_commands` zero-parse warning; `applyState` per-version fallback annotations; `get_state` init shape probe (pinned-version drift net); models.json write skipped when byte-identical. (2) testability: `RustDeps` injection makes RustService vscode-free; `rust-service.test.ts` (6 tests) drives the REAL init/4-step handshake against a fake rust-pi subprocess; opt-in real-binary contract probe `pnpm run test:rust-smoke`. (3) naming: `rust-catalog.ts` → `model-catalog.ts`; `extractMessageText` + tool-preview helpers moved rust-events → agent-events (import direction now rust-specific → shared). (4) structure: **`SdkService` extracted** (`src/sdk-service.ts`, ~715 LOC) — TS runtime now mirrors RustService; PiService 3,050 → 2,439 lines, SDK fields become getters over `_sdk`. Pages: runtime-selection.md (diagram + inventory), pi-service.md, tdd.md (260 tests / 20 files). Rejected-with-reasons: `satisfies RustHost` (already type-checked), queue UUIDs (no metadata channel; needs upstream queue_update), THINKING_LIVE_TRANSPORTS data-driving (verification discipline), README "16 tools" drift claim (count verified correct).
+## [YYYY-MM-DD] <action> | <description>`. Actions:
 `ingest` (new page), `update` (existing page changed), `lint` (quality
 pass performed), `archive` (page moved to archive).
 

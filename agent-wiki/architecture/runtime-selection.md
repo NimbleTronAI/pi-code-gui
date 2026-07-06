@@ -1,7 +1,8 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-06-24 — corrected event-routing path to `RustService.handleEvent` → `normalizeRustEvent`/`routeRustEvent` → `RustHost.handleAgentEvent`; added `src/rust-service.ts` + `src/rust-events.ts` to the file inventory
+> **Last updated:** 2026-07-06 — audit-remediation pass: `SdkService` extraction (the TS runtime now mirrors `RustService`), `RustDeps` injection (RustService is vscode-free and headless-testable), `get_state` shape probe, `rust-catalog.ts` → `model-catalog.ts` rename, shared helpers moved into `agent-events.ts`, architecture diagram.
+> **Earlier:** 2026-06-24 — corrected event-routing path to `RustService.handleEvent` → `normalizeRustEvent`/`routeRustEvent` → `RustHost.handleAgentEvent`; added `src/rust-service.ts` + `src/rust-events.ts` to the file inventory
 > **Earlier:** 2026-06-21 — added "Design decisions & trade-offs" (ADR notes); verified live against rust-pi 0.1.18 (no `queue_update`; tool-skip-on-queued-message; duplicate `agent_end`)
 > **Verified:** the RPC integration was driven against a locally-built
 > `pi_agent_rust` v0.1.18 — `get_state` / `get_available_models` / `get_messages`
@@ -26,6 +27,26 @@ fall back to the markdown card rendering the webview already provides — so the
 feature ships, with Rust positioned as an equal first-class (not "experimental")
 opt-in.
 
+## Architecture at a glance
+
+```mermaid
+graph TD
+    EXT[extension.ts<br/>activation, session windows, panel serializer] --> PS[PiService<br/>runtime-agnostic orchestrator<br/>_backendKind branches per method]
+    PS -->|_sdk| SDK[SdkService<br/>TS SDK plumbing: resolve/load,<br/>auth/registry, model pick, tools,<br/>SessionManager, createAgentSession]
+    PS -->|_rust| RS[RustService<br/>spawn + 4-step RPC handshake,<br/>state sync, synthetic queue,<br/>capability degradation]
+    RS --> RP[RustProcess<br/>LF-framed JSONL RPC transport]
+    RP --> BIN[pi --mode rpc<br/>pi_agent_rust binary]
+    SDK --> NPMSDK[@earendil-works/pi-coding-agent<br/>in-process, dynamic import]
+    PS --> AE[agent-events.ts<br/>pure shared translator<br/>translateAgentEvent]
+    RS -.->|RustHost callbacks| PS
+    SDK -.->|SdkHost: emit, resolvePiRoot| PS
+    RS -->|injected RustDeps| DEPS[config / detectBinary /<br/>setupModels / session dir / UI]
+    PS --> WV[webview: chat UI]
+```
+
+Both runtimes sit behind their own service (`_sdk: SdkService | null`,
+`_rust: RustService | null`); PiService applies shared state and wires the UI.
+
 ## Internal branching, not an external interface
 
 `PiService` carries a `_backendKind: "typescript" | "rust"` field and branches
@@ -48,12 +69,29 @@ under Rust).
 
 ## New files
 
-- `src/rust-service.ts` (~727 LOC) — `RustService`: owns the entire Rust runtime
+- `src/rust-service.ts` (~830 LOC) — `RustService`: owns the entire Rust runtime
   lifecycle, extracted from the `PiService` god class. Spawn + `get_state`
-  handshake/init, the `--no-extensions` self-heal, model & slash-command queries,
-  prompt/abort/steer, capability-degradation surfacing. It does **not** translate
-  events itself — `handleEvent()` delegates to the shared `handleAgentEvent()`
-  through a `RustHost` callback interface (see *Internal branching* above).
+  handshake/init (with a **shape probe** that warns once when the reply lacks the
+  fields every tested binary carries — the pinned-version drift safety net), the
+  `--no-extensions` self-heal, model & slash-command queries, prompt/abort/steer,
+  capability-degradation surfacing. It does **not** translate events itself —
+  `handleEvent()` delegates to the shared `handleAgentEvent()` through a
+  `RustHost` callback interface (see *Internal branching* above). It is
+  **vscode-free**: its environment (settings, binary detection, models.json
+  setup, session dir, error/reopen UI, process construction) is injected via a
+  `RustDeps` contract — PiService supplies the real vscode-backed implementations
+  (`makeRustDeps()`), and `rust-service.test.ts` drives the real init/handshake
+  headlessly against a fake rust-pi subprocess.
+- `src/sdk-service.ts` (~715 LOC) — `SdkService`: the TS runtime's counterpart of
+  `RustService` (extracted 2026-07-06; previously the 12-step init lived inline
+  in PiService). Owns SDK package resolution + dynamic module loading (with
+  retry), the pi-ai ≥0.80 model-API adaptation, auth/registry/settings, model
+  selection (default override → session resume → capability reconcile → thinking
+  clamp), the ResourceLoader (VS Code system prompt, virtual context files,
+  prompt templates), tools, the SessionManager (incl. the fresh-path EEXIST
+  regenerate loop), and `createAgentSession`. PiService reaches the SDK objects
+  through thin getters over `_sdk` and wires the created session to the UI
+  (event subscription, extension binding, history replay).
 - `src/rust-events.ts` (~254 LOC) — the pure, vscode-free core for the Rust path,
   fully unit-tested: `normalizeRustEvent`, `routeRustEvent` (routing / dedupe /
   queue-clear decisions), the `TOOL_PREVIEW_THROTTLE_MS = 200` tool-arg-preview
@@ -75,6 +113,12 @@ under Rust).
   tolerant JSONL listing for the unified Past Sessions view.
 - `src/rust-install.ts` — on-demand install (managed GitHub-release download with
   checksum verification, official `curl | sh`, manual, detect-existing).
+- `src/model-catalog.ts` (formerly `rust-catalog.ts` — renamed 2026-07-06: the
+  helpers serve BOTH runtimes) — pure thinking-capability logic
+  (`getSupportedThinkingLevels`/`clampThinkingLevel`/`reconcileThinkingCapability`),
+  cost computation, and the maxTokens/compat shaping for the Rust models.json.
+  The shared `extractMessageText` + tool-preview helpers likewise moved from
+  `rust-events.ts` into `agent-events.ts`, so imports point rust-specific → shared.
 - `src/runtime-detection.ts` — `detectRuntimes()`,
   `resolveEffectiveDefaultRuntime()`, `refreshRuntimeContext()` (sets the
   `pi-code-gui.{ts,rust,both,any}Available` context keys).
