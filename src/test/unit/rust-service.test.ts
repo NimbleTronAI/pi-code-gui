@@ -88,7 +88,7 @@ function makeHost() {
     setAgentRunActive: () => { /* noop */ },
     setStreaming: () => { /* noop */ },
     getModel: () => state.model,
-    setModel: (m) => { state.model = m as Record<string, unknown>; },
+    setModel: (m) => { state.model = m; },
     setThinkingLevel: (l) => { state.thinkingLevel = l; },
     setSessionId: (id) => { state.sessionId = id; },
     getCycleModels: () => state.cycleModels,

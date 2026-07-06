@@ -12,7 +12,7 @@
 // every core capability it calls, passes through it. That coupling always
 // existed inside the god class — here it's named and visible.
 
-import { piWarn, piDebug } from "./logger.js";
+import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
@@ -332,7 +332,7 @@ export class RustService {
         // A non-empty reply that parses to zero commands means rust-pi changed its
         // command shape (parseRustSlashCommands tolerates the known variants) —
         // surface the drift instead of silently showing an empty command list.
-        if (this.slashCommands.length === 0 && cmds.data && Object.keys(cmds.data as object).length > 0) {
+        if (this.slashCommands.length === 0 && cmds.data && Object.keys(cmds.data).length > 0) {
           piWarn("get_commands returned a non-empty reply that parsed to 0 slash commands — rust-pi's command shape may have drifted (see parseRustSlashCommands).");
         }
         this.recordCapOk("commands");
