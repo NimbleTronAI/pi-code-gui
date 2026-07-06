@@ -591,6 +591,7 @@
     "lint": "eslint src",
     "test": "vscode-test",
     "test:unit": "pnpm run compile-tests && pnpm run compile-tests:webview && node --test out/test/unit/*.test.js",
+    "test:rust-smoke": "node scripts/rust-smoke.mjs",
     "vsix": "pnpm run package && npx @vscode/vsce package --no-dependencies",
     "wiki:lint": "npx tsx agent-wiki/scripts/wiki-lint.ts",
     "wiki:lint:full": "npx tsx agent-wiki/scripts/wiki-lint.ts --full",

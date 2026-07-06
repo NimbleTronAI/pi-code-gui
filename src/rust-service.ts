@@ -12,15 +12,12 @@
 // every core capability it calls, passes through it. That coupling always
 // existed inside the god class — here it's named and visible.
 
-import * as vscode from "vscode";
 import { piWarn, piDebug } from "./logger.js";
-import { RustProcess, RUST_RPC, type RustEvent, type RustResponse } from "./rust-process.js";
+import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
-import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode, isRustExtensionConflict } from "./rust-resolver.js";
-import { setupRustModels } from "./rust-models.js";
-import { resolveRustSessionDir } from "./rust-sessions.js";
-import { resolveWorkspaceCwd } from "./workspace.js";
+import { isRustExtensionConflict } from "./rust-interop.js";
+import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
 
 /** A model entry for the model-cycle list (shared with PiService). */
@@ -82,6 +79,43 @@ export interface RustHost {
   setAutoRetryEnabled(v: boolean): void;
 }
 
+/** The pi-code-gui settings RustService consumes, resolved to plain values. */
+export interface RustSessionConfig {
+  defaultModelProvider?: string;
+  defaultModelId?: string;
+  /** Resolved thinking level ("off" when unset). */
+  defaultThinkingLevel: string;
+  /** Resolved extension policy ("balanced" when unset). */
+  rustExtensionPolicy: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  /** Resolved context budget (0 = no budget). */
+  contextBudget: number;
+}
+
+/** Environment dependencies injected into RustService — everything that would
+ *  otherwise couple it to vscode (configuration, binary detection, models.json
+ *  setup, session dir, host UI). PiService supplies the real implementations;
+ *  tests supply stubs, which is what makes the init/handshake sequence — the most
+ *  complex code in the Rust subsystem — headlessly testable. */
+export interface RustDeps {
+  detectBinary(): RustInstallStatus;
+  shouldDisableExtensions(cwd: string): boolean;
+  /** The rustExtensions setting mode: "auto" | "enabled" | "disabled". */
+  extensionsMode(): string;
+  setupModels(): { piEnv: Record<string, string>; warnings: string[] };
+  sessionDir(): string;
+  workspaceCwd(): string;
+  /** Read the current settings (called at init and on state refresh — not cached). */
+  config(): RustSessionConfig;
+  /** Show a blocking error notification (models.json setup failures). */
+  showError(message: string): void;
+  /** Offer one-click reopen of `sessionFile` after an unexpected crash. */
+  offerReopen(sessionFile: string): void;
+  /** Test seam: wrap/replace RustProcess construction (defaults to the real one). */
+  createProcess?(opts: RustProcessOpts): RustProcess;
+}
+
 export class RustService {
   private process: RustProcess | null = null;
   private initializing = false;
@@ -106,7 +140,7 @@ export class RustService {
   /** Guard against overlapping refreshState() runs — see refreshState(). */
   private _refreshing = false;
 
-  constructor(private readonly host: RustHost) {}
+  constructor(private readonly host: RustHost, private readonly deps: RustDeps) {}
 
   // ── Lifecycle ──────────────────────────────────────────
 
@@ -135,26 +169,26 @@ export class RustService {
     this.followUp = [];
     this.degradedWarned.clear();
 
-    const status = detectRustBinary();
+    const status = this.deps.detectBinary();
     if (!status.installed || !status.binaryPath) {
       return { success: false, error: status.error ?? "Rust Pi binary not found." };
     }
 
-    const cwd = resolveWorkspaceCwd();
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cwd = this.deps.workspaceCwd();
+    const cfg = this.deps.config();
 
     // Build RPC args (flags verified against the v0.1.18 binary's README).
-    const args = ["--mode", "rpc", "--session-dir", resolveRustSessionDir()];
+    const args = ["--mode", "rpc", "--session-dir", this.deps.sessionDir()];
     if (openPath) { args.push("--session", openPath); }
     else if (!fresh) { args.push("--continue"); }
-    const provider = cfg.get<string>("defaultModelProvider")?.trim();
-    const modelId = cfg.get<string>("defaultModelId")?.trim();
+    const provider = cfg.defaultModelProvider?.trim();
+    const modelId = cfg.defaultModelId?.trim();
     // Apply the DEFAULT model only to a fresh session. A restored (--session) or
     // continued (--continue) session carries its own recorded provider/model in
     // its file; overriding with the setting would silently switch its model on
     // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
     const restoring = !!openPath || !fresh;
-    const thinking = cfg.get<string>("defaultThinkingLevel")?.trim() || "off";
+    const thinking = cfg.defaultThinkingLevel?.trim() || "off";
     if (!restoring) {
       if (provider) { args.push("--provider", provider); }
       if (modelId) { args.push("--model", modelId); }
@@ -166,30 +200,27 @@ export class RustService {
       // get_state then syncs the display — so don't force the flag there.
       args.push("--thinking", thinking);
     }
-    const extPolicy = cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced";
-    args.push("--extension-policy", extPolicy);
+    args.push("--extension-policy", cfg.rustExtensionPolicy?.trim() || "balanced");
 
     // Extension discovery. The Rust binary aborts `--mode rpc` startup when it
     // meets the workspace's TypeScript-SDK `.pi/` extensions (it wants its own
     // tool-manifest shape: `missing field 'parameters'`). Per the rustExtensions
     // setting we disable discovery up front ("disabled", or "auto" when those
     // extensions are detected); the catch below is the safety net for the rest.
-    let noExtensions = shouldDisableRustExtensions(cwd);
+    let noExtensions = this.deps.shouldDisableExtensions(cwd);
     if (noExtensions) { args.push("--no-extensions"); }
 
     // Inherit env + runtime API-key overrides so Rust can authenticate.
     const env: NodeJS.ProcessEnv = { ...process.env };
-    const anthropicKey = cfg.get<string>("anthropicApiKey");
-    if (anthropicKey) { env.ANTHROPIC_API_KEY = anthropicKey; }
-    const openaiKey = cfg.get<string>("openaiApiKey");
-    if (openaiKey) { env.OPENAI_API_KEY = openaiKey; }
+    if (cfg.anthropicApiKey) { env.ANTHROPIC_API_KEY = cfg.anthropicApiKey; }
+    if (cfg.openaiApiKey) { env.OPENAI_API_KEY = cfg.openaiApiKey; }
 
     // Model catalog: override the Rust binary's stale built-in model list with the
     // bundled Pi catalog (writes models.json in the relocated agent home). Never
     // silent — fatal problems (unwritable dir) become a loud error + notification;
     // softer ones (an auth-seed miss) become chat warnings.
     try {
-      const { piEnv, warnings } = setupRustModels();
+      const { piEnv, warnings } = this.deps.setupModels();
       Object.assign(env, piEnv);
       for (const w of warnings) {
         this.host.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${w}`, timestamp: Date.now() } });
@@ -198,7 +229,7 @@ export class RustService {
       const m = e instanceof Error ? e.message : String(e);
       piWarn(`Rust custom-models setup failed: ${m}`);
       this.host.emit({ type: "custom-message", data: { customType: "error", content: `⚠ Custom models for Rust couldn't be configured — ${m}`, timestamp: Date.now() } });
-      void vscode.window.showErrorMessage(`Pi Code Gui: ${m}`);
+      this.deps.showError(`Pi Code Gui: ${m}`);
       // Continue: built-in models still work; an unresolved model is caught below.
     }
 
@@ -213,7 +244,7 @@ export class RustService {
       // already disable extensions. In "auto" mode we self-heal (retry with
       // discovery off + warn); when the user explicitly set "enabled" we respect
       // that and surface an actionable error that points to the setting.
-      if (isRustExtensionConflict(msg) && !noExtensions && rustExtensionsMode() === "auto") {
+      if (isRustExtensionConflict(msg) && !noExtensions && this.deps.extensionsMode() === "auto") {
         piWarn("Rust start hit a TS-extension conflict; retrying with --no-extensions");
         args.push("--no-extensions");
         noExtensions = true;
@@ -335,7 +366,8 @@ export class RustService {
   /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
   private async spawn(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
     this.process?.dispose();
-    this.process = new RustProcess({
+    const createProcess = this.deps.createProcess ?? ((o: RustProcessOpts) => new RustProcess(o));
+    this.process = createProcess({
       binaryPath, args, cwd, env,
       onEvent: (e: RustEvent) => this.handleEvent(e),
       onExit: (code: number | null) => this.handleExit(code),
@@ -435,15 +467,7 @@ export class RustService {
     // this is a real crash, not host teardown). Offer one-click recovery into a
     // fresh window via the existing resume flow — avoids in-place re-init (which
     // would replay history into the dead tab) and crash-loops (user-initiated).
-    if (file) {
-      void vscode.window
-        .showWarningMessage(`Rust Pi exited unexpectedly (code ${code ?? "?"}).`, "Reopen session")
-        .then((choice) => {
-          if (choice === "Reopen session") {
-            void vscode.commands.executeCommand("pi-code-gui.resumePastSession", file);
-          }
-        });
-    }
+    if (file) { this.deps.offerReopen(file); }
   }
 
   /** Map a Rust `extension_ui_request` onto the host's webview dialog/widget bridge. */
@@ -653,7 +677,7 @@ export class RustService {
         // everywhere and real compaction for custom models; built-in models' real
         // compaction remains at their registry window. This was a deliberate
         // trade-off to avoid shadowing built-ins for a display-parity gain.
-        const budget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
+        const budget = this.deps.config().contextBudget;
         this.contextWindow = budget > 0 ? Math.min(model.contextWindow, budget) : model.contextWindow;
       }
     } else if (typeof d.modelId === "string") {

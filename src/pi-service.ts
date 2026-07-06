@@ -7,7 +7,10 @@ import { piDebug, piWarn } from "./logger.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import { RUST_RPC, type RustResponse } from "./rust-process.js";
 import { extractMessageText } from "./rust-events.js";
-import { RustService, type RustHost } from "./rust-service.js";
+import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
+import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
+import { setupRustModels } from "./rust-models.js";
+import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./rust-catalog.js";
 import bundledRegistry from "./model-registry.generated.json";
@@ -909,7 +912,7 @@ export class PiService {
    */
   private async initializeRust(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     this._backendKind = "rust";
-    this._rust = new RustService(this.makeRustHost());
+    this._rust = new RustService(this.makeRustHost(), this.makeRustDeps());
     const result = await this._rust.initialize(opts);
     // Mirror the pre-extraction contract: a failed init nulls the live runtime
     // (the old code nulled `this.rust`), so `initialized` reports false.
@@ -918,6 +921,45 @@ export class PiService {
     // this Rust path rather than silently switching the session to the TS SDK.
     if (!result.success) { this._rust = null; }
     return result;
+  }
+
+  /** Real (vscode-backed) implementations of RustService's environment deps.
+   *  RustService itself is vscode-free so its init/handshake sequence can be
+   *  driven headlessly in unit tests with stubbed deps (see rust-service.test.ts). */
+  private makeRustDeps(): RustDeps {
+    return {
+      detectBinary: () => detectRustBinary(),
+      shouldDisableExtensions: (cwd) => shouldDisableRustExtensions(cwd),
+      extensionsMode: () => rustExtensionsMode(),
+      setupModels: () => setupRustModels(),
+      sessionDir: () => resolveRustSessionDir(),
+      workspaceCwd: () => resolveWorkspaceCwd(),
+      config: () => {
+        const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+        return {
+          defaultModelProvider: cfg.get<string>("defaultModelProvider"),
+          defaultModelId: cfg.get<string>("defaultModelId"),
+          defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel")?.trim() || "off",
+          rustExtensionPolicy: cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced",
+          anthropicApiKey: cfg.get<string>("anthropicApiKey"),
+          openaiApiKey: cfg.get<string>("openaiApiKey"),
+          contextBudget: cfg.get<number>("contextBudget") ?? 0,
+        };
+      },
+      showError: (message) => { void vscode.window.showErrorMessage(message); },
+      offerReopen: (sessionFile) => {
+        // The session JSONL persists on disk; offer one-click recovery into a fresh
+        // window via the existing resume flow — avoids in-place re-init (which would
+        // replay history into the dead tab) and crash-loops (user-initiated).
+        void vscode.window
+          .showWarningMessage("Rust Pi exited unexpectedly.", "Reopen session")
+          .then((choice) => {
+            if (choice === "Reopen session") {
+              void vscode.commands.executeCommand("pi-code-gui.resumePastSession", sessionFile);
+            }
+          });
+      },
+    };
   }
 
   /** Build the RustHost callback surface RustService writes through — the explicit
