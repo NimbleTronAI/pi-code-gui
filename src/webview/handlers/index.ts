@@ -12,6 +12,7 @@ import {
   setupCodeBlockHandlers,
 } from "../render/engine.js";
 import { validateExtensionToWebview } from "../../shared/protocol.js";
+import { linkifyPlain } from "../../shared/linkify.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
@@ -1778,7 +1779,12 @@ export function handleCustomMessage(data: any) {
       if (infoContent) {
         var infoEl = document.createElement("div");
         infoEl.className = "message assistant";
-        infoEl.innerHTML = html`<div class="message-content muted">${infoContent}</div>`;
+        // linkifyPlain keeps the content literal (unlike a full markdown render, which
+        // would reformat other info messages) but turns explicit [label](url) links —
+        // e.g. the fd/ripgrep install guides — into clickable anchors. It escapes first,
+        // so this is safe to assign as innerHTML directly (the html`` template would
+        // otherwise re-escape the anchors back into literal text).
+        infoEl.innerHTML = "<div class=\"message-content muted\">" + linkifyPlain(infoContent) + "</div>";
         state.chatContainer.appendChild(infoEl);
         scrollToBottom();
       }
