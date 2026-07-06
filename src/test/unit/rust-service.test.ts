@@ -89,6 +89,7 @@ function makeHost() {
     setStreaming: () => { /* noop */ },
     getModel: () => state.model,
     setModel: (m) => { state.model = m; },
+    getThinkingLevel: () => state.thinkingLevel,
     setThinkingLevel: (l) => { state.thinkingLevel = l; },
     setSessionId: (id) => { state.sessionId = id; },
     getCycleModels: () => state.cycleModels,
@@ -116,6 +117,7 @@ function makeDeps(mode: string, overrides?: Partial<RustDeps>): RustDeps {
     config: () => config,
     showError: () => { /* noop */ },
     offerReopen: () => { /* noop */ },
+    exportHtml: async (_s, out) => out,
     // The fake is a node script: prepend it to the args RustService built, and
     // carry FAKE_MODE through the env RustService assembled.
     createProcess: (opts: RustProcessOpts) => new RustProcess({

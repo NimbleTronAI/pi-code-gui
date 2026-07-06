@@ -21,6 +21,7 @@ import { piDebug, piWarn } from "./logger.js";
 import { isOlderThan } from "./version-compare.js";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import type { PiServiceEvent } from "./types.js";
+import type { BackendCapabilities } from "./pi-backend.js";
 
 /** The bundled pi-ai catalog providers map shape (a subset of
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
@@ -305,6 +306,26 @@ export class SdkService {
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
   constructor(private readonly host: SdkHost, private readonly deps: SdkDeps) {}
+
+  /** What the in-process TypeScript runtime can do — the full feature surface (bridge
+   *  tools, interactive cards, /tools, fork, reload, export, rename). PiService reads
+   *  these instead of hard-coding `_backendKind === "typescript"` gates. The SDK handles
+   *  thinking per-provider in-process, so the level is always "live"; and PiService
+   *  intercepts builtin slash commands before session.prompt (as the CLI does). */
+  get capabilities(): BackendCapabilities {
+    return {
+      kind: "typescript",
+      bridgeTools: true,
+      customCards: true,
+      toolsPicker: true,
+      fork: true,
+      reloadContext: true,
+      exportHtml: true,
+      rename: true,
+      interceptSlashCommands: true,
+      thinkingLevelLive: () => true,
+    };
+  }
 
   /** Resolve, load, and wire the TypeScript SDK up to a live agent session
    *  (the former PiService init Steps 1–9). Never throws; failures come back as
@@ -701,6 +722,12 @@ export class SdkService {
     } catch (e: unknown) {
       piWarn(`pi-ai version check skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  /** Export the conversation to HTML via the in-process SDK session. */
+  async exportToHtml(outputPath: string): Promise<string> {
+    if (!this.session) { throw new Error("No active session to export."); }
+    return this.session.exportToHtml(outputPath);
   }
 
   /** Drop all SDK references. The owner (PiService.dispose) has already

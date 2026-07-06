@@ -21,6 +21,7 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessageText } from "./agent-events.js";
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
+import type { BackendCapabilities } from "./pi-backend.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -380,6 +381,7 @@ export class PiService {
         };
       },
       showError: (message) => { void vscode.window.showErrorMessage(message); },
+      exportHtml: (sessionFile, outputPath) => rustExportHtml(sessionFile, outputPath),
       offerReopen: (sessionFile) => {
         // The session JSONL persists on disk; offer one-click recovery into a fresh
         // window via the existing resume flow — avoids in-place re-init (which would
@@ -451,6 +453,7 @@ export class PiService {
       setStreaming: (v) => { this._isStreaming = v; },
       getModel: () => this._model,
       setModel: (m) => { this._model = m; },
+      getThinkingLevel: () => this._thinkingLevel,
       setThinkingLevel: (level) => { this._thinkingLevel = level; this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
       getCycleModels: () => this.cycleModels,
@@ -703,19 +706,14 @@ export class PiService {
       { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
     );
 
-    // ── TypeScript-only ─────────────────────────────
-    // resume/fork/export are serviced by the SDK when forwarded as a prompt; the
-    // Rust RPC can't run them from chat (use the Sessions view / palette there),
-    // so they're not advertised to Rust. /tools enumerates SDK customTools, for
-    // which there's no RPC equivalent under Rust.
-    if (!isRust) {
-      result.push(
-        { cmd: "/resume", desc: "Resume a previous session", source: "builtin" },
-        { cmd: "/fork", desc: "Fork session from message", source: "builtin" },
-        { cmd: "/export", desc: "Export session to HTML", source: "builtin" },
-        { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
-      );
-    }
+    // ── Capability-gated commands ───────────────────
+    // Advertised only where the backend can service them (data flags, not a runtime
+    // conditional). Rust's RPC can't run these from chat — use the Sessions view/palette.
+    const caps = this.capabilities;
+    if (caps.fork) { result.push({ cmd: "/resume", desc: "Resume a previous session", source: "builtin" }); }
+    if (caps.fork) { result.push({ cmd: "/fork", desc: "Fork session from message", source: "builtin" }); }
+    if (caps.exportHtml && caps.kind === "typescript") { result.push({ cmd: "/export", desc: "Export session to HTML", source: "builtin" }); }
+    if (caps.toolsPicker) { result.push({ cmd: "/tools", desc: "Select which tools are active", source: "builtin" }); }
 
     return result;
   }
@@ -1269,12 +1267,11 @@ export class PiService {
    * (rawSession is null under Rust). Returns the written path.
    */
   async exportToHtml(outputPath: string): Promise<string> {
-    if (this._backendKind === "rust") {
-      const sf = this.sessionFilePath;
-      if (!sf) { throw new Error("This Rust session hasn't been saved yet — send a message first, then export."); }
-      return rustExportHtml(sf, outputPath);
-    }
-    return this.rawSession.exportToHtml(outputPath);
+    // Delegated to the active backend (PiBackend.exportToHtml): Rust shells out to
+    // `pi --export`, the SDK exports the in-process session — PiService no longer branches.
+    const backend = this._backendKind === "rust" ? this._rust : this._sdk;
+    if (!backend) { throw new Error("No active session to export."); }
+    return backend.exportToHtml(outputPath);
   }
 
   /** Resolve a pending interactive dialog (called from webview-panel.ts). */
@@ -1946,6 +1943,21 @@ export class PiService {
   get thinkingLevel(): string { return this.realThinkingLevel(); }
   /** Which runtime backs this session: "typescript" (in-process SDK) or "rust" (RPC subprocess). */
   get runtime(): Runtime { return this._backendKind; }
+
+  /** The active backend's capability flags — the data-driven replacement for scattered
+   *  `_backendKind === "rust"` feature gates. Falls back to a runtime-appropriate default
+   *  when the service isn't live yet (e.g. mid-init or after a failed init). */
+  get capabilities(): BackendCapabilities {
+    const active = this._backendKind === "rust" ? this._rust : this._sdk;
+    if (active) { return active.capabilities; }
+    // No live service: minimal defaults keyed off the attempted runtime.
+    const rust = this._backendKind === "rust";
+    return {
+      kind: this._backendKind, bridgeTools: !rust, customCards: !rust, toolsPicker: !rust,
+      fork: !rust, reloadContext: !rust, exportHtml: true, rename: !rust,
+      interceptSlashCommands: !rust, thinkingLevelLive: () => !rust,
+    };
+  }
 
   /** Promote a follow-up message to a steering message. */
   async promoteToSteer(text: string): Promise<void> {

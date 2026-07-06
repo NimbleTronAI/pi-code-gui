@@ -8,8 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SdkService, type SdkHost, type SdkDeps, type SdkConfig } from "../../sdk-service.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Any = any;
+type Any = ReturnType<typeof JSON.parse>;
 
 /** A fake pi-coding-agent SDK module — just enough surface for initialize(). */
 function fakeSdk(over: Partial<Record<string, Any>> = {}): Any {

@@ -17,8 +17,10 @@ import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProc
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
+import { thinkingLevelIsLive } from "./model-catalog.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
+import type { BackendCapabilities } from "./pi-backend.js";
 
 /** A model entry for the model-cycle list (shared with PiService). */
 export interface CycleModel {
@@ -69,8 +71,9 @@ export interface RustHost {
   getAgentRunActive(): boolean;
   setAgentRunActive(v: boolean): void;
   setStreaming(v: boolean): void;
-  getModel(): { id?: string; name?: string; provider?: string } | null;
+  getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null;
   setModel(m: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean }): void;
+  getThinkingLevel(): string;
   setThinkingLevel(level: string): void;
   setSessionId(id: string): void;
   getCycleModels(): CycleModel[];
@@ -112,6 +115,8 @@ export interface RustDeps {
   showError(message: string): void;
   /** Offer one-click reopen of `sessionFile` after an unexpected crash. */
   offerReopen(sessionFile: string): void;
+  /** Export a session JSONL to HTML by shelling out to `pi --export`. */
+  exportHtml(sessionFile: string, outputPath: string): Promise<string>;
   /** Test seam: wrap/replace RustProcess construction (defaults to the real one). */
   createProcess?(opts: RustProcessOpts): RustProcess;
 }
@@ -784,6 +789,80 @@ export class RustService {
   abort(): void {
     this.process?.send(RUST_RPC.abortBash);
     this.process?.send(RUST_RPC.abort);
+  }
+
+  /** Abort a running bash tool only (the LLM turn keeps going). */
+  abortBash(): void { this.process?.send(RUST_RPC.abortBash); }
+
+  /** What the Rust runtime can do — data flags PiService's shared UI reads instead of
+   *  hard-coding `_backendKind === "rust"` feature gates. The out-of-process RPC has no
+   *  host-tool injection (no bridge tools / interactive cards), and no fork/reload/rename
+   *  RPCs; it owns its own slash-command handling (so PiService does not intercept). */
+  get capabilities(): BackendCapabilities {
+    return {
+      kind: "rust",
+      bridgeTools: false,
+      customCards: false,
+      toolsPicker: false,
+      fork: false,
+      reloadContext: false,
+      exportHtml: true,
+      rename: false,
+      interceptSlashCommands: false,
+      thinkingLevelLive: () => thinkingLevelIsLive(this.host.getModel()?.api),
+    };
+  }
+
+  /** Set the active model on the wire (RPC). Applies the reply so the budget clamp /
+   *  context-% reflect the new model immediately; returns the applied identity. */
+  async setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null> {
+    const resp = await this.requestOrError(RUST_RPC.setModel, { provider, modelId: id }, `Could not switch model to ${id}`);
+    if (!resp) { return null; }
+    this.applyState({ model: resp.data });
+    return this.host.getModel();
+  }
+
+  /** Set the thinking level on the wire (RPC), re-reading state so the returned level
+   *  reflects the binary's clamp (a non-reasoning model forces "off"). */
+  async setThinkingLevel(level: string): Promise<string> {
+    const resp = await this.requestOrError(RUST_RPC.setThinkingLevel, { level }, "Could not set thinking level");
+    if (!resp) { return this.host.getThinkingLevel(); }
+    this.host.setThinkingLevel(level);
+    try {
+      const st = await this.request(RUST_RPC.getState, {}, 8000);
+      if (st?.success) { this.applyState(st.data); }
+    } catch { /* keep optimistic level */ }
+    return this.host.getThinkingLevel();
+  }
+
+  async setAutoCompaction(enabled: boolean): Promise<void> {
+    const r = await this.requestOrError(RUST_RPC.setAutoCompaction, { enabled }, "Could not toggle auto-compaction");
+    if (r) { this.host.setAutoCompactionEnabled(enabled); }
+  }
+
+  async setAutoRetry(enabled: boolean): Promise<void> {
+    const r = await this.requestOrError(RUST_RPC.setAutoRetry, { enabled }, "Could not toggle auto-retry");
+    if (r) { this.host.setAutoRetryEnabled(enabled); }
+  }
+
+  /** Export the conversation to HTML by shelling out to `pi --export` (the binary
+   *  owns its session files; there's no in-process session to export). */
+  async exportToHtml(outputPath: string): Promise<string> {
+    const sf = this.getSessionPath();
+    if (!sf) { throw new Error("This Rust session hasn't been saved yet — send a message first, then export."); }
+    return this.deps.exportHtml(sf, outputPath);
+  }
+
+  /** Promote a queued follow-up / clear the queue — PiBackend aliases. */
+  clearQueue(): void { this.clearQueueAndEmit(); }
+
+  /** Correlated RPC with unified error surfacing (used by the backend setters). */
+  private async requestOrError(command: string, payload: Record<string, unknown>, label: string): Promise<RustResponse | null> {
+    const fail = (m: string): null => { this.host.emit({ type: "custom-message", data: { customType: "error", content: `${label}: ${m}`, timestamp: Date.now() } }); return null; };
+    const resp = await this.request(command, payload, 15000).catch((e: unknown) => fail(e instanceof Error ? e.message : String(e)));
+    if (!resp) { return null; }
+    if (!resp.success) { return fail(resp.error ?? "unknown error"); }
+    return resp;
   }
 
   /**
