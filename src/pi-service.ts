@@ -5,7 +5,6 @@ import * as vscode from "vscode";
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn } from "./logger.js";
 import { humanizeProviderError } from "./extension-errors.js";
-import { RUST_RPC, type RustResponse } from "./rust-process.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
@@ -1364,145 +1363,78 @@ export class PiService {
     }
   }
 
-  /** Run a Rust RPC for a user action, surfacing any failure — an RPC rejection
-   *  (timeout / process exit) OR a {success:false} reply — as a one-line chat
-   *  error prefixed with `label`, and returning null so the caller bails. Dedupes
-   *  the identical error handling across setModel/cycleModel/setThinkingLevel.
-   *  request() (correlated by id), not send(): the binary returns the outcome only
-   *  in the response, which RustProcess drops if nothing awaits the id. */
-  private async rustRequestOrError(command: string, payload: Record<string, unknown>, label: string): Promise<RustResponse | null> {
-    if (!this._rust) { return null; }
-    const fail = (m: string): null => { this.emit({ type: "custom-message", data: { customType: "error", content: `${label}: ${m}`, timestamp: Date.now() } }); return null; };
-    const resp = await this._rust.request(command, payload, 15000)
-      .catch((e: unknown) => fail(e instanceof Error ? e.message : String(e)));
-    if (!resp) { return null; }
-    if (!resp.success) { return fail(resp.error ?? "unknown error"); }
-    return resp;
-  }
-
   async setModel(provider: string, modelId: string): Promise<void> {
-    if (this._backendKind === "rust") {
-      // Apply the reply so a bad switch surfaces and the budget clamp / context-%
-      // reflect the new model (with its real contextWindow) immediately.
-      const resp = await this.rustRequestOrError(RUST_RPC.setModel, { provider, modelId }, `Could not switch model to ${modelId}`);
-      if (!resp) { return; }
-      this._rust?.applyState({ model: resp.data });
-      this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
-      if (this.cycleIndex === -1) { this.cycleIndex = 0; }
-      this.reportStatus();
-      return;
-    }
-    if (!this.session || !this.AI) {
-      piWarn(`setModel("${provider}/${modelId}") ignored: session not initialized`);
-      return;
-    }
-    // Try registry first, then fall back to getModel
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let model: any = null;
-    if (this.modelRegistry) {
-      model = this.modelRegistry.find(provider, modelId);
-    }
-    if (!model) {
-      model = this.AI.getModel(provider, modelId);
-    }
-    if (model) {
-      await this.session.setModel(model);
-      this._model = { id: modelId, provider };
-      this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
-      if (this.cycleIndex === -1) { this.cycleIndex = 0; }
-      // No force-persist here: session.setModel() already records a model_change via
-      // the SDK's appendModelChange (deferred, flushed with the session header on the
-      // first assistant message). A direct write would duplicate it AND create the
-      // file early, breaking the SDK's exclusive-create flush (EEXIST on first prompt).
-      this.reportStatus();
-    }
+    // The backend applies the switch on the wire (Rust: RPC + applyState so the budget
+    // clamp / context-% reflect the new model immediately; SDK: registry/catalog resolve
+    // + session.setModel) and returns the applied identity, or null when it couldn't
+    // (the Rust path already surfaced the error; the SDK path no-op'd). PiService owns
+    // the shared post-step: active model, cycle index, status.
+    const applied = await this.backend?.setModel(provider, modelId);
+    if (!applied) { return; }
+    this._model = applied;
+    this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
+    if (this.cycleIndex === -1) { this.cycleIndex = 0; }
+    this.reportStatus();
   }
 
   async cycleModel(): Promise<void> {
-    if (this._backendKind === "rust") {
-      if (this.cycleModels.length === 0) {
-        vscode.window.showWarningMessage("No models available. Configure an API key first.");
-        return;
-      }
-      this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
-      const next = this.cycleModels[this.cycleIndex];
-      const resp = await this.rustRequestOrError(RUST_RPC.setModel, { provider: next.provider, modelId: next.id }, `Could not switch model to ${next.id}`);
-      if (!resp) { return; }
-      this._rust?.applyState({ model: resp.data });
-      vscode.window.showInformationMessage(`Model: ${next.id}`);
-      this.reportStatus();
-      return;
-    }
-    if (!this.session || !this.AI) {
-      vscode.window.showWarningMessage("Pi session not ready yet.");
-      return;
-    }
     if (this.cycleModels.length === 0) {
       vscode.window.showWarningMessage("No models available. Configure an API key first.");
       return;
     }
+    if (!this.backend) {
+      vscode.window.showWarningMessage("Pi session not ready yet.");
+      return;
+    }
     this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
     const next = this.cycleModels[this.cycleIndex];
-    const model = this.AI.getModel(next.provider, next.id);
-    if (model) {
-      const prevId = this._model?.id ?? "?";
-      await this.session.setModel(model);
-      this._model = { id: next.id, provider: next.provider };
-      if (this.cycleModels.length <= 1) {
-        vscode.window.showInformationMessage(`Only ${next.id} configured. Click the model name in the status bar to add more.`);
-      } else {
-        vscode.window.showInformationMessage(`Model: ${prevId} → ${next.id}`);
-      }
-      this.reportStatus();
+    const prevId = this._model?.id ?? "?";
+    // Delegated to the backend primitive (same wire switch as setModel); PiService
+    // owns the shared post-step + the cycle notice, now uniform across runtimes
+    // (previously Rust showed only "Model: <id>" — it now shows prev → next too).
+    const applied = await this.backend.setModel(next.provider, next.id);
+    if (!applied) { return; }
+    this._model = applied;
+    if (this.cycleModels.length <= 1) {
+      vscode.window.showInformationMessage(`Only ${next.id} configured. Click the model name in the status bar to add more.`);
+    } else {
+      vscode.window.showInformationMessage(`Model: ${prevId} → ${next.id}`);
     }
+    this.reportStatus();
   }
 
   async setThinkingLevel(level: string): Promise<void> {
-    if (this._backendKind === "rust") {
-      // Some provider transports (mistral-conversations and any unverified/unknown
-      // api) never serialize the thinking level on the wire, so changing it would
-      // be a silent no-op the binary still reports as success. Don't pretend:
-      // reasoning is a fixed on/off property of the model there, not an adjustable
-      // depth. (openai-completions/DeepSeek now DOES transmit it — see
-      // thinkingLevelIsLive — so this guard no longer fires for it.)
-      if (!thinkingLevelIsLive(this._model?.api)) {
-        const on = this._model?.reasoning ?? false;
-        vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
-        return;
-      }
-      const resp = await this.rustRequestOrError(RUST_RPC.setThinkingLevel, { level }, "Could not set thinking level");
-      if (!resp) { return; }
-      // The binary clamps the level to the model's capability (a non-reasoning
-      // model forces "off") and returns no value, so re-read state to reflect
-      // what was actually applied rather than what was requested.
-      this._thinkingLevel = level;
-      try {
-        const st = await this._rust?.request(RUST_RPC.getState, {}, 8000);
-        if (st?.success) { this._rust?.applyState(st.data); }
-      } catch { /* keep optimistic level */ }
-      // The binary clamps thinking to "off" for non-reasoning models. We override
-      // its model list with the Pi catalog (correct reasoning flags), so a clamp
-      // now means the model genuinely doesn't support thinking — say so rather than
-      // leaving the switch a silent no-op.
-      if (this._thinkingLevel !== level) {
-        vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${this._thinkingLevel}".`);
-      }
-      this.rememberReasoning();
-      this.reportStatus();
+    // A transport that can't serialize the level (some Rust provider apis —
+    // mistral-conversations and any unverified/unknown api) makes this a silent no-op
+    // the binary still reports as success. Don't pretend: reasoning is then a fixed
+    // on/off model property, not an adjustable depth. capabilities.thinkingLevelLive()
+    // is true for the SDK (handled per-provider in-process) and, under Rust, tracks
+    // thinkingLevelIsLive(model.api) — so openai-completions/DeepSeek still pass.
+    if (!this.capabilities.thinkingLevelLive()) {
+      const on = this._model?.reasoning ?? false;
+      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
       return;
     }
-    if (!this.session) {
+    if (!this.backend) {
       piWarn(`setThinkingLevel("${level}") ignored: session not initialized`);
       return;
     }
-    this.session.setThinkingLevel(level);
-    this._thinkingLevel = level;
+    // The backend sets it on the wire and returns the EFFECTIVE level after its own
+    // clamp (Rust re-reads get_state; the SDK records the clamped level itself and
+    // echoes the request). No force-persist here — both runtimes record the change
+    // via their deferred append path (a direct write would duplicate it and create
+    // the file early, EEXIST on first prompt).
+    const effective = await this.backend.setThinkingLevel(level);
+    this._thinkingLevel = effective;
     this.rememberReasoning();
     this.reportStatus();
-    // No force-persist here: session.setThinkingLevel() already records a
-    // thinking_level_change via the SDK's appendThinkingLevelChange (deferred, and
-    // with the CLAMPED effective level — more correct than the raw level). A direct
-    // write would duplicate it AND create the file early (EEXIST on first prompt).
+    // A clamp means the model genuinely doesn't support the requested level (we
+    // override Rust's model list with the Pi catalog's correct reasoning flags), so
+    // say so rather than leaving the switch a silent no-op. The SDK always echoes the
+    // request, so this only fires under Rust.
+    if (effective !== level) {
+      vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${effective}".`);
+    }
   }
 
   // ── Default model / thinking persistence ──────────────
