@@ -4,14 +4,13 @@ import * as vscode from "vscode";
 
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn } from "./logger.js";
-import { humanizeProviderError } from "./extension-errors.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 
@@ -986,7 +985,10 @@ export class PiService {
    *  fields). A Rust transport that can't transmit the level degrades to a read-only
    *  "reasoning: on/off" badge — the only real axis there. */
   thinkingStatus(): { text: string; clickable: boolean } {
-    if (this._backendKind === "rust" && !thinkingLevelIsLive(this._model?.api)) {
+    // A transport that can't transmit the level (some Rust provider apis) shows a
+    // read-only reasoning on/off badge. capabilities.thinkingLevelLive() is always
+    // true for the SDK, so this only degrades under Rust — as before.
+    if (!this.capabilities.thinkingLevelLive()) {
       return { text: `reasoning: ${this._model?.reasoning ? "on" : "off"}`, clickable: false };
     }
     const level = this.realThinkingLevel();
@@ -1017,7 +1019,7 @@ export class PiService {
       vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to toggle.`);
       return false;
     }
-    if (this._backendKind === "rust" && !thinkingLevelIsLive(this._model?.api)) {
+    if (!this.capabilities.thinkingLevelLive()) {
       const on = this._model?.reasoning ?? false;
       vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — reasoning depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
       return false;
@@ -1043,8 +1045,9 @@ export class PiService {
         thinkingClickable: thinking.clickable,
         // Whether the active transport actually transmits the thinking level. Under
         // Rust this depends on the provider api (openai-completions = no-op); the TS
-        // SDK handles thinking per-provider in-process, so keep it "live" there.
-        thinkingLive: this._backendKind === "rust" ? thinkingLevelIsLive(this._model?.api) : true,
+        // SDK handles thinking per-provider in-process, so it's always "live" there.
+        // Both are expressed by the backend's capability flag.
+        thinkingLive: this.capabilities.thinkingLevelLive(),
         reasoning: this._model?.reasoning,
         isStreaming: this._isStreaming,
         sessionId: this.sessionId ?? undefined,
@@ -1063,85 +1066,46 @@ export class PiService {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
-    if (this._backendKind === "rust") {
-      if (!this._rust) { throw new Error("Rust Pi session not initialized"); }
-      return this._rust.sendPrompt(text, images, mode);
-    }
-    if (!this.session) { throw new Error("Pi session not initialized"); }
+    if (!this.backend) { throw new Error(this._backendKind === "rust" ? "Rust Pi session not initialized" : "Pi session not initialized"); }
 
-    // Handle slash commands at the PiService level before forwarding to
-    // session.prompt(). Builtin commands (from the SDK's BUILTIN_SLASH_COMMANDS
-    // list) map to PiService methods.
-    //
-    // IMPORTANT: unhandled slash commands (extension commands like /tldr,
-    // and unknown commands) MUST go through session.prompt() even during
-    // streaming.  The SDK executes extension commands immediately regardless
-    // of agent state, while steer()/followUp() explicitly reject them
+    // Runtimes that own their own slash handling (Rust: capabilities.interceptSlashCommands
+    // = false) take the raw turn — no interception, no vision auto-switch; the binary
+    // manages both. The steer/queue/prompt wire send is the backend primitive.
+    if (!this.capabilities.interceptSlashCommands) {
+      return this.backend.sendPrompt(text, images, mode);
+    }
+
+    // TS path: intercept builtin slash commands before sending. Builtin commands map
+    // to PiService methods; unhandled slash commands (extension commands like /tldr,
+    // and unknown ones) MUST go through the plain prompt path even while streaming —
+    // the SDK runs them immediately, whereas steer()/followUp() reject them
     // ("extension commands cannot be queued").
     if (text.startsWith("/")) {
       const handled = await this.tryHandleCommand(text);
       if (handled) { return; }
-      // Extension command or unknown slash — execute immediately via prompt(),
-      // bypassing the steer/queue path below.
-      await this.session.prompt(text);
-      return;
+      return this.backend.sendPrompt(text, undefined, undefined);
     }
 
+    // Steer / queue: the primitive enforces the no-image-mid-stream rule and surfaces
+    // steer/followUp rejections as an error card (via the shared emit).
     if (mode === "steer" || mode === "queue") {
-      if (images && images.length > 0) {
-        throw new Error("Cannot attach images while agent is streaming");
-      }
-      try {
-        if (mode === "queue") {
-          await this.session.followUp(text);
-        } else {
-          await this.session.steer(text);
-        }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (e: any) {
-        // steer/followUp reject extension commands and prompt templates
-        // during streaming — surface the error rather than swallowing it.
-        const msg = e?.message ?? String(e);
-        piWarn(`sendPrompt ${mode} failed: ${msg}`);
-        const friendly = humanizeProviderError(msg);
-        this.emit({
-          type: "custom-message",
-          data: {
-            customType: "error",
-            content: friendly ?? `${mode === "steer" ? "Steer" : "Queue"} failed: ${msg}`,
-            timestamp: Date.now(),
-          },
-        });
-      }
-    } else {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const opts: any = {};
-      if (images && images.length > 0) {
-        // Check if current model supports images; if not, try to auto-switch
-        if (!this.activeModelSupportsImages()) {
-          const visionModel = this.findVisionModel();
-          if (visionModel) {
-            // Auto-switch to a vision-capable model
-            await this.setModel(visionModel.provider, visionModel.id);
-            this.emit({
-              type: "custom-message",
-              data: {
-                customType: "info",
-                content: `Auto-switched to ${visionModel.id} (vision-capable) for image support.`,
-                timestamp: Date.now(),
-              },
-            });
-          } else {
-            throw new Error(
-              `Cannot send images: no vision-capable model available. ` +
-              "Add an API key for Claude, GPT-4o, or Gemini to use images."
-            );
-          }
-        }
-        opts.images = images;
-      }
-      await this.session.prompt(text, opts);
+      return this.backend.sendPrompt(text, images, mode);
     }
+
+    // Default turn: vision auto-switch is PiService orchestration (it needs setModel +
+    // the cycle list). Do it here, then hand the turn to the primitive.
+    if (images && images.length > 0 && !this.activeModelSupportsImages()) {
+      const visionModel = this.findVisionModel();
+      if (!visionModel) {
+        throw new Error(
+          `Cannot send images: no vision-capable model available. ` +
+          "Add an API key for Claude, GPT-4o, or Gemini to use images.",
+        );
+      }
+      await this.setModel(visionModel.provider, visionModel.id);
+      this.emit({ type: "custom-message", data: { customType: "info", content: `Auto-switched to ${visionModel.id} (vision-capable) for image support.`, timestamp: Date.now() } });
+    }
+    await this.backend.sendPrompt(text, images, undefined);
   }
 
   /** Check whether the active model's input capabilities include images. */
@@ -1267,9 +1231,8 @@ export class PiService {
   async exportToHtml(outputPath: string): Promise<string> {
     // Delegated to the active backend (PiBackend.exportToHtml): Rust shells out to
     // `pi --export`, the SDK exports the in-process session — PiService no longer branches.
-    const backend = this._backendKind === "rust" ? this._rust : this._sdk;
-    if (!backend) { throw new Error("No active session to export."); }
-    return backend.exportToHtml(outputPath);
+    if (!this.backend) { throw new Error("No active session to export."); }
+    return this.backend.exportToHtml(outputPath);
   }
 
   /** Resolve a pending interactive dialog (called from webview-panel.ts). */
@@ -1635,9 +1598,10 @@ export class PiService {
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
   async pickThinkingLevel(): Promise<boolean> {
-    // Under Rust on a transport that doesn't transmit the level, a graded picker
-    // would be a no-op — surface the honest reasoning on/off state instead.
-    if (this._backendKind === "rust" && !thinkingLevelIsLive(this._model?.api)) {
+    // On a transport that doesn't transmit the level (some Rust provider apis), a
+    // graded picker would be a no-op — surface the honest reasoning on/off state
+    // instead. Always live for the SDK, so this only fires under Rust.
+    if (!this.capabilities.thinkingLevelLive()) {
       const on = this._model?.reasoning ?? false;
       vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
       return false;
@@ -1932,7 +1896,7 @@ export class PiService {
 
   /** Open a QuickPick to select which tools are active for this session. */
   async pickActiveTools(): Promise<boolean> {
-    if (this._backendKind === "rust") {
+    if (!this.capabilities.toolsPicker) {
       vscode.window.showInformationMessage("Per-session tool selection isn't available for Rust sessions — Rust uses its full built-in tool set.");
       return false;
     }
