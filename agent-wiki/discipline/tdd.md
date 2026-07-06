@@ -29,7 +29,7 @@ The project runs two tiers of tests:
   jsdom seam), then `node --test out/test/unit/*.test.js`. The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
   exception being the jsdom dispatch seam (see below). As of 2026-07, there are
-  **277 tests across 21 files** in `src/test/unit/` (rust-events, rust-ingress,
+  **275 tests across 21 files** in `src/test/unit/` (rust-events, rust-ingress,
   rust-process, rust-service, sdk-service, model-catalog, panel-restore,
   session-format, rust-deps, agent-events, rust-interop, bridge-limits,
   pi-package-path, runtime-pick, pi-package-filter, rust-doctor, webview-format,
@@ -106,7 +106,7 @@ silently add full module coverage beyond the scope of the change.
 - [Think Before Acting](think-before-acting.md) — the plan phase before TDD
 - [Verify, Don't Assume](verify-dont-assume.md) — what "tests pass" actually means
 
-> **Last updated:** 2026-07-06 — count to 277 tests across 21 files (added SdkService `PiBackend`-primitive tests with the runtime-seam migration)
+> **Last updated:** 2026-07-06 — count at 275 tests across 21 files (SdkService `PiBackend`-primitive tests added with the runtime-seam migration; missing-fd/rg notice reworked to docs-only)
 > **Earlier:** 2026-06-25 — count to 199 tests across 18 files (added `extension-errors` — runtime-error classifiers)
 > **Earlier:** 2026-06-25 — count to 190 tests across 17 files (added `logger` + `normalizeToolArgs` cases)
 > **Earlier:** 2026-06-25 — refreshed the count to 182 tests across 16 files; documented the jsdom dispatch seam (`tsconfig.test-webview.json` + variable-specifier import)

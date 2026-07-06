@@ -19,7 +19,7 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessageText } from "./agent-events.js";
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
-import { detectMissingRustTools, installCommandForPlatform } from "./rust-deps.js";
+import { detectMissingRustTools } from "./rust-deps.js";
 import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
 
 export interface InstallStatus {
@@ -394,7 +394,7 @@ export class PiService {
       detectMissingTools: async () => {
         const missing = await detectMissingRustTools();
         if (missing.length === 0) { return null; }
-        return { names: missing.map((m) => m.cmds[0]), installHint: installCommandForPlatform(missing, process.platform) };
+        return missing.map((m) => ({ name: m.cmds[0], docs: m.docs }));
       },
       offerReopen: (sessionFile) => {
         // The session JSONL persists on disk; offer one-click recovery into a fresh

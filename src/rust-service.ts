@@ -119,8 +119,8 @@ export interface RustDeps {
   /** Export a session JSONL to HTML by shelling out to `pi --export`. */
   exportHtml(sessionFile: string, outputPath: string): Promise<string>;
   /** Detect rust-pi's external tool prerequisites (fd, ripgrep). Returns the missing
-   *  tools' display names + a platform install hint, or null if all present. */
-  detectMissingTools(): Promise<{ names: string[]; installHint: string | null } | null>;
+   *  tools (command name + its install-guide URL), or null if all present. */
+  detectMissingTools(): Promise<Array<{ name: string; docs: string }> | null>;
   /** Test seam: wrap/replace RustProcess construction (defaults to the real one). */
   createProcess?(opts: RustProcessOpts): RustProcess;
 }
@@ -382,13 +382,12 @@ export class RustService implements PiBackend {
     // error. Fire-and-forget so it never delays session readiness.
     if (!RustService._toolDepsWarned) {
       void this.deps.detectMissingTools().then((missing) => {
-        if (!missing || RustService._toolDepsWarned) { return; }
+        if (!missing || missing.length === 0 || RustService._toolDepsWarned) { return; }
         RustService._toolDepsWarned = true;
-        // formatMissingToolsNotice puts the install command on its own line with NO code
-        // markers — safe to copy even when this card renders before `marked` loads (the
-        // escaped-plain-text fallback would otherwise keep literal backticks, and a pasted
-        // backtick-wrapped command becomes bash command substitution). See its contract.
-        const content = formatMissingToolsNotice(missing.names, missing.installHint);
+        // formatMissingToolsNotice is docs-only — it names the missing tools and links
+        // each one's authoritative per-OS install guide (no synthesized shell command).
+        // Correct on every OS and copy-paste-safe even before `marked` loads. See contract.
+        const content = formatMissingToolsNotice(missing);
         this.host.emit({ type: "custom-message", data: { customType: "info", content, timestamp: Date.now() } });
       }).catch(() => { /* detection is best-effort */ });
     }

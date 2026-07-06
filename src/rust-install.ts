@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { piLog, piWarn } from "./logger.js";
 import { refreshRuntimeContext } from "./runtime-detection.js";
 import { detectRustBinary } from "./rust-resolver.js";
-import { detectMissingRustTools, installCommandForPlatform, RUST_DEPS_DOCS_URL } from "./rust-deps.js";
+import { detectMissingRustTools } from "./rust-deps.js";
 import pinnedRust from "./rust-pi-version.json";
 
 const execFileP = promisify(execFile);
@@ -135,29 +135,24 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
   );
 }
 
-/** After a managed Rust install, ensure rust-pi's find/grep tool deps (fd, rg)
- *  are present; offer the documented install in a terminal if not. No-op when
- *  present, or when the user has them already. */
+/** After a managed Rust install, check rust-pi's find/grep tool deps (fd, rg) and,
+ *  if any are missing, point the user at each tool's own install guide (the
+ *  authoritative per-OS matrix). No-op when they're already present. Docs-only: we
+ *  don't synthesize a package-manager command — see rust-deps.ts for why. */
 async function ensureRustToolDeps(): Promise<void> {
   const missing = await detectMissingRustTools();
   if (missing.length === 0) { return; }
   piWarn(`Rust Pi tool deps missing: ${missing.map((d) => d.cmds[0]).join(", ")} — find/grep tools will fail until installed`);
-  const names = missing.map((d) => `\`${d.cmds[0]}\` (${d.tool} tool)`).join(" and ");
+  const names = missing.map((d) => `${d.cmds[0]} (${d.tool} tool)`).join(" and ");
   const verb = missing.length > 1 ? "aren't" : "isn't";
-  const cmd = installCommandForPlatform(missing, process.platform);
-  const actions = cmd ? ["Install", "Show docs"] : ["Show docs"];
+  // One button per missing tool, opening that tool's install guide for the user's OS.
+  const buttons = missing.map((d) => `${d.cmds[0]} install guide`);
   const choice = await vscode.window.showWarningMessage(
-    `Rust Pi needs ${names}, which ${verb} installed — its find/grep tools will fail until added.`,
-    ...actions,
+    `Rust Pi needs ${names}, which ${verb} installed — its find/grep tools will fail until added. See each tool's install guide for your OS.`,
+    ...buttons,
   );
-  if (choice === "Install" && cmd) {
-    const term = vscode.window.createTerminal("Rust Pi: install tools");
-    term.show();
-    term.sendText(cmd);
-    term.sendText('echo "Done — reload the VS Code window, then start a new Rust session."');
-  } else if (choice === "Show docs") {
-    void vscode.env.openExternal(vscode.Uri.parse(RUST_DEPS_DOCS_URL));
-  }
+  const picked = missing.find((d) => choice === `${d.cmds[0]} install guide`);
+  if (picked) { void vscode.env.openExternal(vscode.Uri.parse(picked.docs)); }
 }
 
 async function curlInstallRust(): Promise<boolean> {
