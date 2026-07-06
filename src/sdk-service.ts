@@ -20,8 +20,9 @@ import * as fs from "node:fs";
 import { piDebug, piWarn } from "./logger.js";
 import { isOlderThan } from "./version-compare.js";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
+import { humanizeProviderError } from "./extension-errors.js";
 import type { PiServiceEvent } from "./types.js";
-import type { BackendCapabilities } from "./pi-backend.js";
+import type { BackendCapabilities, BackendUsage, PiBackend } from "./pi-backend.js";
 
 /** The bundled pi-ai catalog providers map shape (a subset of
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
@@ -292,7 +293,7 @@ export interface SdkInitOutcome {
   isResuming?: boolean;
 }
 
-export class SdkService {
+export class SdkService implements PiBackend {
 /* eslint-disable @typescript-eslint/no-explicit-any -- dynamically imported SDK objects */
   public piRoot: string | null = null;
   public SDK: PiSdk | null = null;
@@ -723,6 +724,140 @@ export class SdkService {
       piWarn(`pi-ai version check skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+
+  // ── PiBackend primitive operations (delegated from PiService) ──
+  // The TS-runtime halves of the per-method runtime split: the raw session
+  // operations, with orchestration + UI (slash interception, vision auto-switch,
+  // pickers, status formatting, cost policy) staying in PiService. RustService
+  // implements the same PiBackend surface for the out-of-process runtime.
+  /* eslint-disable @typescript-eslint/no-explicit-any -- dynamically typed SDK session objects */
+
+  /** Send a user turn / steer / follow-up on the in-process session. Slash-command
+   *  interception and image/vision auto-switch are PiService orchestration and run
+   *  before this call; here we only drive session.prompt / steer / followUp. */
+  async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
+    if (!this.session) { throw new Error("Pi session not initialized"); }
+    if (mode === "steer" || mode === "queue") {
+      if (images && images.length > 0) { throw new Error("Cannot attach images while agent is streaming"); }
+      try {
+        if (mode === "queue") { await this.session.followUp(text); }
+        else { await this.session.steer(text); }
+      } catch (e: any) {
+        // steer/followUp reject extension commands and prompt templates during
+        // streaming — surface the error rather than swallowing it.
+        const msg = e?.message ?? String(e);
+        piWarn(`sendPrompt ${mode} failed: ${msg}`);
+        const friendly = humanizeProviderError(msg);
+        this.host.emit({ type: "custom-message", data: { customType: "error", content: friendly ?? `${mode === "steer" ? "Steer" : "Queue"} failed: ${msg}`, timestamp: Date.now() } });
+      }
+      return;
+    }
+    const opts: any = {};
+    if (images && images.length > 0) { opts.images = images; }
+    await this.session.prompt(text, opts);
+  }
+
+  /** Abort the in-flight LLM turn — killing running bash first (agent.abort() only
+   *  stops the LLM call, not child processes, which would otherwise orphan). */
+  abort(): void {
+    if (!this.session) { piWarn("abort() called but session not initialized — nothing to abort"); return; }
+    try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
+    try { this.session.agent.abort(); } catch (e: any) { piWarn(`abort() failed: ${e?.message ?? e}`); }
+  }
+
+  /** Abort a running bash tool only (the LLM turn keeps going). */
+  abortBash(): void {
+    try { this.session?.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
+  }
+
+  /** Compact the conversation context via the in-process SDK session (the same call
+   *  the command-palette `pi-code-gui.compact` uses). */
+  async compact(): Promise<void> {
+    try { await this.session?.compact?.(); } catch (e: any) { piWarn(`compact() failed: ${e?.message ?? e}`); }
+  }
+
+  /** Set the active model on the session. Resolves the model from the registry (then
+   *  the pi-ai catalog), applies it, and returns the applied identity — or null when
+   *  the session isn't ready or the model can't be resolved (caller then bails). */
+  async setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null> {
+    if (!this.session || !this.AI) { piWarn(`setModel("${provider}/${id}") ignored: session not initialized`); return null; }
+    // Try registry first, then fall back to getModel.
+    let model: any = null;
+    if (this.modelRegistry) { model = this.modelRegistry.find(provider, id); }
+    if (!model) { model = this.AI.getModel(provider, id); }
+    if (!model) { return null; }
+    await this.session.setModel(model);
+    // No force-persist here: session.setModel() already records a model_change via the
+    // SDK's appendModelChange (deferred, flushed with the session header on the first
+    // assistant message). A direct write would duplicate it AND create the file early,
+    // breaking the SDK's exclusive-create flush (EEXIST on first prompt).
+    return { id, provider };
+  }
+
+  /** Set the thinking level on the session. The SDK records the CLAMPED effective
+   *  level itself (appendThinkingLevelChange); we echo the requested level back for
+   *  PiService's shared state (the TS transport always transmits it). */
+  async setThinkingLevel(level: string): Promise<string> {
+    if (!this.session) { piWarn(`setThinkingLevel("${level}") ignored: session not initialized`); return level; }
+    this.session.setThinkingLevel(level);
+    return level;
+  }
+
+  /** Toggle auto-compaction on the session (if the SDK build exposes the setter). */
+  async setAutoCompaction(enabled: boolean): Promise<void> {
+    if (this.session && typeof this.session.setAutoCompactionEnabled === "function") {
+      await this.session.setAutoCompactionEnabled(enabled);
+    }
+  }
+
+  /** Auto-retry has no in-process SDK session toggle — PiService tracks the flag
+   *  locally. Kept for PiBackend symmetry (a no-op on the TS runtime). */
+  async setAutoRetry(_enabled: boolean): Promise<void> { /* no session-level toggle */ }
+
+  /** Cumulative token/cost usage from the session manager's assistant entries, plus
+   *  live context %/window. Cost here is the SDK's own per-turn cost; the catalog-rate
+   *  fallback + costKnown policy stay in PiService.getUsageStats. */
+  getUsage(): BackendUsage {
+    if (!this.sessionManager) { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 }; }
+    const entries = this.sessionManager.getEntries();
+    let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+    for (const entry of entries) {
+      if (entry.type === "message" && entry.message?.role === "assistant") {
+        const usage = entry.message.usage;
+        if (usage) {
+          input += usage.input ?? 0;
+          output += usage.output ?? 0;
+          cacheRead += usage.cacheRead ?? 0;
+          cacheWrite += usage.cacheWrite ?? 0;
+          cost += usage.cost?.total ?? 0;
+        }
+      }
+    }
+    let contextPercent: number | null = null;
+    let contextWindow = 0;
+    try {
+      const contextUsage = this.session?.getContextUsage?.();
+      if (contextUsage) { contextPercent = contextUsage.percent; contextWindow = contextUsage.contextWindow; }
+    } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
+    return { input, output, cacheRead, cacheWrite, cost, contextPercent, contextWindow };
+  }
+
+  /** Session entries for the Open Sessions tree (display only). */
+  getEntries(): any[] { return this.sessionManager?.getEntries?.() ?? []; }
+
+  /** Promote a queued follow-up to a steering message: re-queue the existing steers,
+   *  then append the promoted text (the SDK has no in-place promote). */
+  promoteToSteer(text: string): void {
+    if (!this.session) { return; }
+    const existingSteer = this.session.getSteeringMessages ? [...this.session.getSteeringMessages()] : [];
+    this.session.clearQueue();
+    for (const m of existingSteer) { this.session.steer(m); }
+    this.session.steer(text);
+  }
+
+  /** Clear the pending steer/follow-up queue on the session. */
+  clearQueue(): void { this.session?.clearQueue?.(); }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /** Export the conversation to HTML via the in-process SDK session. */
   async exportToHtml(outputPath: string): Promise<string> {

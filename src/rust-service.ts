@@ -20,7 +20,7 @@ import { isRustExtensionConflict } from "./rust-interop.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
-import type { BackendCapabilities } from "./pi-backend.js";
+import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
 
 /** A model entry for the model-cycle list (shared with PiService). */
 export interface CycleModel {
@@ -124,7 +124,7 @@ export interface RustDeps {
   createProcess?(opts: RustProcessOpts): RustProcess;
 }
 
-export class RustService {
+export class RustService implements PiBackend {
   private process: RustProcess | null = null;
   private initializing = false;
   private sessionPath: string | null = null;
