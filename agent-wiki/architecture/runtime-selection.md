@@ -1,7 +1,8 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-07-06 — audit-remediation pass: `SdkService` extraction (the TS runtime now mirrors `RustService`), `RustDeps` injection (RustService is vscode-free and headless-testable), `get_state` shape probe, `rust-catalog.ts` → `model-catalog.ts` rename, shared helpers moved into `agent-events.ts`, architecture diagram.
+> **Last updated:** 2026-07-06 — `PiBackend` seam migration COMPLETE: `SdkService` and `RustService` both `implements PiBackend`, and PiService delegates every primitive (sendPrompt, abort, compact, setModel, setThinkingLevel, setAuto\*, exportToHtml, getUsage, getEntries, promoteToSteer, clearQueue) through the `backend` accessor instead of `_backendKind === "rust"` branches; the remaining feature gates read `capabilities`. Four `_backendKind` checks remain by design (runtime identity, not feature gates — see the ADR note).
+> **Earlier:** 2026-07-06 — audit-remediation pass: `SdkService` extraction (the TS runtime now mirrors `RustService`), `RustDeps` injection (RustService is vscode-free and headless-testable), `get_state` shape probe, `rust-catalog.ts` → `model-catalog.ts` rename, shared helpers moved into `agent-events.ts`, architecture diagram.
 > **Earlier:** 2026-06-24 — corrected event-routing path to `RustService.handleEvent` → `normalizeRustEvent`/`routeRustEvent` → `RustHost.handleAgentEvent`; added `src/rust-service.ts` + `src/rust-events.ts` to the file inventory
 > **Earlier:** 2026-06-21 — added "Design decisions & trade-offs" (ADR notes); verified live against rust-pi 0.1.18 (no `queue_update`; tool-skip-on-queued-message; duplicate `agent_end`)
 > **Verified:** the RPC integration was driven against a locally-built
@@ -31,9 +32,9 @@ opt-in.
 
 ```mermaid
 graph TD
-    EXT[extension.ts<br/>activation, session windows, panel serializer] --> PS[PiService<br/>runtime-agnostic orchestrator<br/>_backendKind branches per method]
-    PS -->|_sdk| SDK[SdkService<br/>TS SDK plumbing: resolve/load,<br/>auth/registry, model pick, tools,<br/>SessionManager, createAgentSession]
-    PS -->|_rust| RS[RustService<br/>spawn + 4-step RPC handshake,<br/>state sync, synthetic queue,<br/>capability degradation]
+    EXT[extension.ts<br/>activation, session windows, panel serializer] --> PS[PiService<br/>runtime-agnostic orchestrator<br/>delegates primitives via the PiBackend seam]
+    PS -->|backend accessor| SDK[SdkService implements PiBackend<br/>TS SDK plumbing + primitives: resolve/load,<br/>auth/registry, model pick, tools, SessionManager,<br/>createAgentSession, sendPrompt/setModel/…]
+    PS -->|backend accessor| RS[RustService implements PiBackend<br/>spawn + 4-step RPC handshake,<br/>state sync, synthetic queue,<br/>capability degradation, primitives]
     RS --> RP[RustProcess<br/>LF-framed JSONL RPC transport]
     RP --> BIN[pi --mode rpc<br/>pi_agent_rust binary]
     SDK --> NPMSDK[@earendil-works/pi-coding-agent<br/>in-process, dynamic import]
@@ -45,16 +46,34 @@ graph TD
 ```
 
 Both runtimes sit behind their own service (`_sdk: SdkService | null`,
-`_rust: RustService | null`); PiService applies shared state and wires the UI.
+`_rust: RustService | null`), each `implements PiBackend`; PiService reaches the
+active one through a single `private get backend(): PiBackend | null` accessor,
+applies shared state, and wires the UI.
 
-## Internal branching, not an external interface
+## The PiBackend seam (delegation, not per-method branching)
 
-`PiService` carries a `_backendKind: "typescript" | "rust"` field and branches
-internally. ~85% of the class (event translation, dialog/widget bridge, pickers,
-status, slash commands, initial-message replay) is runtime-agnostic. Only the
-runtime-specific methods branch: `initialize`, `sendPrompt`, `abort`, `dispose`,
-`setModel`/`cycleModel`, `setThinkingLevel`, and the `/tools` picker (disabled
-under Rust).
+`PiService` carries a `_backendKind: "typescript" | "rust"` field for runtime
+IDENTITY, but no longer branches on it per method. ~85% of the class (event
+translation, dialog/widget bridge, pickers, status, slash commands,
+initial-message replay) is runtime-agnostic; the ~15% that genuinely diverges is
+formalized as `PiBackend` (`src/pi-backend.ts`). PiService delegates the PRIMITIVE
+operations — `sendPrompt`, `abort`/`abortBash`, `compact`, `setModel`,
+`setThinkingLevel`, `setAutoCompaction`/`setAutoRetry`, `exportToHtml`, `getUsage`,
+`getEntries`, `promoteToSteer`, `clearQueue`, `dispose` — to `this.backend`, and
+reads `capabilities` (bridgeTools / customCards / toolsPicker / fork / reloadContext
+/ exportHtml / rename / interceptSlashCommands / thinkingLevelLive) where it used to
+test `_backendKind === "rust"`. `SdkService` and `RustService` each implement the
+whole surface (tsc-enforced via `implements PiBackend`), so the orchestration
+(cycleModel, the toggles, the pickers, slash dispatch, status/cost formatting) stays
+shared in PiService and calls the primitives.
+
+**Four `_backendKind` checks remain, all deliberate** — runtime identity, not
+feature gates: the `backend` accessor + the `capabilities`-fallback (which service
+is active), `getUsageStats`' cost policy (the Rust binary reports `cost:0`, so
+PiService derives it from catalog rates; the SDK computes its own), the
+`getAllSlashCommands` agent-command source (Rust reports its commands over RPC; the
+SDK introspects its extension runner), and `dispose`' teardown sequencing (subprocess
+kill vs in-process session-file flush). These are genuine runtime divergence.
 
 - `initialize({runtime})` → `initializeRust()` for Rust, else the existing
   TS path. `get runtime()` exposes `_backendKind`.
@@ -217,8 +236,13 @@ rejected alternative. (Lightweight, in lieu of formal ADRs.)
   null-returning SDK getters. The old objection (a polymorphic backend forcing the
   in-process-only custom-card renderer into a leaky abstraction) is answered by
   `capabilities.customCards`: it's a data flag, not an interface method every backend
-  must implement. Both `SdkService` and `RustService` expose `capabilities` + the
-  primitives; delegation is landing incrementally, each step green.
+  must implement. Both `SdkService` and `RustService` now `implements PiBackend`
+  (tsc-enforced), and the delegation is **complete**: PiService reaches the active
+  runtime through one `backend` accessor and no longer branches on `_backendKind` at
+  any primitive or feature-gate site — the four checks that remain are runtime
+  identity (see "The PiBackend seam" above). Landed as a green four-commit series
+  (SdkService primitives + 10 headless tests → simple delegations → setModel/
+  setThinkingLevel → sendPrompt + capability gates), each step tsc/eslint/tests-green.
 - **Pinned managed binary, not `latest`.** The managed download installs a fixed,
   tested release (`src/rust-pi-version.json`), never upstream `latest` —
   auto-pulling a brand-new release behind the extension would break the
@@ -264,6 +288,6 @@ rejected alternative. (Lightweight, in lieu of formal ADRs.)
 
 - [Runtime Switching UX](runtime-switching-ux.md) — commands, indicators, install dialogs
 - [Tree Views](tree-views.md) — the runtime-aware Packages view (available vs active)
-- [PiService](pi-service.md) — the orchestrator that branches on `_backendKind`
+- [PiService](pi-service.md) — the orchestrator that delegates primitives through the `PiBackend` seam
 - [Session Window](session-window.md) — per-tab PiService; mixed-runtime tabs each own a subprocess
 - [archive/multi-backend.md](../archive/multi-backend.md) — the original (superseded) design

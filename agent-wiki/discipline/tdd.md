@@ -29,7 +29,7 @@ The project runs two tiers of tests:
   jsdom seam), then `node --test out/test/unit/*.test.js`. The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
   exception being the jsdom dispatch seam (see below). As of 2026-07, there are
-  **267 tests across 21 files** in `src/test/unit/` (rust-events, rust-ingress,
+  **277 tests across 21 files** in `src/test/unit/` (rust-events, rust-ingress,
   rust-process, rust-service, sdk-service, model-catalog, panel-restore,
   session-format, rust-deps, agent-events, rust-interop, bridge-limits,
   pi-package-path, runtime-pick, pi-package-filter, rust-doctor, webview-format,
@@ -43,7 +43,10 @@ The project runs two tiers of tests:
   pi-ai-version adapt → auth → model → resources → tools → session — against fake
   SDK/AI modules + stubbed `SdkDeps` (config, cwd, module import, fs, bridge-tool
   assembly, catalog providers, UI nudge all injected, so SdkService is vscode-free
-  AND json-import-free). Coverage matrix — headlessly tested: the pure decision
+  AND json-import-free). It also covers SdkService's `PiBackend` primitives
+  (sendPrompt / setModel / setThinkingLevel / abort / getUsage / promoteToSteer)
+  against a fake session — the TS halves of the runtime seam that PiService delegates
+  to (the +10 tests added with the seam migration). Coverage matrix — headlessly tested: the pure decision
   modules + BOTH service init paths + the RustProcess transport. Not unit-tested
   (vscode-coupled UI shells): PiService orchestration/pickers, extension.ts,
   rust-install/rust-packages interactive flows.
@@ -103,7 +106,8 @@ silently add full module coverage beyond the scope of the change.
 - [Think Before Acting](think-before-acting.md) — the plan phase before TDD
 - [Verify, Don't Assume](verify-dont-assume.md) — what "tests pass" actually means
 
-> **Last updated:** 2026-06-25 — count to 199 tests across 18 files (added `extension-errors` — runtime-error classifiers)
+> **Last updated:** 2026-07-06 — count to 277 tests across 21 files (added SdkService `PiBackend`-primitive tests with the runtime-seam migration)
+> **Earlier:** 2026-06-25 — count to 199 tests across 18 files (added `extension-errors` — runtime-error classifiers)
 > **Earlier:** 2026-06-25 — count to 190 tests across 17 files (added `logger` + `normalizeToolArgs` cases)
 > **Earlier:** 2026-06-25 — refreshed the count to 182 tests across 16 files; documented the jsdom dispatch seam (`tsconfig.test-webview.json` + variable-specifier import)
 > **Earlier:** 2026-06-24 — corrected stale "single skeleton test" claim: 82 headless `node:test` unit tests via `pnpm run test:unit`; documented the extract-then-test pattern
