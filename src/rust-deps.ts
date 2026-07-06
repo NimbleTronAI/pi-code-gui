@@ -50,6 +50,22 @@ export function installCommandForPlatform(missing: RustToolDep[], platform: Node
   return null; // win32 / unknown — fall back to docs
 }
 
+/** Build the one-time "missing fd/rg prerequisites" chat notice.
+ *
+ *  CONTRACT: the install command goes on its OWN line with NO markdown code markers
+ *  (no inline `backticks`, no fences). This card can render before the webview's
+ *  `marked` bundle finishes loading, in which case renderMarkdown falls back to escaped
+ *  plain text — inline backticks would then survive literally, and pasting a
+ *  backtick-wrapped command makes bash treat the whole thing as command substitution
+ *  (apt runs, its `Hit:1 …` output is captured and re-executed → "Hit:1: command not
+ *  found"). Unfenced-on-its-own-line copies cleanly in BOTH the marked and fallback
+ *  paths — the install commands carry no markdown-special characters. */
+export function formatMissingToolsNotice(names: string[], installHint: string | null): string {
+  const them = names.length > 1 ? "them" : "it";
+  const lead = `ℹ️ Rust Pi's find/grep tools need ${names.join(" and ")} installed. They're missing, so those tools will fail until you install ${them}`;
+  return installHint ? `${lead}. Run:\n\n${installHint}` : `${lead}.`;
+}
+
 /** Probe which deps are missing. A tool counts as present if ANY of its command
  *  names responds to `--version`. */
 export async function detectMissingRustTools(): Promise<RustToolDep[]> {

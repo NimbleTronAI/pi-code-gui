@@ -17,6 +17,7 @@ import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProc
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
+import { formatMissingToolsNotice } from "./rust-deps.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
@@ -383,9 +384,12 @@ export class RustService implements PiBackend {
       void this.deps.detectMissingTools().then((missing) => {
         if (!missing || RustService._toolDepsWarned) { return; }
         RustService._toolDepsWarned = true;
-        this.host.emit({ type: "custom-message", data: { customType: "info", content:
-          `ℹ️ Rust Pi's \`find\`/\`grep\` tools need ${missing.names.join(" and ")} installed. They're missing, so those tools will fail until you install ${missing.names.length > 1 ? "them" : "it"}${missing.installHint ? `: \`${missing.installHint}\`` : "."}`,
-          timestamp: Date.now() } });
+        // formatMissingToolsNotice puts the install command on its own line with NO code
+        // markers — safe to copy even when this card renders before `marked` loads (the
+        // escaped-plain-text fallback would otherwise keep literal backticks, and a pasted
+        // backtick-wrapped command becomes bash command substitution). See its contract.
+        const content = formatMissingToolsNotice(missing.names, missing.installHint);
+        this.host.emit({ type: "custom-message", data: { customType: "info", content, timestamp: Date.now() } });
       }).catch(() => { /* detection is best-effort */ });
     }
 
