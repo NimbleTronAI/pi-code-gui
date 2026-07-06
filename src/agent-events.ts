@@ -17,6 +17,21 @@ import type { PiServiceEvent, Runtime } from "./types.js";
 import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, extractMessageText } from "./rust-events.js";
 import { humanizeProviderError } from "./extension-errors.js";
 
+/** Coerce a raw error value to a display string. rust-pi/DeepSeek can deliver an error
+ *  as a structured object ({error, errorHints, …}); extract a nested string field when
+ *  present, else stringify — so downstream string-typed schemas never receive an object. */
+export function errorToText(e: unknown): string {
+  if (typeof e === "string") { return e; }
+  if (e && typeof e === "object") {
+    const o = e as { error?: unknown; message?: unknown; summary?: unknown };
+    if (typeof o.error === "string") { return o.error; }
+    if (typeof o.message === "string") { return o.message; }
+    if (typeof o.summary === "string") { return o.summary; }
+    try { return JSON.stringify(e); } catch { return "Unknown error"; }
+  }
+  return "Unknown error";
+}
+
 /** Streaming tool-call preview state, tracked across message_update deltas. */
 export interface ToolCallState { toolName: string; toolCallId: string; args: any; lastPreviewEmit?: number; }
 
@@ -155,7 +170,11 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
         case "text_delta": events.push({ type: "stream-delta", data: { delta: d.delta } }); break;
         case "thinking_delta": events.push({ type: "thinking-delta", data: { delta: d.delta } }); break;
         case "thinking_end": events.push({ type: "thinking-delta", data: { delta: "", done: true } }); break;
-        case "error": events.push({ type: "error", data: { message: humanizeProviderError(d.error) ?? d.error ?? "Unknown error" } }); break;
+        // d.error can be a structured object (rust-pi/DeepSeek attach errorHints), but
+        // the error event's schema requires data.message to be a STRING — passing the
+        // object raw fails protocol validation ("expected string, received object").
+        // Coerce to a string first (prefer a nested .error/.message field).
+        case "error": events.push({ type: "error", data: { message: humanizeProviderError(errorToText(d.error)) ?? errorToText(d.error) } }); break;
       }
 
       if (event.message?.role === "assistant" && event.message?.content) {

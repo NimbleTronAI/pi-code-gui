@@ -27,15 +27,6 @@ export interface SessionSummary {
   runtime?: Runtime;
 }
 
-/**
- * A persisted reference to an open session window, tagged with the runtime that
- * created it so reload can restore each tab on its origin runtime.
- */
-export interface OpenSessionRef {
-  path: string;
-  runtime: Runtime;
-}
-
 /** A single entry in a session (message, compaction, model change, etc.). */
 export type SessionEntryData = Record<string, unknown> & {
   id?: string;

@@ -127,6 +127,22 @@ export function routeRustEvent(event: RustEvent, queueNonEmpty: boolean, agentRu
   return { dropQueuedText, captureSessionId, isRealAgentEnd: type === "agent_end" && agentRunActive, action };
 }
 
+/** True when a provider/agent error message looks TRANSIENT — a network/connection
+ *  drop, timeout, rate limit, or 5xx — i.e. worth an automatic retry. DELIBERATELY
+ *  excludes client errors (400/401/403/404, invalid request, auth, model-not-found):
+ *  retrying those just repeats the failure. The "connection closed before headers"
+ *  class is the motivating case — rust-pi's own retry classifier doesn't cover it,
+ *  so the turn dies; we retry it extension-side. Pure + unit-testable. */
+export function isTransientProviderError(message: string | null | undefined): boolean {
+  if (!message) { return false; }
+  const m = message.toLowerCase();
+  // Never retry unambiguous client/permanent errors, even if other words match.
+  if (/\b(400|401|403|404|invalid request|invalid_request|unauthorized|forbidden|authentication|api key|model (not found|no longer exists)|not found)\b/.test(m)) {
+    return false;
+  }
+  return /connection (closed|reset|refused|aborted|error)|closed before headers|before headers|incomplete (message|chunked)|broken pipe|timed? ?out|timeout|temporarily unavailable|overloaded|rate.?limit|too many requests|\b429\b|\b50[234]\b|bad gateway|service unavailable|gateway timeout|econnreset|econnrefused|epipe|etimedout|enetunreach|socket hang up|network error|stream (error|closed|interrupted)/.test(m);
+}
+
 /**
  * Drop the first queued steer/follow-up message matching `text`. rust-pi (0.1.18)
  * emits no queue_update, so PiService tracks the pending queue itself and clears

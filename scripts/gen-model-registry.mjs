@@ -57,6 +57,22 @@ for (const prov of getProviders()) {
       maxTokens: m.maxTokens,
       input: Array.isArray(m.input) && m.input.length ? m.input : ["text"],
     };
+    // Keep the per-model thinking metadata: thinkingLevelMap drives the extension's
+    // dynamic level picker (which levels a model actually honors — e.g. DeepSeek
+    // collapses minimal/low/medium) for BOTH backends, and is forwarded into rust-pi's
+    // models.json so the Rust backend clamps identically. compat carries the wire
+    // dialect (thinkingFormat, e.g. "deepseek") and forceAdaptiveThinking — the flag
+    // that selects Anthropic's modern adaptive `effort` API over deprecated
+    // budget_tokens. pi_agent_rust reads these under model.compat (gh #116/#117).
+    if (m.thinkingLevelMap && typeof m.thinkingLevelMap === "object") {
+      slim.thinkingLevelMap = m.thinkingLevelMap;
+    }
+    const compat = {};
+    if (m.compat?.thinkingFormat) { compat.thinkingFormat = m.compat.thinkingFormat; }
+    if (typeof m.compat?.forceAdaptiveThinking === "boolean") {
+      compat.forceAdaptiveThinking = m.compat.forceAdaptiveThinking;
+    }
+    if (Object.keys(compat).length) { slim.compat = compat; }
     if (m.cost) {
       slim.cost = { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cacheRead, cacheWrite: m.cost.cacheWrite };
     }

@@ -10,7 +10,8 @@ import { initLogger, disposeLogger, piLog, piDebug, piWarn } from "./logger.js";
 import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
-import type { SessionSummary, Runtime, OpenSessionRef } from "./types.js";
+import type { SessionSummary, Runtime } from "./types.js";
+import { planPanelRestore } from "./panel-restore.js";
 import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext } from "./runtime-detection.js";
 import { detectRustBinary } from "./rust-resolver.js";
 import { isRustSessionPath, listRustSessions } from "./rust-sessions.js";
@@ -37,23 +38,13 @@ let sessionCounter = 0;
 /** Cached extension context — set once in activate(), used throughout. */
 let extContext: vscode.ExtensionContext | null = null;
 
-/** Persist the set of open sessions (path + runtime) so they restore on reload. */
-async function saveOpenSessionPaths(): Promise<void> {
-  if (!extContext) { return; }
-  const refs: OpenSessionRef[] = [];
-  for (const sw of sessions) {
-    const fp = sw.piService.sessionFilePath;
-    if (fp) {
-      refs.push({ path: fp, runtime: sw.piService.runtime });
-      void recordSessionRuntime(fp, sw.piService.runtime);
-    }
-  }
-  await extContext.workspaceState.update("pi-code-gui.openSessionPaths", refs);
-  await extContext.workspaceState.update("pi-code-gui.sessionCounter", sessionCounter);
-  // Persist which session was active so we can restore focus after reload
-  const activePath = activeSessionWindow?.piService.sessionFilePath ?? null;
-  await extContext.workspaceState.update("pi-code-gui.activeSessionPath", activePath);
-}
+// NOTE: open-session restore across reload is owned by VS Code's webview panel
+// serializer (see registerWebviewPanelSerializer in activate). The webview persists
+// {sessionFilePath, runtime} via setState on every status-update; VS Code revives the
+// panels and deserializeWebviewPanel re-attaches sessions. The old workspaceState
+// snapshot ("openSessionPaths"/"activeSessionPath") duplicated that and raced it
+// (double-restored windows) — it is intentionally gone. Only the session→runtime
+// origin index below remains in workspaceState (it serves Past Sessions, not reload).
 
 // ── Session ↔ runtime origin tracking ──────────────────
 //
@@ -132,6 +123,7 @@ function createSessionWindow(context: vscode.ExtensionContext, runtime: Runtime 
   webviewPanel.onDispose = handlePanelDispose(sw);
 
   sessions.push(sw);
+  updateHadOpenPanels();
   return sw;
 }
 
@@ -144,6 +136,11 @@ function getGenericSessionLabel(id: string): string {
 /** Build a dispose handler that saves and removes a session when its panel closes. */
 function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
   return () => {
+    // Record the session's origin runtime while the path is still readable (dispose
+    // tears the service down) — this is what lets Past Sessions reopen it on the
+    // runtime that created it (resume-follows-origin).
+    const fp = sw.piService.sessionFilePath;
+    if (fp) { void recordSessionRuntime(fp, sw.piService.runtime); }
     // The SessionManager auto-persists entries as they are written during
     // conversation, so the session file already exists on disk.  We just
     // need to clean up and remove it from the open-sessions list so it
@@ -154,8 +151,6 @@ function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
     // Refresh past sessions list from disk so the closed session appears
     // under Past Sessions immediately.
     void refreshPastSessionsList();
-    // Persist remaining open sessions for next reload
-    void saveOpenSessionPaths();
   };
 }
 
@@ -250,6 +245,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (isBenignCancellation(err)) { return; }
     piWarn(`UNCAUGHT EXCEPTION: ${err.stack ?? err.message}`);
   });
+
+  // ── Session restore: WebviewPanelSerializer ──────────
+  // VS Code owns open-panel persistence: it revives each pi-code-gui.session panel
+  // across reload (position, order, active tab) and hands us the state the webview
+  // persisted via setState ({sessionFilePath, runtime} — written on every
+  // status-update). We re-attach a live session to the revived panel. This replaces
+  // the old workspaceState-based restore, which duplicated what VS Code already does
+  // and raced it (double-restored windows). Note: VS Code defers deserialization of
+  // a BACKGROUND restored tab until it is first focused — sessions attach lazily.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("pi-code-gui.session", {
+      async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown): Promise<void> {
+        const plan = planPanelRestore(state, (p) => fs.existsSync(p), defaultRuntimeForNewSession());
+        piDebug(`[serializer] revived panel → ${plan.action}${plan.openPath ? ` (${plan.openPath.split("/").pop()})` : ""} on ${plan.runtime}`);
+        if (plan.action === "dispose") {
+          // The session file is gone — closing the shell beats resurrecting an empty one.
+          panel.dispose();
+          return;
+        }
+        const sw = createSessionWindow(context, plan.runtime);
+        sw.webviewPanel.adoptPanel(panel);
+        if (panel.active) { setActiveSession(sw); }
+        void initSessionInBackground(context, sw,
+          plan.action === "open" ? { openPath: plan.openPath, runtime: plan.runtime } : { fresh: true, runtime: plan.runtime });
+      },
+    }),
+  );
 
   // ── Step 1: Register ALL commands immediately ──────────
 
@@ -847,18 +869,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // Active-session effort picker
-  context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickEffort", async () => {
-      const sw = activeSessionWindow;
-      if (!sw || !sw.initialized) {
-        vscode.window.showWarningMessage("No active Pi session.");
-        return;
-      }
-      void sw.webviewPanel.show();
-      await sw.webviewPanel.triggerEffortPicker();
-    }),
-  );
 
   // Active-session context budget picker
   context.subscriptions.push(
@@ -894,38 +904,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // against. The managed build is pinned to that version, so it never warns.
   await warnIfUntestedRustBinary(context);
 
-  // ── Step 4: Restore previously open sessions, or create a fresh one ──
-  // openSessionPaths may be the new tagged shape (OpenSessionRef[]) or a legacy
-  // string[] of paths — normalize either into {path, runtime}.
-  const rawSaved = (context.workspaceState.get("pi-code-gui.openSessionPaths") as Array<OpenSessionRef | string>) ?? [];
-  const savedRefs: OpenSessionRef[] = rawSaved
-    .map((r): OpenSessionRef => (typeof r === "string" ? { path: r, runtime: lookupSessionRuntime(r) } : r))
-    .filter((r) => fs.existsSync(r.path));
-  const savedActivePath: string | undefined = context.workspaceState.get("pi-code-gui.activeSessionPath") ?? undefined;
+  // ── Step 4: Create a fresh session only when VS Code has no panels to revive ──
+  // Reopening previous sessions is owned by the WebviewPanelSerializer: VS Code
+  // revives each persisted pi-code-gui.session panel itself (correct column, order,
+  // active tab — including panels in background tabs, which deserialize lazily on
+  // first focus). So activate() must NOT reconstruct them; it only auto-opens a
+  // fresh session for a genuinely session-less window. "Will VS Code revive
+  // panels?" isn't directly queryable, so we keep one workspaceState hint — a
+  // boolean updated whenever the open-panel count changes. A stale hint degrades
+  // gracefully: worst case no auto-open (click the Pi icon), never a duplicate.
+  const hadOpenPanels = context.workspaceState.get<boolean>("pi-code-gui.hadOpenPanels") ?? false;
   const autoOpen = vscode.workspace.getConfiguration("pi-code-gui").get<boolean>("autoOpenOnStart", true);
+  // One-time migration: drop the retired workspaceState-restore keys.
+  void context.workspaceState.update("pi-code-gui.openSessionPaths", undefined);
+  void context.workspaceState.update("pi-code-gui.activeSessionPath", undefined);
+  void context.workspaceState.update("pi-code-gui.sessionCounter", undefined);
 
-  if (savedRefs.length > 0) {
-    // Restore session counter to avoid ID collisions.
-    const savedCounter: number | undefined = context.workspaceState.get("pi-code-gui.sessionCounter");
-    if (savedCounter !== undefined && savedCounter > sessionCounter) {
-      sessionCounter = savedCounter;
-    }
-    // Restore every session that was open, in order, on its origin runtime.
-    piDebug(`Restoring ${savedRefs.length} open sessions...`);
-    for (let i = 0; i < savedRefs.length; i++) {
-      const ref = savedRefs[i];
-      const sw = createSessionWindow(context, ref.runtime);
-      if (i === 0) { setActiveSession(sw); }
-      if (autoOpen) { void sw.webviewPanel.show(); }
-      void initSessionInBackground(context, sw, { openPath: ref.path, runtime: ref.runtime });
-    }
-    restoreActiveSession(savedActivePath);
-  } else {
-    // No saved sessions — create one fresh session on the effective default runtime.
+  if (!hadOpenPanels && sessions.length === 0) {
     const sw = createSessionWindow(context, defaultRuntimeForNewSession());
     setActiveSession(sw);
     if (autoOpen) { void sw.webviewPanel.show(); }
     void initSessionInBackground(context, sw, { fresh: true });
+  } else {
+    piDebug(`[serializer] activate: hadOpenPanels=${hadOpenPanels}, sessions=${sessions.length} — leaving restore to VS Code's panel revival`);
   }
 
   // ── Step 5: Initialize packages view ────────────────
@@ -1461,7 +1462,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     if (!rust.installed) {
       sw.webviewPanel.postMessage({
         type: "status",
-        data: { model: "not installed", thinkingLevel: "off", effort: "auto", ready: false, runtime },
+        data: { model: "not installed", thinkingLevel: "off", ready: false, runtime },
       });
       sw.webviewPanel.postMessage({
         type: "error",
@@ -1487,7 +1488,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     if (!status.installed) {
       sw.webviewPanel.postMessage({
         type: "status",
-        data: { model: "not installed", thinkingLevel: "off", effort: "auto", ready: false, runtime },
+        data: { model: "not installed", thinkingLevel: "off", ready: false, runtime },
       });
       sw.webviewPanel.postMessage({
         type: "error",
@@ -1525,7 +1526,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   if (!result.success) {
     sw.webviewPanel.postMessage({
       type: "status",
-      data: { model: "init failed", thinkingLevel: "off", effort: "auto", ready: false },
+      data: { model: "init failed", thinkingLevel: "off", ready: false },
     });
 
     // Rust + TypeScript-format `.pi/` extensions don't mix: the Rust runtime
@@ -1648,7 +1649,6 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     data: {
       model: sw.piService.model?.id ?? "ready",
       thinkingLevel: sw.piService.thinkingLevel,
-      effort: sw.piService.effort,
       ready: true,
       runtime: sw.piService.runtime,
     },
@@ -1666,8 +1666,11 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   await new Promise((resolve) => setTimeout(resolve, 50));
   sessionTreeProvider!.refreshSession(sw);
 
-  // Persist open session list so this session is restored on reload.
-  void saveOpenSessionPaths();
+  // Record the session's origin runtime as soon as its file path is known, so a
+  // reload mid-conversation still lets Past Sessions resume-follow-origin. (Panel
+  // revival itself is owned by VS Code's webview serializer.)
+  const readyPath = sw.piService.sessionFilePath;
+  if (readyPath) { void recordSessionRuntime(readyPath, sw.piService.runtime); }
 
   piDebug(`Pi Code Gui session ${sw.id} ready`);
 }
@@ -1677,6 +1680,7 @@ function removeSession(sw: SessionWindow): void {
   if (idx !== -1) {
     sessions.splice(idx, 1);
   }
+  updateHadOpenPanels();
   // If the removed session was the active one, fall back to the latest open session
   if (activeSessionWindow === sw) {
     setActiveSession(sessions.length > 0 ? sessions[sessions.length - 1] : null);
@@ -1685,20 +1689,12 @@ function removeSession(sw: SessionWindow): void {
   sessionTreeProvider?.refresh();
 }
 
-/**
- * Restore additional sessions that were open when VS Code was last closed.
- * Called after the primary session finishes initializing on activate().
- */
-/** Restore which session was focused before reload. */
-function restoreActiveSession(activePath: string | undefined): void {
-  if (!extContext || !activePath) { return; }
-  for (const sw of sessions) {
-    if (sw.piService.sessionFilePath === activePath) {
-      setActiveSession(sw);
-      void sw.webviewPanel.show();
-      return;
-    }
-  }
+/** Keep the "were any panels open?" hint current. Read once at activate to decide
+ *  whether to auto-open a fresh session (panels being revived by VS Code means no
+ *  auto-open). It is a HINT for that one decision — restore correctness never
+ *  depends on it (VS Code owns panel revival). */
+function updateHadOpenPanels(): void {
+  void extContext?.workspaceState.update("pi-code-gui.hadOpenPanels", sessions.length > 0);
 }
 
 // ── Install helper ──────────────────────────────────────
@@ -2281,8 +2277,12 @@ class SessionTreeItem extends vscode.TreeItem {
 }
 
 export async function deactivate(): Promise<void> {
-  // Persist open sessions before disposing so we can restore on next activate
-  await saveOpenSessionPaths();
+  // Panel restore is VS Code's (webview serializer); here we only record each open
+  // session's origin runtime so Past Sessions can resume-follow-origin after reload.
+  for (const sw of sessions) {
+    const fp = sw.piService.sessionFilePath;
+    if (fp) { await recordSessionRuntime(fp, sw.piService.runtime); }
+  }
   for (const sw of sessions) {
     sw.webviewPanel.dispose();
     sw.piService.dispose();

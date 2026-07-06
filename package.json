@@ -41,7 +41,8 @@
     "Chat"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:pi-code-gui.session"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -73,7 +74,7 @@
       },
       {
         "command": "pi-code-gui.cycleThinkingLevel",
-        "title": "PiGui: Cycle Thinking Level"
+        "title": "PiGui: Toggle Thinking On/Off"
       },
       {
         "command": "pi-code-gui.pickFile",

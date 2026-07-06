@@ -175,7 +175,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       .object({
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
-        effort: z.string().optional(),
+        thinkingDisplay: z.string().optional(),
+        thinkingClickable: z.boolean().optional(),
         // Whether the active transport actually transmits the thinking level
         // (false → webview shows a read-only "reasoning: on/off" badge instead of
         // a graded "thinking: <level>"). `reasoning` is the model's fixed flag.
@@ -186,6 +187,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
             input: z.number(),
             output: z.number(),
             cost: z.number(),
+            costKnown: z.boolean().optional(),
             contextPercent: z.number().nullable(),
           })
           .optional(),
@@ -193,6 +195,9 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         ready: z.boolean().optional(),
         reset: z.boolean().optional(),
         sessionId: z.string().optional(),
+        // On-disk session file; the webview persists it (with runtime) into VS Code's
+        // webview state so the panel serializer can re-attach the session on reload.
+        sessionFile: z.string().optional(),
         contextBudget: z.number().optional(),
         runtime: z.enum(["typescript", "rust"]).optional(),
       }),
@@ -203,7 +208,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       .object({
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
-        effort: z.string().optional(),
+        thinkingDisplay: z.string().optional(),
+        thinkingClickable: z.boolean().optional(),
         thinkingLive: z.boolean().optional(),
         reasoning: z.boolean().optional(),
         ready: z.boolean().optional(),
@@ -385,7 +391,6 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("slashCommand"), command: z.string() }),
   z.object({ type: z.literal("pickModel") }),
   z.object({ type: z.literal("pickThinkingLevel") }),
-  z.object({ type: z.literal("pickEffort") }),
   z.object({ type: z.literal("pickContextBudget") }),
   z.object({ type: z.literal("getSettings") }),
   z.object({ type: z.literal("toggleAutoCompaction") }),

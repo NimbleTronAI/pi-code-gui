@@ -41,12 +41,12 @@ export class PiWebviewPanel {
       return;
     }
 
-    // Use a unique viewType per webview to prevent VS Code from restoring
-    // stale webviews that reference old extension versions. The randomId is
-    // regenerated on every createWebviewPanel call.
-    var randomId = Math.random().toString(36).slice(2, 8);
-    this.panel = vscode.window.createWebviewPanel(
-      "pi-chat-" + randomId,
+    // STABLE viewType: VS Code persists panels by viewType and revives them across
+    // reload via the WebviewPanelSerializer registered in extension.ts (a random
+    // viewType would opt out of restoration). Stale-HTML across extension upgrades
+    // is a non-issue: attach() regenerates the HTML on every create AND revive.
+    const panel = vscode.window.createWebviewPanel(
+      "pi-code-gui.session",
       "Pi Code Gui",
       vscode.ViewColumn.Two,
       {
@@ -57,23 +57,48 @@ export class PiWebviewPanel {
         ],
       }
     );
+    this.attach(panel);
+  }
 
-    this.panel.iconPath = {
+  /** Adopt a panel VS Code revived through the WebviewPanelSerializer. The panel
+   *  already exists (VS Code re-created it in its saved column/order); we only wire
+   *  it up exactly like a freshly created one. */
+  adoptPanel(panel: vscode.WebviewPanel): void {
+    if (this.panel) {
+      piWarn("adoptPanel called but a panel is already attached — disposing the revived duplicate");
+      panel.dispose();
+      return;
+    }
+    // Re-assert webview options: revival restores what was serialized, but scripts +
+    // media access must hold regardless of which extension version created the panel.
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+    };
+    this.attach(panel);
+  }
+
+  /** Shared wiring for created AND revived panels: icon, fresh HTML, message and
+   *  lifecycle handlers. Regenerating the HTML here is what makes restoration safe
+   *  across extension upgrades — a revived panel never runs stale markup. */
+  private attach(panel: vscode.WebviewPanel): void {
+    this.panel = panel;
+    panel.iconPath = {
       light: vscode.Uri.joinPath(this.context.extensionUri, "media", "pi-icon-light.svg"),
       dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "pi-icon-dark.svg"),
     };
 
-    this.panel.webview.html = this.getWebviewContent(this.panel.webview);
+    panel.webview.html = this.getWebviewContent(panel.webview);
     this.setupWebviewHandlers();
     this.setupServiceHandlers();
 
-    this.panel.onDidChangeViewState((e) => {
+    panel.onDidChangeViewState((e) => {
       if (e.webviewPanel.active && this._onActivateCb) {
         this._onActivateCb();
       }
     });
 
-    this.panel.onDidDispose(() => {
+    panel.onDidDispose(() => {
       // Notify the owner (extension.ts) so it can save and remove from open sessions
       if (this._onDispose) {
         this._onDispose(this.piService);
@@ -110,7 +135,6 @@ export class PiWebviewPanel {
           data: {
             model: model?.id ?? "loading...",
             thinkingLevel: this.piService.thinkingLevel,
-            effort: this.piService.effort,
             ready: model !== null,
             runtime: this.piService.runtime,
           },
@@ -160,10 +184,6 @@ export class PiWebviewPanel {
 
           case "pickThinkingLevel":
             void this.triggerThinkingPicker();
-            break;
-
-          case "pickEffort":
-            void this.triggerEffortPicker();
             break;
 
           case "switchRuntime":
@@ -336,7 +356,7 @@ export class PiWebviewPanel {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const msgType = (message as any).type;
     if (msgType && msgType !== "prompt" && msgType !== "abort" && msgType !== "slashCommand" &&
-        msgType !== "pickModel" && msgType !== "pickThinkingLevel" && msgType !== "pickEffort" &&
+        msgType !== "pickModel" && msgType !== "pickThinkingLevel" &&
         msgType !== "pickContextBudget" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
         msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" && msgType !== "openUrl" &&
         msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "clearQueue" &&
@@ -471,8 +491,7 @@ export class PiWebviewPanel {
     <span id="pi-sb-dot" style="flex-shrink:0; font-weight:700;">○</span>
     <div class="pi-sb-item pi-sb-runtime--ts" id="pi-sb-runtime" title="Runtime for this session — click to start a session on the other runtime">π TS</div>
     <div class="pi-sb-item" id="pi-sb-model" title="Click to change model">π Pi</div>
-    <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking level">thinking: off</div>
-    <div class="pi-sb-item" id="pi-sb-effort" title="Click to change effort">effort: auto</div>
+    <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking &amp; reasoning">thinking: off</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
     <div class="pi-sb-item spacer"></div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>
@@ -525,33 +544,6 @@ export class PiWebviewPanel {
         ? "Context budget: model default. Restart session to apply."
         : `Context budget set to ${formatBudget(picked.value)}. Restart session to apply.`,
     );
-  }
-
-  /** Open VS Code quick pick to pick effort */
-  async triggerEffortPicker(): Promise<void> {
-    const ps = this.piService;
-    // rust-pi 0.1.20 exposes no set_effort RPC, so changing effort under Rust
-    // would be a silent display-only no-op. Disable the picker honestly, the
-    // same way the /tools picker is disabled for Rust sessions.
-    if (ps.runtime === "rust") {
-      vscode.window.showInformationMessage("Effort level isn't adjustable for Rust sessions — rust-pi has no set_effort control.");
-      return;
-    }
-    const levels = [
-      { label: "auto", description: "Let the model decide" },
-      { label: "none", description: "No effort" },
-      { label: "low", description: "Low effort" },
-      { label: "medium", description: "Medium effort" },
-      { label: "high", description: "High effort" },
-    ];
-    const currentEffort = ps.effort || "auto";
-    const items = levels.map((l) => ({
-      label: `${l.label === currentEffort ? "$(check) " : ""}${l.label}`,
-      description: l.description,
-    }));
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select effort level" });
-    if (!picked) { return; }
-    await ps.setEffort(picked.label);
   }
 
   /** Open VS Code quick pick for settings */

@@ -620,7 +620,6 @@ let sbDot = document.getElementById("pi-sb-dot");
 let sbRuntime = document.getElementById("pi-sb-runtime");
 let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
-let sbEffort = document.getElementById("pi-sb-effort");
 let sbUsage = document.getElementById("pi-sb-usage");
 
 function setSbRuntime(runtime: string | undefined) {
@@ -638,21 +637,28 @@ export function setSbDot(state: string) {
   }
 
 // Render the thinking indicator. On transports that actually transmit the level
-// (thinkingLive !== false) it's the graded, clickable "thinking: <level>". When
-// the level is a no-op on the active transport (thinkingLive === false, e.g.
-// openai-completions / DeepSeek under Rust) it becomes a read-only "reasoning:
-// on/off" badge \u2014 the only real axis there. Undefined thinkingLive (e.g. the
-// init "status" event) keeps the graded form; status-update corrects it.
+// (thinkingLive !== false) it's the graded, clickable "thinking: <level>", showing
+// the level actually in effect for the model (clamped \u2014 see realThinkingLevel).
+// When the level is a no-op on the active transport (thinkingLive === false, e.g.
+// mistral-conversations or an unverified transport under Rust) it becomes a
+// read-only "reasoning: on/off" badge \u2014 the only real axis there. (DeepSeek /
+// openai-completions IS live since pi_agent_rust 6c5f43b3.) Undefined thinkingLive
+// (e.g. the init "status" event) keeps the graded form; status-update corrects it.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function renderThinkingBadge(data: any) {
     if (!sbThinking) {return;}
-    if (data.thinkingLive === false) {
-      sbThinking.textContent = "reasoning: " + (data.reasoning ? "on" : "off");
-      sbThinking.classList.add("sb-readonly");
-    } else {
-      sbThinking.textContent = "thinking: " + (data.thinkingLevel || "off");
-      sbThinking.classList.remove("sb-readonly");
-    }
+    // The backend composes the single Thinking/Reasoning chip (pi-service thinkingStatus):
+    // "thinking: off", "thinking: on · reasoning: <level>", or a read-only
+    // "reasoning: on/off" badge on a transport that can't transmit the level. Fall back
+    // to thinkingLevel for older/placeholder payloads that omit the composed form.
+    const text = data.thinkingDisplay
+      || (data.thinkingLive === false
+            ? "reasoning: " + (data.reasoning ? "on" : "off")
+            : "thinking: " + (data.thinkingLevel || "off"));
+    const clickable = data.thinkingClickable !== false && data.thinkingLive !== false;
+    sbThinking.textContent = text;
+    if (clickable) { sbThinking.classList.remove("sb-readonly"); }
+    else { sbThinking.classList.add("sb-readonly"); }
   }
 
 export function sbModelText(modelId: string) {
@@ -668,20 +674,32 @@ export function sbModelText(modelId: string) {
 export function handleStatusUpdate(data: any) {
     if (data.reset) {return;}
 
+    // Persist the session identity into VS Code's webview state store. On reload,
+    // VS Code revives this panel and hands the blob to deserializeWebviewPanel
+    // (extension.ts), which re-attaches a live session from it. Merge instead of
+    // overwrite: early status-updates may not carry sessionFile yet (TS sessions
+    // write their file on the first assistant message; Rust reports it via get_state).
+    try {
+      var prev = (window.__vscode.getState() || {}) as { sessionFilePath?: string; runtime?: string };
+      window.__vscode.setState({
+        sessionFilePath: data.sessionFile || prev.sessionFilePath,
+        runtime: data.runtime || prev.runtime,
+      });
+    } catch { /* state persistence is best-effort; the session itself is unaffected */ }
+
     setSbRuntime(data.runtime);
     if (sbModel && data.model) {
       sbModel.textContent = sbModelText(data.model);
     }
     renderThinkingBadge(data);
-    if (sbEffort) {
-      sbEffort.textContent = "effort: " + (data.effort || "auto");
-    }
     if (sbUsage && data.usage) {
       var parts = [];
       var u = data.usage;
       if (u.input > 0) {parts.push("\u2191" + formatTokens(u.input));}
       if (u.output > 0) {parts.push("\u2193" + formatTokens(u.output));}
-      if (u.cost > 0) {parts.push("$" + u.cost.toFixed(2));}
+      // Once a turn has run, ALWAYS show cost: the real figure when we hold the model's
+      // rates, or "$??" when we don't \u2014 so an unknown cost is visible, never hidden.
+      if (u.input > 0 || u.output > 0) {parts.push(u.costKnown ? "$" + u.cost.toFixed(2) : "$??");}
       if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }
@@ -699,9 +717,6 @@ export function handleStatus(data: any) {
         sbModel.textContent = sbModelText(data.model);
       }
       renderThinkingBadge(data);
-      if (sbEffort) {
-        sbEffort.textContent = "effort: " + (data.effort || "auto");
-      }
       setSbDot("idle");
     } else if (data.model === "not installed" || data.model === "init failed") {
       state.promptInput.disabled = true;
@@ -846,9 +861,11 @@ export function handleAutoRetryEnd(data: any) {
   }
 
 export function handleThinkingLevelChanged(data: any) {
-    if (sbThinking && data.level) {
-      sbThinking.textContent = "thinking: " + data.level;
-    }
+    // The single Thinking/Reasoning chip is owned by status-update (renderThinkingBadge,
+    // backend-composed). A thinking-level-changed event is always followed by a
+    // reportStatus, so writing the chip here would only flash the deprecated uncomposed
+    // "thinking: <level>" form and skip clickability/clamping. Intentionally a no-op.
+    void data;
   }
 
   // ═══ Error Handling ════════════════════════════════════
@@ -1355,11 +1372,6 @@ export function sendPrompt(): void {
       // Read-only reasoning badge (no-op transport): not clickable.
       if (sbThinking && sbThinking.classList.contains("sb-readonly")) {return;}
       window.__vscode.postMessage({ type: "pickThinkingLevel" });
-    });
-  }
-  if (sbEffort) {
-    sbEffort.addEventListener("click", function () {
-      window.__vscode.postMessage({ type: "pickEffort" });
     });
   }
   if (sbUsage) {

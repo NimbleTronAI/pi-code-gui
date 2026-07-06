@@ -75,6 +75,8 @@ The catalog stays current on its own. Dependabot tracks `@earendil-works/pi-ai`,
 
 > **Thinking level vs. reasoning (by provider):** a model's *thinking level* (off → xhigh) only changes generation on transports that send it — Anthropic (`anthropic-messages`), the OpenAI Responses API (`openai-responses`), and Google. On OpenAI-compatible chat APIs (`openai-completions`, including **DeepSeek**) the level isn't transmitted; the model self-allocates its reasoning, so under Rust the status bar shows a read-only **reasoning: on/off** badge instead of an adjustable level rather than letting you set one that does nothing.
 
+> **⚠️ Cost & token figures are estimates, not your bill.** The token counts and dollar amounts in the status bar are computed locally — from the bundled catalog's per-model rates and the usage each runtime reports back — purely for at-a-glance guidance. They can be wrong or incomplete: published rates change, the catalog can lag a provider's current pricing, and providers meter in ways a flat rate doesn't capture (cache reads/writes, request minimums, batch/volume discounts, taxes). Some providers report no usage for a turn, in which case the figure stays `0`; where we have no rate for a model we show `$??` rather than a misleading `$0`. **Always rely on your provider account's usage/billing dashboard for actual cost — never on these in-app summaries.**
+
 Nothing fails silently: an unwritable agent directory surfaces as a clear error in the chat (and a notification for fatal cases).
 
 ## Features

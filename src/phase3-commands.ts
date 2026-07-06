@@ -56,10 +56,13 @@ export function registerPhase3Commands(
       return;
     }
     try {
-      await piService.setThinkingLevel(
-        nextLevel(piService.thinkingLevel),
-      );
-      vscode.window.showInformationMessage(`Thinking: ${piService.thinkingLevel}`);
+      // Toggle the Thinking axis on/off. Off→on restores the last reasoning level
+      // used (falling back to the model's highest); on→off disables thinking.
+      // toggleThinking surfaces its own notice (and returns false) when there's
+      // nothing to toggle, so only confirm the composed state on a real change.
+      if (await piService.toggleThinking()) {
+        vscode.window.showInformationMessage(piService.thinkingStatus().text);
+      }
     } catch (e: unknown) {
       vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));
     }
@@ -68,10 +71,4 @@ export function registerPhase3Commands(
   safeRegister(context, "pi-code-gui.pickFork", async () => {
     vscode.window.showInformationMessage("Fork via /fork command in chat.");
   });
-}
-
-function nextLevel(cur: string): string {
-  const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
-  const i = levels.indexOf(cur);
-  return levels[(i + 1) % levels.length];
 }

@@ -2,7 +2,27 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, isTransientProviderError } from "../../rust-events.js";
+
+// ── isTransientProviderError (drives extension-side retry) ────────────
+test("isTransientProviderError: retries network/connection/5xx/429 — incl. the motivating 'closed before headers'", () => {
+  for (const m of [
+    "API error: HTTP connection closed before headers",
+    "connection reset by peer", "socket hang up", "request timed out",
+    "429 Too Many Requests", "503 Service Unavailable", "502 Bad Gateway",
+    "Overloaded", "ECONNRESET", "stream interrupted",
+  ]) { assert.equal(isTransientProviderError(m), true, m); }
+});
+
+test("isTransientProviderError: does NOT retry permanent client errors", () => {
+  for (const m of [
+    "400 Bad Request", "401 Unauthorized", "403 Forbidden", "404 Not Found",
+    "invalid request: bad parameter", "authentication failed: bad api key",
+    "model no longer exists",
+  ]) { assert.equal(isTransientProviderError(m), false, m); }
+  assert.equal(isTransientProviderError(""), false);
+  assert.equal(isTransientProviderError(undefined), false);
+});
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
 test("tool_execution_start: null args coerced to {}", () => {

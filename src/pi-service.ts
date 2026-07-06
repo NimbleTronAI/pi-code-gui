@@ -9,7 +9,8 @@ import { RUST_RPC, type RustResponse } from "./rust-process.js";
 import { extractMessageText } from "./rust-events.js";
 import { RustService, type RustHost } from "./rust-service.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { thinkingLevelIsLive } from "./rust-catalog.js";
+import { thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./rust-catalog.js";
+import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 import { isOlderThan } from "./version-compare.js";
 
@@ -273,7 +274,9 @@ export class PiService {
   private listeners: EventListener[] = [];
   private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
   private _thinkingLevel = "off";
-  private _effort = "auto";
+  /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
+   *  user's prior Reasoning level (falls back to the model's highest). */
+  private _lastReasoningLevel: string | undefined;
   private _isStreaming = false;
   /** Guards against rust-pi emitting agent_end twice for one run (observed on
    *  the abort/error path); the duplicate would double-emit agent-end and
@@ -769,6 +772,35 @@ export class PiService {
       piDebug(`Skipping session restore (fresh=${fresh}, hasSessionManager=${!!this.sessionManager})`);
     }
 
+    // Reconcile the model's thinking capability against the authoritative bundled
+    // catalog FIRST, so a custom ~/.pi/agent/models.json that omits `reasoning` can't
+    // make a known-reasoning model look non-reasoning. Upgrade resumeModel IN PLACE so
+    // both our clamp below AND the SDK's own clamp (createAgentSession → sdk.js
+    // clampThinkingLevel(model, level), and getSupportedThinkingLevels(this.model) for
+    // the picker) see reasoning:true — otherwise the default level (e.g. xhigh) silently
+    // clamps to "off" at session open.
+    if (resumeModel?.provider && resumeModel?.id) {
+      resumeModel = reconcileThinkingCapability(this.bundledProviders, resumeModel.provider, resumeModel.id, resumeModel);
+      // Restore cost rates too: a stripped ~/.pi/agent/models.json entry that omits
+      // `cost` makes the SDK default it to zeros, so pi-ai's calculateCost yields
+      // exactly $0 (model.cost.input/1e6 × tokens) and the status bar hides cost. The
+      // catalog carries the model owner's published rates. Only fill when absent/zero.
+      if (!resumeModel.cost?.input) {
+        const realCost = findCatalogModelCost(this.bundledProviders, resumeModel.provider, resumeModel.id);
+        if (realCost) { resumeModel = { ...resumeModel, cost: realCost }; }
+      }
+    }
+    // Clamp the resolved level (default config, or restored session level) to what
+    // the chosen model actually honors, so the session never STARTS at a level the
+    // model would silently ignore — e.g. a saved default of "low" on DeepSeek snaps
+    // to "high". resumeModel carries reasoning + thinkingLevelMap; clampThinkingLevel
+    // mirrors pi-ai's own clamping, so what we send and store is what's real.
+    const clampedThinking = clampThinkingLevel(resumeModel as ThinkingModel, resumeThinkingLevel);
+    if (clampedThinking !== resumeThinkingLevel) {
+      piDebug(`Clamped thinking ${resumeThinkingLevel} → ${clampedThinking} for ${resumeModel?.id ?? "model"}`);
+      resumeThinkingLevel = clampedThinking;
+    }
+
     // ── Step 9: Create agent session ───────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let result: any;
@@ -812,6 +844,11 @@ export class PiService {
 
     this.session = result.session;
     this._thinkingLevel = resumeThinkingLevel;
+    // Seed the off→on toggle memory from the restored level (restore sets
+    // _thinkingLevel directly, bypassing setThinkingLevel/rememberReasoning), so a
+    // session reopened at e.g. "high" toggles back to "high" rather than the model's
+    // highest. Only a real reasoning level is worth remembering.
+    this.rememberReasoning();
     this.sessionId = this.session.sessionId;
 
     // Restore active tools from session file (if resuming)
@@ -888,7 +925,7 @@ export class PiService {
       setStreaming: (v) => { this._isStreaming = v; },
       getModel: () => this._model,
       setModel: (m) => { this._model = m; },
-      setThinkingLevel: (level) => { this._thinkingLevel = level; },
+      setThinkingLevel: (level) => { this._thinkingLevel = level; this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
       getCycleModels: () => this.cycleModels,
       setCycleModels: (list) => { this.cycleModels = list; },
@@ -1423,16 +1460,78 @@ export class PiService {
     return args;
   }
 
+  /** The thinking level actually in effect for the current model — the stored level
+   *  snapped to what the model honors. The status bar and pickers read this so the
+   *  UI never claims a level the model will silently ignore (e.g. it shows "high"
+   *  after switching to DeepSeek with a stored "low"). Falls back to the stored
+   *  level when the model can't be resolved (no metadata to clamp by). */
+  private realThinkingLevel(): string {
+    const full = this.currentFullModel();
+    return full ? clampThinkingLevel(full, this._thinkingLevel) : this._thinkingLevel;
+  }
+
+  /** The composed Thinking/Reasoning status for the single status-bar chip, and
+   *  whether it's an actionable (clickable) control. Thinking and Reasoning are two
+   *  axes of ONE dial: "off" disables thinking; any other level enables it at that
+   *  reasoning effort (mirrors the wire's `thinking.type` + `reasoning_effort`/`effort`
+   *  fields). A Rust transport that can't transmit the level degrades to a read-only
+   *  "reasoning: on/off" badge — the only real axis there. */
+  thinkingStatus(): { text: string; clickable: boolean } {
+    if (this._backendKind === "rust" && !thinkingLevelIsLive(this._model?.api)) {
+      return { text: `reasoning: ${this._model?.reasoning ? "on" : "off"}`, clickable: false };
+    }
+    const level = this.realThinkingLevel();
+    if (level === "off") { return { text: "thinking: off", clickable: true }; }
+    return { text: `thinking: on · reasoning: ${level}`, clickable: true };
+  }
+
+  /** Remember the active reasoning level so toggling Thinking off→on can restore it. */
+  private rememberReasoning(): void {
+    if (this._thinkingLevel !== "off") { this._lastReasoningLevel = this._thinkingLevel; }
+  }
+
+  /** The reasoning level to apply when Thinking is turned on with no explicit choice:
+   *  the last one used, else the model's highest supported level. */
+  private defaultReasoningLevel(): string {
+    const on = this.supportedThinkingLevels().filter((l) => l !== "off");
+    if (this._lastReasoningLevel && on.includes(this._lastReasoningLevel)) { return this._lastReasoningLevel; }
+    return on[on.length - 1] ?? "high";
+  }
+
+  /** Toggle Thinking on/off (the Thinking axis of the one dial). Off→on restores the
+   *  last reasoning level (defaultReasoningLevel); on→off goes to "off". Returns false
+   *  (after an honest notice) when there is nothing to toggle — a non-reasoning model
+   *  or a Rust transport that can't transmit the level — so callers don't claim success. */
+  async toggleThinking(): Promise<boolean> {
+    const onLevels = this.supportedThinkingLevels().filter((l) => l !== "off");
+    if (onLevels.length === 0) {
+      vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to toggle.`);
+      return false;
+    }
+    if (this._backendKind === "rust" && !thinkingLevelIsLive(this._model?.api)) {
+      const on = this._model?.reasoning ?? false;
+      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — reasoning depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
+      return false;
+    }
+    const target = this.realThinkingLevel() === "off" ? this.defaultReasoningLevel() : "off";
+    await this.setThinkingLevel(target);
+    return true;
+  }
+
   private reportStatus(): void {
     const stats = this.getUsageStats();
     const cfg = vscode.workspace.getConfiguration("pi-code-gui");
     const budget = cfg.get<number>("contextBudget") ?? 0;
+    const thinking = this.thinkingStatus();
     this.emit({
       type: "status-update",
       data: {
         model: this._model?.id ?? this._model?.name ?? "pi",
-        thinkingLevel: this._thinkingLevel,
-        effort: this._effort,
+        thinkingLevel: this.realThinkingLevel(),
+        // Composed Thinking/Reasoning chip text + whether it's clickable (a no-op
+        // Rust transport renders a read-only reasoning on/off badge). See thinkingStatus.
+        thinkingDisplay: thinking.text,
+        thinkingClickable: thinking.clickable,
         // Whether the active transport actually transmits the thinking level. Under
         // Rust this depends on the provider api (openai-completions = no-op); the TS
         // SDK handles thinking per-provider in-process, so keep it "live" there.
@@ -1440,6 +1539,10 @@ export class PiService {
         reasoning: this._model?.reasoning,
         isStreaming: this._isStreaming,
         sessionId: this.sessionId ?? undefined,
+        // On-disk session file (null until the first write). The webview persists this
+        // into VS Code's webview state so deserializeWebviewPanel can re-attach the
+        // session after a window reload.
+        sessionFile: this.sessionFilePath ?? undefined,
         usage: stats,
         contextBudget: budget,
         runtime: this._backendKind,
@@ -1750,6 +1853,16 @@ export class PiService {
       piWarn("_forcePersistEntry: no session file");
       return;
     }
+    // Append ONLY to a file the SDK has already created. The SDK defers session
+    // writes — it buffers entries in memory and flushes them with the session
+    // header via an EXCLUSIVE create (openSync wx) on the first assistant message
+    // (session-manager.js). If we appendFileSync first we'd (a) create the file
+    // early, so the SDK's wx open throws EEXIST and the turn fails, and (b) leave a
+    // headerless, malformed file. So never create it here — skip until it exists.
+    if (!fs.existsSync(sf)) {
+      piDebug(`_forcePersistEntry: session file not yet created by SDK; skipping ${String(entry.type)}`);
+      return;
+    }
     try {
       fs.appendFileSync(sf, JSON.stringify(entry) + "\n");
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1804,15 +1917,10 @@ export class PiService {
       this._model = { id: modelId, provider };
       this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
       if (this.cycleIndex === -1) { this.cycleIndex = 0; }
-      // Force-persist the model change so it survives session close/reopen
-      this._forcePersistEntry({
-        type: "model_change",
-        id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        parentId: null,
-        timestamp: new Date().toISOString(),
-        provider,
-        modelId,
-      });
+      // No force-persist here: session.setModel() already records a model_change via
+      // the SDK's appendModelChange (deferred, flushed with the session header on the
+      // first assistant message). A direct write would duplicate it AND create the
+      // file early, breaking the SDK's exclusive-create flush (EEXIST on first prompt).
       this.reportStatus();
     }
   }
@@ -1858,10 +1966,12 @@ export class PiService {
 
   async setThinkingLevel(level: string): Promise<void> {
     if (this._backendKind === "rust") {
-      // Some provider transports (e.g. openai-completions — DeepSeek et al.) never
-      // serialize the thinking level on the wire, so changing it would be a silent
-      // no-op the binary still reports as success. Don't pretend: reasoning is a
-      // fixed on/off property of the model there, not an adjustable depth.
+      // Some provider transports (mistral-conversations and any unverified/unknown
+      // api) never serialize the thinking level on the wire, so changing it would
+      // be a silent no-op the binary still reports as success. Don't pretend:
+      // reasoning is a fixed on/off property of the model there, not an adjustable
+      // depth. (openai-completions/DeepSeek now DOES transmit it — see
+      // thinkingLevelIsLive — so this guard no longer fires for it.)
       if (!thinkingLevelIsLive(this._model?.api)) {
         const on = this._model?.reasoning ?? false;
         vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
@@ -1884,6 +1994,7 @@ export class PiService {
       if (this._thinkingLevel !== level) {
         vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${this._thinkingLevel}".`);
       }
+      this.rememberReasoning();
       this.reportStatus();
       return;
     }
@@ -1893,15 +2004,12 @@ export class PiService {
     }
     this.session.setThinkingLevel(level);
     this._thinkingLevel = level;
+    this.rememberReasoning();
     this.reportStatus();
-    // Force-persist the thinking change so it survives session close/reopen
-    this._forcePersistEntry({
-      type: "thinking_level_change",
-      id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      parentId: null,
-      timestamp: new Date().toISOString(),
-      thinkingLevel: level,
-    });
+    // No force-persist here: session.setThinkingLevel() already records a
+    // thinking_level_change via the SDK's appendThinkingLevelChange (deferred, and
+    // with the CLAMPED effective level — more correct than the raw level). A direct
+    // write would duplicate it AND create the file early (EEXIST on first prompt).
   }
 
   // ── Default model / thinking persistence ──────────────
@@ -2059,6 +2167,47 @@ export class PiService {
     return true;
   }
 
+  /** The full pi-ai model object for the active model (carries reasoning +
+   *  thinkingLevelMap), or null when it can't be resolved from the registry. */
+  /** The bundled pi-ai catalog providers map — the authoritative capability source of
+   *  record (each model owner's published spec; e.g. DeepSeek documents reasoning_effort
+   *  = high|max with low/medium→high and xhigh→max, encoded as a model's thinkingLevelMap). */
+  private get bundledProviders(): Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> | undefined {
+    return (bundledRegistry as { providers?: Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> }).providers;
+  }
+
+  private currentFullModel(): ThinkingModel | null {
+    const id = this._model?.id; const provider = this._model?.provider;
+    if (!id || !provider) { return null; }
+    // TS SDK path: resolve the live pi-ai model from the registry, then reconcile it
+    // against the bundled catalog so a custom ~/.pi/agent/models.json that omits
+    // `reasoning` can't downgrade a known-reasoning model (shared with the init clamp).
+    if (this.modelRegistry) {
+      try {
+        const m = this.modelRegistry.find(provider, id) as ThinkingModel | undefined;
+        if (m) { return reconcileThinkingCapability(this.bundledProviders, provider, id, m); }
+      } catch { /* fall through to the bundled catalog */ }
+    }
+    // Rust path (no SDK ModelRegistry — see initializeRust) or registry miss: use the
+    // bundled catalog. NOT rust-pi's get_state.reasoning, which is only the executor's
+    // heuristic and has classified models wrongly before.
+    const bundled = findCatalogThinkingModel(this.bundledProviders, provider, id);
+    if (bundled) { return bundled; }
+    // Absent from the bundled catalog: last resort, rust-pi's reported reasoning flag —
+    // only to avoid offering a graded picker the runtime would no-op. A fallback
+    // heuristic, not an authoritative capability source.
+    if (this._model?.reasoning === undefined) { return null; }
+    return { reasoning: this._model.reasoning };
+  }
+
+  /** Thinking levels meaningful for the active model (per pi-ai metadata), lowest→
+   *  highest. Falls back to the full graded range when the model isn't resolvable,
+   *  so we only ever narrow the choices when we have real metadata to narrow by. */
+  supportedThinkingLevels(): string[] {
+    const full = this.currentFullModel();
+    return full ? getSupportedThinkingLevels(full) : [...THINKING_LEVELS];
+  }
+
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
   async pickThinkingLevel(): Promise<boolean> {
     // Under Rust on a transport that doesn't transmit the level, a graded picker
@@ -2068,28 +2217,32 @@ export class PiService {
       vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
       return false;
     }
-    const levels = [
-      { label: "off", description: "No thinking" },
-      { label: "minimal", description: "Minimal thinking" },
-      { label: "low", description: "Brief thinking" },
-      { label: "medium", description: "Balanced thinking" },
-      { label: "high", description: "Extended thinking" },
-      { label: "xhigh", description: "Maximum thinking" },
-    ];
+    // off + the reasoning tiers this model honors, from the authoritative catalog
+    // (currentFullModel) — e.g. DeepSeek collapses to off/high/xhigh.
+    const supported = this.supportedThinkingLevels();
+    const onLevels = supported.filter((l) => l !== "off");
+    if (onLevels.length === 0) {
+      // Genuinely non-reasoning per the catalog — there's no reasoning to adjust.
+      vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to adjust.`);
+      return false;
+    }
+    const REASONING_DESCR: Record<string, string> = {
+      minimal: "minimal reasoning", low: "brief reasoning", medium: "balanced reasoning",
+      high: "extended reasoning", xhigh: "maximum reasoning",
+    };
     const current = this.thinkingLevel;
     const defLevel = this.getDefaultThinking();
-    const items = levels.map((l) => {
-      const isDefault = l.label === defLevel;
-      return {
-        label: `${l.label === current ? "$(check) " : ""}${l.label}${isDefault ? " \u2605" : ""}`,
-        description: l.description,
-        level: l.label,
-        isDefault,
-      };
-    });
+    const fmt = (lvl: string, label: string): string =>
+      `${lvl === current ? "$(check) " : ""}${label}${lvl === defLevel ? " ★" : ""}`;
+    type Item = vscode.QuickPickItem & { level?: string; isDefault?: boolean };
+    const items: Item[] = [
+      { label: fmt("off", "Off"), description: "thinking off", level: "off", isDefault: defLevel === "off" },
+      { label: "Reasoning level", kind: vscode.QuickPickItemKind.Separator },
+      ...onLevels.map((l) => ({ label: fmt(l, l), description: REASONING_DESCR[l] ?? "reasoning", level: l, isDefault: l === defLevel })),
+    ];
 
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select thinking level (\u2605 = default)" });
-    if (!picked) { return false; }
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Thinking & reasoning (\u2605 = default)" });
+    if (!picked || picked.level === undefined) { return false; }
 
     await this.setThinkingLevel(picked.level);
 
@@ -2174,13 +2327,6 @@ export class PiService {
     return this._showImages;
   }
 
-  async setEffort(effort: string): Promise<void> {
-    this._effort = effort;
-    if (this.session && typeof this.session.setEffort === "function") {
-      await this.session.setEffort(effort);
-    }
-    this.reportStatus();
-  }
 
   /** Generate a short 3-word tab title summary for the first user input in a session. */
   async generateTabSummary(userInput: string): Promise<string | null> {
@@ -2226,23 +2372,35 @@ export class PiService {
 
   // ── Usage / token stats ──────────────────────────────
 
+  /** Per-million-token cost rates for the active model, from the bundled catalog, or
+   *  null when we have no rate info (→ the status bar shows "$??" rather than $0). */
+  private activeCostRates(): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
+    const p = this._model?.provider; const id = this._model?.id;
+    return (p && id) ? findCatalogModelCost(this.bundledProviders, p, id) : null;
+  }
+
   getUsageStats(): {
     input: number;
     output: number;
     cacheRead: number;
     cacheWrite: number;
     cost: number;
+    /** False when we have no cost rates for the model → render "$??", not "$0". */
+    costKnown: boolean;
     contextPercent: number | null;
     contextWindow: number;
   } {
-    // Rust runs out-of-process (no SDK sessionManager) — usage comes from its
-    // get_session_stats RPC, cached in RustService and refreshed at init + each turn.
+    // Rust runs out-of-process (no SDK sessionManager) — token usage comes from its
+    // get_session_stats RPC, but the binary reports cost:0 (it doesn't compute cost),
+    // so we derive cost here from the binary's tokens × the catalog's published rates.
     if (this._backendKind === "rust") {
-      return this._rust?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+      const u = this._rust?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+      const rates = this.activeCostRates();
+      return { ...u, cost: rates ? computeTokenCost(u, rates) : 0, costKnown: rates !== null };
     }
 
     if (!this.sessionManager) {
-      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costKnown: false, contextPercent: null, contextWindow: 0 };
     }
 
     const entries = this.sessionManager.getEntries();
@@ -2275,14 +2433,20 @@ export class PiService {
       }
     } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
 
-    return { input: totalInput, output: totalOutput, cacheRead: totalCacheRead, cacheWrite: totalCacheWrite, cost: totalCost, contextPercent, contextWindow };
+    // Known when the SDK actually computed a cost, or we hold rates for the model
+    // (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
+    const costKnown = totalCost > 0 || this.activeCostRates() !== null;
+    return { input: totalInput, output: totalOutput, cacheRead: totalCacheRead, cacheWrite: totalCacheWrite, cost: totalCost, costKnown, contextPercent, contextWindow };
   }
 
   // ── Getters ────────────────────────────────────────────
 
   get isStreaming(): boolean { return this._isStreaming; }
   get model(): { id?: string; name?: string; provider?: string } | null { return this._model; }
-  get thinkingLevel(): string { return this._thinkingLevel; }
+  /** The effective thinking level for the current model (stored level clamped to
+   *  what the model honors) — so the status bar, picker, and cycle all show what's
+   *  real, not a level the model silently ignores. */
+  get thinkingLevel(): string { return this.realThinkingLevel(); }
   /** Which runtime backs this session: "typescript" (in-process SDK) or "rust" (RPC subprocess). */
   get runtime(): Runtime { return this._backendKind; }
 
@@ -2312,7 +2476,6 @@ export class PiService {
     if (!this.session) { return; }
     this.session.clearQueue();
   }
-  get effort(): string { return this._effort; }
   get sdkRoot(): string | null { return this._piRoot; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get sessionManagerInstance(): any { return this.sessionManager; }

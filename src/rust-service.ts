@@ -13,7 +13,7 @@
 // existed inside the god class — here it's named and visible.
 
 import * as vscode from "vscode";
-import { piWarn } from "./logger.js";
+import { piWarn, piDebug } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
@@ -97,6 +97,12 @@ export class RustService {
   private steering: string[] = [];
   private followUp: string[] = [];
   private degradedWarned = new Set<string>();
+  // NOTE: transient-error retry is intentionally NOT done here. rust-pi retries the
+  // dropped provider request IN PLACE (preserving the tool-call sequence) and emits its
+  // own auto_retry_start/end events, which the webview surfaces. An earlier extension-
+  // side reprompt-retry corrupted agentic turns (a re-sent prompt lands after a dangling
+  // assistant tool_calls → provider 400), so it was removed. The binary's classifier not
+  // covering some connection drops (e.g. "closed before headers") is tracked upstream.
   /** Guard against overlapping refreshState() runs — see refreshState(). */
   private _refreshing = false;
 
@@ -370,8 +376,22 @@ export class RustService {
     } catch (e: unknown) {
       piWarn(`handleEvent(${event?.type}): ${e instanceof Error ? e.message : String(e)}`);
     }
+    // Mid-turn live tokens/cost: ACCUMULATE each assistant message's own usage rather
+    // than re-polling get_session_stats — which lags, since it only counts PERSISTED
+    // messages (the `pending` backlog stayed >0 mid-turn, so tokens read 0 until the
+    // turn ended). The message_end EVENT carries the real per-round usage (the same
+    // source context% already trusts via captureContext), so summing it climbs live.
+    // agent_end's refreshState then SNAPS this.usage to the authoritative cumulative,
+    // correcting any drift. (cost is recomputed from tokens × catalog rates in PiService.)
+    if (event?.type === "message_end" && (event as { message?: { role?: string } }).message?.role === "assistant") {
+      const mu = (event as { message?: { usage?: unknown } }).message?.usage;
+      if (mu && typeof mu === "object") { this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus(); }
+    }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
+    if (event?.type === "agent_end") {
+      piDebug(`[usage] agent_end: agentRunActive=${this.host.getAgentRunActive()} isRealAgentEnd=${routing.isRealAgentEnd} → ${routing.isRealAgentEnd ? "refreshState()" : "SKIPPED (no usage refresh)"}`);
+    }
     if (routing.isRealAgentEnd) { void this.refreshState(); }
   }
 
@@ -496,7 +516,10 @@ export class RustService {
     // agent_end) AND from compact(); without this they can overlap, and a stale
     // get_state's applyState could clobber a newer one. Skip a redundant refresh
     // while one is already in flight (the in-flight run captures the latest state).
-    if (!this.process || this._refreshing) { return; }
+    if (!this.process || this._refreshing) {
+      if (this._refreshing) { piDebug("[usage] refreshState SKIPPED — already refreshing (guard); next turn's status may stay stale"); }
+      return;
+    }
     this._refreshing = true;
     try {
       try {
@@ -507,11 +530,19 @@ export class RustService {
         this.warnDegraded("status", "Couldn't sync Rust Pi's status — the model/context readout may be stale.");
       }
       await this.refreshUsage();
-      await this.refreshEntries();
+      // Emit status the moment model + usage are known. Critically this is BEFORE
+      // refreshEntries: that history pull (get_messages + parse) grows with the
+      // session and, while it ran under the concurrency guard, the next turn's
+      // refreshState would hit `_refreshing` and return early — so the token/cost/%
+      // readout stayed at its init value during active use and only "caught up" once
+      // the conversation went idle and a refresh finally finished uninterrupted.
       this.host.reportStatus();
     } finally {
       this._refreshing = false;
     }
+    // Entries feed ONLY the Open Sessions tree, never the status bar — refresh them
+    // OUTSIDE the guard so a slow history parse can't block the next turn's status.
+    await this.refreshEntries();
   }
 
   /** Re-pull the Rust session's entries so the Open Sessions tree reflects new turns. */
@@ -531,7 +562,13 @@ export class RustService {
     if (!this.process) { return; }
     try {
       const r = await this.process.request(RUST_RPC.getSessionStats, {}, 8000);
-      if (r.success) { this.applyUsage(r.data); this.recordCapOk("usage"); }
+      if (r.success) {
+        const d = (r.data ?? {}) as { tokens?: Record<string, unknown>; cost?: unknown; assistantMessages?: unknown; pendingMessageCount?: unknown };
+        piDebug(`[usage] get_session_stats OK: tokens=${JSON.stringify(d.tokens)} cost=${JSON.stringify(d.cost)} assistantMessages=${JSON.stringify(d.assistantMessages)} pending=${JSON.stringify(d.pendingMessageCount)}`);
+        this.applyUsage(r.data); this.recordCapOk("usage");
+      } else {
+        piDebug(`[usage] get_session_stats returned success=false: ${JSON.stringify(r.error ?? r)}`);
+      }
     } catch (e: unknown) {
       piWarn(`refreshUsage failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("usage", "Couldn't read Rust Pi's token/cost usage — the usage readout may be missing or stale.");
@@ -721,9 +758,15 @@ export class RustService {
     if (!this.process) { return; }
     try {
       const resp = await this.process.request(RUST_RPC.compact, {}, 120000);
+      // ALL compact feedback — success and failure — uses customType "info", which
+      // handleCustomMessage renders as a fresh in-chat ".message assistant" bubble and
+      // scrolls to it (index.ts). It is deliberately the ONLY surface: never the
+      // collapsed #live-panel side card ("extension-notify"/default), and never the
+      // in-place-updating InlineCard ("display:true"), which can scroll out of view on
+      // a repeat. So /compact always reports where the user is looking — the conversation.
       if (resp.success) {
         await this.refreshState();
-        this.host.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Context compacted.", timestamp: Date.now() } });
+        this.host.emit({ type: "custom-message", data: { customType: "info", content: "Context compacted.", timestamp: Date.now() } });
       } else {
         const err = resp.error ?? "";
         // The Rust runtime gates compaction behind its auto-compaction threshold
@@ -732,13 +775,13 @@ export class RustService {
         // explain it honestly rather than flag a red error. (The TypeScript
         // runtime has no such gate and compacts on demand.)
         if (/not available|missing ids|already compacted|too little history|nothing to compact/i.test(err)) {
-          this.host.emit({ type: "custom-message", data: { customType: "extension-notify", content: "Nothing to compact yet. The Rust runtime compacts automatically as the conversation approaches the model's context limit — it won't compact one that still fits comfortably (unlike the TypeScript runtime, which compacts on demand).", timestamp: Date.now() } });
+          this.host.emit({ type: "custom-message", data: { customType: "info", content: "Nothing to compact yet. The Rust runtime compacts automatically as the conversation approaches the model's context limit — it won't compact one that still fits comfortably (unlike the TypeScript runtime, which compacts on demand).", timestamp: Date.now() } });
         } else {
-          this.host.emit({ type: "custom-message", data: { customType: "error", content: `Compact failed: ${err || "unknown error"}`, timestamp: Date.now() } });
+          this.host.emit({ type: "custom-message", data: { customType: "info", content: `⚠️ Compact failed: ${err || "unknown error"}`, timestamp: Date.now() } });
         }
       }
     } catch (e: unknown) {
-      this.host.emit({ type: "custom-message", data: { customType: "error", content: `Compact failed: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } });
+      this.host.emit({ type: "custom-message", data: { customType: "info", content: `⚠️ Compact failed: ${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() } });
     }
   }
 
@@ -759,7 +802,32 @@ export class RustService {
    *  `sessionFile`), so this is null between init and the first turn — callers
    *  persisting it must tolerate null rather than recording a stale path. */
   getSessionPath(): string | null { return this.sessionPath; }
+  /** Add one assistant message's token usage to the running cumulative so the status bar
+   *  climbs live mid-turn. Replaced wholesale by the authoritative get_session_stats total
+   *  at agent_end (applyUsage), so any estimate drift self-corrects each turn. */
+  private accumulateUsage(u: Record<string, unknown>): void {
+    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+    const base = this.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: this.contextWindow };
+    this.usage = {
+      ...base,
+      input: base.input + n(u.input),
+      output: base.output + n(u.output),
+      cacheRead: base.cacheRead + n(u.cacheRead),
+      cacheWrite: base.cacheWrite + n(u.cacheWrite),
+    };
+  }
+
   getUsage(): RustUsage {
-    return this.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: this.contextWindow };
+    // Recompute context% from the CURRENT lastContextTokens (updated by captureContext
+    // on every assistant message_end) rather than returning the value baked into
+    // this.usage at the last get_session_stats refresh. Without this, the % only moved
+    // at agent_end — staying at its turn-start value through a long multi-tool turn.
+    const cw = this.contextWindow;
+    const ctx = this.lastContextTokens;
+    const contextPercent = (cw > 0 && ctx > 0) ? Math.min(100, (ctx / cw) * 100) : null;
+    const u = this.usage;
+    return u
+      ? { ...u, contextWindow: cw, contextPercent }
+      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent, contextWindow: cw };
   }
 }

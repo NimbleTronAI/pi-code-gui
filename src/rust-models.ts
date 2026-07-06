@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { piDebug } from "./logger.js";
-import { resolveMaxOutputTokens } from "./rust-catalog.js";
+import { resolveMaxOutputTokens, buildThinkingCompat } from "./rust-catalog.js";
 import registryData from "./model-registry.generated.json";
 
 interface RegistryModel {
@@ -34,6 +34,12 @@ interface RegistryModel {
   maxTokens: number;
   input: string[];
   cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  // Per-model thinking metadata (kept by gen-model-registry.mjs). thinkingLevelMap
+  // tells rust-pi which graded levels the model honors so it clamps the same way
+  // the extension's picker offers them; compat.thinkingFormat is the wire dialect;
+  // compat.forceAdaptiveThinking selects Anthropic's modern adaptive `effort` API.
+  thinkingLevelMap?: Record<string, string | null>;
+  compat?: { thinkingFormat?: string; forceAdaptiveThinking?: boolean };
 }
 interface RegistryProvider { baseUrl: string; api: string; models: RegistryModel[]; }
 interface ModelRegistry { generatedFrom: string; piAiVersion: string; providers: Record<string, RegistryProvider>; }
@@ -93,7 +99,19 @@ function writeModelsJson(file: string, contextBudget: number): number {
           ...(maxTokens !== undefined ? { maxTokens } : {}),
           input: m.input,
           ...(m.cost ? { cost: m.cost } : {}),
-          ...(m.reasoning ? { reasoning: true } : {}),
+          // Always write `reasoning` (true AND false). pi_agent_rust (gh #117) now
+          // treats the catalog as AUTHORITATIVE — it honors this flag directly and
+          // only falls back to its built-in model_is_reasoning heuristic when the
+          // field is ABSENT. Omitting `false` would re-enable the heuristic and the
+          // override bug that disabled thinking for misclassified models (gh #114).
+          reasoning: !!m.reasoning,
+          // Forward per-model thinking metadata UNDER compat — the shape pi_agent_rust
+          // deserializes (model.compat.{thinkingLevelMap,forceAdaptiveThinking,
+          // thinkingFormat}, gh #116/#117). thinkingLevelMap clamps graded levels
+          // (e.g. DeepSeek off/high/xhigh); forceAdaptiveThinking selects Anthropic's
+          // modern adaptive `effort` API over deprecated budget_tokens; thinkingFormat
+          // is the wire dialect. A top-level thinkingLevelMap would be silently dropped.
+          ...buildThinkingCompat(m),
         };
       }),
     };
