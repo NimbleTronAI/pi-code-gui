@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { translateAgentEvent, extractToolCalls, normalizeToolArgs, type AgentTranslateState } from "../../agent-events.js";
+import { translateAgentEvent, extractToolCalls, normalizeToolArgs, toolArgsPreviewText, type AgentTranslateState } from "../../agent-events.js";
 
 function makeState(over: Partial<AgentTranslateState> = {}): AgentTranslateState {
   return {
@@ -158,6 +158,24 @@ test("message_update: an existing tool call past the throttle window emits tool-
   assert.equal(st.toolCalls.get("t1")!.lastPreviewEmit, 1300);
 });
 
+test("message_update: past throttle but still-null partial args → no tool-update, clock not advanced (#124)", () => {
+  const st = makeState({ now: 1300 });
+  st.toolCalls.set("t1", { toolName: "write", toolCallId: "t1", args: null, lastPreviewEmit: 1000 });
+  const content = [{ type: "toolCall", id: "t1", name: "write", arguments: null }];
+  const r = translateAgentEvent({ type: "message_update", message: { role: "assistant", content } }, st);
+  assert.deepEqual(r.events, []); // nothing meaningful to preview yet — don't flash "null"
+  assert.equal(st.toolCalls.get("t1")!.lastPreviewEmit, 1000); // unchanged, so the next real delta emits promptly
+});
+
+test("message_update: growing partial-JSON STRING args → tool-update shows the raw string (not double-encoded)", () => {
+  const st = makeState({ now: 1300 });
+  st.toolCalls.set("t1", { toolName: "write", toolCallId: "t1", args: "{\"path\":\"sr", lastPreviewEmit: 1000 });
+  const content = [{ type: "toolCall", id: "t1", name: "write", arguments: "{\"path\":\"src/fo" }];
+  const r = translateAgentEvent({ type: "message_update", message: { role: "assistant", content } }, st);
+  assert.deepEqual(types(r), ["tool-update"]);
+  assert.equal((r.events[0] as { data: { partialResult: { content: Array<{ text: string }> } } }).data.partialResult.content[0].text, "{\"path\":\"src/fo");
+});
+
 test("message_update: bash/exec and id-less tool calls are not previewed", () => {
   const st = makeState();
   const content = [
@@ -167,6 +185,20 @@ test("message_update: bash/exec and id-less tool calls are not previewed", () =>
   const r = translateAgentEvent({ type: "message_update", message: { role: "assistant", content } }, st);
   assert.deepEqual(r.events, []);
   assert.equal(st.toolCalls.size, 0);
+});
+
+// ── toolArgsPreviewText (streaming partial-args display, #124) ────────
+test("toolArgsPreviewText: object → pretty JSON; string → as-is; primitives → String()", () => {
+  assert.equal(toolArgsPreviewText({ path: "a" }), "{\n  \"path\": \"a\"\n}");
+  assert.equal(toolArgsPreviewText("{\"path\":\"src/fo"), "{\"path\":\"src/fo");
+  assert.equal(toolArgsPreviewText(42), "42");
+});
+
+test("toolArgsPreviewText: null / undefined / empty-string / empty-object → null (skip the frame)", () => {
+  assert.equal(toolArgsPreviewText(null), null);
+  assert.equal(toolArgsPreviewText(undefined), null);
+  assert.equal(toolArgsPreviewText(""), null);
+  assert.equal(toolArgsPreviewText({}), null);
 });
 
 // ── message_end ──────────────────────────────────────────────────────

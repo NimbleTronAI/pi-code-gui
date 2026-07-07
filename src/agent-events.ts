@@ -70,6 +70,28 @@ export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | 
   if (tc.name === "bash" || tc.name === "exec") { return false; }
   return true;
 }
+
+/**
+ * Display text for a streaming tool call's (possibly partial) arguments — the live
+ * progress a `tool-update` preview shows — or null when there's nothing meaningful to
+ * render yet, so the caller skips the frame.
+ *
+ * rust-pi >= the #124 fix (commit b45e61dd) grows the tool-call `arguments` field as
+ * deltas stream in, instead of leaving it null until the JSON is complete. That partial
+ * value can arrive as a partially-parsed OBJECT or, defensively, a raw partial-JSON
+ * STRING; both are rendered as-is. null / undefined / empty-string / empty-`{}` return
+ * null so a preview never flashes a literal "null" or a blank "{}" (the pre-fix binary
+ * sent null the whole way through, which this also cleans up).
+ */
+export function toolArgsPreviewText(args: unknown): string | null {
+  if (args === null || args === undefined) { return null; }
+  if (typeof args === "string") { return args.length > 0 ? args : null; }
+  if (typeof args === "object") {
+    if (Object.keys(args).length === 0) { return null; }
+    try { return JSON.stringify(args, null, 2); } catch { return null; }
+  }
+  return String(args); // number / boolean — render as-is
+}
 import { humanizeProviderError } from "./extension-errors.js";
 
 /** Coerce a raw error value to a display string. rust-pi/DeepSeek can deliver an error
@@ -250,9 +272,14 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
               // per token (tens of thousands for a large write); re-emitting the
               // full re-serialized args each time floods the webview O(n²) and
               // freezes it. The final args still arrive via tool_execution_start.
+              // Only emit (and advance the throttle clock) once there's real partial
+              // content — skip while args are still null/empty so no "null"/"{}" flashes.
               if (shouldEmitToolPreviewUpdate(existing.lastPreviewEmit, state.now)) {
-                existing.lastPreviewEmit = state.now;
-                events.push({ type: "tool-update", data: { toolCallId: tc.id, toolName: tc.name, partialResult: { content: [{ type: "text", text: JSON.stringify(tc.arguments, null, 2) }] } } });
+                const preview = toolArgsPreviewText(tc.arguments);
+                if (preview !== null) {
+                  existing.lastPreviewEmit = state.now;
+                  events.push({ type: "tool-update", data: { toolCallId: tc.id, toolName: tc.name, partialResult: { content: [{ type: "text", text: preview }] } } });
+                }
               }
             }
           }
