@@ -399,6 +399,8 @@ export class RustService implements PiBackend {
   private static _toolDepsWarned = false;
   /** One-per-host guard: show the full "/compact differs under Rust" explanation once. */
   private static _compactGateExplained = false;
+  /** One-per-host guard: warn once that a Rust auto-retry re-runs and re-bills the turn. */
+  private static _autoRetryRebillWarned = false;
 
   /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
   private async spawn(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
@@ -437,6 +439,17 @@ export class RustService implements PiBackend {
    *  executes the resulting plan against vscode/PiService state. */
   private handleEvent(event: RustEvent): void {
     normalizeRustEvent(event);
+    // One-time (per host): rust-pi's auto-retry restarts the WHOLE turn on a transient
+    // provider error — re-running and RE-BILLING every tool call, not just re-issuing the
+    // failed request (confirmed 2026-07-07: one prompt → 4 fully-executed, separately-billed
+    // runs on a flaky provider; auto-retry off → a single clean failure, no duplication).
+    // The retry spinner alone doesn't convey the cost consequence, so surface it once so a
+    // multiplied bill is never silent. Turning off Auto-retry avoids it; the re-execution
+    // itself is a rust-pi behaviour tracked upstream.
+    if (event?.type === "auto_retry_start" && !RustService._autoRetryRebillWarned) {
+      RustService._autoRetryRebillWarned = true;
+      this.host.emit({ type: "custom-message", data: { customType: "info", content: "⚠ Auto-retry restarted this turn after a transient provider error. On the Rust runtime a retry re-runs the whole turn, so each attempt is billed again — a flaky provider can multiply the cost. Turn off Auto-retry in settings to avoid this (the re-run behaviour is tracked upstream).", timestamp: Date.now() } });
+    }
     const queueNonEmpty = this.steering.length > 0 || this.followUp.length > 0;
     // routeRustEvent reads agentRunActive BEFORE handleAgentEvent clears it, so
     // the isRealAgentEnd dedupe sees the pre-delegate flag — a duplicate
