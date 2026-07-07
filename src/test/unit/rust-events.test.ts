@@ -30,6 +30,24 @@ test("tool_execution_update: null text inside partialResult content fixed to ''"
   assert.equal(e.partialResult.content[0].text, "");
 });
 
+test("message_update: mirrors assistantMessageEvent.partial → message (role stamped) so tool args stream (#124)", () => {
+  const e: any = {
+    type: "message_update",
+    assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: "rc/f", partial: { content: [{ type: "toolCall", id: "t1", name: "write", arguments: { path: "sr" } }] } },
+  };
+  normalizeRustEvent(e);
+  assert.deepEqual(e.message, { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "write", arguments: { path: "sr" } }] });
+});
+
+test("message_update: does not overwrite an existing message, and no-ops when partial.content is absent", () => {
+  const withMsg: any = { type: "message_update", message: { role: "assistant", content: [] }, assistantMessageEvent: { type: "toolcall_delta", partial: { content: [{ type: "toolCall", id: "x" }] } } };
+  normalizeRustEvent(withMsg);
+  assert.deepEqual(withMsg.message.content, []); // pre-existing message wins
+  const noPartial: any = { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi" } };
+  normalizeRustEvent(noPartial);
+  assert.equal("message" in noPartial, false); // nothing to mirror
+});
+
 test("tool_execution_end: null result is deleted", () => {
   const e: any = { type: "tool_execution_end", toolName: "write", result: null };
   normalizeRustEvent(e);

@@ -41,8 +41,19 @@ export function normalizeRustEvent(event: RustEvent): void {
       }
       break;
     case "message_update": {
-      const d = r.assistantMessageEvent as { type?: string; delta?: unknown } | undefined;
+      const d = r.assistantMessageEvent as { type?: string; delta?: unknown; partial?: { content?: unknown } } | undefined;
       if (d && (d.type === "text_delta" || d.type === "thinking_delta") && nil(d.delta)) { d.delta = ""; }
+      // rust-pi carries the growing assistant snapshot on the streaming event's `partial`
+      // field (an AssistantMessage — which serializes `content` but NO `role`), whereas the
+      // TS SDK delivers it as a top-level `message`. translateAgentEvent's tool-call preview
+      // reads `event.message.content`, so mirror `partial` → `message` (stamping role) when a
+      // message isn't already present. This is what streams tool-call arguments live under
+      // Rust (the client side of upstream #124); without it a large write shows only a spinner
+      // until it completes. Harmless for text/thinking deltas (their partial carries no
+      // toolCall blocks, so the preview extraction is a no-op).
+      if (nil(r.message) && d?.partial && Array.isArray(d.partial.content)) {
+        r.message = { role: "assistant", content: d.partial.content };
+      }
       break;
     }
     case "message_end": {
