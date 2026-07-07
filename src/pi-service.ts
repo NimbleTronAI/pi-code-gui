@@ -20,6 +20,7 @@ import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessag
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools } from "./rust-deps.js";
+import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
 import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
 
 export interface InstallStatus {
@@ -1067,6 +1068,22 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
     if (!this.backend) { throw new Error(this._backendKind === "rust" ? "Rust Pi session not initialized" : "Pi session not initialized"); }
+
+    // Dispatch trace (debug-level): mode + the streaming state the decision keys off.
+    // Enable the "Pi Code Gui" output channel's Debug level to capture this — it's how
+    // we pin the trigger of a preempting dispatch (see prompt-guard.ts).
+    piDebug(`sendPrompt runtime=${this._backendKind} mode=${mode ?? "prompt"} agentRunActive=${this._agentRunActive} streaming=${this._isStreaming} len=${text.length}`);
+
+    // Never let a mode-less conversational prompt preempt an in-flight turn: a real
+    // mid-stream follow-up arrives as steer/queue, so this is a stale/duplicate dispatch
+    // that on Rust forks the session from root and orphans + double-bills the live run.
+    // Drop it and log the call site so the (still-unconfirmed) trigger is captured.
+    if (shouldDropPreemptingPrompt(mode, this._agentRunActive, text)) {
+      piWarn(`Dropped a fresh prompt that would preempt an in-flight turn (runtime=${this._backendKind}, streaming=${this._isStreaming}). A mid-stream follow-up should arrive as steer/queue — a mode-less prompt here is a stale/duplicate dispatch. Text: ${JSON.stringify(text.slice(0, 80))}`);
+      piDebug(`Preempting-prompt call site:\n${new Error("preempting-prompt dispatch").stack}`);
+      this.emit({ type: "custom-message", data: { customType: "info", content: "Ignored a duplicate prompt that arrived while the current turn was still running.", timestamp: Date.now() } });
+      return;
+    }
 
     // Runtimes that own their own slash handling (Rust: capabilities.interceptSlashCommands
     // = false) take the raw turn — no interception, no vision auto-switch; the binary
