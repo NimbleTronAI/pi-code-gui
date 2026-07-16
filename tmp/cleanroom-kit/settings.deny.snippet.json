@@ -1,0 +1,29 @@
+{
+  "$comment": [
+    "Fold the permissions.deny array into your agent-config file. For Claude Code",
+    "that file is .claude/settings.json (project-scoped, committed).",
+    "",
+    "These Read() rules forbid the agent from opening the source of pi_agent_rust /",
+    "asupersync / franken-*. Claude Code is an Anthropic surface; the OpenAI/Anthropic",
+    "Rider states the Software and derivatives may not be made available to Anthropic,",
+    "so the source must not enter the agent context.",
+    "",
+    "PATH SHAPE (Rust/cargo): the leading double-slash is deliberate — Claude Code",
+    "Read() globs match absolute paths, and //home/... anchors the rule to the on-disk",
+    "cargo git checkout + registry sources. Replace USER with the ~/.cargo home dir.",
+    "",
+    "github.com/earendil-works/pi (the MIT ancestor) carries no rider and is not denied.",
+    "",
+    "Presence of these rules is gated by scripts/check-cleanroom.sh (pre-commit + CI);",
+    "removing a rule fails the commit."
+  ],
+  "permissions": {
+    "deny": [
+      "Read(//home/USER/.cargo/git/checkouts/pi_agent_rust*/**)",
+      "Read(//home/USER/.cargo/registry/src/**/asupersync-*/**)",
+      "Read(//home/USER/.cargo/registry/src/**/franken-decision-*/**)",
+      "Read(//home/USER/.cargo/registry/src/**/franken-evidence-*/**)",
+      "Read(//home/USER/.cargo/registry/src/**/franken-kernel-*/**)"
+    ]
+  }
+}
