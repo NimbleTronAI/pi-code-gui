@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "Source clean-room wall for pi_agent_rust's 'MIT + OpenAI/Anthropic Rider' license:",
+    "the Software and derivatives may not be made available to a Restricted Party",
+    "(OpenAI/Anthropic, affiliates/agents). Claude Code is an Anthropic surface, so the",
+    "source of pi_agent_rust / asupersync / franken-* must never enter agent context.",
+    "",
+    "Read() rules cover every on-disk shape the source can take: any checkout/clone of",
+    "pi_agent_rust (the leading **/ matches a clone anywhere), the cargo git checkout,",
+    "and the cargo registry sources of the restricted runtime deps. The WebFetch deny",
+    "blocks raw.githubusercontent.com (the raw-source fetch channel); GitHub *issue*",
+    "pages (prose) stay readable. The Bash PreToolUse hook closes the cat/grep/git-show",
+    "channel Read() rules do not cover. The MIT ancestor github.com/earendil-works/pi",
+    "carries no rider and is deliberately NOT denied.",
+    "",
+    "Presence of these rules is gated by scripts/check-cleanroom.sh (pretest/package +",
+    "the committed .githooks/pre-commit); removing a rule fails the commit. See the",
+    "'pi clean-room' section of AGENTS.md."
+  ],
+  "permissions": {
+    "deny": [
+      "Read(**/pi_agent_rust*/**)",
+      "Read(//home/node/.cargo/git/checkouts/pi_agent_rust*/**)",
+      "Read(//home/node/.cargo/registry/src/**/asupersync-*/**)",
+      "Read(//home/node/.cargo/registry/src/**/franken-decision-*/**)",
+      "Read(//home/node/.cargo/registry/src/**/franken-evidence-*/**)",
+      "Read(//home/node/.cargo/registry/src/**/franken-kernel-*/**)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hook-cleanroom-bash.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

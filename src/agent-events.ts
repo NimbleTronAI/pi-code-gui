@@ -76,8 +76,9 @@ export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | 
  * progress a `tool-update` preview shows — or null when there's nothing meaningful to
  * render yet, so the caller skips the frame.
  *
- * rust-pi >= the #124 fix (commit b45e61dd) grows the tool-call `arguments` field as
- * deltas stream in, instead of leaving it null until the JSON is complete. That partial
+ * rust-pi with the upstream #124 fix (released in v0.1.22) grows the tool-call
+ * `arguments` field as deltas stream in, instead of leaving it null until the JSON is
+ * complete (verified from raw `--mode rpc` captures of both binaries). That partial
  * value can arrive as a partially-parsed OBJECT or, defensively, a raw partial-JSON
  * STRING; both are rendered as-is. null / undefined / empty-string / empty-`{}` return
  * null so a preview never flashes a literal "null" or a blank "{}" (the pre-fix binary

@@ -49,6 +49,34 @@ Install locally: `code --install-extension pi-code-gui-*.vsix --force`.
 Publishes to VS Code Marketplace (`vsce publish`) and Open VSX (`ovsx publish`).
 Requires the `marketplace` environment with reviewer gates.
 
+## pi clean-room — license law
+
+Do not read, fetch, paste, or reference the source of `pi_agent_rust` and its restricted
+runtime deps `asupersync`, `franken-decision`, `franken-evidence`, `franken-kernel` into
+any agent context — **by any channel**: the Read tool, Bash (`cat`/`grep`/`sed`/`git
+show`/`git log -p` on a checkout), or WebFetch of the repo's source/blob/raw/commit
+pages. That covers local clones (e.g. a `~/pi_agent_rust` checkout), the `~/.cargo`
+checkout/registry copies, and fork diffs (a fork's diff of restricted source is a
+derivative work — same rule). These crates ship under "MIT + OpenAI/Anthropic Rider":
+the Software and derivatives may not be made available to a Restricted Party (OpenAI,
+Anthropic, their affiliates/agents), and Claude Code is an Anthropic surface — content
+read into it is provided to Anthropic.
+
+Work black-box instead: drive `pi --mode rpc` and capture its stdout (wire probes are
+the established pattern), read its version/`--help` output, read its GitHub *issues*
+(prose), and keep our own API notes in `agent-wiki/`. Reading the binary's observable
+behavior is fine; reading its source is not.
+
+`github.com/earendil-works/pi` (plain MIT © 2025 Mario Zechner) is the ancestor
+`pi_agent_rust` was ported from. It carries no rider and MAY be read and fetched freely
+as a clean-room reference. If you port ancestor code verbatim, carry its LICENSE note in
+the module header + a NOTICE entry.
+
+Enforced, not just prose: `permissions.deny` Read()/WebFetch rules + a Bash PreToolUse
+hook in `.claude/settings.json`, and `scripts/check-cleanroom.sh` (+ `-smoke.sh`) at
+pre-commit (`.githooks/`), `pretest`, and `package`. Removing a deny rule fails the
+commit.
+
 ## Tool discipline
 
 Raw bash for dev-loop (build, test, lint). VS Code extension publishing is
@@ -173,3 +201,4 @@ you name the next action.
 | How TDD works here | `agent-wiki/discipline/tdd.md` |
 | How the wiki is maintained | `agent-wiki/discipline/wiki-maintenance.md` |
 | Wiki change log | `agent-wiki/log.md` |
+| Why rust-pi source is off-limits (license wall) | `AGENTS.md` §"pi clean-room" + `scripts/check-cleanroom.sh` |

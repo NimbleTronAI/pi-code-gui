@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Committed pre-commit hook. Activate per clone with:
+#   git config core.hooksPath .githooks
+# (documented in AGENTS.md; CI re-runs the same gate via pretest/package, so a
+# commit made with --no-verify or without hooksPath set cannot sneak past.)
+set -euo pipefail
+
+echo "==> pre-commit: source clean-room wall (deny rules present + no source-path refs) + smoke"
+bash scripts/check-cleanroom.sh
+bash scripts/check-cleanroom-smoke.sh
