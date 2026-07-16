@@ -315,6 +315,22 @@ To package a `.vsix`:
 pnpm run vsix         # Creates pi-code-gui-x.x.x.vsix
 ```
 
+## Contributing
+
+Activate the repo's pre-commit checks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+**Rust-runtime clean-room rule.** `pi_agent_rust` (and its runtime deps `asupersync` / `franken-*`) ships under an MIT license **with an OpenAI/Anthropic rider**: its source and derivative works may not be made available to those parties. What that means for contributions here:
+
+- **Don't read or paste that source into AI coding assistants** (Claude Code, Copilot, Cursor, …) while working on this repo — AI surfaces route content to those vendors — and don't port its code into PRs.
+- **Work black-box:** this extension integrates with the released *binary* over its `--mode rpc` protocol; observed wire behavior, `--version`/`--help` output, and the upstream *issue tracker* are the reference material. The plain-MIT ancestor [earendil-works/pi](https://github.com/earendil-works/pi) may be read freely.
+- **The gate is not a bug:** `scripts/check-cleanroom.sh` runs at pre-commit and inside the packaging pipeline. If it fails your commit, a file references restricted source paths — fix the reference rather than reaching for `--no-verify` (CI runs the same gate).
+
+The full rule lives in `AGENTS.md` §"pi clean-room — license law".
+
 ## Credits
 
 Pi Code Gui is a GUI shell around two independent upstream agents — all the hard agent work lives in them:
