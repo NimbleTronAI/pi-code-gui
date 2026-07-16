@@ -115,6 +115,11 @@ bypass VS Code's buffer tracking and cause dirty-state mismatches.
    auto-cleaned).
 3. API keys never leave the extension — they're in-memory runtime overrides
    or the system keychain, never written to project files.
+4. **All agent memory is repo-scoped**: AGENTS.md for law/protocol, the wiki
+   for knowledge. Do NOT maintain assistant-private memory layers (Claude
+   auto-memory files, a CLAUDE.md, tool-local notes) — they fork the source of
+   truth, are invisible to other contributors/tools, and don't survive
+   environment changes. Anything worth remembering goes here or in the wiki.
 
 ## Wiki conventions
 

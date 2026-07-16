@@ -42,7 +42,7 @@ SETTINGS=${CLEANROOM_SETTINGS_PATH:-".claude/settings.json"}
 
 # Where to scan for live references, and which paths are exempt (decision record,
 # wiki log/archive, and this wall's own scripts — they legitimately name the shapes).
-SCAN_ROOTS=(src scripts media agent-wiki AGENTS.md CLAUDE.md README.md)
+SCAN_ROOTS=(src scripts media agent-wiki AGENTS.md README.md)
 EXEMPT_GLOBS=(
   '!agent-wiki/log.md'
   '!agent-wiki/archive/**'
