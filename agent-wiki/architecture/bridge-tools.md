@@ -64,13 +64,14 @@ toggled via `setActiveTools`. PiService exposes this through:
 - **`/tools` slash command** — opens a grouped checkbox QuickPick (Built-in,
   VS Code Bridge, Extension) pre-populated from the current active tool set.
   Uses `canPickMany: true` for multi-select, reports `+N/-N` diffs.
-- **Session persistence** — active tool selection is persisted to the session
-  `.jsonl` as `tools_active_change` entries, matching the pattern used by
-  `model_change` and `thinking_level_change`. Restored on session resume.
-- **`PiService.setActiveTools()`** — programmatic entry point, delegates to
-  `session.setActiveToolsByName()`, triggers `_forcePersistEntry`.
+- **Session persistence** — active tool selection is persisted through the SDK's
+  `SessionManager.appendCustomEntry()` as a `pi-code-gui.active-tools` custom
+  entry. Resume also accepts legacy `tools_active_change` entries.
+- **`PiService.setActiveTools()`** — programmatic entry point, delegates runtime
+  activation to `session.setActiveToolsByName()` and persistence to the session
+  manager. It never appends directly to the `.jsonl` file.
 
 The older static `pi-code-gui.tools` VS Code setting has been removed in favor
 of runtime-per-session control.
 
-> **Last updated:** 2026-05-27 — corrected tool count (16, not 17), removed duplicate table row
+> **Last updated:** 2026-07-19 — moved active-tool persistence to SessionManager custom entries with legacy restore compatibility

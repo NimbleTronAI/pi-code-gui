@@ -1782,27 +1782,12 @@ export class PiService {
     this.reportStatus();
   }
 
-  /** Write a session entry directly to the session file, bypassing SDK _persist quirks. */
-  private _forcePersistEntry(entry: Record<string, unknown>): void {
-    const sf = this.sessionManager?.getSessionFile?.();
-    if (!sf) {
-      piWarn("_forcePersistEntry: no session file");
-      return;
-    }
-    try {
-      fs.appendFileSync(sf, JSON.stringify(entry) + "\n");
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      piWarn(`_forcePersistEntry failed: ${e.message}`);
-    }
-  }
-
   async setModel(provider: string, modelId: string): Promise<void> {
     if (!this.session || !this.AI) {
       piWarn(`setModel("${provider}/${modelId}") ignored: session not initialized`);
       return;
     }
-    // Try registry first, then fall back to getModel
+    // Try registry first, then fall back to pi-ai's model catalog.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let model: any = null;
     if (this.modelRegistry) {
@@ -1816,15 +1801,7 @@ export class PiService {
       this._model = { id: modelId, provider };
       this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
       if (this.cycleIndex === -1) { this.cycleIndex = 0; }
-      // Force-persist the model change so it survives session close/reopen
-      this._forcePersistEntry({
-        type: "model_change",
-        id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        parentId: null,
-        timestamp: new Date().toISOString(),
-        provider,
-        modelId,
-      });
+      // session.setModel() delegates persistence to the SDK SessionManager.
       this.reportStatus();
     }
   }
@@ -1862,14 +1839,7 @@ export class PiService {
     this.session.setThinkingLevel(level);
     this._thinkingLevel = level;
     this.reportStatus();
-    // Force-persist the thinking change so it survives session close/reopen
-    this._forcePersistEntry({
-      type: "thinking_level_change",
-      id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      parentId: null,
-      timestamp: new Date().toISOString(),
-      thinkingLevel: level,
-    });
+    // session.setThinkingLevel() delegates persistence to the SDK SessionManager.
   }
 
   // ── Default model / thinking persistence ──────────────
@@ -2277,26 +2247,31 @@ export class PiService {
     // Verify the update took effect
     const actualNames = this.session.getActiveToolNames();
     piLog(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
-    // Force-persist the tool selection so it survives session close/reopen
-    this._forcePersistEntry({
-      type: "tools_active_change",
-      id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      parentId: null,
-      timestamp: new Date().toISOString(),
-      toolNames,
-    });
+    // Use the SessionManager API so fresh-session header creation and tree
+    // bookkeeping stay under SDK control. Raw appends can create a headerless
+    // file before the SDK's first flush, causing EEXIST on the first response.
+    if (typeof this.sessionManager?.appendCustomEntry === "function") {
+      this.sessionManager.appendCustomEntry("pi-code-gui.active-tools", { toolNames });
+    } else {
+      piWarn("setActiveTools: SessionManager.appendCustomEntry unavailable; selection will not persist");
+    }
     piLog(`setActiveTools: ${toolNames.length} tools active`);
   }
 
-  /** Walk session entries in reverse to find and apply the last tools_active_change. */
+  /** Restore the latest active-tool selection, including the legacy raw entry format. */
   private _restoreActiveToolsFromSession(): void {
     const entries = this.sessionManager?.getEntries?.() ?? [];
     if (!entries.length) { return; }
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
-      if (e.type === "tools_active_change" && Array.isArray(e.toolNames) && e.toolNames.length > 0) {
-        this.session.setActiveToolsByName(e.toolNames);
-        piLog(`Restored active tools from session: ${e.toolNames.join(", ")}`);
+      const toolNames = e.type === "custom" && e.customType === "pi-code-gui.active-tools"
+        ? e.data?.toolNames
+        : e.type === "tools_active_change"
+          ? e.toolNames
+          : undefined;
+      if (Array.isArray(toolNames) && toolNames.every((name) => typeof name === "string")) {
+        this.session.setActiveToolsByName(toolNames);
+        piLog(`Restored active tools from session: ${toolNames.join(", ") || "(none)"}`);
         return;
       }
     }
