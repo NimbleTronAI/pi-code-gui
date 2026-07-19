@@ -5,6 +5,8 @@ starts with `## [YYYY-MM-DD] <action> | <description>`. Actions:
 `ingest` (new page), `update` (existing page changed), `lint` (quality
 pass performed), `archive` (page moved to archive).
 
+## [2026-07-19] update | PiService and SDK initialization — migrated to ModelRuntime and loaded extension providers before default-model resolution
+
 ## [2026-07-19] update | PiService and Bridge Tools — delegated session persistence to SessionManager APIs to prevent headerless files and first-response EEXIST failures
 
 ## [2026-05-27] lint | Full wiki + README audit — bridge-tools (16 tools, not 17; dedup table row), syntax-highlighting (15 languages, +yaml/sql/diff), tree-views (progressive load, entry caching, state-change refresh), event-translation (turn-end, message_update error, user message_end), streaming-pipeline (progressive replay), README (16 tools)

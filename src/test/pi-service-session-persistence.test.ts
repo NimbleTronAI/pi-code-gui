@@ -21,7 +21,7 @@ suite("PiService session persistence", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
     const service = new PiService() as any;
 
-    service.AI = {
+    service.modelRuntime = {
       getModel: (provider: string, id: string) =>
         provider === model.provider && id === model.id ? model : undefined,
     };

@@ -12,8 +12,8 @@ management, and usage stat tracking.
 
 The Pi SDK is loaded dynamically at runtime from the user's global npm install
 — it is not bundled with the extension. PiService encapsulates the full lifecycle:
-finding the SDK on disk (`resolvePiPackagePath`), importing modules (`PiSdk`,
-`PiAi`), configuring auth/model-registry/session-manager, building custom tools
+finding the SDK on disk (`resolvePiPackagePath`), importing the coding-agent
+module, configuring `ModelRuntime`/model-registry/session-manager, building custom tools
 (via `bridge-tools.ts`), creating the agent session, subscribing to events, and
 cleaning up on disposal.
 
@@ -27,10 +27,19 @@ independently, leading to duplicated init logic and inconsistent error handling.
 - **Install check** (`PiService.checkInstall`) — static method that verifies
   the SDK and its critical transitive dependencies (openai, @anthropic-ai/sdk)
   are actually installed.
-- **Session init** (`initialize`) — 11-step async sequence: resolve SDK, load
-  modules, setup auth/registry, pick model, build tools, create session manager,
-  restore model/thinking from session file, create agent session, subscribe to
-  events, bind extensions, send initial message history.
+- **Session init** (`initialize`) — async sequence: resolve SDK, load the SDK,
+  create runtime services, load provider extensions, pick a model, build tools,
+  create a session manager, restore model/thinking from the session file, create
+  the agent session, subscribe to events, bind extensions, and send history.
+  SDK 0.80's `createAgentSessionServices()` and
+  `createAgentSessionFromServices()` enforce this two-phase order so dynamic
+  providers are registered before defaults are resolved. New sessions prefer
+  the Pi Code Gui default, then Pi's SettingsManager default, then the first
+  available model.
+- **Model runtime compatibility** (`src/pi-model-runtime.ts`) — centralizes model
+  lookup, scoped-model construction, and lightweight completion on the canonical
+  `ModelRuntime` API. Pi SDK 0.80 removed root `pi-ai.getModel()` and
+  `pi-ai.complete()` exports, so PiService must not call those legacy globals.
 - **Event emission** (`onEvent` / `emit`) — observer pattern: listeners (webview
   panel, extension commands) subscribe to typed `PiServiceEvent` emissions.
 - **User actions** — `sendPrompt`, `abort`, `cycleModel`, `setThinkingLevel`,
@@ -45,10 +54,14 @@ independently, leading to duplicated init logic and inconsistent error handling.
   expose the SDK's tool registry/activation for per-session control. The
   `pickActiveTools()` method (bound to `/tools`) opens a grouped checkbox
   QuickPick (Built-in, VS Code Bridge, Extension) pre-populated from the
-  current active set. Selection persists to the session file as
-  `tools_active_change` entries and restores on resume. The older static
-  `pi-code-gui.tools` VS Code settings allowlist has been removed in favor
-  of runtime-per-session control.
+  current active set. Selection persists through
+  `SessionManager.appendCustomEntry("pi-code-gui.active-tools", ...)` and
+  restores on resume, with read compatibility for legacy
+  `tools_active_change` entries. Model and thinking changes likewise rely on
+  SDK session APIs; PiService never appends directly to a `.jsonl` file, so a
+  fresh session cannot be created without its required header. The older static
+  `pi-code-gui.tools` VS Code settings allowlist has been removed in favor of
+  runtime-per-session control.
 - **Session listing** (`PiService.listSessions`, `PiService.deleteSessionFile`) —
   static methods for the Past Sessions tree view.
 
@@ -58,4 +71,4 @@ independently, leading to duplicated init logic and inconsistent error handling.
 - [Event Translation](event-translation.md) — how SDK events become PiServiceEvent types
 - [SDK Resolution & Init](../operations/sdk-resolution.md) — detailed walkthrough of the init sequence
 
-> **Last updated:** 2026-05-27 — progressive replay in sendInitialMessages, removed _activeToolNames field
+> **Last updated:** 2026-07-19 — adopted two-phase SDK service creation so dynamic-provider defaults resolve correctly

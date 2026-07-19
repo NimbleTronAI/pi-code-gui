@@ -1,7 +1,9 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
+import { buildScopedModels, completeWithModelRuntime, getRuntimeModel, selectInitialModel } from "./pi-model-runtime.js";
 import { type PiServiceEvent, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
 
@@ -25,7 +27,10 @@ async function importWithRetry(
 ): Promise<any> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await import(modulePath);
+      const target = process.platform === "win32"
+        ? pathToFileURL(modulePath).href
+        : modulePath;
+      return await import(target);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       if (attempt === maxAttempts) { throw e; }
@@ -39,10 +44,11 @@ async function importWithRetry(
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- dynamically imported SDK; types unavailable at compile time */
 interface PiSdk {
-  createAgentSession: Function;
+  createAgentSessionFromServices: Function;
+  createAgentSessionServices: Function;
   SessionManager: any;
   SettingsManager: any;
-  AuthStorage: any;
+  ModelRuntime: any;
   ModelRegistry: any;
   createCodingTools: Function;
   createReadOnlyTools: Function;
@@ -50,12 +56,6 @@ interface PiSdk {
   defineTool: Function;
   getAgentDir: Function;
   createSyntheticSourceInfo: Function;
-}
-
-interface PiAi {
-  getModel: Function;
-  getProviders: Function;
-  complete: Function;
 }
 
 export interface InstallStatus {
@@ -91,6 +91,8 @@ export function resolvePiPackagePath(): string {
     candidates.add(path.join(prefix, "lib", pkgSuffix));
     if (process.platform === "win32") {
       candidates.add(path.join(prefix, pkgSuffix));
+      // nvm4w: PATH entry IS the node dir containing node_modules directly
+      candidates.add(path.join(normBin, pkgSuffix));
     }
   }
 
@@ -305,8 +307,7 @@ export class PiService {
   // SDK instances (loaded at init time)
   /* eslint-disable @typescript-eslint/no-explicit-any -- SDK objects are dynamically typed */
   private SDK: PiSdk | null = null;
-  private AI: PiAi | null = null;
-  private authStorage: any = null;
+  private modelRuntime: any = null;
   private modelRegistry: any = null;
   private settingsManager: any = null;
   private sessionManager: any = null;
@@ -475,28 +476,6 @@ export class PiService {
       return { success: false, error: `Failed to load pi-coding-agent: ${e.message ?? e}` };
     }
 
-    try {
-      this.AI = (await importWithRetry(
-        path.join(this._piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"), 5, 500
-      )) as PiAi;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      const msg = e.message ?? String(e);
-      // Detect common missing-dependency patterns caused by broken npm global
-      // installs and give a specific fix instruction.
-      const openaiMatch = msg.match(/openai\/index\.js/);
-      const anthroMatch = msg.match(/@anthropic-ai\/sdk/);
-      if (openaiMatch || anthroMatch) {
-        return {
-          success: false,
-          error:
-            `Missing dependency (${openaiMatch ? "openai" : "@anthropic-ai/sdk"}). ` +
-            `This is usually caused by a broken npm global install. ` +
-            `Fix: npm uninstall -g @earendil-works/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent`,
-        };
-      }
-      return { success: false, error: `Failed to load pi-ai: ${msg}` };
-    }
     // Load typebox for defineTool usage (with retry — npm install may still
     // be populating node_modules when the extension host first activates).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -516,64 +495,80 @@ export class PiService {
     const SDK = this.SDK;
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
-    // ── Step 3: Auth & model registry ──────────────────
+    // ── Step 3: Runtime settings and SDK services ──────
+    // Provider extensions must be loaded before resolving defaults. In SDK 0.80
+    // createAgentSessionServices() applies pending registerProvider() calls and
+    // refreshes ModelRuntime before returning.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let services: any;
     try {
-      this.authStorage = SDK.AuthStorage.create();
+      this.modelRuntime = await SDK.ModelRuntime.create();
 
       // Runtime API key override from VS Code secrets or env
       const config = vscode.workspace.getConfiguration("pi-code-gui");
       const anthropicKey = config.get<string>("anthropicApiKey");
       if (anthropicKey) {
-        this.authStorage.setRuntimeApiKey("anthropic", anthropicKey);
+        await this.modelRuntime.setRuntimeApiKey("anthropic", anthropicKey);
       }
       const openaiKey = config.get<string>("openaiApiKey");
       if (openaiKey) {
-        this.authStorage.setRuntimeApiKey("openai", openaiKey);
+        await this.modelRuntime.setRuntimeApiKey("openai", openaiKey);
       }
 
-      this.modelRegistry = SDK.ModelRegistry.create(this.authStorage);
       this.settingsManager = SDK.SettingsManager.create(cwd);
+      const contextFiles = buildContextFiles(cwd);
+      const templates = buildPromptTemplates(SDK.createSyntheticSourceInfo);
+      services = await SDK.createAgentSessionServices({
+        cwd,
+        modelRuntime: this.modelRuntime,
+        settingsManager: this.settingsManager,
+        resourceLoaderOptions: {
+          systemPromptOverride: () => buildSystemPrompt(),
+          appendSystemPromptOverride: () => [],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+          agentsFilesOverride: (current: any) => ({
+            agentsFiles: [...current.agentsFiles, ...contextFiles],
+          }),
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+          promptsOverride: (current: any) => ({
+            prompts: [...current.prompts, ...templates],
+            diagnostics: current.diagnostics,
+          }),
+        },
+      });
+      this.modelRuntime = services.modelRuntime;
+      this.settingsManager = services.settingsManager;
+      this.resourceLoader = services.resourceLoader;
+      this.modelRegistry = new SDK.ModelRegistry(this.modelRuntime);
+      for (const diagnostic of services.diagnostics ?? []) {
+        const message = `SDK service ${diagnostic.type}: ${diagnostic.message}`;
+        diagnostic.type === "error" ? piWarn(message) : piLog(message);
+      }
+      const { skills: discoveredSkills } = this.resourceLoader.getSkills();
+      piLog(`Extensions: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
-      return { success: false, error: `Auth/registry setup failed: ${e.message ?? e}` };
+      return { success: false, error: `Runtime service setup failed: ${e.message ?? e}` };
     }
 
-    // ── Step 4: Pick a model (dynamic from registry) ──
-    const AI = this.AI;
+    // ── Step 4: Pick a model after providers are registered ──
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let model: any = null;
+    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
     try {
-      // Try registry first (respects API keys)
-      const available = await this.modelRegistry.getAvailable();
-      if (available.length > 0) {
-        model = available[0];
+      const available = await this.modelRuntime.getAvailable();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.cycleModels = available.map((m: any) => ({ provider: m.provider, id: m.id }));
-      } else {
-        // Fallback: try built-in models via modelRegistry.find() and getModel()
-        this.cycleModels = [];
-        for (const candidate of [
-          ["anthropic", "claude-sonnet-4-5"],
-          ["anthropic", "claude-haiku-4-5"],
-          ["openai", "gpt-4o"],
-        ]) {
-          const found = this.modelRegistry.find(candidate[0], candidate[1]);
-          if (found) {
-            this.cycleModels.push({ provider: candidate[0], id: candidate[1] });
-            if (!model) { model = found; }
-          }
-        }
-        // Try getModel for models not in registry but built-in
-        if (!model) {
-          for (const candidate of [
-            ["anthropic", "claude-sonnet-4-5"],
-            ["anthropic", "claude-haiku-4-5"],
-            ["openai", "gpt-4o"],
-          ]) {
-            const m = AI.getModel(candidate[0], candidate[1]);
-            if (m) { model = m; break; }
-          }
-        }
+      this.cycleModels = available.map((m: any) => ({ provider: m.provider, id: m.id }));
+      const defProvider = cfg.get<string>("defaultModelProvider")?.trim();
+      const defModelId = cfg.get<string>("defaultModelId")?.trim();
+      const piProvider = this.settingsManager.getDefaultProvider?.();
+      const piModelId = this.settingsManager.getDefaultModel?.();
+      model = selectInitialModel(this.modelRuntime, available, {
+        guiDefault: defProvider && defModelId ? { provider: defProvider, id: defModelId } : undefined,
+        piDefault: piProvider && piModelId ? { provider: piProvider, id: piModelId } : undefined,
+      });
+      if (defProvider && defModelId && (model?.provider !== defProvider || model?.id !== defModelId)) {
+        piWarn(`Configured GUI default model is unavailable: ${defProvider}/${defModelId}`);
       }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -583,64 +578,16 @@ export class PiService {
     if (!model) {
       return {
         success: false,
-        error: "No model available. Set an API key (e.g. ANTHROPIC_API_KEY) and restart.",
+        error: "No model available. Configure a provider/API key and restart.",
       };
     }
 
-    // ── Override with user's default model from VS Code settings ──
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    const defProvider = cfg.get<string>("defaultModelProvider");
-    const defModelId = cfg.get<string>("defaultModelId");
-    if (defProvider && defModelId) {
-      const defModel = this.modelRegistry.find(defProvider, defModelId) ?? AI.getModel(defProvider, defModelId);
-      if (defModel) { model = defModel; }
-    }
-
-    // ── Override context budget from VS Code settings ──
     const contextBudget = cfg.get<number>("contextBudget") ?? 0;
     if (contextBudget > 0) {
       model = { ...model, contextWindow: contextBudget };
     }
-
     this._model = { id: model.id, name: model.name, provider: model.provider };
-
-    // ── Step 5: ResourceLoader ─────────────────────────
-    // Builds custom system prompt, skills, context files, and prompt templates
-    try {
-      const DefaultResourceLoader = SDK.DefaultResourceLoader;
-      const getAgentDir = SDK.getAgentDir;
-
-      const contextFiles = buildContextFiles(cwd);
-      const templates = buildPromptTemplates(SDK.createSyntheticSourceInfo);
-
-      this.resourceLoader = new DefaultResourceLoader({
-        cwd,
-        agentDir: getAgentDir ? getAgentDir() : undefined,
-        // Custom system prompt with VS Code context
-        systemPromptOverride: () => buildSystemPrompt(),
-        // Prevent DefaultResourceLoader from appending default append files
-        appendSystemPromptOverride: () => [],
-        // Inject virtual context files with project-specific guidelines
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        agentsFilesOverride: (current: any) => ({
-          agentsFiles: [...current.agentsFiles, ...contextFiles],
-        }),
-        // Inject custom slash commands
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        promptsOverride: (current: any) => ({
-          prompts: [...current.prompts, ...templates],
-          diagnostics: current.diagnostics,
-        }),
-      });
-      await this.resourceLoader.reload();
-
-      // Report discovered resources
-      const { skills: discoveredSkills } = this.resourceLoader.getSkills();
-      piLog(`Extensions: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
-    } catch (e: unknown) {
-      piWarn(`ResourceLoader setup warning: ${e instanceof Error ? e.message : String(e)}`);
-      // Non-fatal: ResourceLoader is optional, session can work without it
-    }
+    piLog(`Initial model: ${model.provider}/${model.id}`);
 
     // ── Step 6: Session tools ──────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -699,8 +646,8 @@ export class PiService {
               foundSessionModel = true;
               piLog(`Restored model from session: ${e.provider}/${e.modelId}`);
             } else {
-              // Fallback: try getModel
-              const m = AI.getModel(e.provider, e.modelId);
+              // Fallback: resolve through the canonical model runtime.
+              const m = getRuntimeModel(this.modelRuntime, e.provider, e.modelId);
               if (m) {
                 resumeModel = m;
                 foundSessionModel = true;
@@ -731,28 +678,16 @@ export class PiService {
     try {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const opts: any = {
+        services,
         model: resumeModel,
         thinkingLevel: resumeThinkingLevel,
-        authStorage: this.authStorage,
-        modelRegistry: this.modelRegistry,
-        settingsManager: this.settingsManager,
         sessionManager: this.sessionManager,
         customTools: tools,
-        cwd,
       };
 
       // Scoped models from registry (dynamic)
       if (this.cycleModels.length > 0) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        opts.scopedModels = this.cycleModels.map((m: any) => ({
-          model: AI.getModel(m.provider, m.id),
-          thinkingLevel: "off",
-        }));
-      }
-
-      // ResourceLoader with custom system prompt, context files, templates
-      if (this.resourceLoader) {
-        opts.resourceLoader = this.resourceLoader;
+        opts.scopedModels = buildScopedModels(this.modelRuntime, this.cycleModels);
       }
 
       // Inject before extensions load (SDK may load them during createAgentSession)
@@ -760,10 +695,10 @@ export class PiService {
         this.emit({ type: "registerMessageRenderer", data: { customType, sourceCode } });
       };
 
-      result = await SDK.createAgentSession(opts);
+      result = await SDK.createAgentSessionFromServices(opts);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
-      return { success: false, error: `createAgentSession failed: ${e.message ?? e}` };
+      return { success: false, error: `createAgentSessionFromServices failed: ${e.message ?? e}` };
     }
 
     this.session = result.session;
@@ -1543,9 +1478,9 @@ export class PiService {
 
   /** Find a vision-capable model from the available scoped models. */
   private findVisionModel(): { provider: string; id: string } | null {
-    if (!this.AI) { return null; }
+    if (!this.modelRuntime) { return null; }
     for (const cm of this.cycleModels) {
-      const m = this.AI.getModel(cm.provider, cm.id);
+      const m = getRuntimeModel(this.modelRuntime, cm.provider, cm.id);
       if (m?.input?.includes("image")) {
         return { provider: cm.provider, id: cm.id };
       }
@@ -1783,18 +1718,18 @@ export class PiService {
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
-    if (!this.session || !this.AI) {
+    if (!this.session || !this.modelRuntime) {
       piWarn(`setModel("${provider}/${modelId}") ignored: session not initialized`);
       return;
     }
-    // Try registry first, then fall back to pi-ai's model catalog.
+    // Try the compatibility registry first, then the canonical runtime.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let model: any = null;
     if (this.modelRegistry) {
       model = this.modelRegistry.find(provider, modelId);
     }
     if (!model) {
-      model = this.AI.getModel(provider, modelId);
+      model = getRuntimeModel(this.modelRuntime, provider, modelId);
     }
     if (model) {
       await this.session.setModel(model);
@@ -1807,7 +1742,7 @@ export class PiService {
   }
 
   async cycleModel(): Promise<void> {
-    if (!this.session || !this.AI) {
+    if (!this.session || !this.modelRuntime) {
       vscode.window.showWarningMessage("Pi session not ready yet.");
       return;
     }
@@ -1817,7 +1752,7 @@ export class PiService {
     }
     this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
     const next = this.cycleModels[this.cycleIndex];
-    const model = this.AI.getModel(next.provider, next.id);
+    const model = getRuntimeModel(this.modelRuntime, next.provider, next.id);
     if (model) {
       const prevId = this._model?.id ?? "?";
       await this.session.setModel(model);
@@ -2082,15 +2017,14 @@ export class PiService {
 
   /** Generate a short 3-word tab title summary for the first user input in a session. */
   async generateTabSummary(userInput: string): Promise<string | null> {
-    if (!this.AI || !this._model) { return null; }
+    if (!this.modelRuntime || !this._model) { return null; }
 
     try {
-      const model = this.AI.getModel(this._model.provider, this._model.id);
+      const provider = this._model.provider;
+      const modelId = this._model.id;
+      if (!provider || !modelId) { return null; }
+      const model = getRuntimeModel(this.modelRuntime, provider, modelId);
       if (!model) { return null; }
-
-      const apiKey = this.authStorage
-        ? await this.authStorage.getApiKey(this._model.provider!)
-        : undefined;
 
       const context = {
         systemPrompt: "Generate a concise 3-word summary of the following user request. Respond with ONLY the three words, lowercase, no punctuation, no quotes, no explanation.",
@@ -2099,9 +2033,8 @@ export class PiService {
         ],
       };
 
-      const result = await this.AI.complete(model, context, {
+      const result = await completeWithModelRuntime(this.modelRuntime, model, context, {
         maxTokens: 20,
-        apiKey,
       });
 
       const text = this.extractTextFromContent(result.content);
@@ -2117,8 +2050,8 @@ export class PiService {
 
   /** Set a runtime API key (not persisted to disk) */
   setRuntimeApiKey(provider: string, key: string): void {
-    if (this.authStorage && typeof this.authStorage.setRuntimeApiKey === "function") {
-      this.authStorage.setRuntimeApiKey(provider, key);
+    if (this.modelRuntime && typeof this.modelRuntime.setRuntimeApiKey === "function") {
+      this.modelRuntime.setRuntimeApiKey(provider, key);
     }
   }
 
@@ -2355,7 +2288,7 @@ export class PiService {
    * 4. For API key: prompt for key and save it
    */
   async login(): Promise<void> {
-    if (!this.authStorage || !this.modelRegistry) {
+    if (!this.modelRuntime || !this.modelRegistry) {
       throw new Error("Pi session not initialized");
     }
 
@@ -2407,20 +2340,18 @@ export class PiService {
   private getLoginProviderOptions(
     authType: "oauth" | "api_key",
   ): Array<{ id: string; name: string; authType: string; label: string; description: string }> {
-    const oauthProviders = this.authStorage.getOAuthProviders();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const oauthProviderIds = new Set(oauthProviders.map((p: any) => p.id));
+    const KNOWN_OAUTH_PROVIDERS = ["anthropic", "github-copilot", "openai-codex"];
     const options: Array<{ id: string; name: string; authType: string; label: string; description: string }> = [];
 
     if (authType === "oauth") {
-      // OAuth providers
-      for (const provider of oauthProviders) {
-        const authStatus = this.modelRegistry.getProviderAuthStatus(provider.id);
+      for (const providerId of KNOWN_OAUTH_PROVIDERS) {
+        const displayName = this.modelRegistry.getProviderDisplayName(providerId);
+        const authStatus = this.modelRegistry.getProviderAuthStatus(providerId);
         options.push({
-          id: provider.id,
-          name: provider.name,
+          id: providerId,
+          name: displayName,
           authType: "oauth",
-          label: provider.name,
+          label: displayName,
           description: authStatus?.configured ? "$(check) Already configured" : "",
         });
       }
@@ -2432,8 +2363,7 @@ export class PiService {
         const providerId = model.provider;
         if (seenProviders.has(providerId)) { continue; }
         seenProviders.add(providerId);
-        // Skip providers that only support OAuth
-        if (oauthProviderIds.has(providerId)) { continue; }
+        if (KNOWN_OAUTH_PROVIDERS.includes(providerId)) { continue; }
         const displayName = this.modelRegistry.getProviderDisplayName(providerId);
         const authStatus = this.modelRegistry.getProviderAuthStatus(providerId);
         options.push({
@@ -2492,28 +2422,24 @@ export class PiService {
           const abortController = new AbortController();
           token.onCancellationRequested(() => abortController.abort());
 
-          await this.authStorage.login(providerId, {
+          await this.modelRuntime.login(providerId, "oauth", {
             onAuth: (info: { url: string; instructions?: string }) => {
-              // Open the URL in the browser
               vscode.env.openExternal(vscode.Uri.parse(info.url));
               if (info.instructions) {
                 progress.report({ message: info.instructions });
               }
             },
-            onPrompt: async (prompt: { message: string; placeholder?: string }) => {
-              // Show an input box for the response
-              return vscode.window.showInputBox({
-                prompt: prompt.message,
-                placeHolder: prompt.placeholder,
-                password: true,
+            prompt: async (opts: { message?: string; type?: string }) => {
+              return (await vscode.window.showInputBox({
+                prompt: opts?.message ?? "Enter value",
+                password: opts?.type === "secret",
                 ignoreFocusOut: true,
-              }) ?? "";
+              })) ?? "";
             },
             onProgress: (message: string) => {
               progress.report({ message });
             },
             onManualCodeInput: () => {
-              // For callback-server providers, prompt for manual paste
               return new Promise<string>((resolve, reject) => {
                 token.onCancellationRequested(() => reject(new Error("Login cancelled")));
                 vscode.window
@@ -2535,7 +2461,7 @@ export class PiService {
       );
 
       // Refresh model registry and try to select a model for the provider
-      this.modelRegistry.refresh();
+      await this.modelRegistry.refresh();
       await this.completeLogin(providerId, providerName, "oauth", previousModel);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
@@ -2565,8 +2491,11 @@ export class PiService {
         return; // cancelled
       }
 
-      this.authStorage.set(providerId, { type: "api_key", key: apiKey.trim() });
-      this.modelRegistry.refresh();
+      const trimmedKey = apiKey.trim();
+      await this.modelRuntime.login(providerId, "api_key", {
+        prompt: async () => trimmedKey,
+      });
+      await this.modelRegistry.refresh();
       await this.completeLogin(providerId, providerName, "api_key", previousModel);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
@@ -2586,7 +2515,7 @@ export class PiService {
     const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
 
     // Try to select a default model for the provider if the current model is "unknown"
-    if (this.AI && (!previousModel || previousModel.provider === "unknown")) {
+    if (this.modelRuntime && (!previousModel || previousModel.provider === "unknown")) {
       const availableModels = this.modelRegistry.getAvailable();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const providerModels = availableModels.filter((m: any) => m.provider === providerId);
@@ -2609,21 +2538,20 @@ export class PiService {
    * Mirrors the pi CLI's /logout command.
    */
   async logout(): Promise<void> {
-    if (!this.authStorage || !this.modelRegistry) {
+    if (!this.modelRuntime || !this.modelRegistry) {
       throw new Error("Pi session not initialized");
     }
 
     // Build list of providers that have credentials saved
     const options: Array<{ id: string; name: string; label: string; description: string }> = [];
-    for (const providerId of this.authStorage.list()) {
-      const credential = this.authStorage.get(providerId);
-      if (!credential) { continue; }
-      const displayName = this.modelRegistry.getProviderDisplayName(providerId);
+    const credentials = await this.modelRuntime.listCredentials();
+    for (const entry of credentials) {
+      const displayName = this.modelRegistry.getProviderDisplayName(entry.providerId);
       options.push({
-        id: providerId,
+        id: entry.providerId,
         name: displayName,
         label: displayName,
-        description: credential.type === "oauth" ? "OAuth subscription" : "API key",
+        description: entry.type === "oauth" ? "OAuth subscription" : "API key",
       });
     }
 
@@ -2641,8 +2569,8 @@ export class PiService {
     if (!pick) { return; }
 
     try {
-      this.authStorage.logout(pick.id);
-      this.modelRegistry.refresh();
+      await this.modelRuntime.logout(pick.id);
+      await this.modelRegistry.refresh();
       const message =
         pick.description === "OAuth subscription"
           ? `Logged out of ${pick.name}`
@@ -2676,7 +2604,7 @@ export class PiService {
     this.session = null;
     this.unsubscribe = null;
     this.SDK = null;
-    this.AI = null;
+    this.modelRuntime = null;
     this.resourceLoader = null;
   }
 }

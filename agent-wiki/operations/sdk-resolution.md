@@ -23,27 +23,29 @@ before any chat interaction can begin.
    nvm versions directories, Windows `%APPDATA%/npm`. Returns the first
    directory containing a `package.json`.
 
-2. **Load SDK modules** — Dynamic `import()` of `dist/index.js` (PiSdk)
-   and `node_modules/@earendil-works/pi-ai/dist/index.js` (PiAi). Catches
-   missing dependency errors (openai, @anthropic-ai/sdk) with specific fix
-   instructions.
+2. **Load SDK module** — Dynamic `import()` of `dist/index.js`, using a file URL
+   on Windows so absolute paths work with native ESM. PiService no longer imports
+   the `pi-ai` root module directly because SDK 0.80 removed its legacy global
+   model lookup and completion exports.
 
 3. **Load Typebox** — Dynamic import of `typebox/build/index.mjs` for
    `defineTool()` type schemas.
 
-4. **Auth & model registry** — Create `AuthStorage`, apply runtime API key
-   overrides from VS Code settings, create `ModelRegistry` and `SettingsManager`.
+4. **Runtime services and extensions** — Create `ModelRuntime` and
+   `SettingsManager`, apply runtime API key overrides, then call SDK 0.80's
+   `createAgentSessionServices()`. Its ResourceLoader injects VS Code context and
+   custom prompts, loads package extensions, applies pending provider
+   registrations, and refreshes ModelRuntime before model selection.
 
-5. **Pick a model** — Try `modelRegistry.getAvailable()` first (respects API
-   keys), fall back to `modelRegistry.find()` and `AI.getModel()` for built-in
-   models. Apply user's default model from VS Code settings if configured.
-   Apply context budget override.
+5. **Pick a model** — Resolve defaults only after dynamic providers exist. The
+   priority is Pi Code Gui's configured provider/model, Pi's SettingsManager
+   default, then the first available model. Apply the context budget override.
+   Scoped models are resolved through ModelRuntime with unresolved entries
+   omitted. An unavailable configured GUI default is logged explicitly.
 
-6. **ResourceLoader** — Build custom system prompt with VS Code context,
-   inject virtual context files (`/virtual/vscode-guidelines.md`,
-   `/virtual/project-stack-typescript.md`), register custom slash commands
-   (`/fix-diagnostics`, `/explain-code`, `/refactor`). Reload to discover
-   skills and prompts.
+6. **Resource reporting** — Cache the ResourceLoader returned by the service
+   factory and log its discovered skills and diagnostics. The same coherent
+   service set is reused when creating the AgentSession.
 
 7. **Build tools** — Combine SDK's `createCodingTools()` with bridge tools
    from `createBridgeTools()`.
@@ -51,15 +53,18 @@ before any chat interaction can begin.
 8. **Session manager** — `SessionManager.open()` for explicit path,
    `SessionManager.create()` for fresh sessions, or
    `SessionManager.continueRecent()` for restore. Applies custom `sessionDir`
-   from VS Code settings.
+   from VS Code settings. All subsequent model, thinking, and Pi Code Gui
+   metadata writes go through SessionManager APIs; direct `.jsonl` appends are
+   forbidden because they can create a fresh file before its session header.
 
 9. **Restore model/thinking** — Walk session entries in reverse to find the
    last `model_change` and `thinking_level_change` entries. Resolve model
    against registry.
 
-10. **Create agent session** — `SDK.createAgentSession()` with all
-    configuration: model, thinking level, auth, registry, tools, resource
-    loader, settings manager, session manager, scoped models.
+10. **Create agent session** — `SDK.createAgentSessionFromServices()` with the
+    already-loaded service set, selected model/thinking level, tools, session
+    manager, and resolved scoped models. This prevents provider discovery from
+    occurring after model selection.
 
 11. **Bind extensions & emit history** — Subscribe to agent events, bind
     extension UI context, emit initial message history (with batch-start/end
@@ -78,4 +83,4 @@ Retry, Learn More), and updates the tree view to reflect the failure state.
 - [Session Window](../architecture/session-window.md) — calls initSessionInBackground
 - [Build Pipeline](build-pipeline.md) — how the extension itself is built
 
-> **Last updated:** 2026-05-15 — initial documentation
+> **Last updated:** 2026-07-19 — moved provider loading before default-model resolution using SDK 0.80 service factories
