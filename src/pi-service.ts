@@ -26,6 +26,7 @@ import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
 import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
+import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -1609,12 +1610,7 @@ export class PiService {
   /** Get all configured tools available for selection. */
   getAllTools(): Array<{ name: string; description: string; source: string }> {
     if (!this.session || typeof this.session.getAllTools !== "function") { return []; }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.session.getAllTools().map((t: any) => ({
-      name: t.name,
-      description: t.description ?? "",
-      source: t.sourceInfo?.source ?? "sdk",
-    }));
+    return mapSessionTools(this.session.getAllTools());
   }
 
   /** Get names of currently active tools. */
@@ -1646,15 +1642,10 @@ export class PiService {
 
   /** Walk session entries in reverse to find and apply the last tools_active_change. */
   private _restoreActiveToolsFromSession(): void {
-    const entries = this.sessionManager?.getEntries?.() ?? [];
-    if (!entries.length) { return; }
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i];
-      if (e.type === "tools_active_change" && Array.isArray(e.toolNames) && e.toolNames.length > 0) {
-        this.session.setActiveToolsByName(e.toolNames);
-        piDebug(`Restored active tools from session: ${e.toolNames.join(", ")}`);
-        return;
-      }
+    const toolNames = findLastActiveTools(this.sessionManager?.getEntries?.() ?? []);
+    if (toolNames) {
+      this.session.setActiveToolsByName(toolNames);
+      piDebug(`Restored active tools from session: ${toolNames.join(", ")}`);
     }
   }
 
@@ -1678,30 +1669,13 @@ export class PiService {
     const activeNames = new Set(this.getActiveToolNames());
     piDebug(`pickActiveTools: ${activeNames.size} active tools — ${[...activeNames].join(", ") || "(none)"}`);
 
-    // Group by source for a cleaner pick list
-    const builtinTools = allTools.filter((t) => t.source === "builtin");
-    const bridgeTools = allTools.filter((t) => t.source === "sdk" && t.name.startsWith("vscode_"));
-    const extensionTools = allTools.filter((t) => t.source !== "builtin" && !t.name.startsWith("vscode_"));
-
-    const items: vscode.QuickPickItem[] = [];
-
-    const addGroup = (label: string, tools: typeof allTools): void => {
-      if (tools.length === 0) { return; }
-      const icon = label === "Built-in" ? "tools" : label === "VS Code Bridge" ? "extensions" : "symbol-misc";
-      items.push({ label: `$(${icon}) ${label}`, kind: vscode.QuickPickItemKind.Separator });
-      for (const t of tools) {
-        items.push({
-          label: t.name,
-          description: t.description,
-          detail: t.source,
-          picked: activeNames.has(t.name),
-        });
-      }
-    };
-
-    addGroup("Built-in", builtinTools);
-    addGroup("VS Code Bridge", bridgeTools);
-    addGroup("Extension", extensionTools);
+    // Grouping / picked-state is pure + tested (buildToolPickerRows); map its neutral rows to
+    // vscode QuickPick items here.
+    const items: vscode.QuickPickItem[] = buildToolPickerRows(allTools, activeNames).map((r) =>
+      r.separator
+        ? { label: `$(${r.icon}) ${r.label}`, kind: vscode.QuickPickItemKind.Separator }
+        : { label: r.name, description: r.description, detail: r.source, picked: r.picked },
+    );
 
     const picked = await vscode.window.showQuickPick(items, {
       canPickMany: true,
@@ -1716,15 +1690,7 @@ export class PiService {
       .map((p) => p.label);
 
     this.setActiveTools(selectedNames);
-
-    const added = selectedNames.filter((n) => !activeNames.has(n)).length;
-    const removed = activeNames.size - selectedNames.filter((n) => activeNames.has(n)).length;
-    const parts: string[] = [];
-    if (added > 0) { parts.push(`+${added}`); }
-    if (removed > 0) { parts.push(`-${removed}`); }
-    vscode.window.showInformationMessage(
-      `Tools updated: ${selectedNames.length} active${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`,
-    );
+    vscode.window.showInformationMessage(summarizeToolSelection(activeNames, selectedNames).summary);
 
     return true;
   }
