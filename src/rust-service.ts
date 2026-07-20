@@ -72,8 +72,9 @@ export interface RustHost {
   getAgentRunActive(): boolean;
   setAgentRunActive(v: boolean): void;
   setStreaming(v: boolean): void;
-  getThinkingLevel(): string;
-  setThinkingLevel(level: string): void;
+  /** Level is owned by RustService now; this is the orchestration hook that fires when it
+   *  changes (PiService remembers the last non-off level for the off→on toggle). */
+  rememberReasoning(): void;
   setSessionId(id: string): void;
   getCycleModels(): CycleModel[];
   setCycleModels(list: CycleModel[]): void;
@@ -136,6 +137,8 @@ export class RustService implements PiBackend {
   /** The active model identity — OWNED here (captured from get_state/applyState), read
    *  by PiService via the PiBackend getModel() seam instead of pushed up to a host field. */
   private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
+  /** The active thinking level — OWNED here; PiService reads it via getThinkingLevel(). */
+  private _thinkingLevel = "off";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private entries: any[] = [];
   // Synthetic steer/follow-up queue: rust-pi (0.1.18) never emits queue_update,
@@ -248,7 +251,7 @@ export class RustService implements PiBackend {
       // Continue: built-in models still work; an unresolved model is caught below.
     }
 
-    this.host.setThinkingLevel(thinking);
+    this._thinkingLevel = thinking; this.host.rememberReasoning();
 
     let warning: string | undefined;
     try {
@@ -737,7 +740,7 @@ export class RustService implements PiBackend {
       this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
     }
     const thinking = (d.thinkingLevel ?? d.thinking) as string | undefined;
-    if (typeof thinking === "string") { this.host.setThinkingLevel(thinking); }
+    if (typeof thinking === "string") { this._thinkingLevel = thinking; this.host.rememberReasoning(); }
     if (typeof d.sessionId === "string") { this.host.setSessionId(d.sessionId); }
     // Field names verified against the real binary's get_state response.
     if (typeof d.autoCompactionEnabled === "boolean") { this.host.setAutoCompactionEnabled(d.autoCompactionEnabled); }
@@ -874,13 +877,13 @@ export class RustService implements PiBackend {
    *  reflects the binary's clamp (a non-reasoning model forces "off"). */
   async setThinkingLevel(level: string): Promise<string> {
     const resp = await this.requestOrError(RUST_RPC.setThinkingLevel, { level }, "Could not set thinking level");
-    if (!resp) { return this.host.getThinkingLevel(); }
-    this.host.setThinkingLevel(level);
+    if (!resp) { return this._thinkingLevel; }
+    this._thinkingLevel = level;
     try {
       const st = await this.request(RUST_RPC.getState, {}, 8000);
       if (st?.success) { this.applyState(st.data); }
     } catch { /* keep optimistic level */ }
-    return this.host.getThinkingLevel();
+    return this._thinkingLevel;
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
@@ -973,6 +976,10 @@ export class RustService implements PiBackend {
   getAvailableModels(): Promise<CycleModel[]> { return Promise.resolve(this._availableModels); }
   /** The active model identity (owned here; PiService reads it via the seam). */
   getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null { return this._model; }
+  /** The active thinking level (owned here; PiService reads it via the seam). */
+  getThinkingLevel(): string { return this._thinkingLevel; }
+  /** Sync the stored level from a streamed thinking_level_changed echo (no wire call). */
+  applyThinkingLevel(level: string): void { this._thinkingLevel = level; }
   /** The on-disk session file, or null. CONTRACT: a fresh Rust session has no
    *  file until the binary writes its first turn (it's captured from get_state's
    *  `sessionFile`), so this is null between init and the first turn — callers

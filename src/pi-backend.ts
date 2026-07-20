@@ -74,9 +74,17 @@ export interface PiBackend {
   /** Set the active model on the wire. Returns the resolved model identity applied
    *  (or null if it couldn't be set); the backend also updates its own getModel(). */
   setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null>;
+  /** The active thinking level — OWNED by the backend (Rust captures it from
+   *  get_state/applyState; the SDK sets it at init + on setThinkingLevel). PiService reads
+   *  this instead of holding its own `_thinkingLevel`. */
+  getThinkingLevel(): string;
   /** Set the thinking level on the wire. Returns the level actually in effect after
-   *  the backend clamps/validates (may differ from the request). */
+   *  the backend clamps/validates (may differ from the request); the backend also updates
+   *  its own getThinkingLevel(). */
   setThinkingLevel(level: string): Promise<string>;
+  /** Update the STORED thinking level WITHOUT a wire call — the echo path for a streamed
+   *  `thinking_level_changed` event (the wire already changed; we're just syncing state). */
+  applyThinkingLevel(level: string): void;
   /** Toggle auto-compaction on the backend. */
   setAutoCompaction(enabled: boolean): Promise<void>;
   /** Toggle auto-retry on the backend. */

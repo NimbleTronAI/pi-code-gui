@@ -305,6 +305,9 @@ export class SdkService implements PiBackend {
   /** The active model identity — OWNED here (set at init + on setModel), read by
    *  PiService via the PiBackend getModel() seam. */
   private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
+  /** The active thinking level — OWNED here (set at init + on setThinkingLevel), read by
+   *  PiService via getThinkingLevel(). */
+  private _thinkingLevel = "off";
   public settingsManager: any = null;
   public sessionManager: any = null;
   public resourceLoader: any = null;
@@ -708,6 +711,7 @@ export class SdkService implements PiBackend {
     // Own the active model identity (read by PiService via getModel()); the outcome still
     // carries it for the caller's other post-init wiring.
     this._model = { id: resumeModel.id, name: resumeModel.name, provider: resumeModel.provider };
+    this._thinkingLevel = resumeThinkingLevel;
 
     return {
       success: true,
@@ -811,8 +815,14 @@ export class SdkService implements PiBackend {
   async setThinkingLevel(level: string): Promise<string> {
     if (!this.session) { piWarn(`setThinkingLevel("${level}") ignored: session not initialized`); return level; }
     this.session.setThinkingLevel(level);
+    this._thinkingLevel = level;  // owned here; PiService reads via getThinkingLevel()
     return level;
   }
+
+  /** The active thinking level (owned here; PiService reads it via the seam). */
+  getThinkingLevel(): string { return this._thinkingLevel; }
+  /** Sync the stored level from a streamed thinking_level_changed echo (no wire call). */
+  applyThinkingLevel(level: string): void { this._thinkingLevel = level; }
 
   /** Toggle auto-compaction on the session (if the SDK build exposes the setter). */
   async setAutoCompaction(enabled: boolean): Promise<void> {

@@ -84,7 +84,10 @@ export class PiService {
   private get _model(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null {
     return this.backend?.getModel() ?? null;
   }
-  private _thinkingLevel = "off";
+  /** The active thinking level — now OWNED by the active backend and read through the
+   *  seam (getter, so the ~10 read-sites are unchanged). Backends update it on init /
+   *  setThinkingLevel / applyThinkingLevel. */
+  private get _thinkingLevel(): string { return this.backend?.getThinkingLevel() ?? "off"; }
   /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
    *  user's prior Reasoning level (falls back to the model's highest). */
   private _lastReasoningLevel: string | undefined;
@@ -310,9 +313,9 @@ export class PiService {
       return { success: false, error: init.error ?? "SDK initialization produced no session.", errorKind: init.errorKind, warning: init.warning };
     }
     // _model is owned by SdkService now (set during initialize); PiService reads it via
-    // the getter. cycleModels/thinkingLevel remain PiService orchestration state.
+    // the getter. cycleModels remains PiService orchestration; _thinkingLevel is owned by
+    // SdkService (set during initialize) and read via the getter.
     this.cycleModels = init.cycleModels ?? [];
-    this._thinkingLevel = init.thinkingLevel ?? "off";
     // Seed the off→on toggle memory from the restored level (restore sets
     // _thinkingLevel directly, bypassing setThinkingLevel/rememberReasoning), so a
     // session reopened at e.g. "high" toggles back to "high" rather than the model's
@@ -472,8 +475,7 @@ export class PiService {
       getAgentRunActive: () => this._agentRunActive,
       setAgentRunActive: (v) => { this._agentRunActive = v; },
       setStreaming: (v) => { this._isStreaming = v; },
-      getThinkingLevel: () => this._thinkingLevel,
-      setThinkingLevel: (level) => { this._thinkingLevel = level; this.rememberReasoning(); },
+      rememberReasoning: () => { this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
       getCycleModels: () => this.cycleModels,
       setCycleModels: (list) => { this.cycleModels = list; },
@@ -908,7 +910,7 @@ export class PiService {
 
     if (r.setAgentRunActive !== undefined) { this._agentRunActive = r.setAgentRunActive; }
     if (r.setStreaming !== undefined) { this._isStreaming = r.setStreaming; }
-    if (r.setThinkingLevel !== undefined) { this._thinkingLevel = r.setThinkingLevel; }
+    if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
     if (r.turnIndex === "reset") { this.turnIndex = 0; }
     else if (r.turnIndex === "increment") { this.turnIndex++; }
     if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
@@ -1382,7 +1384,8 @@ export class PiService {
     // via their deferred append path (a direct write would duplicate it and create
     // the file early, EEXIST on first prompt).
     const effective = await this.backend.setThinkingLevel(level);
-    this._thinkingLevel = effective;
+    // The backend stored the effective level (getThinkingLevel()); PiService keeps the
+    // off→on toggle memory + status.
     this.rememberReasoning();
     this.reportStatus();
     // A clamp means the model genuinely doesn't support the requested level (we
