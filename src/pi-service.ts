@@ -13,6 +13,7 @@ import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
+import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 
@@ -1366,23 +1367,11 @@ export class PiService {
       const model = rt.getModel(this._model.provider, this._model.id);
       if (!model) { return null; }
 
-      const context = {
-        systemPrompt: "Generate a concise 3-word summary of the following user request. Respond with ONLY the three words, lowercase, no punctuation, no quotes, no explanation.",
-        messages: [
-          { role: "user", content: userInput, timestamp: Date.now() },
-        ],
-      };
-
       // maxTokens caps output so a reasoning model can't burn tokens on a 3-word title;
-      // completeSimple resolves auth from the runtime (no explicit key).
-      const result = await rt.completeSimple(model, context, { maxTokens: 20 });
-
-      const text = extractMessageText(result.content);
-      if (text) {
-        // Clean up: take first line, trim, limit to ~40 chars
-        return text.split("\n")[0].trim().replace(/^["']|["']$/g, "").slice(0, 40);
-      }
-      return null;
+      // completeSimple resolves auth from the runtime (no explicit key). Prompt/context build
+      // + the reply cleaning are pure + tested (tab-summary.ts).
+      const result = await rt.completeSimple(model, buildSummaryContext(userInput, Date.now()), { maxTokens: 20 });
+      return cleanTabSummary(extractMessageText(result.content));
     } catch (e: unknown) {
       piWarn(`Tab summary generation failed: ${e instanceof Error ? e.message : String(e)}`);
       return null;
