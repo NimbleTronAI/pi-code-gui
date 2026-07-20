@@ -383,6 +383,18 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       events.push({ type: "auto-retry-end", data: { success: event.success, attempt: event.attempt, finalError: event.finalError } });
       break;
 
+    case "agent_settled":
+      // rust-pi terminal "run fully settled" event (added to the protocol after the agent_end
+      // pair — v0.1.22). Not a UI event of its own; used as a safety net so the streaming/active
+      // flags are cleared and a final authoritative status refresh happens even if the double-
+      // agent_end dedupe latched agentRunActive false (which otherwise starves the cost snap —
+      // see the turn_end/agent_settled refresh in rust-service.handleEvent). Recognized here so
+      // it no longer trips the "unhandled agent event" drift warning.
+      result.setStreaming = false;
+      if (state.backendKind === "rust") { result.setAgentRunActive = false; }
+      effects.reportStatus = true;
+      break;
+
     default:
       // Surface unknown events so they aren't silently lost — an unhandled type
       // usually means upstream protocol drift. The shell warns once per type.

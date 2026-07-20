@@ -12,7 +12,7 @@
 // every core capability it calls, passes through it. That coupling always
 // existed inside the god class — here it's named and visible.
 
-import { piWarn } from "./logger.js";
+import { piWarn, piDebug } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
@@ -492,6 +492,10 @@ export class RustService implements PiBackend {
     // correcting any drift. (cost is recomputed from tokens × catalog rates in PiService.)
     if (event?.type === "message_end" && (event as { message?: { role?: string } }).message?.role === "assistant") {
       const mu = (event as { message?: { usage?: unknown } }).message?.usage;
+      // Diagnostic (debug-level): pin whether this rust-pi build actually delivers per-message
+      // usage here — if it's absent, the mid-turn live cost climb can't work and cost only
+      // snaps at the terminal refresh. Logs the field names so a moved usage shape is visible.
+      piDebug(`rust message_end assistant: usage ${mu && typeof mu === "object" ? `{${Object.keys(mu).join(",")}}` : "ABSENT"}`);
       if (mu && typeof mu === "object") { this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus(); }
     }
     // Authoritative usage snap on EVERY turn boundary, not just agent_end. The agent_end
@@ -506,6 +510,13 @@ export class RustService implements PiBackend {
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
     if (routing.isRealAgentEnd) { void this.refreshState(); }
+    // agent_settled (v0.1.22) is the terminal "run fully settled" event, emitted after the
+    // agent_end pair. Refresh authoritatively here too: it's NOT gated on the agentRunActive
+    // dedupe, so even if a duplicate agent_end latched the flag false and starved the
+    // isRealAgentEnd refresh above, the final cost/token total still lands. Idempotent
+    // (applyUsage replaces wholesale; refreshState's own _refreshing guard drops a redundant
+    // overlap with an in-flight agent_end refresh).
+    if (event?.type === "agent_settled") { void this.refreshState(); }
   }
 
   /** Surface an unexpected Rust subprocess exit in the chat. */

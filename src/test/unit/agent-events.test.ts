@@ -329,6 +329,23 @@ test("auto_retry_start clears tool-call correlation (the retry re-runs the turn 
   assert.notEqual(translateAgentEvent({ type: "auto_retry_end", success: true, attempt: 2 }, makeState()).clearToolCalls, true);
 });
 
+// ── agent_settled (v0.1.22 terminal event) ──────────────────────────
+test("agent_settled: recognized (no unknown-drift warning), clears streaming/active, reports status", () => {
+  const r = translateAgentEvent({ type: "agent_settled" }, makeState({ backendKind: "rust", agentRunActive: true }));
+  assert.equal(r.effects.unknownType, undefined); // NOT treated as protocol drift
+  assert.deepEqual(r.events, []);                  // no UI event of its own
+  assert.equal(r.setStreaming, false);
+  assert.equal(r.setAgentRunActive, false);        // safety-net: un-latch the run
+  assert.equal(r.effects.reportStatus, true);
+});
+
+test("agent_settled on the SDK path: clears streaming + reports, but doesn't touch the run flag", () => {
+  const r = translateAgentEvent({ type: "agent_settled" }, makeState({ backendKind: "typescript" }));
+  assert.equal(r.setStreaming, false);
+  assert.equal(r.setAgentRunActive, undefined);    // rust-only latch guard
+  assert.equal(r.effects.reportStatus, true);
+});
+
 // ── unknown ──────────────────────────────────────────────────────────
 test("unknown event: flags unknownType and emits a hidden diagnostic custom-message", () => {
   const r = translateAgentEvent({ type: "totally_new_event" }, makeState());
