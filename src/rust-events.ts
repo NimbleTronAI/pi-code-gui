@@ -225,6 +225,18 @@ export function parseRustEntries(data: unknown): any[] {
   });
 }
 
+/** Whether a get_commands reply that parsed to ZERO commands actually looks like DRIFT
+ *  (command entries we failed to recognize) versus a legitimately EMPTY command list. rust-pi
+ *  advertises `{commands: []}` when it has no session commands — a well-formed empty result that
+ *  must NOT warn. Drift is: a non-empty `commands` array whose items lack the known name fields,
+ *  or (shape moved) no `commands` array but some other non-empty array in the reply. Pure. */
+export function commandsReplyLooksDrifted(data: unknown): boolean {
+  if (!data || typeof data !== "object") { return false; }
+  const d = data as Record<string, unknown>;
+  if (Array.isArray(d.commands)) { return d.commands.length > 0; } // items present but unparsed → drift
+  return Object.values(d).some((v) => Array.isArray(v) && v.length > 0); // commands moved elsewhere
+}
+
 /** Map a Rust `get_commands` reply to slash-command entries. */
 export function parseRustSlashCommands(data: unknown): Array<{ cmd: string; desc: string; source: string }> {
   const list = (data as { commands?: unknown })?.commands;

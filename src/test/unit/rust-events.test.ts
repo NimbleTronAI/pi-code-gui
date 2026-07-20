@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted } from "../../rust-events.js";
 import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS } from "../../agent-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
@@ -299,4 +299,21 @@ test("parseRustSlashCommands: skips nameless entries; null/garbage → []", () =
   assert.deepEqual(parseRustSlashCommands({ commands: [{ description: "no name" }] }), []);
   assert.deepEqual(parseRustSlashCommands(null), []);
   assert.deepEqual(parseRustSlashCommands({ commands: "nope" }), []);
+});
+
+test("commandsReplyLooksDrifted: empty {commands:[]} is NOT drift (the false-positive start-up warning)", () => {
+  // rust-pi v0.1.22 advertises this when it has no session commands — well-formed, must not warn.
+  assert.equal(commandsReplyLooksDrifted({ commands: [] }), false);
+  assert.equal(commandsReplyLooksDrifted({}), false);
+  assert.equal(commandsReplyLooksDrifted(null), false);
+  assert.equal(commandsReplyLooksDrifted("nope"), false);
+});
+
+test("commandsReplyLooksDrifted: real drift — entries present but unparsed, or the array moved", () => {
+  // A non-empty commands array that parsed to 0 (items lacked known name fields) → drift.
+  assert.equal(commandsReplyLooksDrifted({ commands: [{ description: "no name" }] }), true);
+  // commands isn't an array but another field carries a non-empty list → shape moved → drift.
+  assert.equal(commandsReplyLooksDrifted({ list: [{ name: "x" }] }), true);
+  // commands moved to a non-empty array while `commands` is absent.
+  assert.equal(commandsReplyLooksDrifted({ items: [{ invocationName: "y" }], commands: undefined }), true);
 });

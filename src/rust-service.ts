@@ -15,7 +15,7 @@
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
@@ -351,11 +351,13 @@ export class RustService implements PiBackend {
       const cmds = await proc.request(RUST_RPC.getCommands, {}, 8000);
       if (cmds.success) {
         this.slashCommands = parseRustSlashCommands(cmds.data);
-        // A non-empty reply that parses to zero commands means rust-pi changed its
-        // command shape (parseRustSlashCommands tolerates the known variants) —
-        // surface the drift instead of silently showing an empty command list.
-        if (this.slashCommands.length === 0 && cmds.data && Object.keys(cmds.data).length > 0) {
-          piWarn("get_commands returned a non-empty reply that parsed to 0 slash commands — rust-pi's command shape may have drifted (see parseRustSlashCommands).");
+        // Warn only on genuine drift — command entries we failed to recognize — NOT on a
+        // legitimately empty list. rust-pi advertises `{commands: []}` when it has no session
+        // commands (verified against v0.1.22 via a black-box RPC probe); the old
+        // Object.keys()>0 check treated that well-formed empty reply as drift and warned on
+        // every start. commandsReplyLooksDrifted distinguishes the two.
+        if (this.slashCommands.length === 0 && commandsReplyLooksDrifted(cmds.data)) {
+          piWarn("get_commands returned command entries that parsed to 0 slash commands — rust-pi's command shape may have drifted (see parseRustSlashCommands).");
         }
         this.recordCapOk("commands");
       }
