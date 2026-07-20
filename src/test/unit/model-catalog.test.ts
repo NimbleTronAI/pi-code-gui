@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, computeTokenCost, buildThinkingCompat } from "../../model-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, aliasMaxToXhigh, computeTokenCost, buildThinkingCompat } from "../../model-catalog.js";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -36,6 +36,31 @@ test("reconcile respects a deliberately non-reasoning model that is ABSENT from 
   const base = { id: "my-custom", reasoning: false };
   const out = reconcileThinkingCapability(DS_PROVIDERS, "acme", "my-custom", base);
   assert.equal(out.reasoning, false); // unknown model — not upgraded
+});
+
+// aliasMaxToXhigh: pi-ai's live catalog keys DeepSeek's top tier `max` (its 7-level ladder);
+// our 6-level ladder + the Rust path label it `xhigh`. Without the alias, the TS picker drops
+// the tier (caps at high) while Rust offers xhigh — the reported cross-runtime inconsistency.
+test("reconcile aliases a live `max`-keyed top tier to `xhigh` so the TS picker surfaces it", () => {
+  // The exact shape ModelRuntime.getModel returns for deepseek-v4-pro on pi-ai 0.80.x.
+  const live = { reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" } };
+  const out = reconcileThinkingCapability(DS_PROVIDERS, "deepseek", "deepseek-v4-pro", live);
+  assert.equal((out as any).thinkingLevelMap.xhigh, "max"); // aliased in
+  // The picker now offers the same rungs as the Rust (bundled-catalog) path.
+  assert.deepEqual(getSupportedThinkingLevels(out), ["off", "high", "xhigh"]);
+});
+
+test("aliasMaxToXhigh only fires when `max` is present and `xhigh` is absent", () => {
+  // Already has xhigh → untouched (a genuinely distinct xhigh is preserved).
+  const both = { minimal: null, high: "high", xhigh: "high", max: "max" };
+  assert.equal(aliasMaxToXhigh(both), both);
+  // No max → untouched.
+  const noMax = { high: "high" };
+  assert.equal(aliasMaxToXhigh(noMax), noMax);
+  // max:null (unsupported) → not aliased.
+  assert.deepEqual(aliasMaxToXhigh({ high: "high", max: null }), { high: "high", max: null });
+  // null/undefined maps pass through.
+  assert.equal(aliasMaxToXhigh(null), null);
 });
 
 test("computeTokenCost: tokens × per-million rates, summed (matches pi-ai calculateCost)", () => {

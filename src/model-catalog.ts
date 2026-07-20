@@ -227,10 +227,36 @@ export function reconcileThinkingCapability<T extends ThinkingModel>(
   id: string,
   base: T,
 ): T {
-  if (base.reasoning) { return base; }
+  // Normalize pi-ai's top rung to this extension's ladder BEFORE anything else (see
+  // aliasMaxToXhigh) — otherwise a model whose live catalog keys its top tier `max`
+  // (e.g. DeepSeek) loses that tier in our `xhigh`-only picker. Preserve the same-object
+  // contract when nothing is aliased (callers rely on `out === base` = no clobber).
+  const aliasedMap = aliasMaxToXhigh(base.thinkingLevelMap);
+  const normalized = aliasedMap === base.thinkingLevelMap ? base : ({ ...base, thinkingLevelMap: aliasedMap } as T);
+  if (normalized.reasoning) { return normalized; }
   const bundled = findCatalogThinkingModel(providers, provider, id);
   if (bundled?.reasoning) {
-    return { ...base, reasoning: true, thinkingLevelMap: base.thinkingLevelMap ?? bundled.thinkingLevelMap };
+    return { ...normalized, reasoning: true, thinkingLevelMap: normalized.thinkingLevelMap ?? bundled.thinkingLevelMap };
   }
-  return base;
+  return normalized;
+}
+
+/** pi-ai's live catalog uses a 7-level ladder — `[off,minimal,low,medium,high,xhigh,max]`
+ *  — with a distinct top rung `max`, and labels some providers' top reasoning tier `max`
+ *  (DeepSeek: `reasoning_effort:"max"`). This extension's ladder is 6 levels topping at
+ *  `xhigh` (THINKING_LEVELS), and both the bundled catalog and the Rust path label that
+ *  same DeepSeek tier `xhigh:"max"`. So when a live pi-ai model keys its top tier `max`
+ *  and has NO separate `xhigh`, alias it to `xhigh` — otherwise getSupportedThinkingLevels
+ *  (keyed by our ladder) can't surface it and the TS picker caps at `high` while Rust
+ *  offers `xhigh` (the reported inconsistency). On select, the SDK's own clamp maps our
+ *  `xhigh` up to the model's `max` tier, so the wire still gets `reasoning_effort:"max"`.
+ *  Only aliases when `xhigh` is absent, so a model exposing a genuinely distinct `xhigh`
+ *  keeps it untouched. */
+export function aliasMaxToXhigh(
+  map: Record<string, string | null> | null | undefined,
+): Record<string, string | null> | null | undefined {
+  if (map && map.max !== undefined && map.max !== null && map.xhigh === undefined) {
+    return { ...map, xhigh: map.max };
+  }
+  return map;
 }
