@@ -14,6 +14,7 @@ import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingMode
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
+import { EventBus } from "./event-bus.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 
@@ -86,7 +87,8 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private get session(): any { return this._sdk?.session ?? null; }
   private unsubscribe: (() => void) | null = null;
-  private listeners: EventListener[] = [];
+  /** The webview event bus (validate → dispatch, listener-error isolation). See event-bus.ts. */
+  private readonly _bus = new EventBus(validateExtensionToWebview, piWarn);
   /** The active model identity — now OWNED by the active backend (SdkService/RustService)
    *  and read through the seam, not stored here. Kept as a getter so the ~38 read-sites
    *  are unchanged; the backends update it on init / setModel / applyState. */
@@ -171,48 +173,15 @@ export class PiService {
   // ── Public API ─────────────────────────────────────────
 
   onEvent(listener: EventListener): () => void {
-    this.listeners.push(listener);
-    return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
-    };
+    return this._bus.subscribe(listener);
   }
 
-  private emit(event: PiServiceEvent): void {
-    // ── Layer 1: Runtime protocol validation ───────────────
-    // Validates every outgoing message against the Zod schema.
-    // If validation fails, we STILL emit to avoid breaking existing
-    // functionality, but log the error and show a diagnostic notification.
-    const result = validateExtensionToWebview(event);
-    if (!result.success) {
-      piWarn(`[protocol] emit validation failed for type "${(event as Record<string, unknown>).type}": ${result.error}`);
-      // Emit a visible diagnostic so the user (and us) can see the issue
-      this.emitSafe({
-        type: "custom-message",
-        data: {
-          customType: "pi-gui-diagnostic",
-          content: `Protocol validation error (type: ${(event as Record<string, unknown>).type}): ${result.error.substring(0, 200)}`,
-          display: false,
-        },
-      });
-    }
-    // Dispatch to listeners (always, even on validation failures for backward compat)
-    for (const l of this.listeners) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      try { l(event); } catch (e: any) {
-        piWarn(`emit listener threw for type "${(event as Record<string, unknown>).type}": ${e?.message ?? e}`);
-      }
-    }
-  }
+  /** Validate-then-dispatch a webview event (validation failure logs + pushes a diagnostic but
+   *  still emits). See event-bus.ts. */
+  private emit(event: PiServiceEvent): void { this._bus.emit(event); }
 
   /** Emit without validation (used internally to avoid recursive validation on diagnostics). */
-  private emitSafe(event: PiServiceEvent): void {
-    for (const l of this.listeners) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      try { l(event); } catch (e: any) {
-        piWarn(`emitSafe listener threw for type "${(event as Record<string, unknown>).type}": ${e?.message ?? e}`);
-      }
-    }
-  }
+  private emitSafe(event: PiServiceEvent): void { this._bus.emitSafe(event); }
 
   static async checkInstall(): Promise<InstallStatus> {
     try {
@@ -960,7 +929,7 @@ export class PiService {
     prompt: string,
     extras: { options?: string[]; defaultValue?: string },
   ): Promise<unknown> | undefined {
-    if (this.listeners.length === 0) {
+    if (this._bus.listenerCount === 0) {
       // No webview attached — SDK will fall back to text prompts
       return undefined;
     }
