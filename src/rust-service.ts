@@ -12,7 +12,7 @@
 // every core capability it calls, passes through it. That coupling always
 // existed inside the god class — here it's named and visible.
 
-import { piWarn, piDebug } from "./logger.js";
+import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands } from "./rust-events.js";
@@ -491,31 +491,30 @@ export class RustService implements PiBackend {
     // agent_end's refreshState then SNAPS this.usage to the authoritative cumulative,
     // correcting any drift. (cost is recomputed from tokens × catalog rates in PiService.)
     if (event?.type === "message_end" && (event as { message?: { role?: string } }).message?.role === "assistant") {
+      // rust-pi v0.1.22 delivers per-message usage here as
+      // {input,output,cacheRead,cacheWrite,totalTokens,cost} (confirmed via a debug probe), so
+      // this live per-round accumulate is what climbs the cost mid-run. Keep it the ONLY mid-run
+      // usage writer — see the no-mid-run-refresh note at the agent_settled snap below.
       const mu = (event as { message?: { usage?: unknown } }).message?.usage;
-      // Diagnostic (debug-level): pin whether this rust-pi build actually delivers per-message
-      // usage here — if it's absent, the mid-turn live cost climb can't work and cost only
-      // snaps at the terminal refresh. Logs the field names so a moved usage shape is visible.
-      piDebug(`rust message_end assistant: usage ${mu && typeof mu === "object" ? `{${Object.keys(mu).join(",")}}` : "ABSENT"}`);
       if (mu && typeof mu === "object") { this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus(); }
     }
-    // Authoritative usage snap on EVERY turn boundary, not just agent_end. The agent_end
-    // refresh below is gated on isRealAgentEnd (the double-`agent_end` dedupe); once
-    // `agentRunActive` latches false on an abort / auto-retry / queue-interrupt re-run that
-    // emits a duplicate `agent_end` without a re-arming `agent_start`, that gate starves the
-    // token/cost readout for the ENTIRE rest of the session — the accumulate path above only
-    // covers it while messages still carry `usage`. turn_end isn't gated on agentRunActive, so
-    // it keeps the authoritative get_session_stats total flowing through long/recovered runs.
-    // Idempotent: applyUsage replaces this.usage wholesale, so an extra refresh can't harm it.
-    if (event?.type === "turn_end") { void this.refreshUsage().then(() => this.host.reportStatus()); }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
+    //
+    // DO NOT refresh authoritative usage mid-run (e.g. on turn_end): get_session_stats only
+    // counts PERSISTED messages, so it reads ~0 during an active turn (the pending backlog),
+    // and applyUsage REPLACES this.usage wholesale — a mid-run refresh therefore WIPES the live
+    // accumulate above back toward zero, hiding the cost until the very end. The authoritative
+    // snap belongs only at a terminal event, where the stats have settled. Live mid-run cost is
+    // the accumulate path's job (and is why TS, which re-sums entries per read, shows it fine).
     if (routing.isRealAgentEnd) { void this.refreshState(); }
     // agent_settled (v0.1.22) is the terminal "run fully settled" event, emitted after the
-    // agent_end pair. Refresh authoritatively here too: it's NOT gated on the agentRunActive
+    // agent_end pair. Snap authoritatively here too: it's NOT gated on the agentRunActive
     // dedupe, so even if a duplicate agent_end latched the flag false and starved the
-    // isRealAgentEnd refresh above, the final cost/token total still lands. Idempotent
-    // (applyUsage replaces wholesale; refreshState's own _refreshing guard drops a redundant
-    // overlap with an in-flight agent_end refresh).
+    // isRealAgentEnd refresh above, the final cost/token total still lands. Terminal, so the
+    // stats have settled; refreshState's own _refreshing guard drops a redundant overlap with
+    // an in-flight agent_end refresh. THIS is the real fix for the "cost froze after an
+    // abort/retry" report — not a mid-run refresh.
     if (event?.type === "agent_settled") { void this.refreshState(); }
   }
 
