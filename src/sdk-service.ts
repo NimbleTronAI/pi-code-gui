@@ -849,6 +849,32 @@ export class SdkService implements PiBackend {
   /** Session entries for the Open Sessions tree (display only). */
   getEntries(): any[] { return this.sessionManager?.getEntries?.() ?? []; }
 
+  /** The TS runtime's own slash commands: extension-registered commands (introspected
+   *  from the session's extension runner) + the builtin VS Code prompt templates. Rust
+   *  supplies its equivalents over RPC; PiService appends the shared GUI/capability set. */
+  getSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
+    const result: Array<{ cmd: string; desc: string; source: string }> = [];
+    try {
+      const runner = this.session?._extensionRunner;
+      if (runner && typeof runner.getRegisteredCommands === "function") {
+        const commands = runner.getRegisteredCommands();
+        if (commands && commands.length > 0) {
+          for (const c of commands) {
+            const source = c?.sourceInfo?.source ? `extension (${c.sourceInfo.source})` : "extension";
+            result.push({ cmd: `/${c.invocationName}`, desc: c.description ?? "", source });
+          }
+        }
+      }
+    } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
+    // Builtin prompt templates are TS-SDK-registered (Rust supplies its own via get_commands).
+    result.push(
+      { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
+      { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
+      { cmd: "/refactor", desc: "Refactor the selected code", source: "builtin" },
+    );
+    return result;
+  }
+
   /** Promote a queued follow-up to a steering message: re-queue the existing steers,
    *  then append the promoted text (the SDK has no in-place promote). */
   promoteToSteer(text: string): void {

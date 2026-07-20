@@ -83,6 +83,11 @@ export interface PiBackend {
   /** Session entries for the Open Sessions tree (display only). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getEntries(): any[];
+  /** The runtime's own slash commands — the agent-provided ones only (Rust reports its
+   *  extensions/templates/skills over RPC; the SDK introspects its extension runner and
+   *  adds the builtin prompt templates). PiService appends the shared GUI + capability
+   *  commands, so this returns just the per-runtime slice. */
+  getSlashCommands(): Array<{ cmd: string; desc: string; source: string }>;
   /** Promote a queued follow-up to a steer message. */
   promoteToSteer(text: string): void;
   /** Clear the pending steer/follow-up queue. */

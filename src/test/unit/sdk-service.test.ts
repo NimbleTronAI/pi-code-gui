@@ -191,6 +191,20 @@ test("getUsage sums assistant entries + reads live context", () => {
   assert.deepEqual(u, { input: 30, output: 12, cacheRead: 2, cacheWrite: 1, cost: 0.03, contextPercent: 42, contextWindow: 200000 });
 });
 
+test("getSlashCommands: extension-runner commands + builtin templates", () => {
+  const { svc } = makeService({ _extensionRunner: { getRegisteredCommands: () => [{ invocationName: "tldr", description: "summarize", sourceInfo: { source: "pi-tldr" } }] } });
+  const cmds = svc.getSlashCommands();
+  assert.ok(cmds.some((c) => c.cmd === "/tldr" && c.source === "extension (pi-tldr)"), "extension command mapped");
+  assert.ok(cmds.some((c) => c.cmd === "/fix-diagnostics" && c.source === "builtin"), "builtin template present");
+});
+
+test("getSlashCommands: no extension runner → just the three builtin templates", () => {
+  const { svc } = makeService();
+  const cmds = svc.getSlashCommands();
+  assert.equal(cmds.length, 3);
+  assert.ok(cmds.every((c) => c.source === "builtin"));
+});
+
 test("promoteToSteer re-queues then appends the promoted text", () => {
   const { svc, calls } = makeService({ getSteeringMessages: () => ["old"] });
   svc.promoteToSteer("new");

@@ -672,40 +672,12 @@ export class PiService {
    *  field so the UI can group or label them. */
   getAllSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
     const result: Array<{ cmd: string; desc: string; source: string }> = [];
-    const isRust = this._backendKind === "rust";
 
     // ── Agent-provided commands (per runtime) ───────
-    // These come from whichever agent is actually running this session, so each
-    // runtime advertises only the commands it can service.
-    if (isRust) {
-      // The Rust runtime reports its own extensions / templates / skills over RPC.
-      result.push(...(this._rust?.getSlashCommands() ?? []));
-    } else {
-      // TypeScript SDK: extension-registered commands + builtin prompt templates.
-      try {
-        const rawSession = (this.session);
-        const runner = rawSession?._extensionRunner;
-        if (runner && typeof runner.getRegisteredCommands === "function") {
-          const commands = runner.getRegisteredCommands();
-          if (commands && commands.length > 0) {
-            for (const c of commands) {
-              const source = c?.sourceInfo?.source
-                ? `extension (${c.sourceInfo.source})`
-                : "extension";
-              result.push({ cmd: `/${c.invocationName}`, desc: c.description ?? "", source });
-            }
-          }
-        }
-      } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
-
-      // Builtin prompt templates are TypeScript-SDK-registered (Rust supplies its
-      // own via get_commands above), so they only apply to the TS runtime.
-      result.push(
-        { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
-        { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
-        { cmd: "/refactor", desc: "Refactor the selected code", source: "builtin" },
-      );
-    }
+    // The active backend advertises only the commands it can service: Rust reports its
+    // extensions/templates/skills over RPC; the SDK introspects its extension runner and
+    // adds the builtin prompt templates. Delegated so PiService no longer branches on runtime.
+    result.push(...(this.backend?.getSlashCommands() ?? []));
 
     // ── GUI-orchestrated session commands (both runtimes) ───
     // The extension services these directly (pickers, session ops), branching
