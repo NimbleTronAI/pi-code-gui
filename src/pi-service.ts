@@ -1831,14 +1831,66 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get modelRuntimeInstance(): any { return this.modelRuntime; }
 
-  /** Get the session display name from the session manager, if set. */
+  /** Cached Rust session name (rust-pi tracks none — we persist/read a `session_info`
+   *  entry in its JSONL ourselves, the same entry type the SDK writes). */
+  private _rustSessionName: string | undefined;
+  private _rustSessionNameRead = false;
+
+  /** Get the session display name. TS: the SDK's SessionManager. Rust: the last
+   *  `session_info` entry we persisted to the JSONL (read once, then cached) — so a
+   *  reopened Rust session shows its title just like TS. */
   get sessionName(): string | undefined {
+    if (this._backendKind === "rust") {
+      if (!this._rustSessionNameRead) { this._rustSessionName = this._readRustSessionName(); this._rustSessionNameRead = true; }
+      return this._rustSessionName;
+    }
     return this.sessionManager?.getSessionName?.();
   }
 
-  /** Persist a display name to the session file so it survives tab close. */
+  /** Persist a display name so it survives tab close AND shows in the Past Sessions tree
+   *  (summarizeSessionFile reads the `session_info` name for both runtimes). TS: the SDK
+   *  writes the entry. Rust: rust-pi exposes no name RPC and doesn't track a name, so the
+   *  extension appends the SAME `session_info` entry to its JSONL directly — "use the
+   *  title entry appropriately" so both runtimes benefit from the one reader. */
   setSessionName(name: string): void {
+    if (this._backendKind === "rust") {
+      this._rustSessionName = name;
+      this._rustSessionNameRead = true;
+      this._persistRustSessionInfo(name);
+      return;
+    }
     this.session?.setSessionName?.(name);
+  }
+
+  /** Read the last `session_info` name from the Rust session JSONL, or undefined. */
+  private _readRustSessionName(): string | undefined {
+    const sf = this._rust?.getSessionPath();
+    if (!sf) { return undefined; }
+    try {
+      const lines = fs.readFileSync(sf, "utf-8").trim().split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try { const e = JSON.parse(lines[i]); if (e?.type === "session_info" && typeof e.name === "string") { return e.name; } }
+        catch { /* skip a malformed line */ }
+      }
+    } catch { /* no file yet (fresh session pre-first-turn) */ }
+    return undefined;
+  }
+
+  /** Append a `session_info` name entry to the Rust session JSONL (best-effort; the file
+   *  only exists after the binary writes its first turn, so a very-early name is carried
+   *  live via the webview and flushed at dispose if it never got persisted). */
+  private _persistRustSessionInfo(name: string): void {
+    const sf = this._rust?.getSessionPath();
+    if (!sf || !fs.existsSync(sf)) { return; }
+    try {
+      fs.appendFileSync(sf, JSON.stringify({
+        type: "session_info",
+        id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        name,
+      }) + "\n");
+    } catch (e: unknown) { piWarn(`Rust session_info persist failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
   // ── Tools ───────────────────────────────────────────────
@@ -2131,6 +2183,10 @@ export class PiService {
 
     // Rust runtime: tear down the subprocess (it owns its own persistence).
     if (this._backendKind === "rust") {
+      // Flush the session-name entry if a title was set before the binary had written the
+      // session file (fresh session: no file at first-message time). Skips cleanly if it's
+      // already there is acceptable — the tree reader takes the LAST session_info name.
+      if (this._rustSessionName) { this._persistRustSessionInfo(this._rustSessionName); }
       if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
       this._rust?.dispose();
       this._rust = null;
