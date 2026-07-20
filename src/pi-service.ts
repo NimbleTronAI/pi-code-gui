@@ -1987,33 +1987,156 @@ export class PiService {
 
   // ── Login / Logout ─────────────────────────────────────
 
+  /* eslint-disable @typescript-eslint/no-explicit-any -- ModelRuntime + pi-ai auth objects are dynamically typed */
+
   /**
-   * Provider login. TEMPORARILY DEGRADED for the pi-coding-agent >= 0.80.8 migration:
-   * the previous flow was written against the removed AuthStorage API
-   * (`authStorage.login/set/getOAuthProviders` + `modelRegistry.getProviderDisplayName`).
-   * Tier 2 reworks it against `ModelRuntime.login()` / `logout()` / `listCredentials()`.
-   * Until then, point users at the credential paths that still work so they're never stuck.
+   * Provider login (pi-coding-agent >= 0.80.8). The provider-owned flow is driven by
+   * `ModelRuntime.login(providerId, "api_key"|"oauth", interaction)`, where `interaction`
+   * is a pi-ai `AuthInteraction` — a unified `{ prompt, notify }` pair serving both the
+   * API-key and OAuth flows. We adapt those callbacks to VS Code UI (input boxes / quick
+   * picks / browser-open) via makeAuthInteraction. Replaces the removed AuthStorage flow.
    */
   async login(): Promise<void> {
-    vscode.window.showInformationMessage(
-      "In-app provider login is being updated for the new Pi SDK. For now set credentials via the " +
-      "ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY environment variables, the " +
-      "pi-code-gui.anthropicApiKey / openaiApiKey settings, or ~/.pi/agent/auth.json — the extension " +
-      "picks these up on the next session.",
+    const rt = this.modelRuntime;
+    if (!rt) { throw new Error("Pi session not initialized"); }
+
+    // Step 1: auth type.
+    const typePick = await vscode.window.showQuickPick(
+      [
+        { label: "Use a subscription", authType: "oauth" as const, description: "OAuth login (Anthropic, GitHub Copilot, OpenAI Codex, …)" },
+        { label: "Use an API key", authType: "api_key" as const, description: "Enter an API key for a provider" },
+      ],
+      { placeHolder: "Select authentication method" },
     );
+    if (!typePick) { return; }
+    const authType = typePick.authType;
+
+    // Step 2: provider (from the runtime catalog, filtered to those supporting the type).
+    const provider = await this.pickLoginProvider(authType);
+    if (!provider) { return; }
+
+    // Step 3: run the provider-owned login through the VS Code interaction adapter.
+    const previousModel = this._model;
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Logging in to ${provider.name}…`, cancellable: true },
+        async (progress, token) => {
+          const controller = new AbortController();
+          token.onCancellationRequested(() => controller.abort());
+          await rt.login(provider.id, authType, this.makeAuthInteraction(progress, controller.signal));
+        },
+      );
+      await rt.refresh(); // async now — reload the dynamic catalog with the new credential
+      await this.completeLogin(provider.id, provider.name, previousModel);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (!/cancel|abort/i.test(msg)) { void vscode.window.showErrorMessage(`Failed to log in to ${provider.name}: ${msg}`); }
+    }
+  }
+
+  /** Adapt a pi-ai `AuthInteraction` (prompt/notify) to VS Code UI. */
+  private makeAuthInteraction(progress: vscode.Progress<{ message?: string }>, signal: AbortSignal): any {
+    return {
+      signal,
+      prompt: async (p: any): Promise<string> => {
+        if (p.type === "select") {
+          const options: Array<{ label: string; description?: string; id: string }> =
+            ((p.options ?? []) as any[]).map((o: any) => ({ label: o.label, description: o.description, id: o.id }));
+          const pick = await vscode.window.showQuickPick(options, { placeHolder: p.message, ignoreFocusOut: true });
+          if (!pick) { throw new Error("Login cancelled"); }
+          return pick.id;
+        }
+        // "text" | "secret" | "manual_code"
+        const value = await vscode.window.showInputBox({
+          prompt: p.message,
+          placeHolder: p.placeholder,
+          password: p.type === "secret",
+          ignoreFocusOut: true,
+        });
+        if (value === undefined) { throw new Error("Login cancelled"); }
+        return value;
+      },
+      notify: (event: any): void => {
+        if (event.type === "auth_url") {
+          void vscode.env.openExternal(vscode.Uri.parse(event.url));
+          progress.report({ message: event.instructions ?? "Complete the login in your browser…" });
+        } else if (event.type === "device_code") {
+          void vscode.env.openExternal(vscode.Uri.parse(event.verificationUri));
+          progress.report({ message: `Enter code ${event.userCode} at ${event.verificationUri}` });
+        } else if (event.message) {
+          progress.report({ message: event.message });
+        }
+      },
+    };
+  }
+
+  /** Providers supporting `authType`, annotated with configured status, for a QuickPick. */
+  private async pickLoginProvider(authType: "oauth" | "api_key"): Promise<{ id: string; name: string } | undefined> {
+    const rt = this.modelRuntime;
+    const providers = (rt.getProviders?.() ?? []) as any[];
+    const items = providers
+      .filter((p) => (authType === "oauth" ? !!p.auth?.oauth : !!p.auth?.apiKey))
+      .map((p) => ({ label: p.name, id: p.id, name: p.name, description: rt.hasConfiguredAuth?.(p.id) ? "$(check) already configured" : "" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    if (items.length === 0) {
+      void vscode.window.showInformationMessage(`No providers support ${authType === "oauth" ? "subscription" : "API key"} login.`);
+      return undefined;
+    }
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: `Select ${authType === "oauth" ? "subscription" : "API key"} provider`,
+      matchOnDescription: true,
+    });
+    return pick ? { id: pick.id, name: pick.name } : undefined;
+  }
+
+  /** After login, auto-select a model for the provider when none is active yet. */
+  private async completeLogin(providerId: string, providerName: string, previousModel: { id?: string; provider?: string } | null): Promise<void> {
+    if (!previousModel || previousModel.provider === "unknown") {
+      try {
+        const available = (await this.modelRuntime.getAvailable()) as any[];
+        const first = available.find((m) => m.provider === providerId);
+        if (first) {
+          await this.setModel(providerId, first.id);
+          void vscode.window.showInformationMessage(`Logged in to ${providerName}. Selected ${first.id}.`);
+          return;
+        }
+      } catch { /* fall through to the plain confirmation */ }
+    }
+    void vscode.window.showInformationMessage(`Logged in to ${providerName}.`);
   }
 
   /**
-   * Provider logout. TEMPORARILY DEGRADED (see login) — Tier 2 reworks it against
-   * `ModelRuntime.logout()` + `listCredentials()`.
+   * Provider logout. Lists stored credentials via `ModelRuntime.listCredentials()` and
+   * removes the chosen one with `logout()`. Env vars / models.json config are untouched.
    */
   async logout(): Promise<void> {
-    vscode.window.showInformationMessage(
-      "Managing stored credentials from the extension is being updated for the new Pi SDK. For now, " +
-      "edit or remove entries in ~/.pi/agent/auth.json directly (environment variables and models.json " +
-      "config are unaffected).",
-    );
+    const rt = this.modelRuntime;
+    if (!rt) { throw new Error("Pi session not initialized"); }
+    const creds = (await rt.listCredentials()) as any[];
+    if (!creds || creds.length === 0) {
+      void vscode.window.showInformationMessage(
+        "No stored credentials to remove. /logout only removes credentials saved via login; environment variables and models.json config are unchanged.",
+      );
+      return;
+    }
+    const items = creds
+      .map((c) => ({ label: rt.getProvider?.(c.providerId)?.name ?? c.providerId, id: c.providerId, description: c.type === "oauth" ? "OAuth subscription" : "API key" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const pick = await vscode.window.showQuickPick(items, { placeHolder: "Select provider to log out" });
+    if (!pick) { return; }
+    try {
+      await rt.logout(pick.id);
+      await rt.refresh();
+      void vscode.window.showInformationMessage(
+        pick.description === "OAuth subscription"
+          ? `Logged out of ${pick.label}.`
+          : `Removed stored API key for ${pick.label}. Environment variables and models.json config are unchanged.`,
+      );
+    } catch (e: any) {
+      void vscode.window.showErrorMessage(`Logout failed: ${e?.message ?? e}`);
+    }
   }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   // ── Cleanup ────────────────────────────────────────────
 
