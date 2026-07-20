@@ -205,6 +205,23 @@ test("getSlashCommands: no extension runner → just the three builtin templates
   assert.ok(cmds.every((c) => c.source === "builtin"));
 });
 
+test("getAvailableModels maps the ModelRuntime catalog (provider/id/name/cost/ctx)", async () => {
+  const { svc } = makeService();
+  svc.modelRuntime = { getAvailable: async () => [
+    { provider: "deepseek", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", cost: { input: 0.435, output: 0.87, cacheRead: 0.0036 }, contextWindow: 1000000 },
+  ] } as Any;
+  const models = await svc.getAvailableModels();
+  assert.deepEqual(models, [{ provider: "deepseek", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", cost: { input: 0.435, output: 0.87 }, contextWindow: 1000000 }]);
+});
+
+test("getAvailableModels: no modelRuntime → [] (and a throwing runtime → [])", async () => {
+  const { svc } = makeService();
+  svc.modelRuntime = null;
+  assert.deepEqual(await svc.getAvailableModels(), []);
+  svc.modelRuntime = { getAvailable: async () => { throw new Error("boom"); } } as Any;
+  assert.deepEqual(await svc.getAvailableModels(), []);
+});
+
 test("promoteToSteer re-queues then appends the promoted text", () => {
   const { svc, calls } = makeService({ getSteeringMessages: () => ["old"] });
   svc.promoteToSteer("new");

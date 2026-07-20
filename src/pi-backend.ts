@@ -88,6 +88,10 @@ export interface PiBackend {
    *  adds the builtin prompt templates). PiService appends the shared GUI + capability
    *  commands, so this returns just the per-runtime slice. */
   getSlashCommands(): Array<{ cmd: string; desc: string; source: string }>;
+  /** Models available for the /model picker. Rust returns its own get_available_models
+   *  catalog (includes custom models.json entries); the SDK queries its ModelRuntime. The
+   *  picker reads this instead of branching on runtime for the data source. */
+  getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>>;
   /** Promote a queued follow-up to a steer message. */
   promoteToSteer(text: string): void;
   /** Clear the pending steer/follow-up queue. */

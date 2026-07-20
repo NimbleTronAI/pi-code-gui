@@ -133,6 +133,8 @@ export class RustService implements PiBackend {
   private contextWindow = 0;
   private lastContextTokens = 0;
   private slashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
+  /** Available models from get_available_models (owned here; read via getAvailableModels). */
+  private _availableModels: CycleModel[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private entries: any[] = [];
   // Synthetic steer/follow-up queue: rust-pi (0.1.18) never emits queue_update,
@@ -318,7 +320,7 @@ export class RustService implements PiBackend {
     try {
       const models = await proc.request(RUST_RPC.getAvailableModels, {}, 15000);
       const list = parseRustModels(models.data);
-      if (models.success && list.length > 0) { this.host.setCycleModels(list); this.recordCapOk("models"); }
+      if (models.success && list.length > 0) { this._availableModels = list; this.host.setCycleModels(list); this.recordCapOk("models"); }
       else { this.warnDegraded("models", "Rust Pi returned no model list — model switching (/model) may be unavailable this session."); }
     } catch (e: unknown) {
       piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -964,6 +966,10 @@ export class RustService implements PiBackend {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getEntries(): any[] { return this.entries; }
   getSlashCommands(): Array<{ cmd: string; desc: string; source: string }> { return this.slashCommands; }
+  /** The Rust catalog captured from get_available_models at init (includes custom
+   *  models.json entries) — RustService owns this list (a step toward backend state
+   *  ownership); PiService's picker reads it via the PiBackend seam. */
+  getAvailableModels(): Promise<CycleModel[]> { return Promise.resolve(this._availableModels); }
   /** The on-disk session file, or null. CONTRACT: a fresh Rust session has no
    *  file until the binary writes its first turn (it's captured from get_state's
    *  `sessionFile`), so this is null between init and the first turn — callers

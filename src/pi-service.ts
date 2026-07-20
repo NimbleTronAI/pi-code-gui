@@ -1442,20 +1442,9 @@ export class PiService {
 
   /** Get available models from the model runtime (for dynamic model pickers). */
   async getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>> {
-    if (!this.modelRuntime) { return []; }
-    try {
-      const available = await this.modelRuntime.getAvailable();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return available.map((m: any) => ({
-        provider: m.provider,
-        id: m.id,
-        name: m.name,
-        cost: m.cost ? { input: m.cost.input, output: m.cost.output } : undefined,
-        contextWindow: m.contextWindow ?? undefined,
-      }));
-    } catch {
-      return [];
-    }
+    // Delegated to the active backend (SDK: ModelRuntime.getAvailable; Rust: its cached
+    // get_available_models catalog) — works for BOTH runtimes now, not just the SDK.
+    return (await this.backend?.getAvailableModels()) ?? [];
   }
 
   /** Format model specs (pricing + context window) for QuickPick detail. Returns empty string if no data. */
@@ -1475,30 +1464,23 @@ export class PiService {
     interface ModelItem { label: string; provider: string; modelId: string; cost?: { input: number; output: number }; contextWindow?: number }
     let models: ModelItem[] = [];
 
-    if (this._backendKind === "rust") {
-      // Rust reports its own catalog via get_available_models (cached in
-      // cycleModels) — which INCLUDES custom models.json entries. getAvailableModels()
-      // is the TypeScript SDK registry (always empty under Rust), so it would hide
-      // custom models and fall back to the static list.
-      models = this.cycleModels.map((m) => ({
-        label: m.name || m.id, provider: m.provider, modelId: m.id, cost: m.cost, contextWindow: m.contextWindow,
-      }));
-    } else {
-      try {
-        const available = await this.getAvailableModels();
-        if (available.length > 0) {
-          models = available.map((m) => ({
-            label: m.name || m.id,
-            provider: m.provider,
-            modelId: m.id,
-            cost: m.cost,
-            contextWindow: m.contextWindow,
-          }));
-        }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (e: any) {
-        piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
+    // One data source for both runtimes: getAvailableModels() delegates to the backend
+    // (Rust's own catalog — including custom models.json — or the SDK's ModelRuntime).
+    // No runtime branch here; the picker doesn't know which backend it's talking to.
+    try {
+      const available = await this.getAvailableModels();
+      if (available.length > 0) {
+        models = available.map((m) => ({
+          label: m.name || m.id,
+          provider: m.provider,
+          modelId: m.id,
+          cost: m.cost,
+          contextWindow: m.contextWindow,
+        }));
       }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (e: any) {
+      piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
     }
 
     // Fallback: static list of common models (no pricing — only SDK-reported pricing is shown)

@@ -875,6 +875,23 @@ export class SdkService implements PiBackend {
     return result;
   }
 
+  /** Models available for /model — from the ModelRuntime's auth-filtered catalog. */
+  async getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>> {
+    if (!this.modelRuntime) { return []; }
+    try {
+      const available = await this.modelRuntime.getAvailable();
+      return available.map((m: any) => ({
+        provider: m.provider,
+        id: m.id,
+        name: m.name,
+        cost: m.cost ? { input: m.cost.input, output: m.cost.output } : undefined,
+        contextWindow: m.contextWindow ?? undefined,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   /** Promote a queued follow-up to a steering message: re-queue the existing steers,
    *  then append the promoted text (the SDK has no in-place promote). */
   promoteToSteer(text: string): void {
