@@ -182,6 +182,10 @@ export const state: AppState = {
   extensionSlashCommands: [],
   localSlashCommands: [
     "/login", "/logout", "/debug", "/model", "/thinking", "/sessions", "/settings",
+    // /tools is extension-serviced (SDK only). It must be intercepted here too, or under
+    // Rust it slips past every handler and gets forwarded raw to the binary, which doesn't
+    // parse it. Intercepted → pickActiveTools, which shows the honest "not on Rust" guard.
+    "/tools",
     // Session ops the extension services itself — must be intercepted here so they
     // reach handleSlashCommand → the runtime-aware router, instead of being sent to
     // the model as a prompt. (TypeScript's SDK parses such prompts; the Rust RPC

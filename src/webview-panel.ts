@@ -395,6 +395,12 @@ export class PiWebviewPanel {
       case "settings":
         await this.triggerSettingsPicker();
         break;
+      case "tools":
+        // Extension-serviced (SDK only). pickActiveTools opens the picker on TS and shows the
+        // honest "not available on Rust" message on Rust — instead of the raw /tools text
+        // leaking to the Rust binary as a prompt.
+        await this.piService.pickActiveTools();
+        break;
       default:
         // The TypeScript SDK parses slash commands out of forwarded prompt text
         // (and extension command handlers like /tldr respond), so the path below
