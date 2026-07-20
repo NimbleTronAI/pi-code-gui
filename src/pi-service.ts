@@ -27,6 +27,7 @@ import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
 import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
+import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, mapScopedModels, type ModelChoice } from "./model-picker.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -1167,68 +1168,24 @@ export class PiService {
     return (await this.backend?.getAvailableModels()) ?? [];
   }
 
-  /** Format model specs (pricing + context window) for QuickPick detail. Returns empty string if no data. */
-  static formatModelDetail(cost?: { input: number; output: number }, contextWindow?: number): string {
-    const parts: string[] = [];
-    if (cost) {
-      parts.push(`$${cost.input}/$${cost.output} per M tokens`);
-    }
-    if (contextWindow) {
-      parts.push(`${Math.round(contextWindow / 1000)}K context`);
-    }
-    return parts.join(" · ");
-  }
-
-  /** Open a QuickPick to choose a model, set it on this session, and optionally save as default. */
+  /** Open a QuickPick to choose a model, set it on this session, and optionally save as default.
+   *  The choice list + item labelling is pure + tested (model-picker.ts); this owns the vscode
+   *  glue and the setModel/save-default side effects. */
   async pickModel(): Promise<boolean> {
-    interface ModelItem { label: string; provider: string; modelId: string; cost?: { input: number; output: number }; contextWindow?: number }
-    let models: ModelItem[] = [];
-
     // One data source for both runtimes: getAvailableModels() delegates to the backend
     // (Rust's own catalog — including custom models.json — or the SDK's ModelRuntime).
     // No runtime branch here; the picker doesn't know which backend it's talking to.
+    let models: ModelChoice[] = [];
     try {
       const available = await this.getAvailableModels();
-      if (available.length > 0) {
-        models = available.map((m) => ({
-          label: m.name || m.id,
-          provider: m.provider,
-          modelId: m.id,
-          cost: m.cost,
-          contextWindow: m.contextWindow,
-        }));
-      }
+      if (available.length > 0) { models = toModelChoices(available); }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
     }
+    if (models.length === 0) { models = FALLBACK_MODELS; }
 
-    // Fallback: static list of common models (no pricing — only SDK-reported pricing is shown)
-    if (models.length === 0) {
-      models = [
-        { label: "Claude Sonnet 4.5", provider: "anthropic", modelId: "claude-sonnet-4-5" },
-        { label: "Claude Haiku 4.5", provider: "anthropic", modelId: "claude-haiku-4-5" },
-        { label: "Claude Opus 4.5", provider: "anthropic", modelId: "claude-opus-4-5" },
-        { label: "GPT 4o", provider: "openai", modelId: "gpt-4o" },
-        { label: "Gemini 2.5 Pro", provider: "google", modelId: "gemini-2.5-pro" },
-        { label: "DeepSeek V3", provider: "deepseek", modelId: "deepseek-chat" },
-      ];
-    }
-
-    const currentId = this.model?.id;
-    const defModel = this.getDefaultModel();
-    const items = models.map((m) => {
-      const isDefault = defModel && m.provider === defModel.provider && m.modelId === defModel.id;
-      return {
-        label: `${m.label}${m.modelId === currentId ? " $(check)" : ""}${isDefault ? " \u2605" : ""}`,
-        description: m.provider,
-        detail: PiService.formatModelDetail(m.cost, m.contextWindow),
-        provider: m.provider,
-        modelId: m.modelId,
-        isDefault,
-      };
-    });
-
+    const items = buildModelPickerItems(models, this.model?.id, this.getDefaultModel());
     const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select model (\u2605 = default)", matchOnDetail: true });
     if (!picked) { return false; }
 
@@ -1341,13 +1298,7 @@ export class PiService {
   /** Get scoped models from the session */
   getScopedModels(): Array<{ provider: string; id: string; thinkingLevel: string }> {
     if (!this.session || !this.session.scopedModels) { return []; }
-    return this.session.scopedModels
-      .filter((s: Record<string, unknown>) => s.model !== null && s.model !== undefined)
-      .map((s: Record<string, unknown>) => ({
-        provider: (s.model as Record<string, unknown>).provider as string,
-        id: (s.model as Record<string, unknown>).id as string,
-        thinkingLevel: (s.thinkingLevel as string) ?? "off",
-      }));
+    return mapScopedModels(this.session.scopedModels);
   }
 
   emitScopedModels(): void {
