@@ -847,9 +847,42 @@ export function handleCompactionEnd(data: any) {
 
 export function handleAutoRetryStart(data: any) {
     state.isRetrying = true;
+    // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. Finalize the
+    // FAILED attempt's still-running tool/bash blocks (muted "retried" — not success, not
+    // error) and drop them from the live maps, so the re-run's tool calls create FRESH blocks
+    // instead of reconciling against a stale entry (a wrong/partial file path from the aborted
+    // attempt sticking on screen). Mirrors the translate-side clearToolCalls on auto_retry_start
+    // so both sides reset in lockstep. Rendered blocks stay as muted history.
+    finalizeInFlightBlocksForRetry();
     removeRetryIndicator();
     addRetryIndicator(data.attempt, data.maxAttempts, data.delayMs);
     updateStreamingState();
+  }
+
+/** Mark the failed attempt's running tool/bash blocks as "retried" (muted) and clear the live
+ *  correlation maps so the re-run starts fresh. Used on auto-retry-start. */
+function finalizeInFlightBlocksForRetry() {
+    Object.keys(state.currentToolBlocks).forEach(function (id) {
+      var entry = state.currentToolBlocks[id];
+      var block = (entry as any).el || entry;
+      if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
+        var statusEl = block.querySelector(".tool-status");
+        if (statusEl) { statusEl.textContent = "retried"; statusEl.className = "tool-status pending"; }
+        block.setAttribute("data-status", "done"); // so agent-end doesn't re-finalize it as "done"
+      }
+    });
+    state.currentToolBlocks = {};
+
+    Object.keys(state.bashBlocks).forEach(function (id) {
+      var bash = state.bashBlocks[id as string];
+      if (bash && bash.getAttribute && bash.getAttribute("data-status") === "running") {
+        bash.setAttribute("data-status", "done");
+        var footer = bash.querySelector(".bash-footer");
+        if (footer) { footer.innerHTML = '<span class="exit-code">exit: -</span> <span>(retried)</span>'; }
+        delete state.bashBlocks[id as string];
+        delete state.bashOutputs[id];
+      }
+    });
   }
 
 export function handleAutoRetryEnd(data: any) {
