@@ -10,7 +10,8 @@ import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } fro
 import { setupRustModels } from "./rust-models.js";
 import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, computeTokenCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
+import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 
@@ -1414,31 +1415,12 @@ export class PiService {
     return (p && id) ? findCatalogModelCost(this.bundledProviders, p, id) : null;
   }
 
-  getUsageStats(): {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-    /** False when we have no cost rates for the model → render "$??", not "$0". */
-    costKnown: boolean;
-    contextPercent: number | null;
-    contextWindow: number;
-  } {
-    // Raw token counts + context come from the active backend primitive
-    // (SdkService sums its session entries; RustService caches get_session_stats).
-    // The COST POLICY is the genuine runtime divergence kept here: the Rust binary
-    // reports cost:0 (it doesn't compute cost), so we derive it from tokens × the
-    // catalog's published rates; the SDK computes its own per-turn cost (u.cost).
+  getUsageStats(): UsageStats {
+    // Raw token counts + context come from the active backend primitive (SdkService sums its
+    // session entries; RustService caches get_session_stats). The cost policy — the genuine
+    // runtime divergence — is the pure, tested computeUsageStats (src/usage-stats.ts).
     const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-    const rates = this.activeCostRates();
-    if (this._backendKind === "rust") {
-      return { ...u, cost: rates ? computeTokenCost(u, rates) : 0, costKnown: rates !== null };
-    }
-    // Known when the SDK actually computed a cost, or we hold rates for the model
-    // (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
-    const costKnown = u.cost > 0 || rates !== null;
-    return { ...u, costKnown };
+    return computeUsageStats(u, this.activeCostRates(), this._backendKind);
   }
 
   // ── Getters ────────────────────────────────────────────
