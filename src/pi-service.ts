@@ -23,6 +23,7 @@ import { detectMissingRustTools } from "./rust-deps.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
 import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
 import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
+import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -543,37 +544,11 @@ export class PiService {
    *  and builtin prompt templates.  Each entry carries a `source`
    *  field so the UI can group or label them. */
   getAllSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
-    const result: Array<{ cmd: string; desc: string; source: string }> = [];
-
-    // ── Agent-provided commands (per runtime) ───────
-    // The active backend advertises only the commands it can service: Rust reports its
-    // extensions/templates/skills over RPC; the SDK introspects its extension runner and
-    // adds the builtin prompt templates. Delegated so PiService no longer branches on runtime.
-    result.push(...(this.backend?.getSlashCommands() ?? []));
-
-    // ── GUI-orchestrated session commands (both runtimes) ───
-    // The extension services these directly (pickers, session ops), branching
-    // internally on the runtime, so they work from chat regardless of backend.
-    result.push(
-      { cmd: "/model", desc: "Switch model", source: "builtin" },
-      { cmd: "/new", desc: "Start new session", source: "builtin" },
-      { cmd: "/compact", desc: "Compact context", source: "builtin" },
-      { cmd: "/settings", desc: "Open settings", source: "builtin" },
-      { cmd: "/login", desc: "Configure provider authentication", source: "builtin" },
-      { cmd: "/logout", desc: "Remove provider authentication", source: "builtin" },
-      { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
-    );
-
-    // ── Capability-gated commands ───────────────────
-    // Advertised only where the backend can service them (data flags, not a runtime
-    // conditional). Rust's RPC can't run these from chat — use the Sessions view/palette.
-    const caps = this.capabilities;
-    if (caps.fork) { result.push({ cmd: "/resume", desc: "Resume a previous session", source: "builtin" }); }
-    if (caps.fork) { result.push({ cmd: "/fork", desc: "Fork session from message", source: "builtin" }); }
-    if (caps.exportHtml && caps.kind === "typescript") { result.push({ cmd: "/export", desc: "Export session to HTML", source: "builtin" }); }
-    if (caps.toolsPicker) { result.push({ cmd: "/tools", desc: "Select which tools are active", source: "builtin" }); }
-
-    return result;
+    // Assembly is pure + tested (buildSlashCommandList): the active backend's agent commands
+    // (Rust reports its extensions/templates/skills over RPC; the SDK introspects its
+    // extension runner + builtin templates) + the GUI/session commands + the capability-gated
+    // ones. No runtime branch here.
+    return buildSlashCommandList(this.backend?.getSlashCommands() ?? [], this.capabilities);
   }
 
   /** Map a Rust `get_commands` reply into slash-command entries (tolerant of field naming). */
@@ -993,8 +968,7 @@ export class PiService {
   /** Try to handle a slash command locally. Returns true if handled,
    *  false if the caller should forward to session.prompt(). */
   private async tryHandleCommand(text: string): Promise<boolean> {
-    const spaceIndex = text.indexOf(" ");
-    const cmdName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+    const { cmd: cmdName, arg } = parseSlashCommand(text);
 
     switch (cmdName) {
       // Builtin commands with PiService handlers
@@ -1008,8 +982,7 @@ export class PiService {
       // the webview's localSlashCommands and handled via handleSlashCommand.
 
       case "name": {
-        const name = text.slice(6).trim();
-        if (name) { this.session.setSessionName(name); }
+        if (arg) { this.session.setSessionName(arg); }
         return true;
       }
 
@@ -1018,15 +991,13 @@ export class PiService {
         return true;
 
       case "compact": {
-        const compactArgs = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
-        await this.session.compact(compactArgs);
+        await this.session.compact(arg || undefined);
         return true;
       }
 
       case "export": {
-        // Parse optional output path from text
-        const exportArgs = text.startsWith("/export ") ? text.slice(8).trim() : undefined;
-        const outputPath = exportArgs || vscode.Uri.joinPath(
+        // Optional output path is the command argument.
+        const outputPath = arg || vscode.Uri.joinPath(
           vscode.Uri.file(resolveWorkspaceCwd()),
           `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`
         ).fsPath;
