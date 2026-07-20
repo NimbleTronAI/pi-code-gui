@@ -322,6 +322,13 @@ test("auto_retry_start / auto_retry_end", () => {
   assert.deepEqual(types(translateAgentEvent({ type: "auto_retry_end", success: true, attempt: 1 }, makeState())), ["auto-retry-end"]);
 });
 
+test("auto_retry_start clears tool-call correlation (the retry re-runs the turn — stale wrong-file previews must not survive)", () => {
+  const r = translateAgentEvent({ type: "auto_retry_start", attempt: 2, maxAttempts: 3 }, makeState());
+  assert.equal(r.clearToolCalls, true);
+  // auto_retry_end does NOT clear — the successful attempt's tools stay correlated.
+  assert.notEqual(translateAgentEvent({ type: "auto_retry_end", success: true, attempt: 2 }, makeState()).clearToolCalls, true);
+});
+
 // ── unknown ──────────────────────────────────────────────────────────
 test("unknown event: flags unknownType and emits a hidden diagnostic custom-message", () => {
   const r = translateAgentEvent({ type: "totally_new_event" }, makeState());

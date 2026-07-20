@@ -369,6 +369,13 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       break;
 
     case "auto_retry_start":
+      // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. The
+      // in-flight tool-call correlation (state.toolCalls, keyed by tool-call id) is from the
+      // FAILED attempt — leaving it in place lets the re-run's streaming preview reconcile
+      // against a stale entry (e.g. a wrong/partial file path from the aborted attempt sticks
+      // until the run ends). Clear it so the retry's tool calls correlate fresh. The rendered
+      // history blocks stay; only the live-preview correlation resets.
+      result.clearToolCalls = true;
       events.push({ type: "auto-retry-start", data: { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage } });
       break;
 
