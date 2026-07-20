@@ -16,7 +16,8 @@ import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.j
 
 
 import { resolveWorkspaceCwd } from "./workspace.js";
-import { translateAgentEvent, extractToolCalls, normalizeToolArgs, extractMessageText } from "./agent-events.js";
+import { translateAgentEvent, extractMessageText } from "./agent-events.js";
+import { replaySessionEntries, indexEntries } from "./session-replay.js";
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools } from "./rust-deps.js";
@@ -562,7 +563,12 @@ export class PiService {
     });
   }
 
-  /** Send existing session messages to the webview on initial load (or after reload). */
+  /** Send existing session messages to the webview on initial load (or after reload). The
+   *  replay decision (which events reproduce the session) is the pure, unit-tested
+   *  replaySessionEntries (src/session-replay.ts); this shell owns the side effects: appending
+   *  to the capped user-message history, then emitting each entry's group and yielding to the
+   *  event loop so the webview paints top-down (oldest first) without a synchronous DOM flood
+   *  that would crash the extension host on large sessions. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendInitialMessages(providedEntries?: any[]): Promise<void> {
     // Build session context from the session manager, or from caller-provided
@@ -584,153 +590,20 @@ export class PiService {
     }
     if (!entries || entries.length === 0) { return; }
 
-    // Pre-index tool results by call ID (O(n) instead of O(n²) .find() per entry)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toolResultsById = new Map<string, any>();
-    for (const e of entries) {
-      if (e.type === "message" && e.message?.role === "toolResult") {
-        toolResultsById.set(e.message.toolCallId, e);
-      }
+    const { groups, userMessages } = replaySessionEntries(entries, { now: Date.now() });
+    for (const m of userMessages) {
+      this._userMessages.push(m);
+      if (this._userMessages.length > 50) { this._userMessages.shift(); }
     }
 
-    // Replay entries top-down (oldest first), yielding to the event loop
-    // between each entry.  This guarantees correct visual order (oldest at
-    // top, newest at bottom) and prevents the synchronous DOM flood that
-    // would crash the extension host on large sessions.
     const yieldTick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
-
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (entry.type === "message" && entry.message) {
-        const msg = entry.message;
-        if (msg.role === "user") {
-          const text = this.extractTextFromContent(msg.content);
-          if (text) {
-            this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry.id } });
-          }
-        } else if (msg.role === "assistant") {
-          const text = this.extractTextFromContent(msg.content);
-          const thinking = this.extractThinkingFromContent(msg.content);
-          const toolCalls = this.extractToolCallsFromContent(msg.content);
-          
-
-          // Always emit assistant messages — even tool-only ones with no text.
-          // Skipping them makes tool executions invisible on reload/resume.
-          this.emit({ type: "assistant-start", data: { messageId: msg.id, entryId: entry.id } });
-          // Emit thinking content first, then text
-          if (thinking) {
-            this.emit({ type: "thinking-delta", data: { delta: thinking } });
-            this.emit({ type: "thinking-delta", data: { delta: "", done: true } });
-          }
-          if (text) {
-            this.emit({ type: "stream-delta", data: { delta: text } });
-          }
-          this.emit({
-            type: "assistant-end",
-            data: {
-              stopReason: msg.stopReason,
-              errorMessage: msg.errorMessage,
-              toolCalls: toolCalls.map((tc) => tc.id),
-            },
-          });
-
-          for (const tc of toolCalls) {
-            const toolResultEntry = toolResultsById.get(tc.id);
-            if (tc.name === "bash" || tc.name === "exec") {
-              this.emit({ type: "bash-start", data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", entryId: toolResultEntry?.id } });
-              const outputText = toolResultEntry?.message
-                ? this.extractTextFromContent(toolResultEntry.message.content)
-                : "";
-              this.emit({
-                type: "bash-end",
-                data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", exitCode: 0, cancelled: false, output: outputText, isError: false, entryId: toolResultEntry?.id },
-              });
-            } else {
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: normalizeToolArgs(tc.arguments), fromMessage: true, entryId: toolResultEntry?.id } });
-              if (toolResultEntry?.message) {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: toolResultEntry.message, isError: false, entryId: toolResultEntry?.id } });
-              } else {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: { content: [{ type: "text", text: "(completed)" }] }, isError: false, entryId: toolResultEntry?.id } });
-              }
-            }
-          }
-        } else if (msg.role === "custom") {
-          this.emit({ type: "custom-message", data: { customType: msg.customType, content: msg.content, display: msg.display, details: msg.details, timestamp: msg.timestamp, entryId: entry.id } });
-        } else if (msg.role === "bashExecution") {
-          const bashEntryId = entry.id ?? `bash-${Date.now()}`;
-          this.emit({ type: "bash-start", data: { toolCallId: bashEntryId, command: msg.command ?? "", entryId: entry.id } });
-          this.emit({ type: "bash-end", data: { toolCallId: bashEntryId, command: msg.command ?? "", exitCode: msg.exitCode, cancelled: msg.cancelled, output: msg.output ?? "", isError: msg.exitCode !== 0 && msg.exitCode !== null, entryId: entry.id } });
-        }
-      } else if (entry.type === "compaction") {
-        this.emit({
-          type: "compaction-summary-message",
-          data: { summary: entry.summary ?? "", tokensBefore: entry.tokensBefore ?? 0, timestamp: this._toTimestamp(entry.timestamp), entryId: entry.id },
-        });
-      }
-
-      // Yield after every entry so the webview paints incrementally.
-      await yieldTick();
+    for (const group of groups) {
+      for (const ev of group) { this.emit(ev); }
+      await yieldTick(); // paint incrementally
     }
   }
 
   // ── Agent event → PiServiceEvent translation ────────────
-
-  /** SDK entries store timestamps as ISO strings; protocol expects numbers. */
-  private _toTimestamp(ts: unknown): number {
-    if (typeof ts === "number") { return ts; }
-    if (ts) { return Date.parse(String(ts)); }
-    return Date.now();
-  }
-
-  /** Extract plain text from a message content (string or array) */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private extractTextFromContent(content: any): string {
-    return extractMessageText(content);
-  }
-
-  /** Extract thinking content blocks from an assistant message content array */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private extractThinkingFromContent(content: any): string {
-    if (!content) { return ""; }
-    if (Array.isArray(content)) {
-      return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((c: any) => c.type === "thinking")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((c: any) => c.thinking)
-        .join("\n");
-    }
-    return "";
-  }
-
-  /** Extract tool call content blocks from an assistant message. Delegates to
-   *  the shared pure helper (single source of truth with translateAgentEvent). */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private extractToolCallsFromContent(content: any[]): Array<{ name: string; id: string; arguments: any }> {
-    return extractToolCalls(content);
-  }
-
-  /** Get entries once per event, plus pre-built lookups to avoid O(n²) scans. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private getEntriesWithLookups(): { entries: any[]; byMessageId: Map<string, any>; byToolCallId: Map<string, any> } {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const entries: any[] = this.sessionManager?.getEntries?.() ?? [];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const byMessageId = new Map<string, any>();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const byToolCallId = new Map<string, any>();
-    for (const e of entries) {
-      if (e.type === "message") {
-        if (e.message?.id) { byMessageId.set(e.message.id, e); }
-        if (e.message?.role === "toolResult" && e.message?.toolCallId) {
-          byToolCallId.set(e.message.toolCallId, e);
-        }
-      }
-    }
-    return { entries, byMessageId, byToolCallId };
-  }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handleAgentEvent(event: any): void {
@@ -743,7 +616,7 @@ export class PiService {
     const r = translateAgentEvent(event, {
       backendKind: this._backendKind,
       agentRunActive: this._agentRunActive,
-      lookups: this.getEntriesWithLookups(),
+      lookups: indexEntries(this.sessionManager?.getEntries?.() ?? []),
       userMessages: this._userMessages,
       toolCalls: this.currentAssistantToolCalls,
       now: Date.now(),
@@ -1561,7 +1434,7 @@ export class PiService {
       // completeSimple resolves auth from the runtime (no explicit key).
       const result = await rt.completeSimple(model, context, { maxTokens: 20 });
 
-      const text = this.extractTextFromContent(result.content);
+      const text = extractMessageText(result.content);
       if (text) {
         // Clean up: take first line, trim, limit to ~40 chars
         return text.split("\n")[0].trim().replace(/^["']|["']$/g, "").slice(0, 40);
