@@ -17,11 +17,14 @@ function fakeSdk(over: Partial<Record<string, Any>> = {}): Any {
     getEntries: () => [],
   };
   return {
-    AuthStorage: { create: () => ({ setRuntimeApiKey: () => {} }) },
-    ModelRegistry: {
-      create: () => ({
+    // pi-coding-agent >= 0.80.8: the unified async ModelRuntime replaced AuthStorage + ModelRegistry.
+    ModelRuntime: {
+      create: async () => ({
+        setRuntimeApiKey: async () => {},
         getAvailable: async () => [{ provider: "anthropic", id: "claude-opus-4-8", name: "Claude Opus 4.8" }],
-        find: () => null,
+        getModel: () => null,
+        getAuth: async () => undefined,
+        refresh: async () => {},
       }),
     },
     SettingsManager: { create: () => ({}) },
@@ -115,7 +118,7 @@ function makeService(sessionOver: Record<string, Any> = {}): { svc: SdkService; 
   };
   svc.session = session;
   svc.AI = { getModel: (provider: string, id: string) => ({ provider, id, name: id }) } as Any;
-  svc.modelRegistry = { find: () => null };
+  svc.modelRuntime = { getModel: () => null };
   svc.sessionManager = {
     getEntries: () => [
       { type: "message", message: { role: "assistant", usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, cost: { total: 0.03 } } } },
@@ -163,7 +166,7 @@ test("setModel resolves + applies + returns identity", async () => {
 test("setModel unresolvable → null, no session.setModel", async () => {
   const { svc, calls } = makeService();
   svc.AI = { getModel: () => null } as Any;
-  svc.modelRegistry = { find: () => null };
+  svc.modelRuntime = { getModel: () => null };
   const applied = await svc.setModel("nope", "nope");
   assert.equal(applied, null);
   assert.equal(calls.length, 0);
@@ -241,7 +244,7 @@ test("no model available (empty registry + no built-ins) → 'No model available
       if (p.includes("pi-ai/dist/index.js")) { return fakeAi({ getModel: () => null }); }
       if (p.includes("typebox")) { return { Type: {} }; }
       if (p.endsWith("dist/index.js")) {
-        return fakeSdk({ ModelRegistry: { create: () => ({ getAvailable: async () => [], find: () => null }) } });
+        return fakeSdk({ ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {}, getAvailable: async () => [], getModel: () => null, getAuth: async () => undefined, refresh: async () => {} }) } });
       }
       return {};
     },
@@ -265,7 +268,7 @@ test("createAgentSession throwing → 'createAgentSession failed'", async () => 
   assert.match(out.error ?? "", /createAgentSession failed/);
 });
 
-test("runtime API keys from config are applied to auth storage", async () => {
+test("runtime API keys from config are applied to the model runtime", async () => {
   const applied: Array<[string, string]> = [];
   const { host, deps } = makeEnv({
     config: { anthropicApiKey: "sk-ant", openaiApiKey: "sk-oai" },
@@ -273,7 +276,11 @@ test("runtime API keys from config are applied to auth storage", async () => {
       if (p.includes("pi-ai/dist/index.js")) { return fakeAi(); }
       if (p.includes("typebox")) { return { Type: {} }; }
       if (p.endsWith("dist/index.js")) {
-        return fakeSdk({ AuthStorage: { create: () => ({ setRuntimeApiKey: (prov: string, key: string) => applied.push([prov, key]) }) } });
+        return fakeSdk({ ModelRuntime: { create: async () => ({
+          setRuntimeApiKey: async (prov: string, key: string) => { applied.push([prov, key]); },
+          getAvailable: async () => [{ provider: "anthropic", id: "claude-opus-4-8", name: "Claude Opus 4.8" }],
+          getModel: () => null, getAuth: async () => undefined, refresh: async () => {},
+        }) } });
       }
       return {};
     },

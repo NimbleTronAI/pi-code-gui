@@ -115,8 +115,8 @@ export class PiService {
   /* eslint-disable @typescript-eslint/no-explicit-any -- SDK objects are dynamically typed */
   private get SDK(): PiSdk | null { return this._sdk?.SDK ?? null; }
   private get AI(): PiAi | null { return this._sdk?.AI ?? null; }
-  private get authStorage(): any { return this._sdk?.authStorage ?? null; }
-  private get modelRegistry(): any { return this._sdk?.modelRegistry ?? null; }
+  /** Unified auth+model facade (pi-coding-agent >= 0.80.8), owned by SdkService. */
+  private get modelRuntime(): any { return this._sdk?.modelRuntime ?? null; }
   private get settingsManager(): any { return this._sdk?.settingsManager ?? null; }
   private get sessionManager(): any { return this._sdk?.sessionManager ?? null; }
   private get resourceLoader(): any { return this._sdk?.resourceLoader ?? null; }
@@ -1468,11 +1468,11 @@ export class PiService {
   get showImages(): boolean { return this._showImages; }
   get userMessages(): Array<{ id: string; text: string; timestamp?: number }> { return this._userMessages; }
 
-  /** Get available models from the model registry (for dynamic model pickers). */
+  /** Get available models from the model runtime (for dynamic model pickers). */
   async getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>> {
-    if (!this.modelRegistry) { return []; }
+    if (!this.modelRuntime) { return []; }
     try {
-      const available = await this.modelRegistry.getAvailable();
+      const available = await this.modelRuntime.getAvailable();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return available.map((m: any) => ({
         provider: m.provider,
@@ -1587,9 +1587,9 @@ export class PiService {
     // TS SDK path: resolve the live pi-ai model from the registry, then reconcile it
     // against the bundled catalog so a custom ~/.pi/agent/models.json that omits
     // `reasoning` can't downgrade a known-reasoning model (shared with the init clamp).
-    if (this.modelRegistry) {
+    if (this.modelRuntime) {
       try {
-        const m = this.modelRegistry.find(provider, id) as ThinkingModel | undefined;
+        const m = this.modelRuntime.getModel(provider, id) as ThinkingModel | undefined;
         if (m) { return reconcileThinkingCapability(this.bundledProviders, provider, id, m); }
       } catch { /* fall through to the bundled catalog */ }
     }
@@ -1724,9 +1724,12 @@ export class PiService {
       const model = this.AI.getModel(this._model.provider, this._model.id);
       if (!model) { return null; }
 
-      const apiKey = this.authStorage
-        ? await this.authStorage.getApiKey(this._model.provider!)
+      // getApiKey was removed; ModelRuntime.getAuth(provider) resolves the provider's
+      // credential (env / auth.json / runtime override) as an AuthResult.
+      const auth = this.modelRuntime
+        ? await this.modelRuntime.getAuth(this._model.provider!)
         : undefined;
+      const apiKey = auth?.apiKey;
 
       const context = {
         systemPrompt: "Generate a concise 3-word summary of the following user request. Respond with ONLY the three words, lowercase, no punctuation, no quotes, no explanation.",
@@ -1751,10 +1754,10 @@ export class PiService {
     }
   }
 
-  /** Set a runtime API key (not persisted to disk) */
-  setRuntimeApiKey(provider: string, key: string): void {
-    if (this.authStorage && typeof this.authStorage.setRuntimeApiKey === "function") {
-      this.authStorage.setRuntimeApiKey(provider, key);
+  /** Set a runtime API key (not persisted to disk). Async on the new SDK. */
+  async setRuntimeApiKey(provider: string, key: string): Promise<void> {
+    if (this.modelRuntime && typeof this.modelRuntime.setRuntimeApiKey === "function") {
+      await this.modelRuntime.setRuntimeApiKey(provider, key);
     }
   }
 
@@ -1843,9 +1846,9 @@ export class PiService {
   get initialized(): boolean { return this.session !== null || this._rust !== null; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get rawSession(): any { return this.session; }
-  /** Expose the model registry for dynamic model pickers in the webview */
+  /** Expose the model runtime for dynamic model pickers in the webview */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  get modelRegistryInstance(): any { return this.modelRegistry; }
+  get modelRuntimeInstance(): any { return this.modelRuntime; }
 
   /** Get the session display name from the session manager, if set. */
   get sessionName(): string | undefined {
@@ -1985,311 +1988,31 @@ export class PiService {
   // ── Login / Logout ─────────────────────────────────────
 
   /**
-   * Show the login flow for a provider.
-   * Mirrors the pi CLI's /login command:
-   * 1. Select auth type (subscription/OAuth vs API key)
-   * 2. Select provider
-   * 3. For OAuth: open browser and complete OAuth flow
-   * 4. For API key: prompt for key and save it
+   * Provider login. TEMPORARILY DEGRADED for the pi-coding-agent >= 0.80.8 migration:
+   * the previous flow was written against the removed AuthStorage API
+   * (`authStorage.login/set/getOAuthProviders` + `modelRegistry.getProviderDisplayName`).
+   * Tier 2 reworks it against `ModelRuntime.login()` / `logout()` / `listCredentials()`.
+   * Until then, point users at the credential paths that still work so they're never stuck.
    */
   async login(): Promise<void> {
-    if (!this.authStorage || !this.modelRegistry) {
-      throw new Error("Pi session not initialized");
-    }
-
-    // ── Step 1: Auth type selector ─────────────────────
-    const authType = await this.pickAuthType();
-    if (!authType) { return; } // cancelled
-
-    // ── Step 2: Provider selector ───────────────────────
-    const providerChoice = await this.pickLoginProvider(authType);
-    if (!providerChoice) { return; } // cancelled
-
-    // ── Step 3: Execute login ───────────────────────────
-    if (providerChoice.authType === "oauth") {
-      await this.doOAuthLogin(providerChoice.id, providerChoice.name);
-    } else if (providerChoice.id === "amazon-bedrock") {
-      await this.showInfoMessage(
-        "Amazon Bedrock uses AWS credentials. Configure an AWS profile, IAM keys, or role-based credentials.",
-      );
-    } else {
-      await this.doApiKeyLogin(providerChoice.id, providerChoice.name);
-    }
-  }
-
-  /** Show the auth type picker: Subscription (OAuth) vs API Key */
-  private async pickAuthType(): Promise<"oauth" | "api_key" | undefined> {
-    const ITEMS = [
-      { label: "Use a subscription", authType: "oauth" as const, description: "OAuth login for Anthropic, GitHub Copilot, OpenAI Codex" },
-      { label: "Use an API key", authType: "api_key" as const, description: "Enter an API key for any provider" },
-    ];
-    const pick = await this.showQuickPick(ITEMS, "Select authentication method:");
-    return pick?.authType;
-  }
-
-  /** Show provider picker for a given auth type */
-  private async pickLoginProvider(
-    authType: "oauth" | "api_key",
-  ): Promise<{ id: string; name: string; authType: string } | undefined> {
-    const options = this.getLoginProviderOptions(authType);
-    if (options.length === 0) {
-      const label = authType === "oauth" ? "No subscription providers available." : "No API key providers available.";
-      await this.showInfoMessage(label);
-      return undefined;
-    }
-    const pick = await this.showQuickPick(options, `Select ${authType === "oauth" ? "subscription" : "API key"} provider:`);
-    return pick;
-  }
-
-  /** Build the list of provider options for login */
-  private getLoginProviderOptions(
-    authType: "oauth" | "api_key",
-  ): Array<{ id: string; name: string; authType: string; label: string; description: string }> {
-    const oauthProviders = this.authStorage.getOAuthProviders();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const oauthProviderIds = new Set(oauthProviders.map((p: any) => p.id));
-    const options: Array<{ id: string; name: string; authType: string; label: string; description: string }> = [];
-
-    if (authType === "oauth") {
-      // OAuth providers
-      for (const provider of oauthProviders) {
-        const authStatus = this.modelRegistry.getProviderAuthStatus(provider.id);
-        options.push({
-          id: provider.id,
-          name: provider.name,
-          authType: "oauth",
-          label: provider.name,
-          description: authStatus?.configured ? "$(check) Already configured" : "",
-        });
-      }
-    } else {
-      // API key providers — all model providers that aren't OAuth-only
-      const allModels = this.modelRegistry.getAll();
-      const seenProviders = new Set<string>();
-      for (const model of allModels) {
-        const providerId = model.provider;
-        if (seenProviders.has(providerId)) { continue; }
-        seenProviders.add(providerId);
-        // Skip providers that only support OAuth
-        if (oauthProviderIds.has(providerId)) { continue; }
-        const displayName = this.modelRegistry.getProviderDisplayName(providerId);
-        const authStatus = this.modelRegistry.getProviderAuthStatus(providerId);
-        options.push({
-          id: providerId,
-          name: displayName,
-          authType: "api_key",
-          label: displayName,
-          description: authStatus?.configured
-            ? `$(check) Already configured (${authStatus.source})`
-            : "",
-        });
-      }
-    }
-
-    return options.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  /** Show a VS Code quick pick (wraps showQuickPick since it's async and returns proper type) */
-  private async showQuickPick<T extends { label: string; description?: string }>(
-    items: T[],
-    placeHolder: string,
-  ): Promise<T | undefined> {
-    const vscode = await import("vscode");
-    const picked = await vscode.window.showQuickPick(items, { placeHolder, matchOnDescription: true });
-    return picked;
-  }
-
-  /** Show an info message */
-  private async showInfoMessage(message: string): Promise<void> {
-    const vscode = await import("vscode");
-    await vscode.window.showInformationMessage(message);
-  }
-
-  /** Show an error message */
-  private async showErrorMessage(message: string): Promise<void> {
-    const vscode = await import("vscode");
-    await vscode.window.showErrorMessage(message);
+    vscode.window.showInformationMessage(
+      "In-app provider login is being updated for the new Pi SDK. For now set credentials via the " +
+      "ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY environment variables, the " +
+      "pi-code-gui.anthropicApiKey / openaiApiKey settings, or ~/.pi/agent/auth.json — the extension " +
+      "picks these up on the next session.",
+    );
   }
 
   /**
-   * Execute OAuth login flow for a provider.
-   * Opens the browser, handles callbacks, and waits for completion.
-   */
-  private async doOAuthLogin(providerId: string, providerName: string): Promise<void> {
-    const vscode = await import("vscode");
-    const previousModel = this._model;
-
-    try {
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Logging in to ${providerName}...`,
-          cancellable: true,
-        },
-        async (progress, token) => {
-          const abortController = new AbortController();
-          token.onCancellationRequested(() => abortController.abort());
-
-          await this.authStorage.login(providerId, {
-            onAuth: (info: { url: string; instructions?: string }) => {
-              // Open the URL in the browser
-              vscode.env.openExternal(vscode.Uri.parse(info.url));
-              if (info.instructions) {
-                progress.report({ message: info.instructions });
-              }
-            },
-            onPrompt: async (prompt: { message: string; placeholder?: string }) => {
-              // Show an input box for the response
-              return vscode.window.showInputBox({
-                prompt: prompt.message,
-                placeHolder: prompt.placeholder,
-                password: true,
-                ignoreFocusOut: true,
-              }) ?? "";
-            },
-            onProgress: (message: string) => {
-              progress.report({ message });
-            },
-            onManualCodeInput: () => {
-              // For callback-server providers, prompt for manual paste
-              return new Promise<string>((resolve, reject) => {
-                token.onCancellationRequested(() => reject(new Error("Login cancelled")));
-                vscode.window
-                  .showInputBox({
-                    prompt: "Paste redirect URL below, or complete login in browser:",
-                    ignoreFocusOut: true,
-                  })
-                  .then((value) => {
-                    if (value) { resolve(value); }
-                    else { reject(new Error("Login cancelled")); }
-                  });
-              });
-            },
-            signal: abortController.signal,
-          });
-
-          progress.report({ message: "Login successful!" });
-        },
-      );
-
-      // Refresh model registry and try to select a model for the provider
-      this.modelRegistry.refresh();
-      await this.completeLogin(providerId, providerName, "oauth", previousModel);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-      if (error.message !== "Login cancelled") {
-        await this.showErrorMessage(`Failed to login to ${providerName}: ${error.message ?? error}`);
-      }
-    }
-  }
-
-  /**
-   * Execute API key login flow for a provider.
-   */
-  private async doApiKeyLogin(providerId: string, providerName: string): Promise<void> {
-    const vscode = await import("vscode");
-    const previousModel = this._model;
-
-    try {
-      const apiKey = await vscode.window.showInputBox({
-        prompt: `Enter API key for ${providerName}:`,
-        password: true,
-        placeHolder: "sk-...",
-        validateInput: (value) => (value.trim() ? undefined : "API key required"),
-        ignoreFocusOut: true,
-      });
-
-      if (!apiKey || !apiKey.trim()) {
-        return; // cancelled
-      }
-
-      this.authStorage.set(providerId, { type: "api_key", key: apiKey.trim() });
-      this.modelRegistry.refresh();
-      await this.completeLogin(providerId, providerName, "api_key", previousModel);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-      if (error.message !== "Login cancelled") {
-        await this.showErrorMessage(`Failed to save API key for ${providerName}: ${error.message ?? error}`);
-      }
-    }
-  }
-
-  /** After login, try to select a default model for the provider */
-  private async completeLogin(
-    providerId: string,
-    providerName: string,
-    authType: string,
-    previousModel: { id?: string; provider?: string } | null,
-  ): Promise<void> {
-    const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
-
-    // Try to select a default model for the provider if the current model is "unknown"
-    if (this.AI && (!previousModel || previousModel.provider === "unknown")) {
-      const availableModels = this.modelRegistry.getAvailable();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const providerModels = availableModels.filter((m: any) => m.provider === providerId);
-      if (providerModels.length > 0) {
-        try {
-          await this.setModel(providerId, providerModels[0].id);
-          await this.showInfoMessage(`${actionLabel}. Selected ${providerModels[0].id}.`);
-        } catch {
-          await this.showInfoMessage(`${actionLabel}.`);
-        }
-        return;
-      }
-    }
-
-    await this.showInfoMessage(`${actionLabel}.`);
-  }
-
-  /**
-   * Show the logout flow for a provider.
-   * Mirrors the pi CLI's /logout command.
+   * Provider logout. TEMPORARILY DEGRADED (see login) — Tier 2 reworks it against
+   * `ModelRuntime.logout()` + `listCredentials()`.
    */
   async logout(): Promise<void> {
-    if (!this.authStorage || !this.modelRegistry) {
-      throw new Error("Pi session not initialized");
-    }
-
-    // Build list of providers that have credentials saved
-    const options: Array<{ id: string; name: string; label: string; description: string }> = [];
-    for (const providerId of this.authStorage.list()) {
-      const credential = this.authStorage.get(providerId);
-      if (!credential) { continue; }
-      const displayName = this.modelRegistry.getProviderDisplayName(providerId);
-      options.push({
-        id: providerId,
-        name: displayName,
-        label: displayName,
-        description: credential.type === "oauth" ? "OAuth subscription" : "API key",
-      });
-    }
-
-    if (options.length === 0) {
-      await this.showInfoMessage(
-        "No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
-      );
-      return;
-    }
-
-    const pick = await this.showQuickPick(
-      options.sort((a, b) => a.name.localeCompare(b.name)),
-      "Select provider to logout:",
+    vscode.window.showInformationMessage(
+      "Managing stored credentials from the extension is being updated for the new Pi SDK. For now, " +
+      "edit or remove entries in ~/.pi/agent/auth.json directly (environment variables and models.json " +
+      "config are unaffected).",
     );
-    if (!pick) { return; }
-
-    try {
-      this.authStorage.logout(pick.id);
-      this.modelRegistry.refresh();
-      const message =
-        pick.description === "OAuth subscription"
-          ? `Logged out of ${pick.name}`
-          : `Removed stored API key for ${pick.name}. Environment variables and models.json config are unchanged.`;
-      await this.showInfoMessage(message);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-      await this.showErrorMessage(`Logout failed: ${error.message ?? error}`);
-    }
   }
 
   // ── Cleanup ────────────────────────────────────────────

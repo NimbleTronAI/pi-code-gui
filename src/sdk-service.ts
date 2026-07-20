@@ -64,8 +64,9 @@ export interface PiSdk {
   createAgentSession: Function;
   SessionManager: any;
   SettingsManager: any;
-  AuthStorage: any;
-  ModelRegistry: any;
+  // ModelRuntime (pi-coding-agent >= 0.80.8) is the unified async auth+model facade
+  // that replaced the removed AuthStorage + ModelRegistry.create(auth) pair.
+  ModelRuntime: any;
   createCodingTools: Function;
   createReadOnlyTools: Function;
   DefaultResourceLoader: any;
@@ -298,8 +299,9 @@ export class SdkService implements PiBackend {
   public piRoot: string | null = null;
   public SDK: PiSdk | null = null;
   public AI: PiAi | null = null;
-  public authStorage: any = null;
-  public modelRegistry: any = null;
+  /** Unified auth+model facade (pi-coding-agent >= 0.80.8), replacing the removed
+   *  authStorage + modelRegistry. Async: created via `await ModelRuntime.create()`. */
+  public modelRuntime: any = null;
   public settingsManager: any = null;
   public sessionManager: any = null;
   public resourceLoader: any = null;
@@ -416,23 +418,26 @@ export class SdkService implements PiBackend {
     const cfg = this.deps.config();
     const cwd = this.deps.workspaceCwd();
 
-    // ── Step 3: Auth & model registry ──────────────────
+    // ── Step 3: Model runtime (auth + models) ──────────
+    // pi-coding-agent >= 0.80.8 replaced AuthStorage + ModelRegistry.create(auth) with
+    // the single async ModelRuntime (0.80.8 CHANGELOG "Unified model runtime and provider
+    // authentication"). It owns credentials (auth.json), the dynamic catalog, and request
+    // auth; create it once and pass it to createAgentSession via the `modelRuntime` option.
     try {
-      this.authStorage = SDK.AuthStorage.create();
+      this.modelRuntime = await SDK.ModelRuntime.create();
 
-      // Runtime API key override from VS Code secrets or env
+      // Runtime API key override from VS Code secrets or env (not persisted). Now async.
       if (cfg.anthropicApiKey) {
-        this.authStorage.setRuntimeApiKey("anthropic", cfg.anthropicApiKey);
+        await this.modelRuntime.setRuntimeApiKey("anthropic", cfg.anthropicApiKey);
       }
       if (cfg.openaiApiKey) {
-        this.authStorage.setRuntimeApiKey("openai", cfg.openaiApiKey);
+        await this.modelRuntime.setRuntimeApiKey("openai", cfg.openaiApiKey);
       }
 
-      this.modelRegistry = SDK.ModelRegistry.create(this.authStorage);
       this.settingsManager = SDK.SettingsManager.create(cwd);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
-      return { success: false, error: `Auth/registry setup failed: ${e.message ?? e}` };
+      return { success: false, error: `Model runtime setup failed: ${e.message ?? e}` };
     }
 
     // ── Step 4: Pick a model (dynamic from registry) ──
@@ -441,21 +446,21 @@ export class SdkService implements PiBackend {
     let model: any = null;
     let cycleModels: Array<{ provider: string; id: string }> = [];
     try {
-      // Try registry first (respects API keys)
-      const available = await this.modelRegistry.getAvailable();
+      // Try the runtime catalog first (respects API keys); getAvailable is async.
+      const available = await this.modelRuntime.getAvailable();
       if (available.length > 0) {
         model = available[0];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         cycleModels = available.map((m: any) => ({ provider: m.provider, id: m.id }));
       } else {
-        // Fallback: try built-in models via modelRegistry.find() and getModel()
+        // Fallback: try built-in models via modelRuntime.getModel() (find() was removed)
         cycleModels = [];
         for (const candidate of [
           ["anthropic", "claude-sonnet-4-5"],
           ["anthropic", "claude-haiku-4-5"],
           ["openai", "gpt-4o"],
         ]) {
-          const found = this.modelRegistry.find(candidate[0], candidate[1]);
+          const found = this.modelRuntime.getModel(candidate[0], candidate[1]);
           if (found) {
             cycleModels.push({ provider: candidate[0], id: candidate[1] });
             if (!model) { model = found; }
@@ -487,7 +492,7 @@ export class SdkService implements PiBackend {
 
     // ── Override with user's default model from VS Code settings ──
     if (cfg.defaultModelProvider && cfg.defaultModelId) {
-      const defModel = this.modelRegistry.find(cfg.defaultModelProvider, cfg.defaultModelId) ?? AI.getModel(cfg.defaultModelProvider, cfg.defaultModelId);
+      const defModel = this.modelRuntime.getModel(cfg.defaultModelProvider, cfg.defaultModelId) ?? AI.getModel(cfg.defaultModelProvider, cfg.defaultModelId);
       if (defModel) { model = defModel; }
     }
 
@@ -594,8 +599,8 @@ export class SdkService implements PiBackend {
         for (let i = entries.length - 1; i >= 0; i--) {
           const e = entries[i];
           if (!foundSessionModel && e.type === "model_change" && e.provider && e.modelId) {
-            // Try to resolve the model from the registry
-            const found = this.modelRegistry.find(e.provider, e.modelId);
+            // Try to resolve the model from the runtime catalog
+            const found = this.modelRuntime.getModel(e.provider, e.modelId);
             if (found) {
               resumeModel = found;
               foundSessionModel = true;
@@ -665,8 +670,7 @@ export class SdkService implements PiBackend {
       const sessionOpts: any = {
         model: resumeModel,
         thinkingLevel: resumeThinkingLevel,
-        authStorage: this.authStorage,
-        modelRegistry: this.modelRegistry,
+        modelRuntime: this.modelRuntime,
         settingsManager: this.settingsManager,
         sessionManager: this.sessionManager,
         customTools: tools,
@@ -781,9 +785,9 @@ export class SdkService implements PiBackend {
    *  the session isn't ready or the model can't be resolved (caller then bails). */
   async setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null> {
     if (!this.session || !this.AI) { piWarn(`setModel("${provider}/${id}") ignored: session not initialized`); return null; }
-    // Try registry first, then fall back to getModel.
+    // Try the runtime catalog first, then fall back to pi-ai getModel.
     let model: any = null;
-    if (this.modelRegistry) { model = this.modelRegistry.find(provider, id); }
+    if (this.modelRuntime) { model = this.modelRuntime.getModel(provider, id); }
     if (!model) { model = this.AI.getModel(provider, id); }
     if (!model) { return null; }
     await this.session.setModel(model);
@@ -871,9 +875,8 @@ export class SdkService implements PiBackend {
     this.session = null;
     this.sessionManager = null;
     this.resourceLoader = null;
-    this.modelRegistry = null;
+    this.modelRuntime = null;
     this.settingsManager = null;
-    this.authStorage = null;
     this.SDK = null;
     this.AI = null;
     this.piRoot = null;
