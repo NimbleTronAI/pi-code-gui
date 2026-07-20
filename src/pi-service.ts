@@ -12,6 +12,7 @@ import { resolveRustSessionDir } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
+import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 
@@ -682,15 +683,13 @@ export class PiService {
    *  fields). A Rust transport that can't transmit the level degrades to a read-only
    *  "reasoning: on/off" badge — the only real axis there. */
   thinkingStatus(): { text: string; clickable: boolean } {
-    // A transport that can't transmit the level (some Rust provider apis) shows a
-    // read-only reasoning on/off badge. capabilities.thinkingLevelLive() is always
-    // true for the SDK, so this only degrades under Rust — as before.
-    if (!this.capabilities.thinkingLevelLive()) {
-      return { text: `reasoning: ${this._model?.reasoning ? "on" : "off"}`, clickable: false };
-    }
-    const level = this.realThinkingLevel();
-    if (level === "off") { return { text: "thinking: off", clickable: true }; }
-    return { text: `thinking: on · reasoning: ${level}`, clickable: true };
+    // Chip composition is pure + tested (composeThinkingStatus). thinkingLevelLive() is always
+    // true for the SDK, so the read-only reasoning badge only appears under Rust — as before.
+    return composeThinkingStatus({
+      live: this.capabilities.thinkingLevelLive(),
+      reasoningOn: !!this._model?.reasoning,
+      level: this.realThinkingLevel(),
+    });
   }
 
   /** Remember the active reasoning level so toggling Thinking off→on can restore it. */
@@ -701,9 +700,7 @@ export class PiService {
   /** The reasoning level to apply when Thinking is turned on with no explicit choice:
    *  the last one used, else the model's highest supported level. */
   private defaultReasoningLevel(): string {
-    const on = this.supportedThinkingLevels().filter((l) => l !== "off");
-    if (this._lastReasoningLevel && on.includes(this._lastReasoningLevel)) { return this._lastReasoningLevel; }
-    return on[on.length - 1] ?? "high";
+    return pickDefaultReasoningLevel(this.supportedThinkingLevels(), this._lastReasoningLevel);
   }
 
   /** Toggle Thinking on/off (the Thinking axis of the one dial). Off→on restores the
@@ -721,8 +718,7 @@ export class PiService {
       vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — reasoning depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
       return false;
     }
-    const target = this.realThinkingLevel() === "off" ? this.defaultReasoningLevel() : "off";
-    await this.setThinkingLevel(target);
+    await this.setThinkingLevel(toggleThinkingTarget(this.realThinkingLevel(), this.defaultReasoningLevel()));
     return true;
   }
 
@@ -1264,20 +1260,14 @@ export class PiService {
       vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to adjust.`);
       return false;
     }
-    const REASONING_DESCR: Record<string, string> = {
-      minimal: "minimal reasoning", low: "brief reasoning", medium: "balanced reasoning",
-      high: "extended reasoning", xhigh: "maximum reasoning",
-    };
-    const current = this.thinkingLevel;
-    const defLevel = this.getDefaultThinking();
-    const fmt = (lvl: string, label: string): string =>
-      `${lvl === current ? "$(check) " : ""}${label}${lvl === defLevel ? " ★" : ""}`;
+    // Row assembly (Off + separator + supported levels, with marks) is pure + tested
+    // (buildThinkingPickerRows); map its neutral rows to vscode QuickPick items here.
     type Item = vscode.QuickPickItem & { level?: string; isDefault?: boolean };
-    const items: Item[] = [
-      { label: fmt("off", "Off"), description: "thinking off", level: "off", isDefault: defLevel === "off" },
-      { label: "Reasoning level", kind: vscode.QuickPickItemKind.Separator },
-      ...onLevels.map((l) => ({ label: fmt(l, l), description: REASONING_DESCR[l] ?? "reasoning", level: l, isDefault: l === defLevel })),
-    ];
+    const items: Item[] = buildThinkingPickerRows(onLevels, this.thinkingLevel, this.getDefaultThinking()).map((r) =>
+      r.separator
+        ? { label: r.label, kind: vscode.QuickPickItemKind.Separator }
+        : { label: r.label, description: r.description, level: r.level, isDefault: r.isDefault },
+    );
 
     const picked = await vscode.window.showQuickPick(items, { placeHolder: "Thinking & reasoning (\u2605 = default)" });
     if (!picked || picked.level === undefined) { return false; }
