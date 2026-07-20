@@ -1,6 +1,7 @@
 # SDK Resolution & Initialization
 
 > **Status:** evolving
+> **Last updated:** 2026-07-20 — migrated to pi-coding-agent ≥ 0.80.8 `ModelRuntime` (removed `AuthStorage`/`ModelRegistry`); steps 4/5/9/10 updated + new "SDK version compatibility" section (incl. the OAuth-not-live-verified caveat).
 
 SDK Resolution & Initialization (`src/pi-service.ts` — `resolvePiPackagePath()`,
 `PiService.checkInstall()`, and `PiService.initialize()`) is the startup sequence
@@ -31,11 +32,13 @@ before any chat interaction can begin.
 3. **Load Typebox** — Dynamic import of `typebox/build/index.mjs` for
    `defineTool()` type schemas.
 
-4. **Auth & model registry** — Create `AuthStorage`, apply runtime API key
-   overrides from VS Code settings, create `ModelRegistry` and `SettingsManager`.
+4. **Model runtime (auth + models)** — `await ModelRuntime.create()` (the unified
+   async auth+model facade; see "SDK version compatibility" below), apply runtime API
+   key overrides from VS Code settings (`await modelRuntime.setRuntimeApiKey(...)`),
+   create `SettingsManager`.
 
-5. **Pick a model** — Try `modelRegistry.getAvailable()` first (respects API
-   keys), fall back to `modelRegistry.find()` and `AI.getModel()` for built-in
+5. **Pick a model** — Try `await modelRuntime.getAvailable()` first (respects API
+   keys), fall back to `modelRuntime.getModel()` and `AI.getModel()` for built-in
    models. Apply user's default model from VS Code settings if configured.
    Apply context budget override.
 
@@ -55,11 +58,12 @@ before any chat interaction can begin.
 
 9. **Restore model/thinking** — Walk session entries in reverse to find the
    last `model_change` and `thinking_level_change` entries. Resolve model
-   against registry.
+   via `modelRuntime.getModel()`.
 
 10. **Create agent session** — `SDK.createAgentSession()` with all
-    configuration: model, thinking level, auth, registry, tools, resource
-    loader, settings manager, session manager, scoped models.
+    configuration: model, thinking level, `modelRuntime` (carries auth + the
+    catalog), tools, resource loader, settings manager, session manager, scoped
+    models.
 
 11. **Bind extensions & emit history** — Subscribe to agent events, bind
     extension UI context, emit initial message history (with batch-start/end
@@ -71,6 +75,50 @@ Each step returns `{ success: false, error: "..." }` on failure. The caller
 (`initSessionInBackground` in `extension.ts`) posts error messages to the
 webview, shows VS Code error notifications with action buttons (Install Pi,
 Retry, Learn More), and updates the tree view to reflect the failure state.
+
+## SDK version compatibility (ModelRuntime, pi-coding-agent ≥ 0.80.8)
+
+**0.80.8 was a breaking redesign** (its CHANGELOG: "Unified model runtime and
+provider authentication"). It **removed the `AuthStorage` export and
+`ModelRegistry.create(auth)`** and replaced both with a single **async
+`ModelRuntime`**. On the removed API the extension died at init with
+`Auth/registry setup failed: Cannot read properties of undefined (reading 'create')`
+(`SDK.AuthStorage.create()` → `undefined.create`). The extension migrated to
+`ModelRuntime` rather than pinning an old SDK — it runs on current 0.80.x.
+
+The mapping (`src/sdk-service.ts` + `src/pi-service.ts`):
+
+| Removed | ModelRuntime (0.80.8+) |
+|---|---|
+| `AuthStorage.create()` + `ModelRegistry.create(auth)` | `await ModelRuntime.create()` — one object |
+| `authStorage.setRuntimeApiKey(p,k)` | `await modelRuntime.setRuntimeApiKey(p,k)` (async) |
+| `authStorage.getApiKey(p)` | `await modelRuntime.getAuth(p)` → `.apiKey` |
+| `modelRegistry.find(p,id)` | `modelRuntime.getModel(p,id)` (sync) |
+| `modelRegistry.getAvailable()` | `await modelRuntime.getAvailable()` (async) |
+| `modelRegistry.refresh()` | `await modelRuntime.refresh()` (async) |
+| `modelRegistry.getAll()` / `getProviderDisplayName(id)` | `modelRuntime.getProviders()` / `getProvider(id).name` |
+| `authStorage.login/list/logout` | `modelRuntime.login(id, "api_key"\|"oauth", interaction)` / `listCredentials()` / `logout(id)` |
+| `createAgentSession({ authStorage, modelRegistry })` | `createAgentSession({ modelRuntime })` |
+
+**`/login` and `/logout`** (`PiService.login`/`logout`) drive
+`modelRuntime.login(providerId, type, interaction)`, where `interaction` is a pi-ai
+`AuthInteraction` — a unified `{ prompt(AuthPrompt), notify(AuthEvent) }` pair
+serving BOTH the api-key and OAuth flows. `makeAuthInteraction()` adapts it to VS
+Code: `prompt({text|secret|select|manual_code})` → input box / quick pick;
+`notify({auth_url|device_code|info|progress})` → `openExternal` + progress.
+
+> **⚠ OAuth login is wired-to-spec but NOT live-verified.** The **api-key** path and
+> logout were validated end-to-end against real 0.80.10 (secret prompt → credential
+> persisted via `listCredentials` → `logout` removed it). The **OAuth** path shares
+> the exact same `AuthInteraction` contract but was never driven through a real
+> provider round-trip (needs a live subscription login), so treat a first real OAuth
+> `/login` as unverified — check that `notify({type:"auth_url"})` opens the browser and
+> the manual-code/`prompt` step round-trips before trusting it.
+
+**Do not pin the SDK to dodge a shape change** — the devcontainer installs
+`@latest` intentionally. When a future release shifts the API again, adapt the
+`ModelRuntime` call-sites (the headless `sdk-service.test.ts` fakes + a real-SDK
+`createAgentSession` smoke are the net), don't freeze the version.
 
 ## Related
 
