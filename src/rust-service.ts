@@ -494,6 +494,15 @@ export class RustService implements PiBackend {
       const mu = (event as { message?: { usage?: unknown } }).message?.usage;
       if (mu && typeof mu === "object") { this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus(); }
     }
+    // Authoritative usage snap on EVERY turn boundary, not just agent_end. The agent_end
+    // refresh below is gated on isRealAgentEnd (the double-`agent_end` dedupe); once
+    // `agentRunActive` latches false on an abort / auto-retry / queue-interrupt re-run that
+    // emits a duplicate `agent_end` without a re-arming `agent_start`, that gate starves the
+    // token/cost readout for the ENTIRE rest of the session — the accumulate path above only
+    // covers it while messages still carry `usage`. turn_end isn't gated on agentRunActive, so
+    // it keeps the authoritative get_session_stats total flowing through long/recovered runs.
+    // Idempotent: applyUsage replaces this.usage wholesale, so an extra refresh can't harm it.
+    if (event?.type === "turn_end") { void this.refreshUsage().then(() => this.host.reportStatus()); }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
     if (routing.isRealAgentEnd) { void this.refreshState(); }
