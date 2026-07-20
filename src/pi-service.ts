@@ -1679,19 +1679,38 @@ export class PiService {
 
 
   /** Generate a short 3-word tab title summary for the first user input in a session. */
-  async generateTabSummary(userInput: string): Promise<string | null> {
-    if (!this.AI || !this._model) { return null; }
-
+  /** A ModelRuntime for the tab-summary side-call: the SDK session's own on the TS runtime,
+   *  or a lazily-created one on Rust (which has no in-process SdkService). Cached. Null when
+   *  the TS SDK can't be resolved (a Rust-only box with no npm SDK), so the caller falls
+   *  back to the raw first message. ModelRuntime.create() resolves auth from env/auth.json
+   *  itself, so no key plumbing is needed. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _summaryRuntime: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async summaryRuntime(): Promise<any> {
+    if (this.modelRuntime) { return this.modelRuntime; }       // TS: reuse the session's runtime
+    if (this._summaryRuntime) { return this._summaryRuntime; } // Rust: cached lazy one
     try {
-      const model = this.AI.getModel(this._model.provider, this._model.id);
-      if (!model) { return null; }
+      const SDK = await importWithRetry(path.join(resolvePiPackagePath(), "dist/index.js"), 2, 300);
+      this._summaryRuntime = await SDK.ModelRuntime.create();
+      return this._summaryRuntime;
+    } catch (e: unknown) {
+      piWarn(`Tab summary: no ModelRuntime available (${e instanceof Error ? e.message : String(e)}) — keeping the raw first message.`);
+      return null;
+    }
+  }
 
-      // getApiKey was removed; ModelRuntime.getAuth(provider) resolves the provider's
-      // credential (env / auth.json / runtime override) as an AuthResult.
-      const auth = this.modelRuntime
-        ? await this.modelRuntime.getAuth(this._model.provider!)
-        : undefined;
-      const apiKey = auth?.apiKey;
+  /** Generate a short 3-word tab-title summary for the first user input. Works on BOTH
+   *  runtimes: the Rust binary exposes no summarize RPC, so the extension makes this
+   *  lightweight side-call itself via a ModelRuntime (the same model the session uses),
+   *  giving Rust the same nice tab title TS already gets instead of the raw first command. */
+  async generateTabSummary(userInput: string): Promise<string | null> {
+    if (!this._model) { return null; }
+    try {
+      const rt = await this.summaryRuntime();
+      if (!rt) { return null; }
+      const model = rt.getModel(this._model.provider, this._model.id);
+      if (!model) { return null; }
 
       const context = {
         systemPrompt: "Generate a concise 3-word summary of the following user request. Respond with ONLY the three words, lowercase, no punctuation, no quotes, no explanation.",
@@ -1700,10 +1719,9 @@ export class PiService {
         ],
       };
 
-      const result = await this.AI.complete(model, context, {
-        maxTokens: 20,
-        apiKey,
-      });
+      // maxTokens caps output so a reasoning model can't burn tokens on a 3-word title;
+      // completeSimple resolves auth from the runtime (no explicit key).
+      const result = await rt.completeSimple(model, context, { maxTokens: 20 });
 
       const text = this.extractTextFromContent(result.content);
       if (text) {
@@ -1711,7 +1729,8 @@ export class PiService {
         return text.split("\n")[0].trim().replace(/^["']|["']$/g, "").slice(0, 40);
       }
       return null;
-    } catch {
+    } catch (e: unknown) {
+      piWarn(`Tab summary generation failed: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
   }
