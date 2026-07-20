@@ -87,8 +87,6 @@ function makeHost() {
     getAgentRunActive: () => false,
     setAgentRunActive: () => { /* noop */ },
     setStreaming: () => { /* noop */ },
-    getModel: () => state.model,
-    setModel: (m) => { state.model = m; },
     getThinkingLevel: () => state.thinkingLevel,
     setThinkingLevel: (l) => { state.thinkingLevel = l; },
     setSessionId: (id) => { state.sessionId = id; },
@@ -137,8 +135,9 @@ test("initialize (happy path): full handshake populates model, thinking, session
   const result = await svc.initialize({ fresh: true });
   try {
     assert.equal(result.success, true, JSON.stringify(result));
-    // get_state applied
-    assert.equal(state.model?.id, "deepseek-v4-pro");
+    // get_state applied — model is now OWNED by RustService (read via getModel()),
+    // not pushed to the host.
+    assert.equal(svc.getModel()?.id, "deepseek-v4-pro");
     assert.equal(state.thinkingLevel, "high");        // binary's state wins over the default
     assert.equal(state.sessionId, "sess-42");
     assert.equal(state.autoCompaction, true);

@@ -66,8 +66,13 @@ export interface PiBackend {
   abortBash(): void;
   /** Compact the conversation context. */
   compact(): Promise<void>;
+  /** The active model identity — OWNED by the backend (Rust captures it from get_state /
+   *  applyState; the SDK sets it at init + on setModel). PiService reads this instead of
+   *  holding its own `_model`. `api`/`reasoning` carry the transport + reasoning flag the
+   *  UI uses to decide whether the thinking level is actually transmitted. */
+  getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null;
   /** Set the active model on the wire. Returns the resolved model identity applied
-   *  (or null if it couldn't be set), so PiService can update shared state. */
+   *  (or null if it couldn't be set); the backend also updates its own getModel(). */
   setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null>;
   /** Set the thinking level on the wire. Returns the level actually in effect after
    *  the backend clamps/validates (may differ from the request). */

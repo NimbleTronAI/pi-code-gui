@@ -72,8 +72,6 @@ export interface RustHost {
   getAgentRunActive(): boolean;
   setAgentRunActive(v: boolean): void;
   setStreaming(v: boolean): void;
-  getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null;
-  setModel(m: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean }): void;
   getThinkingLevel(): string;
   setThinkingLevel(level: string): void;
   setSessionId(id: string): void;
@@ -135,6 +133,9 @@ export class RustService implements PiBackend {
   private slashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
   /** Available models from get_available_models (owned here; read via getAvailableModels). */
   private _availableModels: CycleModel[] = [];
+  /** The active model identity — OWNED here (captured from get_state/applyState), read
+   *  by PiService via the PiBackend getModel() seam instead of pushed up to a host field. */
+  private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private entries: any[] = [];
   // Synthetic steer/follow-up queue: rust-pi (0.1.18) never emits queue_update,
@@ -368,7 +369,7 @@ export class RustService implements PiBackend {
     // Loud failure on an unresolved model. An invalid `defaultModelId` (e.g. the
     // non-existent "deepseek-v4-pro") leaves the Rust session with no active model
     // and otherwise SILENTLY inert — every prompt/command no-ops. Surface it.
-    if (!this.host.getModel()) {
+    if (!this._model) {
       const valid = this.host.getCycleModels().slice(0, 8).map((m) => m.id).join(", ");
       const want = restoring
         ? "this session's recorded model"
@@ -709,7 +710,7 @@ export class RustService implements PiBackend {
       // Carry `api` (the provider transport) and `reasoning` through: the GUI uses
       // them to tell whether the thinking level is actually transmitted on this
       // transport (only some serialize it) vs a display-only no-op.
-      this.host.setModel({ id: model.id, name: model.name, provider: model.provider, api: model.api, reasoning: model.reasoning });
+      this._model = { id: model.id, name: model.name, provider: model.provider, api: model.api, reasoning: model.reasoning };
       if (typeof model.contextWindow === "number") {
         // Clamp the displayed context window to the user's context budget so the
         // context-% readout honours the budget for EVERY Rust model — including
@@ -733,7 +734,7 @@ export class RustService implements PiBackend {
         this.contextWindow = budget > 0 ? Math.min(model.contextWindow, budget) : model.contextWindow;
       }
     } else if (typeof d.modelId === "string") {
-      this.host.setModel({ id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined });
+      this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
     }
     const thinking = (d.thinkingLevel ?? d.thinking) as string | undefined;
     if (typeof thinking === "string") { this.host.setThinkingLevel(thinking); }
@@ -856,7 +857,7 @@ export class RustService implements PiBackend {
       exportHtml: true,
       rename: false,
       interceptSlashCommands: false,
-      thinkingLevelLive: () => thinkingLevelIsLive(this.host.getModel()?.api),
+      thinkingLevelLive: () => thinkingLevelIsLive(this._model?.api),
     };
   }
 
@@ -866,7 +867,7 @@ export class RustService implements PiBackend {
     const resp = await this.requestOrError(RUST_RPC.setModel, { provider, modelId: id }, `Could not switch model to ${id}`);
     if (!resp) { return null; }
     this.applyState({ model: resp.data });
-    return this.host.getModel();
+    return this._model;
   }
 
   /** Set the thinking level on the wire (RPC), re-reading state so the returned level
@@ -970,6 +971,8 @@ export class RustService implements PiBackend {
    *  models.json entries) — RustService owns this list (a step toward backend state
    *  ownership); PiService's picker reads it via the PiBackend seam. */
   getAvailableModels(): Promise<CycleModel[]> { return Promise.resolve(this._availableModels); }
+  /** The active model identity (owned here; PiService reads it via the seam). */
+  getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null { return this._model; }
   /** The on-disk session file, or null. CONTRACT: a fresh Rust session has no
    *  file until the binary writes its first turn (it's captured from get_state's
    *  `sessionFile`), so this is null between init and the first turn — callers

@@ -78,7 +78,12 @@ export class PiService {
   private get session(): any { return this._sdk?.session ?? null; }
   private unsubscribe: (() => void) | null = null;
   private listeners: EventListener[] = [];
-  private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
+  /** The active model identity — now OWNED by the active backend (SdkService/RustService)
+   *  and read through the seam, not stored here. Kept as a getter so the ~38 read-sites
+   *  are unchanged; the backends update it on init / setModel / applyState. */
+  private get _model(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null {
+    return this.backend?.getModel() ?? null;
+  }
   private _thinkingLevel = "off";
   /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
    *  user's prior Reasoning level (falls back to the model's highest). */
@@ -304,7 +309,8 @@ export class PiService {
     if (!init.success || !this.session) {
       return { success: false, error: init.error ?? "SDK initialization produced no session.", errorKind: init.errorKind, warning: init.warning };
     }
-    this._model = init.model ?? null;
+    // _model is owned by SdkService now (set during initialize); PiService reads it via
+    // the getter. cycleModels/thinkingLevel remain PiService orchestration state.
     this.cycleModels = init.cycleModels ?? [];
     this._thinkingLevel = init.thinkingLevel ?? "off";
     // Seed the off→on toggle memory from the restored level (restore sets
@@ -466,8 +472,6 @@ export class PiService {
       getAgentRunActive: () => this._agentRunActive,
       setAgentRunActive: (v) => { this._agentRunActive = v; },
       setStreaming: (v) => { this._isStreaming = v; },
-      getModel: () => this._model,
-      setModel: (m) => { this._model = m; },
       getThinkingLevel: () => this._thinkingLevel,
       setThinkingLevel: (level) => { this._thinkingLevel = level; this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
@@ -1323,7 +1327,8 @@ export class PiService {
     // the shared post-step: active model, cycle index, status.
     const applied = await this.backend?.setModel(provider, modelId);
     if (!applied) { return; }
-    this._model = applied;
+    // The backend already stored the applied identity (getModel()); PiService just owns
+    // the cycle index + status refresh.
     this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
     if (this.cycleIndex === -1) { this.cycleIndex = 0; }
     this.reportStatus();
@@ -1346,7 +1351,7 @@ export class PiService {
     // (previously Rust showed only "Model: <id>" — it now shows prev → next too).
     const applied = await this.backend.setModel(next.provider, next.id);
     if (!applied) { return; }
-    this._model = applied;
+    // Backend owns the applied identity (getModel()); PiService owns the notice + status.
     if (this.cycleModels.length <= 1) {
       vscode.window.showInformationMessage(`Only ${next.id} configured. Click the model name in the status bar to add more.`);
     } else {

@@ -302,6 +302,9 @@ export class SdkService implements PiBackend {
   /** Unified auth+model facade (pi-coding-agent >= 0.80.8), replacing the removed
    *  authStorage + modelRegistry. Async: created via `await ModelRuntime.create()`. */
   public modelRuntime: any = null;
+  /** The active model identity — OWNED here (set at init + on setModel), read by
+   *  PiService via the PiBackend getModel() seam. */
+  private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
   public settingsManager: any = null;
   public sessionManager: any = null;
   public resourceLoader: any = null;
@@ -702,10 +705,13 @@ export class SdkService implements PiBackend {
     }
 
     this.session = result.session;
+    // Own the active model identity (read by PiService via getModel()); the outcome still
+    // carries it for the caller's other post-init wiring.
+    this._model = { id: resumeModel.id, name: resumeModel.name, provider: resumeModel.provider };
 
     return {
       success: true,
-      model: { id: resumeModel.id, name: resumeModel.name, provider: resumeModel.provider },
+      model: this._model,
       cycleModels,
       thinkingLevel: resumeThinkingLevel,
       isResuming: !!isResuming,
@@ -791,6 +797,7 @@ export class SdkService implements PiBackend {
     if (!model) { model = this.AI.getModel(provider, id); }
     if (!model) { return null; }
     await this.session.setModel(model);
+    this._model = { id, provider };  // owned here; PiService reads via getModel()
     // No force-persist here: session.setModel() already records a model_change via the
     // SDK's appendModelChange (deferred, flushed with the session header on the first
     // assistant message). A direct write would duplicate it AND create the file early,
@@ -874,6 +881,9 @@ export class SdkService implements PiBackend {
     );
     return result;
   }
+
+  /** The active model identity (owned here; PiService reads it via the seam). */
+  getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null { return this._model; }
 
   /** Models available for /model — from the ModelRuntime's auth-filtered catalog. */
   async getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>> {
