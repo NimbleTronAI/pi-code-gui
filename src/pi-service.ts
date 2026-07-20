@@ -22,6 +22,7 @@ import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
 import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
+import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -137,7 +138,9 @@ export class PiService {
   private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any; lastPreviewEmit?: number }> = new Map();
 
   // Widget activity timer (cleared on dispose to prevent leaks)
-  private _widgetTimer: ReturnType<typeof setInterval> | null = null;
+  /** The extension UIContext bridge (widget sweep + dialog routing), created on
+   *  bindExtensionUI. Its dispose() stops the idle-widget timer. */
+  private _uiBridge: ExtensionUIBridge | null = null;
 
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -504,151 +507,14 @@ export class PiService {
       return;
     }
 
-    const emit = (event: PiServiceEvent): void => this.emit(event);
-
-    // Active widgets keyed by widget key (rendered text per widget)
-    const widgetTexts = new Map<string, string>();
-    const widgetLastUpdate = new Map<string, number>();
-    // Periodically check for stale widgets (not updated in 30s) and clear them.
-    // This prevents orphaned animations from running forever when extensions
-    // forget to call stopWidgetAnimation (e.g. pi-subagents async jobs).
-    const MAX_WIDGET_IDLE_MS = 30_000;
-    this._widgetTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [key, lastUpdate] of widgetLastUpdate) {
-        if (now - lastUpdate > MAX_WIDGET_IDLE_MS) {
-          widgetTexts.delete(key);
-          widgetLastUpdate.delete(key);
-          emit({ type: "widget-update", data: { key, content: null } });
-        }
-      }
-    }, 10_000);
-    if (this._widgetTimer.unref) { this._widgetTimer.unref(); }
-
-    // Base uiContext with the methods we explicitly support.
-    // Wrapped in a Proxy so any unknown method calls (e.g. from TUI-only
-    // extensions) silently no-op instead of throwing "is not a function".
-    const baseUIContext = {
-      notify: (message: string, level: "info" | "error") => {
-        if (level === "error") {
-          piWarn(`ui.notify(error): ${message.substring(0, 120)}`);
-        }
-        emit({
-          type: "custom-message",
-          data: {
-            customType: level === "error" ? "error" : "extension-notify",
-            content: message,
-            timestamp: Date.now(),
-          },
-        });
-      },
-      setWidget: (key: string, factory: unknown) => {
-        if (factory === undefined || factory === null) {
-          // Clear widget
-          widgetTexts.delete(key);
-          widgetLastUpdate.delete(key);
-          emit({
-            type: "widget-update",
-            data: { key, content: null },
-          });
-          return;
-        }
-
-        if (typeof factory !== "function") {
-          piWarn(`setWidget("${key}"): factory is not a function (got ${typeof factory})`);
-          return;
-        }
-
-        try {
-          // Minimal Theme stub: fg returns text without ANSI codes.
-          // Widgets render in an HTML webview so ANSI colors are unnecessary.
-          const theme = {
-            fg: (_role: string, text: string) => text,
-          };
-          // Minimal TUI stub — extensions that need tui methods won't work,
-          // but pi-tldr and similar widgets only use theme.
-          const tui = {};
-
-          const component = (factory)(tui, theme) as {
-            render?: (width: number) => string[];
-          };
-          if (!component || typeof component.render !== "function") {
-            piWarn(`setWidget("${key}"): component.render is not a function`);
-            return;
-          }
-
-          const lines = component.render(80);
-          if (!Array.isArray(lines)) {
-            piWarn(`setWidget("${key}"): render() did not return an array`);
-            return;
-          }
-
-          // Strip any remaining ANSI escape codes (just in case)
-          const ansiRegex = /\x1b\[[0-9;]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[_][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-          const cleanLines = lines.map((l: string) => l.replace(ansiRegex, ""));
-          const content = cleanLines.join("\n");
-
-          // Skip if unchanged
-          if (widgetTexts.get(key) === content) { return; }
-          widgetTexts.set(key, content);
-          widgetLastUpdate.set(key, Date.now());
-
-          emit({
-            type: "widget-update",
-            data: { key, content },
-          });
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } catch (e: any) {
-          // Widget rendering is best-effort; don't crash the session.
-          piWarn(`setWidget("${key}"): render error: ${e?.message ?? e}`);
-        }
-      },
-      // Interactive methods — return Promises that resolve when the user
-      // dismisses the dialog in the webview.  Falls back to undefined if
-      // no webview panel is active (e.g. during tests).
-      select: (prompt: string, options: string[]) => {
-        return this._showDialog("select", prompt, { options });
-      },
-      confirm: (prompt: string) => {
-        return this._showDialog("confirm", prompt, {});
-      },
-      input: (prompt: string, defaultValue?: string) => {
-        return this._showDialog("input", prompt, { defaultValue });
-      },
-      custom: () => undefined,
-
-      // TUI compatibility stubs discovered via the Proxy at runtime
-      setToolsExpanded: (_expanded: boolean) => { /* stub — TUI widget expand/collapse */ },
-      getToolsExpanded: () => false,
-      requestRender: () => { /* stub — TUI repaint, not needed in webview */ },
-      onTerminalInput: (_handler: unknown) => { /* stub */ },
-      setStatus: (key: string, status: string | null) => {
-        // Show as a widget card so status is visible in VS Code
-        if (status === null || status === undefined) {
-          widgetTexts.delete(`status-${key}`);
-          emit({ type: "widget-update", data: { key: `status-${key}`, content: null } });
-        } else {
-          const content = `**${key}** ${status}`;
-          widgetTexts.set(`status-${key}`, content);
-          emit({ type: "widget-update", data: { key: `status-${key}`, content } });
-        }
-      },
-    };
-
-    // Proxy: log unknown method calls so we can see what TUI methods
-    // extensions expect, then no-op gracefully instead of crashing.
-    const uiContext = new Proxy(baseUIContext, {
-      get(target, prop) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (prop in target) { return (target as any)[prop]; }
-        if (typeof prop === "string" && !prop.startsWith("_")) {
-          return (...args: unknown[]) => {
-            piWarn(`ui.${prop}() called by extension but not implemented — args: ${JSON.stringify(args).substring(0, 200)}`);
-          };
-        }
-        return undefined;
-      },
+    // The UIContext (widget sweep, notify, interactive dialogs, TUI-stub Proxy) is built
+    // by the extracted, headlessly-tested extension-ui-bridge; PiService supplies its two
+    // effects (emit, showDialog) and keeps the handle to dispose the widget timer.
+    this._uiBridge = createExtensionUIBridge({
+      emit: (event) => this.emit(event),
+      showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
     });
+    const uiContext = this._uiBridge.uiContext;
 
     try {
       await this.session.bindExtensions({
@@ -2187,7 +2053,7 @@ export class PiService {
       // session file (fresh session: no file at first-message time). Skips cleanly if it's
       // already there is acceptable — the tree reader takes the LAST session_info name.
       if (this._rustSessionName) { this._persistRustSessionInfo(this._rustSessionName); }
-      if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
+      this._uiBridge?.dispose(); this._uiBridge = null;
       this._rust?.dispose();
       this._rust = null;
       return;
@@ -2211,7 +2077,7 @@ export class PiService {
     // Kill any running bash processes before tearing down the session.
     // Without this, processes orphaned by session close survive as zombies.
     try { this.session?.abortBash?.(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
-    if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
+    this._uiBridge?.dispose(); this._uiBridge = null;
     this.unsubscribe?.();
     this.session?.dispose();
     this.unsubscribe = null;
