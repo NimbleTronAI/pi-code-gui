@@ -20,6 +20,16 @@ import { linkifyPlain } from "../../shared/linkify.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
+import type { ThinkingBlock } from "../components/thinking-block.js";
+
+/** What `HTMLElement._component` holds on a thinking block. The global declaration has to say
+ *  `unknown` because different elements hold different components — but every site below knows
+ *  which one it has, so it narrows here rather than reaching for `any`.
+ *
+ *  `_rawText` is accumulated on the COMPONENT, not the element: handleThinkingDelta appends each
+ *  delta to `tb._rawText` and the RAF flush reads it back. That is why it is declared on this
+ *  handle and not alongside the element expandos in global.d.ts. */
+type ThinkingComponent = ThinkingBlock & { _rawText?: string };
 import { Dialog } from "../components/dialog.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
@@ -223,7 +233,7 @@ export function handleAgentEnd(): void {
     setSbDot("idle");
     // Stop thinking spinner (safety net) — use component API if available
     if (state.currentThinkingEl) {
-      var tb = state.currentThinkingEl._component as any;
+      var tb = state.currentThinkingEl._component as ThinkingComponent | undefined;
       if (tb) {
         tb.update({ content: tb._rawText || "", done: true });
       } else {
@@ -560,7 +570,7 @@ export function _scheduleThinkingRender(el: HTMLElement): void {
       if (!state._thinkingEl) {return;}
       var el = state._thinkingEl;
       state._thinkingEl = null;
-      var tb = el._component as any;
+      var tb = el._component as ThinkingComponent | undefined;
       if (tb) {
         tb.update({ content: tb._rawText || "" });
         tb.scrollToBottom();
@@ -576,7 +586,7 @@ export function _flushThinkingRender(): void {
       if (state._thinkingEl) {
         var el = state._thinkingEl;
         state._thinkingEl = null;
-        var tb = el._component as any;
+        var tb = el._component as ThinkingComponent | undefined;
         if (tb) {
           tb.update({ content: tb._rawText || "" });
         }
@@ -589,7 +599,7 @@ export function handleThinkingDelta(data: MsgData<"thinking-delta">): void {
       _flushThinkingRender();
       // Finalize: update component with done=true (removes spinner, sets button)
       if (state.currentThinkingEl && state.currentThinkingEl._component) {
-        var tb = state.currentThinkingEl._component as any;
+        var tb = state.currentThinkingEl._component as ThinkingComponent;
         tb.update({ content: tb._rawText || "", done: true });
       }
       return;
@@ -604,7 +614,7 @@ export function handleThinkingDelta(data: MsgData<"thinking-delta">): void {
     var el = state.currentThinkingEl;
     if (el && el._component) {
       // Accumulate raw text, render once per frame via the component
-      var tb = el._component as any;
+      var tb = el._component as ThinkingComponent;
       tb._rawText = (tb._rawText || "") + data.delta;
       _scheduleThinkingRender(el);
     }
@@ -1744,7 +1754,7 @@ export function renderInlineCustomMessage(data: any): void {
     var renderer = getMessageRenderer(customType);
 
     if (existing) {
-      var existingIc = existing._component as any;
+      var existingIc = existing._component as InlineCard | undefined;
       if (existingIc) {
         existingIc.update({
           customType: customType,
@@ -2133,7 +2143,7 @@ export function handleRevealEntry(entryId: string, toolCallId: string): void {
 export function handleBashStart(data: Record<string, unknown>): void {
     // Stop thinking spinner — bash execution means thinking is done
     if (state.currentThinkingEl) {
-      var _tb3 = state.currentThinkingEl._component as any;
+      var _tb3 = state.currentThinkingEl._component as ThinkingComponent | undefined;
       if (_tb3) {
         _tb3.update({ content: _tb3._rawText || "", done: true });
       } else {

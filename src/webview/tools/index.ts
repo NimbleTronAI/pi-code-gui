@@ -423,7 +423,7 @@ export const readToolRenderer = {
         var compactEl = document.createElement("div");
         compactEl.className = "compact-label";
         compactEl.textContent = "[" + compact.kind + "] " + compact.label;
-        (tb as any).getHeaderEl().after(compactEl);
+        tb.getHeaderEl().after(compactEl);
       }
 
       // Store path, offset, and language for result rendering

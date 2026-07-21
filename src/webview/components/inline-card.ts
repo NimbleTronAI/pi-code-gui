@@ -16,8 +16,8 @@ import { html } from "../render/html.js";
 export interface InlineCardProps {
   customType: string;
   content: string; // trusted HTML
-  renderer?: (data: any, container: HTMLElement, escapeHtml: (s: string) => string) => void;
-  rawData?: any; // passed to renderer
+  renderer?: (data: unknown, container: HTMLElement, escapeHtml: (s: string) => string) => void;
+  rawData?: unknown; // passed to renderer
   escapeHtmlFn?: (s: string) => string;
 }
 
