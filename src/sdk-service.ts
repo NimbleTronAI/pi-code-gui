@@ -275,6 +275,9 @@ export interface SdkDeps {
   /** The bundled pi-ai catalog providers (authoritative capability/cost source).
    *  Injected rather than imported so this module needs no JSON import (headless). */
   catalogProviders(): CatalogProviders | undefined;
+  /** Ask the user whether a pi extension may run a custom message renderer (arbitrary JS) in
+   *  the webview. Remembered per custom type; see the TRUST BOUNDARY note at the call site. */
+  confirmRendererConsent(customType: string): Promise<boolean>;
 }
 
 /** The shared state PiService applies after a successful SDK init. */
@@ -687,9 +690,25 @@ export class SdkService implements PiBackend {
         sessionOpts.resourceLoader = this.resourceLoader;
       }
 
-      // Inject before extensions load (SDK may load them during createAgentSession)
+      // Inject before extensions load (SDK may load them during createAgentSession).
+      //
+      // TRUST BOUNDARY. Whatever a pi extension passes here is injected into the webview as a
+      // <script> carrying the CSP nonce and executed — i.e. arbitrary JS in the webview, which is
+      // the one thing the nonce-based CSP otherwise prevents. A pi extension already runs
+      // arbitrary code in the extension host, so this is not an escalation FOR a trusted
+      // extension; the danger is that the payload travels over the message bus, so any future
+      // path that lets model or remote content reach this handler becomes a full compromise.
+      //
+      // Gated on explicit, remembered user consent per (extension-ish) custom type, so source
+      // never reaches the webview unless the user said yes at least once.
       (globalThis as Record<string, unknown>).__piRegisterMessageRenderer = (customType: string, sourceCode: string) => {
-        this.host.emit({ type: "registerMessageRenderer", data: { customType, sourceCode } });
+        void (async () => {
+          if (!(await this.deps.confirmRendererConsent(customType))) {
+            piWarn(`Custom renderer for "${customType}" was not allowed — rendering falls back to markdown.`);
+            return;
+          }
+          this.host.emit({ type: "registerMessageRenderer", data: { customType, sourceCode } });
+        })();
       };
 
       result = await SDK.createAgentSession(sessionOpts);

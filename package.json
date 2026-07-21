@@ -224,6 +224,10 @@
       {
         "command": "pi-code-gui.openPiDevMarketplace",
         "title": "PiGui: Open Pi.dev Marketplace"
+      },
+      {
+        "command": "pi-code-gui.resetRendererPermissions",
+        "title": "PiGui: Reset Custom Renderer Permissions"
       }
     ],
     "viewsContainers": {

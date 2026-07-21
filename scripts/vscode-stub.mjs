@@ -11,6 +11,8 @@ const control = {
   /** Scripted return values (shift()ed) for showQuickPick / showInputBox. */
   quickPick: [],
   inputBox: [],
+  /** Scripted answers (shift()ed) for show*Message. Undefined models the user DISMISSING. */
+  messageChoice: [],
   /** Recorded calls for assertions. */
   calls: [],
 };
@@ -18,6 +20,15 @@ const control = {
 globalThis.__vscodeMock = control;
 
 const rec = (kind, payload) => { control.calls.push({ kind, ...payload }); };
+
+/** Shared modal/notification reply: records the call, honours a scripted choice, and models the
+ *  optional leading options object that real VS Code accepts. */
+function msgReply(kind, message, items) {
+  rec(kind, { message });
+  const choices = items.filter((i) => typeof i === "string" || (i && typeof i.title === "string"));
+  if (control.messageChoice.length) { return control.messageChoice.shift(); }
+  return choices[0];
+}
 
 export const window = {
   registerTreeDataProvider: () => ({ dispose() {} }),
@@ -30,9 +41,14 @@ export const window = {
   activeTextEditor: undefined,
   visibleTextEditors: [],
   showTextDocument: async () => ({}),
-  showInformationMessage: async (message, ...items) => { rec("info", { message }); return items[0]; },
-  showWarningMessage: async (message, ...items) => { rec("warn", { message }); return items[0]; },
-  showErrorMessage: async (message, ...items) => { rec("error", { message }); return items[0]; },
+  // Real VS Code accepts an optional OPTIONS object before the items
+  // (showWarningMessage(msg, {modal, detail}, ...items)). The old stub returned items[0]
+  // blindly, so a caller using that overload got the options object back — a test would then
+  // "confirm" a dialog that was never confirmable. Skip a leading non-string and return the
+  // first real item, or control.messageChoice when a test scripts one.
+  showInformationMessage: async (message, ...items) => msgReply("info", message, items),
+  showWarningMessage: async (message, ...items) => msgReply("warn", message, items),
+  showErrorMessage: async (message, ...items) => msgReply("error", message, items),
   showQuickPick: async (items, opts) => { rec("quickPick", { opts }); return control.quickPick.length ? control.quickPick.shift() : undefined; },
   showInputBox: async (opts) => { rec("inputBox", { opts }); return control.inputBox.length ? control.inputBox.shift() : undefined; },
   withProgress: async (_opts, task) => task({ report: () => {} }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),

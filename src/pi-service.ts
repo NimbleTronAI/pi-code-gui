@@ -5,6 +5,7 @@ import * as vscode from "vscode";
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn, registerSecret } from "./logger.js";
 import { getApiKey } from "./secrets.js";
+import { confirmRendererConsent } from "./renderer-consent.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
@@ -451,6 +452,8 @@ export class PiService {
       readFileUtf8: (p) => fs.promises.readFile(p, "utf-8"),
       buildBridgeTools: (defineTool, typebox) => createBridgeTools(defineTool, typebox),
       catalogProviders: () => this.bundledProviders,
+      // Arbitrary JS in the webview — ask once per custom type and remember the answer.
+      confirmRendererConsent: (customType) => confirmRendererConsent(customType),
       notifyOutdatedPiAi: (installed, supported) => {
         const UPDATE = "Update";
         void vscode.window.showWarningMessage(

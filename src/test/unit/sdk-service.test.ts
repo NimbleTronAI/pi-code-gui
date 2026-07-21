@@ -86,6 +86,7 @@ function makeEnv(opts: {
     notifyOutdatedPiAi: (installed) => notified.push(installed),
     buildBridgeTools: () => [],
     catalogProviders: () => ({}),
+    confirmRendererConsent: async () => true,
   };
   return { host, deps, notified };
 }

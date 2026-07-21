@@ -8,6 +8,7 @@ import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
 import { initLogger, disposeLogger, piLog, piDebug, piWarn, redactSecrets } from "./logger.js";
 import { initSecrets } from "./secrets.js";
+import { initRendererConsent, resetRendererConsent } from "./renderer-consent.js";
 import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
@@ -215,6 +216,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
   initRustModels(context);
+  initRendererConsent(context);
   // Load API keys from SecretStorage, migrating any still sitting in plaintext settings. Awaited
   // because the config seam that serves them (SdkDeps/RustDeps.config()) is synchronous; it is a
   // keychain read, not I/O that can hang on a user prompt.
@@ -1359,6 +1361,14 @@ function registerEarlyCommands(context: vscode.ExtensionContext): void {
   // (or following a notification that names it) failed with "command not found".
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-code-gui.installPi", async () => { await installPi(); }),
+  );
+
+  // Revoke the per-type consent granted to pi-extension custom renderers (audit H3).
+  context.subscriptions.push(
+    vscode.commands.registerCommand("pi-code-gui.resetRendererPermissions", async () => {
+      await resetRendererConsent();
+      vscode.window.showInformationMessage("Custom renderer permissions reset — you'll be asked again next time an extension registers one.");
+    }),
   );
 
   // ── pickCommand (Cmd+/) ─────────────────────────────
