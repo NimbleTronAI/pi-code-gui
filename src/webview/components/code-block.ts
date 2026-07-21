@@ -13,6 +13,7 @@
 //   showCopy  — show the copy button
 
 import type { Component } from "./types.js";
+import { escapeHtml as sharedEscapeHtml } from "../../shared/escape-html.js";
 import { html, safe } from "../render/html.js";
 import { highlightCode } from "../highlight.js";
 
@@ -129,11 +130,7 @@ export class CodeBlock implements Component<CodeBlockProps> {
       .join("\n");
   }
 
-  private escapeHtml(text: string): string {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-  }
+  private escapeHtml(text: string): string { return sharedEscapeHtml(text); }
 
   private cacheRefs(): void {
     this.preEl = this.el.querySelector(".code-block") || this.preEl;

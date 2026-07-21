@@ -80,8 +80,4 @@ export class InlineCard implements Component<InlineCardProps> {
   }
 }
 
-function escapeHtmlPolyfill(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
+import { escapeHtml as escapeHtmlPolyfill } from "../../shared/escape-html.js";

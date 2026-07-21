@@ -20,11 +20,10 @@ import { ThinkingBlock } from "../components/thinking-block.js";
 export { formatTokens, getLangFromPath, getCompactReadLabel, formatToolError } from "../../shared/webview-format.js";
 import { isRenderableImageSrc } from "../../shared/webview-format.js";
 
-export function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
+// Imported for local use AND re-exported so existing call sites keep working; the
+// implementation is the shared, quote-escaping, headlessly-testable one.
+import { escapeHtml } from "../../shared/escape-html.js";
+export { escapeHtml };
 
 export function truncate(text: string, maxLen: number): string {
   if (!text || text.length <= maxLen) {return text || "";}
