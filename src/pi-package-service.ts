@@ -90,6 +90,8 @@ export class PiPackageService {
   // Marketplace search debounce + cache
   private lastSearchTime = 0;
   private lastSearchPromise: Promise<MarketplacePackage[]> | null = null;
+  /** Query the in-flight search is for (see the debounce below). */
+  private lastSearchQuery: string | null = null;
   private defaultResults: MarketplacePackage[] | null = null;
 
   // enrichInstalledPackages: name-keyed TTL cache so repeated tree refreshes
@@ -276,10 +278,14 @@ export class PiPackageService {
 
     // Debounce: minimum 2 s between outgoing requests
     const now = Date.now();
-    if (now - this.lastSearchTime < 2000 && this.lastSearchPromise) {
+    // Reuse the in-flight request only when it is for the SAME query. It used to be returned for
+    // any query inside the window, so typing "web" then "mcp" resolved the second call with the
+    // first call's results — rendering them under the wrong header.
+    if (now - this.lastSearchTime < 2000 && this.lastSearchPromise && this.lastSearchQuery === q) {
       return this.lastSearchPromise;
     }
     this.lastSearchTime = now;
+    this.lastSearchQuery = q;
 
     this.lastSearchPromise = this.doSearchMarketplace(q);
     try {

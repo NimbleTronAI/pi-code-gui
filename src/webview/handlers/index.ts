@@ -1869,6 +1869,14 @@ export function handleRegisterMessageRenderer(data: any) {
     }
   }
 
+/** Build a [data-status-key=…] selector safely. The key comes from an extension, and a `"` in it
+ *  made the concatenated selector invalid — querySelector then THROWS a DOMException rather than
+ *  returning null, taking out the whole widget update. CSS.escape handles the quoting. */
+function statusKeySelector(key: string): string {
+  const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(key) : key.replace(/["\\]/g, "\\$&");
+  return `[data-status-key="${esc}"]`;
+}
+
 export function handleWidgetUpdate(data: any) {
     if (!data || !data.key) {return;}
 
@@ -1928,7 +1936,7 @@ export function handleStatusWidget(key: string, content: string | null) {
 
     if (content === null || content === undefined) {
       // Remove status indicator
-      var existingStatus = statusBar.querySelector('[data-status-key="' + key + '"]');
+      var existingStatus = statusBar.querySelector(statusKeySelector(key));
       if (existingStatus) {(existingStatus).remove();}
       // Also clean up any legacy live-card
       var legacy = state.widgetCards[key];
@@ -1942,7 +1950,7 @@ export function handleStatusWidget(key: string, content: string | null) {
     var label = match ? match[1] : key;
     var value = match ? match[2] : content;
 
-    var existingEl = statusBar.querySelector('[data-status-key="' + key + '"]');
+    var existingEl = statusBar.querySelector(statusKeySelector(key));
     if (existingEl) {
       existingEl.textContent = label + ": " + value;
     } else {

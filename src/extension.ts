@@ -856,11 +856,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (confirm !== "Delete All") { return; }
       try {
+        // Keep going past a failure and report honestly: aborting at the first error left the
+        // user with a partially-deleted list and no idea which ones went.
+        let deleted = 0;
+        const failed: string[] = [];
         for (const s of past) {
-          await PiService.deleteSessionFile(s.path);
+          try { await PiService.deleteSessionFile(s.path); deleted++; }
+          catch (e: unknown) { failed.push(`${s.path}: ${e instanceof Error ? e.message : String(e)}`); }
         }
         await refreshPastSessionsList();
         sessionTreeProvider?.refresh();
+        if (failed.length) {
+          piWarn(`deleteAllPastSessions: ${failed.length} failed\n${failed.join("\n")}`);
+          vscode.window.showWarningMessage(`Deleted ${deleted} of ${past.length} sessions; ${failed.length} could not be removed (see the Pi Code Gui output channel).`);
+        }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         vscode.window.showErrorMessage(`Delete all failed: ${e.message ?? e}`);
