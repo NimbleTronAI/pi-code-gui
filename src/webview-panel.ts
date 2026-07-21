@@ -3,6 +3,7 @@ import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
 import { validateExtensionToWebview, validateWebviewToExtension, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
 import { piWarn } from "./logger.js";
+import { safeExternalUrlString, safeWorkspaceFilePath } from "./shared/webview-nav-guard.js";
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
@@ -110,6 +111,19 @@ export class PiWebviewPanel {
     });
   }
 
+  /** Allowlisted external URL → Uri, or null when blocked. See shared/webview-nav-guard.ts. */
+  private safeExternalUrl(raw: unknown): vscode.Uri | null {
+    const ok = safeExternalUrlString(raw);
+    return ok ? vscode.Uri.parse(ok) : null;
+  }
+
+  /** Workspace-confined file → Uri, or null when the path escapes every root. */
+  private safeWorkspaceFile(raw: unknown): vscode.Uri | null {
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const abs = safeWorkspaceFilePath(raw, roots);
+    return abs ? vscode.Uri.file(abs) : null;
+  }
+
   private setupWebviewHandlers(): void {
     if (!this.panel) {
       piWarn("setupWebviewHandlers called with no panel — webview messages will be lost");
@@ -152,12 +166,13 @@ export class PiWebviewPanel {
 
     this.panel.webview.onDidReceiveMessage(
       async (message) => {
-        // Warn-only inbound validation: surface webview→extension protocol drift
-        // (an unknown/malformed message type) without blocking dispatch. The switch
-        // below already ignores unhandled types; this just makes drift visible.
+        // BLOCKING inbound validation. This used to warn and dispatch anyway, which made the
+        // Zod schema decorative: a malformed or forged message reached the handlers regardless,
+        // and openUrl/openFile below act on webview-supplied strings. Drop what doesn't validate.
         const inbound = validateWebviewToExtension(message);
         if (!inbound.success) {
-          piWarn(`webview→extension message failed validation (type "${(message as { type?: unknown })?.type}"): ${inbound.error}`);
+          piWarn(`webview→extension message REJECTED (type "${(message as { type?: unknown })?.type}"): ${inbound.error}`);
+          return;
         }
         switch (message.type) {
           case "prompt": {
@@ -190,13 +205,31 @@ export class PiWebviewPanel {
             void vscode.commands.executeCommand("pi-code-gui.switchRuntime");
             break;
 
-          case "openUrl":
-            vscode.env.openExternal(vscode.Uri.parse(message.url));
+          case "openUrl": {
+            // The sender is a blanket handler over MODEL-RENDERED content: handlers/index.ts
+            // posts openUrl for any <a href> in the transcript. Without an allowlist a markdown
+            // link to e.g. vscode://<publisher>.<ext>/… reached openExternal on one user click.
+            const url = this.safeExternalUrl(message.url);
+            if (!url) {
+              piWarn(`Blocked openUrl with a disallowed scheme: ${String(message.url).slice(0, 120)}`);
+              break;
+            }
+            void vscode.env.openExternal(url);
             break;
+          }
 
-          case "openFile":
-            vscode.window.showTextDocument(vscode.Uri.file(message.path));
+          case "openFile": {
+            // Same exposure: render/engine.ts posts openFile for any element carrying data-path,
+            // and that attribute is model-authored. Confine it to the workspace so an injected
+            // data-path="/home/<user>/.ssh/id_rsa" can't open arbitrary files.
+            const file = this.safeWorkspaceFile(message.path);
+            if (!file) {
+              piWarn(`Blocked openFile outside the workspace: ${String(message.path).slice(0, 200)}`);
+              break;
+            }
+            void vscode.window.showTextDocument(file);
             break;
+          }
 
           // Slash commands intercepted locally (not sent to LLM)
           case "slashCommand":
