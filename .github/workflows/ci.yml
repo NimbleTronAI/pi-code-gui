@@ -1,0 +1,33 @@
+# Runs on every push and pull request. Until this existed, NOTHING ran the test suite in CI:
+# the only workflow was publish.yml, whose single test-shaped step invokes the `pretest`
+# lifecycle hook directly (clean-room gate + compile + lint) and never chains into `test`.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Lint, type-check and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      # The licence wall is a repo invariant, not a local convenience — assert it in CI too.
+      - run: pnpm run check:cleanroom
+      - run: pnpm run check-types
+      - run: pnpm run lint
+      # The real suite (node:test). `pnpm test` runs this too; it is spelled out here so a
+      # failure is attributable to the tests rather than to a lifecycle hook.
+      - run: pnpm run test:unit
+      # Prove the shipped artifact still builds (and that packaging's own gates pass).
+      - run: pnpm run package

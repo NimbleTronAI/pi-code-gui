@@ -585,18 +585,18 @@
     "watch:webview": "node esbuild.webview.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "check:cleanroom": "bash scripts/check-cleanroom.sh && bash scripts/check-cleanroom-smoke.sh",
-    "package": "pnpm run check:cleanroom && node scripts/check-diagram.mjs && node scripts/check-model-registry.mjs && pnpm run check-types && pnpm run lint && node esbuild.js --production && node esbuild.webview.js --production",
+    "package": "pnpm run check:cleanroom && node scripts/check-diagram.mjs && node scripts/check-model-registry.mjs && pnpm run check-types && pnpm run lint && pnpm run test:unit && node esbuild.js --production && node esbuild.webview.js --production",
     "gen:diagram": "node scripts/gen-diagram.mjs",
     "check:diagram": "node scripts/check-diagram.mjs",
     "gen:model-registry": "node scripts/gen-model-registry.mjs",
     "check:model-registry": "node scripts/check-model-registry.mjs",
-    "compile-tests": "tsc -p . --outDir out",
+    "compile-tests": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p . --outDir out",
     "compile-tests:webview": "tsc -p tsconfig.test-webview.json",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "pnpm run check:cleanroom && pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src",
-    "test": "vscode-test",
+    "test": "pnpm run test:unit",
     "test:unit": "pnpm run compile-tests && pnpm run compile-tests:webview && node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js",
     "test:rust-smoke": "node scripts/rust-smoke.mjs",
     "test:rpc-behavior": "pnpm run compile-tests && node scripts/rpc-behavior.mjs",
@@ -605,7 +605,8 @@
     "wiki:lint:full": "npx tsx agent-wiki/scripts/wiki-lint.ts --full",
     "publish": "vsce publish --no-yarn --skip-duplicate",
     "un-publish": "vsce unpublish",
-    "vsix:openvsx": "pnpm run package && pnpm exec ovsx publish"
+    "vsix:openvsx": "pnpm run package && pnpm exec ovsx publish",
+    "test:vscode": "vscode-test"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
