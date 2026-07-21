@@ -21,7 +21,7 @@ import { formatMissingToolsNotice } from "./rust-deps.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
-import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
+import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
 
 /** A model entry for the model-cycle list (shared with PiService). */
 export interface CycleModel {
@@ -871,18 +871,10 @@ export class RustService implements PiBackend {
    *  host-tool injection (no bridge tools / interactive cards), and no fork/reload/rename
    *  RPCs; it owns its own slash-command handling (so PiService does not intercept). */
   get capabilities(): BackendCapabilities {
-    return {
-      kind: "rust",
-      bridgeTools: false,
-      customCards: false,
-      toolsPicker: false,
-      fork: false,
-      reloadContext: false,
-      exportHtml: true,
-      rename: false,
-      interceptSlashCommands: false,
-      thinkingLevelLive: () => thinkingLevelIsLive(this._model?.api),
-    };
+    // The static flags are the runtime default for Rust (out-of-process RPC gates every
+    // host-tool/fork/reload/rename feature; it owns its own slashes). Only thinkingLevelLive is
+    // dynamic here — it depends on the active model's transport api — so override that one.
+    return { ...backendCapabilityDefaults("rust"), thinkingLevelLive: () => thinkingLevelIsLive(this._model?.api) };
   }
 
   /** Set the active model on the wire (RPC). Applies the reply so the budget clamp /

@@ -22,7 +22,7 @@ import { isOlderThan } from "./version-compare.js";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import type { PiServiceEvent } from "./types.js";
-import type { BackendCapabilities, BackendUsage, PiBackend } from "./pi-backend.js";
+import { backendCapabilityDefaults, type BackendCapabilities, type BackendUsage, type PiBackend } from "./pi-backend.js";
 
 /** The bundled pi-ai catalog providers map shape (a subset of
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
@@ -322,18 +322,9 @@ export class SdkService implements PiBackend {
    *  thinking per-provider in-process, so the level is always "live"; and PiService
    *  intercepts builtin slash commands before session.prompt (as the CLI does). */
   get capabilities(): BackendCapabilities {
-    return {
-      kind: "typescript",
-      bridgeTools: true,
-      customCards: true,
-      toolsPicker: true,
-      fork: true,
-      reloadContext: true,
-      exportHtml: true,
-      rename: true,
-      interceptSlashCommands: true,
-      thinkingLevelLive: () => true,
-    };
+    // All flags are the runtime default for TypeScript (everything on; thinking always live in
+    // process). Single source of truth — see backendCapabilityDefaults.
+    return backendCapabilityDefaults("typescript");
   }
 
   /** Resolve, load, and wire the TypeScript SDK up to a live agent session

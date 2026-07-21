@@ -26,7 +26,7 @@ import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from
 import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
-import type { BackendCapabilities, PiBackend } from "./pi-backend.js";
+import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
 import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
@@ -1388,13 +1388,9 @@ export class PiService {
   get capabilities(): BackendCapabilities {
     const active = this._backendKind === "rust" ? this._rust : this._sdk;
     if (active) { return active.capabilities; }
-    // No live service: minimal defaults keyed off the attempted runtime.
-    const rust = this._backendKind === "rust";
-    return {
-      kind: this._backendKind, bridgeTools: !rust, customCards: !rust, toolsPicker: !rust,
-      fork: !rust, reloadContext: !rust, exportHtml: true, rename: !rust,
-      interceptSlashCommands: !rust, thinkingLevelLive: () => !rust,
-    };
+    // No live service (mid-init / failed init): the shared runtime default. Same source the
+    // backends derive from, so this fallback can't drift from the real thing.
+    return backendCapabilityDefaults(this._backendKind);
   }
 
   /** Promote a follow-up message to a steering message. Delegated to the backend:

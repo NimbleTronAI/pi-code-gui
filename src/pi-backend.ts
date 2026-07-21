@@ -51,6 +51,31 @@ export interface BackendCapabilities {
   thinkingLevelLive(): boolean;
 }
 
+/** The single source of truth for a runtime's DEFAULT capability flags. Both backends and the
+ *  PiService no-backend fallback derive from this so the defaults can't drift apart (adding a
+ *  capability to BackendCapabilities is now one edit here, compile-checked everywhere).
+ *
+ *  Every gated feature is TS-only (out-of-process RPC has no host-tool injection, no
+ *  fork/reload/rename RPCs, and owns its own slash handling), so the flags are `!rust` — EXCEPT
+ *  exportHtml, which both runtimes support. `thinkingLevelLive` here is the STATIC default
+ *  (`!rust`, correct for the SDK and for the no-model fallback); RustService overrides it with a
+ *  per-model check (`thinkingLevelIsLive(model.api)`) since it's dynamic there. */
+export function backendCapabilityDefaults(runtime: Runtime): BackendCapabilities {
+  const rust = runtime === "rust";
+  return {
+    kind: runtime,
+    bridgeTools: !rust,
+    customCards: !rust,
+    toolsPicker: !rust,
+    fork: !rust,
+    reloadContext: !rust,
+    exportHtml: true,
+    rename: !rust,
+    interceptSlashCommands: !rust,
+    thinkingLevelLive: () => !rust,
+  };
+}
+
 /** The primitive, runtime-divergent operations PiService delegates. Implemented by
  *  SdkService (in-process SDK) and RustService (out-of-process RPC). Orchestration
  *  and UI stay in PiService and call through this. */
