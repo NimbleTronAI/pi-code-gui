@@ -37,6 +37,10 @@ interface SessionWindow {
   label: string;
   /** Intended runtime for this window (known before init completes). */
   runtime: Runtime;
+  /** Per-session subscriptions torn down when the session closes (audit M6: the tree-refresh
+   *  listener was never unsubscribed, so a disposed session's late event still refreshed the
+   *  tree and the closure kept the session alive). */
+  disposables: vscode.Disposable[];
 }
 
 const sessions: SessionWindow[] = [];
@@ -128,6 +132,7 @@ function createSessionWindow(context: vscode.ExtensionContext, runtime: Runtime 
     initialized: false, isStreaming: false,
     label: getGenericSessionLabel(id),
     runtime,
+    disposables: [],
   };
 
   // Track when this panel becomes active
@@ -162,6 +167,8 @@ function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
     // conversation, so the session file already exists on disk.  We just
     // need to clean up and remove it from the open-sessions list so it
     // appears under Past Sessions.
+    for (const d of sw.disposables) { try { d.dispose(); } catch { /* best effort */ } }
+    sw.disposables.length = 0;
     sw.piService.dispose();
     removeSession(sw);
 
@@ -278,13 +285,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // It also fires its OWN benign cancellations (CancellationError, "Canceled")
   // when disposing/terminating during a reconnect — those are not ours and not
   // crashes, so we drop them to avoid flooding the log with hundreds of lines.
-  process.on("unhandledRejection", (reason: unknown) => {
+  // These are PROCESS-level handlers on a SHARED extension host, so they affect every other
+  // extension too. Two consequences the original code got wrong:
+  //  - Registering an "uncaughtException" listener SUPPRESSES the default crash. A fatal error
+  //    thrown by any other extension then continued with corrupted state instead of restarting
+  //    the host. We log and re-throw on a later tick so the default behaviour is restored.
+  //  - They were never removed, so a disable/enable cycle installed duplicates. They are now
+  //    disposed with the extension.
+  const onUnhandledRejection = (reason: unknown): void => {
     if (isBenignCancellation(reason)) { return; }
     piWarn(`UNHANDLED REJECTION: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
-  });
-  process.on("uncaughtException", (err: Error) => {
+  };
+  const onUncaughtException = (err: Error): void => {
     if (isBenignCancellation(err)) { return; }
     piWarn(`UNCAUGHT EXCEPTION: ${err.stack ?? err.message}`);
+    // Restore the default: crash the host rather than limping on with unknown state. Deferred so
+    // this log line is flushed first.
+    setTimeout(() => { throw err; }, 0);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
+  context.subscriptions.push({
+    dispose: () => {
+      process.off("unhandledRejection", onUnhandledRejection);
+      process.off("uncaughtException", onUncaughtException);
+    },
   });
 
   // ── Session restore: WebviewPanelSerializer ──────────
@@ -1667,7 +1692,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   // Refresh tree only when something the user can see actually changes.
   // The tree shows session name, model, thinking level, streaming dot, entry
   // count, and usage stats. Most of these change only a few times per session.
-  sw.piService.onEvent((event) => {
+  const unsubscribeTreeRefresh = sw.piService.onEvent((event) => {
     let changed = false;
 
     if (event.type === "agent-start") {
@@ -1689,6 +1714,9 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
 
     if (changed) { sessionTreeProvider?.refresh(); }
   });
+  // Drop the subscription when the session goes away. Without this, a torn-down session's late
+  // event still called sessionTreeProvider.refresh(), and the closure kept `sw` alive.
+  sw.disposables.push({ dispose: unsubscribeTreeRefresh });
 
   // Notify webview that pi is ready
   sw.webviewPanel.postMessage({
@@ -1752,6 +1780,10 @@ function removeSession(sw: SessionWindow): void {
   if (activeSessionWindow === sw) {
     setActiveSession(sessions.length > 0 ? sessions[sessions.length - 1] : null);
   }
+  // Drop the tree provider's per-session cache entries. These are keyed by the monotonic sw.id
+  // and were only ever ADDED, so a long-lived window accumulated one item (and one expansion
+  // flag) per session opened, forever.
+  sessionTreeProvider?.forgetSession(sw.id);
   // Refresh tree so "Open Sessions (N)" header updates count
   sessionTreeProvider?.refresh();
 }
@@ -1826,6 +1858,12 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
   public pastFilter = "";
   /** Cache of current session tree items so we can update them in-place. */
   private _sessionItems = new Map<string, SessionTreeItem>();
+
+  /** Forget a closed session's cached tree item + expansion flag (see removeSession). */
+  forgetSession(id: string): void {
+    this._sessionItems.delete(id);
+    this.expandedEntries.delete(id);
+  }
 
   constructor(private sessions: SessionWindow[], private context: vscode.ExtensionContext) {}
 
