@@ -20,7 +20,8 @@ const execFileP = promisify(execFile);
 const REPO = "Dicklesworthstone/pi_agent_rust";
 // Pin the managed download to the release we test against (src/rust-pi-version.json)
 // rather than "latest" — auto-installing a moving upstream target is the footgun
-// we deliberately avoid. The pin is bumped via .github/workflows/update-rust-pi.yml.
+// we deliberately avoid. The pin is bumped by editing src/rust-pi-version.json (there is no
+// automated bump workflow — the file's own _comment describes what a Renovate rule would need).
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/tags/${pinnedRust.tag}`;
 
 type Method = "managed" | "curl" | "manual" | "detect";
@@ -159,7 +160,10 @@ async function ensureRustToolDeps(): Promise<void> {
 async function curlInstallRust(): Promise<boolean> {
   const term = vscode.window.createTerminal("Rust Pi Install");
   term.show();
-  term.sendText(`curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" | bash`);
+  // Pin the installer to the SAME tag the extension is built and tested against, rather than
+  // whatever `main` happens to be. The managed path verifies SHA256SUMS and hard-fails without
+  // them; this path can't (it is the upstream installer), so at minimum it must not float.
+  term.sendText(`curl -fsSL "https://raw.githubusercontent.com/${REPO}/${pinnedRust.tag}/install.sh" | bash`);
   term.sendText('echo "Rust Pi installer finished. Reload VS Code to use it."');
   // rust-pi's find/grep tools also need fd/rg, which it doesn't install. Offer
   // them now (independent of the curl install running in the terminal above).

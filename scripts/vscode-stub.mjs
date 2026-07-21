@@ -84,10 +84,35 @@ export const env = {
   openExternal: async (uri) => { rec("openExternal", { uri: String(uri) }); return true; },
 };
 
+// Modelled on the real Uri closely enough that a guard which passes here also passes in
+// production. The previous stub lied in three ways that would make security tests green-but-
+// wrong: Uri.file() had NO `scheme`, Uri.parse("https://x/y").fsPath returned the whole URL, and
+// joinPath was a naive "/" join with no `..` normalisation — so a path-traversal guard would
+// have passed here and failed for real.
+import { posix as posixPath } from "node:path";
+
+const mkUri = (scheme, fsPath, full) => ({
+  scheme,
+  fsPath,
+  path: fsPath,
+  toString: () => full ?? fsPath,
+});
+
 export const Uri = {
-  parse: (s) => ({ toString: () => s, fsPath: s, scheme: String(s).split(":")[0] }),
-  file: (p) => ({ fsPath: p, toString: () => p, path: p }),
-  joinPath: (base, ...segs) => { const p = [base?.fsPath ?? "", ...segs].join("/"); return { fsPath: p, toString: () => p, path: p }; },
+  parse: (value) => {
+    const str = String(value);
+    const m = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/.exec(str);
+    if (!m) { return mkUri("file", str, str); }
+    const [, scheme, rest] = m;
+    // Only file: URIs have a meaningful fsPath; for others it is NOT the whole URL.
+    const fsPath = scheme === "file" ? rest.replace(/^\/\//, "") : "";
+    return mkUri(scheme.toLowerCase(), fsPath, str);
+  },
+  file: (p) => mkUri("file", String(p), `file://${p}`),
+  joinPath: (base, ...segs) => {
+    const joined = posixPath.normalize([base?.fsPath ?? "", ...segs].join("/"));
+    return mkUri(base?.scheme ?? "file", joined, joined);
+  },
 };
 
 export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };

@@ -776,6 +776,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
+        // Already open? Two tabs on one JSONL means two PiServices appending to it, and the
+        // first tab's flush-on-dispose can truncate the second's appends. Focus it instead.
+        const already = findOpenSessionFor(resolved);
+        if (already) {
+          setActiveSession(already);
+          void already.webviewPanel.show();
+          vscode.window.showInformationMessage("That session is already open — focused its tab.");
+          return;
+        }
         // Create a new session tab (like Add Pi Session) and resume into it,
         // on the runtime that originally created the session.
         const originRuntime = lookupSessionRuntime(resolved);
@@ -1761,6 +1770,19 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
  * removeSession(), so this must NOT also dispose the service itself. The trailing guard covers
  * the case where there was no live panel to fire that callback.
  */
+/** An already-open session for `sessionFile`, if any. Two tabs on the same JSONL means two
+ *  PiServices appending to it, and the first tab's flush-on-dispose can truncate the second's
+ *  appends. resumePastSession and the panel deserializer both check this. */
+function findOpenSessionFor(sessionFile: string): SessionWindow | undefined {
+  let resolved: string;
+  try { resolved = path.resolve(sessionFile); } catch { return undefined; }
+  return sessions.find((s) => {
+    const fp = s.piService.sessionFilePath;
+    if (!fp) { return false; }
+    try { return path.resolve(fp) === resolved; } catch { return false; }
+  });
+}
+
 function closeSession(sw: SessionWindow): void {
   sw.webviewPanel.dispose();
   if (sessions.includes(sw)) {

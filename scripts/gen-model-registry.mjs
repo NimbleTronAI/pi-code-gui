@@ -3,9 +3,9 @@
 // bundles the output and uses it to override the Rust binary's stale built-in model
 // list, so Rust gets the same fresh catalog as Pi — with no per-model config.
 //
-//   npm run gen:model-registry   ← run after a pi-ai bump (Dependabot), then commit.
+//   npm run gen:model-registry   ← run after a pi-ai bump (a manual pi-ai bump (there is no dependabot.yml)), then commit.
 //
-// Dependabot tracks @earendil-works/pi-ai (a devDependency); check-model-registry
+// a manual pi-ai bump (there is no dependabot.yml) tracks @earendil-works/pi-ai (a devDependency); check-model-registry
 // fails the build when the stamped version drifts from the installed one, forcing
 // a regen so prices/flags never go stale silently.
 //

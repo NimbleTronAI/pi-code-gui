@@ -6,7 +6,8 @@
 // module writes a fresh catalog into the binary's models.json, OVERRIDING its
 // built-in list with the same registry the TypeScript runtime uses: bundled as
 // src/model-registry.generated.json (generated from @earendil-works/pi-ai and kept
-// fresh by Dependabot — see scripts/gen-model-registry.mjs).
+// fresh by regenerating with scripts/gen-model-registry.mjs; there is no dependabot.yml,
+// so this is a manual step on a pi-ai bump).
 //
 // We always relocate the Rust agent home (PI_CODING_AGENT_DIR) to a directory we
 // own (or pi-code-gui.rustAgentDir), so writing the full catalog never clobbers a

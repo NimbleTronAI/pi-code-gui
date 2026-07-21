@@ -48,5 +48,19 @@ jobs:
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vsce package --no-dependencies -o pi-code-gui.vsix
-      - run: pnpm exec ovsx create-namespace NimbleTron --pat ${{ secrets.OPEN_VSX_MARKETPLACE_TOKEN }} || true
-      - run: pnpm exec ovsx publish pi-code-gui.vsix --pat ${{ secrets.OPEN_VSX_MARKETPLACE_TOKEN }}
+      # The token goes through the ENVIRONMENT, not argv: process arguments are world-readable
+      # via /proc/<pid>/cmdline on the runner, and appear in error output. ovsx reads OVSX_PAT.
+      # `create-namespace` legitimately fails once the namespace exists, so tolerate ONLY that —
+      # the previous `|| true` also swallowed genuine auth failures.
+      - name: Ensure Open VSX namespace
+        env:
+          OVSX_PAT: ${{ secrets.OPEN_VSX_MARKETPLACE_TOKEN }}
+        run: |
+          out=$(pnpm exec ovsx create-namespace NimbleTron 2>&1) || {
+            echo "$out"
+            echo "$out" | grep -qiE "already (exists|owned)" || exit 1
+          }
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OPEN_VSX_MARKETPLACE_TOKEN }}
+        run: pnpm exec ovsx publish pi-code-gui.vsix
