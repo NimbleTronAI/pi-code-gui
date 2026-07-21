@@ -126,7 +126,13 @@ export class PiService {
    *  instead of branching on `_backendKind` at each call site. Orchestration and UI
    *  (pickers, slash dispatch, status/cost formatting) stay in PiService. */
   private get backend(): PiBackend | null {
-    return this._backendKind === "rust" ? this._rust : this._sdk;
+    // Exhaustive on Runtime: a third runtime becomes a compile error here (and at the other
+    // _backendKind branch points) rather than silently routing to the SDK.
+    switch (this._backendKind) {
+      case "rust": return this._rust;
+      case "typescript": return this._sdk;
+      default: return assertNever(this._backendKind, "runtime");
+    }
   }
 
   // SDK state — owned by SdkService; exposed under the legacy names as getters.
@@ -1279,7 +1285,10 @@ export class PiService {
     // state via the RustHost callback only on success (optimistic-safe); the SDK
     // flips eagerly then pushes to the session. The wire call itself is now the
     // backend primitive (setAutoCompaction), not inline RPC/session plumbing.
-    if (this._backendKind !== "rust") { this._autoCompactionEnabled = next; }
+    // Exhaustive so a third runtime must declare its flip policy rather than defaulting to eager.
+    if (this._backendKind === "rust") { /* echo-on-success via the host callback (below) */ }
+    else if (this._backendKind === "typescript") { this._autoCompactionEnabled = next; }
+    else { assertNever(this._backendKind, "runtime"); }
     await this.backend?.setAutoCompaction(next);
     this.emitSettings();
     return this._autoCompactionEnabled;
@@ -1289,7 +1298,9 @@ export class PiService {
     const next = !this._autoRetryEnabled;
     // Same flip policy as auto-compaction. setAutoRetry is a no-op on the SDK (no
     // session toggle); Rust applies it over RPC and echoes state via the host callback.
-    if (this._backendKind !== "rust") { this._autoRetryEnabled = next; }
+    if (this._backendKind === "rust") { /* echo-on-success via the host callback (below) */ }
+    else if (this._backendKind === "typescript") { this._autoRetryEnabled = next; }
+    else { assertNever(this._backendKind, "runtime"); }
     await this.backend?.setAutoRetry(next);
     this.emitSettings();
     return this._autoRetryEnabled;
@@ -1632,6 +1643,10 @@ export class PiService {
       this._rust = null;
       return;
     }
+    // Exhaustive: the SDK teardown below is the "typescript" path. A third runtime added to
+    // Runtime becomes a compile error here (this._backendKind narrows to it) until it declares
+    // its own teardown above. Dead/no-op today.
+    if (this._backendKind !== "typescript") { assertNever(this._backendKind, "runtime"); }
 
     // Force-flush the session file to disk before tearing down.
     // The SDK defers all disk writes until the first assistant message
