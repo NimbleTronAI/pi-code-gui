@@ -75,3 +75,32 @@ test("phase-3/4 commands are registered at ACTIVATION, not behind a session-init
     "the primary-session gate is what made a failed first session unrecoverable",
   );
 });
+
+test("commands register BEFORE anything in activate() that can block", () => {
+  const ext = readFileSync(join(srcDir, "extension.ts"), "utf-8");
+  const body = ext.slice(ext.indexOf("export async function activate"));
+
+  const iEarly = body.indexOf("registerEarlyCommands(context)");
+  const iPhase = body.indexOf("registerPhaseCommands(context)");
+  const iWait = body.indexOf("Waiting for workspace folders");
+  const iDetect = body.indexOf("Step 3c: Detect installed runtimes");
+
+  assert.ok(iEarly > 0 && iPhase > 0 && iWait > 0 && iDetect > 0, "all four anchors present");
+  assert.ok(iEarly < iWait, "early commands must precede the workspace-folder wait (up to 2.5s)");
+  assert.ok(iPhase < iWait, "phase commands must precede it too");
+  assert.ok(iEarly < iDetect && iPhase < iDetect, "…and precede runtime detection / the install offer");
+});
+
+test("the runtime detection + install offer is NOT awaited by activate()", () => {
+  const ext = readFileSync(join(srcDir, "extension.ts"), "utf-8");
+  // offerInitialRuntimeChoice awaits a QuickPick with ignoreFocusOut AND an install, so awaiting
+  // that chain at activation level meant activate() never resolved until the user finished.
+  const detect = ext.slice(ext.indexOf("Step 3c: Detect installed runtimes"));
+  const block = detect.slice(0, detect.indexOf("Step 4"));
+  assert.match(block, /void \(async \(\) => \{/, "the detection chain must be detached");
+  assert.doesNotMatch(
+    block,
+    /^\s{2}await (refreshRuntimeContext|offerInitialRuntimeChoice|warnIfUntestedRustBinary)/m,
+    "no activate()-level await on the detection/install chain",
+  );
+});

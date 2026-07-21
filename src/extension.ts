@@ -230,6 +230,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   piLog(`Pi Code Gui v${context.extension.packageJSON.version} starting... (dev=${context.extensionMode === vscode.ExtensionMode.Development})`);
 
+  // ── Commands FIRST ──────────────────────────────────────────────────────
+  // These must exist before anything that can block. The workspace-folder wait below is up to
+  // 2.5s, and Step 3c's install offer used to be unbounded — registering after them meant
+  // Cmd+/, Cmd+L and the rest were "command not found" for that whole window, which is exactly
+  // what the old "must be registered synchronously so keybindings work immediately" comment was
+  // trying to prevent while sitting AFTER the wait. Neither registration needs a workspace
+  // folder or a runtime: every handler resolves its target at invocation time.
+  registerEarlyCommands(context);
+  registerPhaseCommands(context);
+
   // After extension host restart, workspace folders may not be available yet.
   // Without this guard, we fall back to process.cwd() which on remote servers
   // is the server root, loading sessions from the wrong project.
@@ -911,36 +921,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // ── Step 3b: Register SDK-independent commands ─────
-  // These must be registered synchronously so keybindings
-  // (Cmd+/, Cmd+L, etc.) work immediately — the async SDK
-  // init chain in initSessionInBackground can take seconds.
-  registerEarlyCommands(context);
-  // Phase 3/4 commands are GLOBAL and must exist for the whole window lifetime. They used to be
-  // registered inside initSessionInBackground behind `!phaseCommandsRegistered && sw ===
-  // primarySession()`, which sat past every early return — so if the first session failed to
-  // init (Pi not installed, rust-extension conflict, init error) the commands never registered.
-  // Two of those early returns don't removeSession(), so the failed session stayed sessions[0]
-  // forever and no later session could ever satisfy `sw === primarySession()`: cycleModel
-  // (Ctrl+P), pickThinkingLevel, login and resumeSession were "command not found" for the rest
-  // of the window, EVEN AFTER the user installed Pi. They already resolve the live service per
-  // invocation and warn when it isn't ready, so registering them up front is safe.
-  registerPhaseCommands(context);
+  // ── Step 3b: (command registration now happens at the TOP of activate) ─────
 
   // ── Step 3c: Detect installed runtimes and set menu context keys ──
-  // Runs before session restore so runtime-aware UI settles correctly.
-  await refreshRuntimeContext(true);
-
-  // If neither runtime is installed, let the user choose one to install.
-  const detectedAtStartup = cachedRuntimes();
-  if (detectedAtStartup && !detectedAtStartup.ts && !detectedAtStartup.rust) {
-    await offerInitialRuntimeChoice(context);
-    await refreshRuntimeContext(true);
-  }
-
-  // Warn (once) if a user-supplied Rust binary differs from the version we test
-  // against. The managed build is pinned to that version, so it never warns.
-  await warnIfUntestedRustBinary(context);
+  // DETACHED, deliberately. This chain ends in offerInitialRuntimeChoice, which awaits a
+  // QuickPick with ignoreFocusOut:true and then an INSTALL — so awaiting it here meant
+  // activate() did not resolve until the user finished installing Pi (or forever, if they
+  // ignored the prompt). Anything awaiting our activation — getExtension(...).activate(), the
+  // packages view, the auto-open session below — hung with it.
+  // Nothing after this point depends on the result: the context keys only drive menu
+  // visibility, and session init re-detects the runtime itself.
+  void (async () => {
+    try {
+      await refreshRuntimeContext(true);
+      const detectedAtStartup = cachedRuntimes();
+      if (detectedAtStartup && !detectedAtStartup.ts && !detectedAtStartup.rust) {
+        await offerInitialRuntimeChoice(context);
+        await refreshRuntimeContext(true);
+      }
+      // Warn (once) if a user-supplied Rust binary differs from the version we test against.
+      // The managed build is pinned to that version, so it never warns.
+      await warnIfUntestedRustBinary(context);
+    } catch (e: unknown) {
+      piWarn(`Runtime detection/install offer failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })();
 
   // ── Step 4: Create a fresh session only when VS Code has no panels to revive ──
   // Reopening previous sessions is owned by the WebviewPanelSerializer: VS Code
