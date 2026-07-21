@@ -16,7 +16,7 @@ import type { SessionSummary, Runtime } from "./types.js";
 import { planPanelRestore } from "./panel-restore.js";
 import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext } from "./runtime-detection.js";
 import { detectRustBinary } from "./rust-resolver.js";
-import { isRustSessionPath, listRustSessions } from "./rust-sessions.js";
+import { isRustSessionPath, listRustSessions, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { isRustSessionHeader } from "./session-format.js";
 import { installRustInteractive } from "./rust-install.js";
 import pinnedRust from "./rust-pi-version.json";
@@ -2321,7 +2321,7 @@ function formatEntryLabel(entry: any): { label: string; tooltip: string; type: s
   if (entry.type === "label") {
     return { label: `[label: ${entry.label ?? "(cleared)"}]`, tooltip: "", type: "label", fullText: "" };
   }
-  if (entry.type === "session_info") {
+  if (entry.type === RUST_SESSION_NAME_ENTRY || entry.type === "session_info") {
     return { label: `[title: ${entry.name ?? "(empty)"}]`, tooltip: "", type: "session_info", fullText: "" };
   }
 
@@ -2395,7 +2395,7 @@ class SessionTreeItem extends vscode.TreeItem {
       : type === "custom_message" ? "pencil"
       : type === "custom" ? "symbol-property"
       : type === "label" ? "tag"
-      : type === "session_info" ? "info"
+      : type === RUST_SESSION_NAME_ENTRY || type === "session_info" ? "info"
       : "play",
     );
   }

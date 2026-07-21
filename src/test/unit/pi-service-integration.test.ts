@@ -4,6 +4,7 @@
 // DECISIONS where dual-runtime bugs hide: the sendPrompt dispatch matrix and the
 // optimistic-vs-eager toggle-flip divergence. This was the audits' deferred integration gap.
 import { test } from "node:test";
+import { RUST_SESSION_NAME_ENTRY } from "../../session-format.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -137,10 +138,14 @@ test("toggleAutoRetry: same optimistic-vs-eager divergence", async () => {
 });
 
 // ── Rust session_info append: never write while the binary owns the file ──
-// rust-pi owns its session JSONL and appends to it as a turn progresses. Our session_info
-// append is O_APPEND, but if the binary writes via a tracked offset instead, an interleaved
-// write could clobber ours — unknowable under the clean-room wall. So we only ever write while
-// the binary is idle, and at dispose only AFTER the child is torn down.
+// rust-pi owns its session JSONL and appends to it as a turn progresses. Our name-entry append
+// is O_APPEND, but if the binary writes via a tracked offset instead, an interleaved write could
+// clobber ours — unknowable under the clean-room wall. So we only ever write while the binary is
+// idle, and at dispose only AFTER the child is torn down.
+//
+// The ENTRY TYPE matters as much as the timing: these assertions read
+// RUST_SESSION_NAME_ENTRY rather than a literal, because writing the literal `session_info` here
+// is precisely the bug that made rust-pi reject whole sessions (see rust-session-name.test.ts).
 function rustPiWithSessionFile(): { pi: PiService; backend: FakeBackend; file: string; dir: string; entries: () => Any[] } {
   const { pi, backend } = makePi("rust");
   const dir = mkdtempSync(join(tmpdir(), "pi-sessinfo-"));
@@ -153,7 +158,7 @@ function rustPiWithSessionFile(): { pi: PiService; backend: FakeBackend; file: s
   const entries = () => readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
   return { pi, backend, file, dir, entries };
 }
-const names = (es: Any[]) => es.filter((e) => e.type === "session_info").map((e) => e.name);
+const names = (es: Any[]) => es.filter((e) => e.type === RUST_SESSION_NAME_ENTRY).map((e) => e.name);
 
 test("setSessionName writes immediately when the binary is IDLE", () => {
   const { pi, dir, entries } = rustPiWithSessionFile();

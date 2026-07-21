@@ -16,7 +16,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSummary } from "./types.js";
-import { collectJsonlFiles, summarizeSessionFile } from "./session-format.js";
+import { collectJsonlFiles, summarizeSessionFile, RUST_SESSION_NAME_ENTRY } from "./session-format.js";
+
+export { RUST_SESSION_NAME_ENTRY };
 
 /** The Rust agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent). */
 function rustAgentDir(): string {

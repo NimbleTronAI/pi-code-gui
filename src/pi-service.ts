@@ -10,7 +10,7 @@ import { confirmRendererConsent } from "./renderer-consent.js";
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
 import { setupRustModels } from "./rust-models.js";
-import { resolveRustSessionDir } from "./rust-sessions.js";
+import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
@@ -1494,7 +1494,9 @@ export class PiService {
     try {
       const lines = fs.readFileSync(sf, "utf-8").trim().split("\n");
       for (let i = lines.length - 1; i >= 0; i--) {
-        try { const e = JSON.parse(lines[i]); if (e?.type === "session_info" && typeof e.name === "string") { return e.name; } }
+        // Accept the legacy `session_info` too: sessions titled before the entry type changed
+        // still carry their name that way, and reading it costs nothing.
+        try { const e = JSON.parse(lines[i]); if ((e?.type === RUST_SESSION_NAME_ENTRY || e?.type === "session_info") && typeof e.name === "string") { return e.name; } }
         catch { /* skip a malformed line */ }
       }
     } catch { /* no file yet (fresh session pre-first-turn) */ }
@@ -1526,10 +1528,10 @@ export class PiService {
   private _appendRustSessionInfo(sf: string | null, name: string): void {
     if (!sf || !fs.existsSync(sf)) { return; }
     try {
+      // No id/parentId: this entry is deliberately OUTSIDE rust-pi's tree (see
+      // RUST_SESSION_NAME_ENTRY). Supplying tree fields is exactly what broke the loader before.
       fs.appendFileSync(sf, JSON.stringify({
-        type: "session_info",
-        id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        parentId: null,
+        type: RUST_SESSION_NAME_ENTRY,
         timestamp: new Date().toISOString(),
         name,
       }) + "\n");

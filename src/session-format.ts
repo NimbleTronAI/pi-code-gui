@@ -7,6 +7,23 @@ import * as path from "node:path";
 import { piWarn } from "./logger.js";
 import type { SessionSummary } from "./types.js";
 
+/** The entry type the extension appends to a Rust session JSONL to record a display name.
+ *
+ *  NAMESPACED ON PURPOSE, and it must stay a type rust-pi does not know. We used to write
+ *  `session_info` — a type rust-pi DOES know — with an extension-generated id and
+ *  `parentId: null`. Its loader builds a tree from the entries it recognises, our entry didn't
+ *  fit that tree, and the build failed WHOLESALE: a single appended line made the binary report
+ *  zero messages for an otherwise intact 137-message session, so resuming opened a blank tab and
+ *  the model lost its context too.
+ *
+ *  Verified black-box against rust-pi 0.1.22: an unknown entry type is skipped harmlessly
+ *  (136/136 messages still load) — including four appended in sequence, and one interleaved
+ *  mid-file — while `session_info` and a duplicated real entry both yield 0. Legacy
+ *  `session_info` names are still READ so titles written before this fix survive.
+ *
+ *  Lives here rather than in rust-sessions.ts because that module imports THIS one. */
+export const RUST_SESSION_NAME_ENTRY = "pi-code-gui.session_name";
+
 /**
  * Best-effort: does this session JSONL look like a Rust-runtime session? The Rust
  * runtime records `provider` + `modelId` in its `type:"session"` header line; the
@@ -102,6 +119,30 @@ export function summarizeSessionFile(filePath: string): SessionFileSummary {
   return value;
 }
 
+/** What a session JSONL holds on disk, for reconciling against what the runtime reports it
+ *  loaded. `legacyNameEntries` counts the `session_info` lines that make rust-pi's loader reject
+ *  the whole file — the one signal that turns "this session is empty" into an explanation. */
+export interface SessionFileCensus {
+  messages: number;
+  legacyNameEntries: number;
+}
+
+/** Count message + legacy-name entries in a session JSONL. Returns null if unreadable. */
+export function censusSessionFile(filePath: string): SessionFileCensus | null {
+  let raw: string;
+  try { raw = fs.readFileSync(filePath, "utf-8"); } catch { return null; }
+  let messages = 0, legacyNameEntries = 0;
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) { continue; }
+    let entry: { type?: unknown };
+    try { entry = JSON.parse(t) as { type?: unknown }; } catch { continue; }
+    if (entry.type === "message") { messages++; }
+    else if (entry.type === "session_info") { legacyNameEntries++; }
+  }
+  return { messages, legacyNameEntries };
+}
+
 function parseSessionFile(filePath: string, modified: number | undefined): SessionFileSummary {
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
@@ -124,7 +165,7 @@ function parseSessionFile(filePath: string, modified: number | undefined): Sessi
         else if (typeof ts === "number") { created = ts; }
         if (typeof entry.name === "string") { name = entry.name; }
         if (typeof entry.cwd === "string") { cwd = entry.cwd; }
-      } else if (type === "session_info" && typeof entry.name === "string") {
+      } else if ((type === RUST_SESSION_NAME_ENTRY || type === "session_info") && typeof entry.name === "string") {
         name = entry.name;
       } else if (type === "message") {
         messageCount++;

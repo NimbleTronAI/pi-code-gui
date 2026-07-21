@@ -18,6 +18,7 @@ import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
+import { censusSessionFile } from "./session-format.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
@@ -172,6 +173,25 @@ export class RustService implements PiBackend {
    * line-delimited JSON RPC protocol and route its events through the host's
    * handleAgentEvent path (the event shapes mirror the TS SDK's).
    */
+  /** Say so — visibly — when rust-pi reports no history for a session file that demonstrably
+   *  has some. Silence here is what let a corrupted session open as an ordinary blank tab.
+   *
+   *  The known cause is a `session_info` entry: the extension used to append one to record the
+   *  tab name, and rust-pi's loader rejects the WHOLE file over it (verified black-box against
+   *  0.1.22 — one such line turns a 137-message session into zero). Writing that entry has been
+   *  fixed, but files already carrying one stay unloadable, so name the cause when we see it. */
+  private warnIfHistoryWasNotLoaded(loaded: number): void {
+    if (loaded > 0 || !this.sessionPath) { return; }
+    const census = censusSessionFile(this.sessionPath);
+    if (!census || census.messages === 0) { return; } // genuinely empty: nothing to report
+    const cause = census.legacyNameEntries > 0
+      ? " The cause is a `session_info` entry an older build of this extension appended to record the tab name — rust-pi's loader rejects the entire file over it."
+      : "";
+    const content = `⚠ This session's history did not load. The file on disk still holds ${census.messages} message${census.messages === 1 ? "" : "s"}, but the Rust runtime reported none, so the conversation above is missing AND the model has no context from it.${cause} Your transcript is intact on disk at ${this.sessionPath}`;
+    piWarn(`Rust history not loaded: ${census.messages} messages on disk, 0 reported (legacy session_info entries: ${census.legacyNameEntries}) — ${this.sessionPath}`);
+    this.host.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
+  }
+
   async initialize(opts: { fresh?: boolean; openPath?: string }): Promise<RustInitResult> {
     this.initializing = true;
     try {
@@ -357,6 +377,12 @@ export class RustService implements PiBackend {
       if (entries.length === 0 && entriesReplyLooksDrifted(msgs.data)) {
         piWarn("get_messages returned entries that parsed to 0 messages — rust-pi's history shape may have drifted (see parseRustEntries).");
       }
+      // Reconcile against the file on disk. A well-formed EMPTY reply is indistinguishable from a
+      // genuinely new session, so the drift probe above stays silent — which is exactly how the
+      // extension came to open resumed sessions as blank tabs with no signal at all. If the file
+      // holds messages the runtime says it loaded none of, that is never normal: say so, loudly,
+      // and name the count so the transcript is visibly still there.
+      this.warnIfHistoryWasNotLoaded(entries.length);
       this.entries = entries;
       this.captureContextFromMessages(msgs.data);
       this.host.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
