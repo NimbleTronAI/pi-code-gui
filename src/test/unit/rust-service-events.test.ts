@@ -97,6 +97,75 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+const assistantMsgEnd = (u: Any) => ({ type: "message_end", message: { role: "assistant", usage: u } });
+const statsCalls = (h: Harness) => h.requests.filter((r) => r === "get_session_stats").length;
+
+// ── Item 1: usage arithmetic (direct) ────────────────────────────────
+test("accumulateUsage climbs additively from the current base", () => {
+  const h = makeHarness();
+  (h.rust as Any).accumulateUsage({ input: 100, output: 20, cacheRead: 5, cacheWrite: 1 });
+  (h.rust as Any).accumulateUsage({ input: 50, output: 10, cacheRead: 0, cacheWrite: 0 });
+  const u = h.rust.getUsage();
+  assert.deepEqual([u.input, u.output, u.cacheRead, u.cacheWrite], [150, 30, 5, 1]);
+});
+
+test("applyUsage REPLACES this.usage wholesale (authoritative snap, not additive)", () => {
+  const h = makeHarness();
+  (h.rust as Any).accumulateUsage({ input: 999, output: 999, cacheRead: 9, cacheWrite: 9 });
+  (h.rust as Any).applyUsage({ tokens: { input: 10, output: 2, cacheRead: 1, cacheWrite: 0 }, cost: 5 });
+  const u = h.rust.getUsage();
+  assert.deepEqual([u.input, u.output, u.cacheRead, u.cacheWrite], [10, 2, 1, 0]);
+});
+
+test("getUsage recomputes contextPercent live from lastContextTokens / contextWindow", () => {
+  const h = makeHarness({ contextWindow: 100_000 });
+  (h.rust as Any).captureContext({ input: 20_000, cacheRead: 5_000 }); // ctx = 25000 → 25%
+  assert.equal(h.rust.getUsage().contextPercent, 25);
+});
+
+test("captureContext updates lastContextTokens only when the turn's context tokens are > 0", () => {
+  const h = makeHarness({ contextWindow: 100_000 });
+  (h.rust as Any).captureContext({ input: 10_000, cacheRead: 0 });
+  assert.equal(h.rust.getUsage().contextPercent, 10);
+  (h.rust as Any).captureContext({ input: 0, cacheRead: 0 }); // ctx=0 → leave the prior fill
+  assert.equal(h.rust.getUsage().contextPercent, 10);
+});
+
+// ── Item 1: full handleEvent trajectory ──────────────────────────────
+test("full turn: live cost climbs per message_end, terminal snaps authoritative, dup agent_end doesn't double-refresh, agent_settled is latch-proof", async () => {
+  const h = makeHarness({ contextWindow: 100_000 });
+
+  h.emit({ type: "agent_start" });
+  assert.equal(h.getActive(), true, "agent_start latched the run active");
+
+  h.emit(assistantMsgEnd({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }));
+  assert.equal(h.rust.getUsage().input, 100);
+  h.emit(assistantMsgEnd({ input: 50, output: 10, cacheRead: 0, cacheWrite: 0 }));
+  h.emit(assistantMsgEnd({ input: 30, output: 5, cacheRead: 0, cacheWrite: 0 }));
+  assert.equal(h.rust.getUsage().input, 180, "live accumulate climbs across each message_end");
+
+  // Terminal agent_end: get_session_stats carries the authoritative cumulative.
+  h.setStats({ tokens: { input: 500, output: 120, cacheRead: 10, cacheWrite: 2 }, cost: 0 });
+  h.emit({ type: "agent_end", messages: [] });
+  await flush();
+  assert.equal(h.getActive(), false, "agent_end un-latched active");
+  assert.equal(h.rust.getUsage().input, 500, "terminal snapped to the authoritative total");
+  const afterFirstEnd = statsCalls(h);
+  assert.equal(afterFirstEnd, 1, "one authoritative refresh at the real agent_end");
+
+  // Duplicate agent_end (rust error-path double-emit) → deduped, no second refresh.
+  h.emit({ type: "agent_end", messages: [] });
+  await flush();
+  assert.equal(statsCalls(h), afterFirstEnd, "duplicate agent_end did not double-refresh");
+
+  // agent_settled terminal → authoritative refresh EVEN THOUGH active is already false (the
+  // latch-proof path: a duplicate agent_end that starved isRealAgentEnd can't starve this).
+  h.setStats({ tokens: { input: 600, output: 150, cacheRead: 10, cacheWrite: 2 }, cost: 0 });
+  h.emit({ type: "agent_settled" });
+  await flush();
+  assert.equal(statsCalls(h), afterFirstEnd + 1, "agent_settled took its own authoritative snap");
+  assert.equal(h.rust.getUsage().input, 600, "final total landed via agent_settled");
+});
 
 // ── Item 6: compact() mid-turn wipe guard ────────────────────────────
 test("refreshUsage is skipped while a turn is active — /compact mid-turn can't wipe live usage", async () => {
