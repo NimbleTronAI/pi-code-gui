@@ -18,6 +18,10 @@ import { isRustSessionPath, listRustSessions } from "./rust-sessions.js";
 import { isRustSessionHeader } from "./session-format.js";
 import { installRustInteractive } from "./rust-install.js";
 import pinnedRust from "./rust-pi-version.json";
+// The tree-view label extractor is the SAME operation as the event translator's — import the
+// one implementation instead of a second copy (this file's copy also threw on a null content
+// item and could join `undefined` into the label).
+import { extractMessageText as extractText } from "./agent-events.js";
 
 // ── Session window management ──────────────────────────
 
@@ -2197,21 +2201,6 @@ function getEntryCount(sw: SessionWindow): number {
   // Runtime-agnostic: TS reads its SessionManager, Rust reads its get_messages
   // cache. Using the unified accessor keeps Rust sessions expandable like TS.
   return sw.piService.getDisplayEntries()?.length ?? 0;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractText(content: any): string {
-  if (!content) { return ""; }
-  if (typeof content === "string") { return content; }
-  if (Array.isArray(content)) {
-    return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((c: any) => c.type === "text")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((c: any) => c.text)
-      .join("\n");
-  }
-  return "";
 }
 
 function truncate(s: string, max: number): string {
