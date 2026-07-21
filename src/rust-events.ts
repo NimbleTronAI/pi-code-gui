@@ -237,6 +237,26 @@ export function commandsReplyLooksDrifted(data: unknown): boolean {
   return Object.values(d).some((v) => Array.isArray(v) && v.length > 0); // commands moved elsewhere
 }
 
+/** A token-bearing object (a get_session_stats `tokens` block, or a message_end `usage` object)
+ *  looks DRIFTED when it's absent or lacks the numeric `input`/`output` fields the usage math
+ *  reads — i.e. rust-pi renamed or moved a field. A legitimate all-zero session sends numeric
+ *  zeros (verified against the binary: fresh get_session_stats → tokens {input:0,output:0,…}),
+ *  so it is NOT flagged. Pure. This is the usage-path analogue of the get_state shape probe:
+ *  without it, a rename makes every token read 0 and — since catalog rates exist — the status
+ *  bar shows "$0.00" (not "$??") on a session that is actually billing, with no warning. */
+export function tokenFieldsLookDrifted(tokens: unknown): boolean {
+  if (!tokens || typeof tokens !== "object") { return true; }
+  const t = tokens as Record<string, unknown>;
+  return typeof t.input !== "number" || typeof t.output !== "number";
+}
+
+/** Whether a get_session_stats reply (the authoritative cost source) has drifted — its `tokens`
+ *  block is missing or non-numeric. Pure. */
+export function sessionStatsLookDrifted(data: unknown): boolean {
+  if (!data || typeof data !== "object") { return true; }
+  return tokenFieldsLookDrifted((data as Record<string, unknown>).tokens);
+}
+
 /** Map a Rust `get_commands` reply to slash-command entries. */
 export function parseRustSlashCommands(data: unknown): Array<{ cmd: string; desc: string; source: string }> {
   const list = (data as { commands?: unknown })?.commands;

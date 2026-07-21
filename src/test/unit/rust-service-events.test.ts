@@ -149,3 +149,25 @@ test("setThinkingLevel: no clamp → no notice", async () => {
   assert.equal(h.rust.getThinkingLevel(), "high");
   assert.ok(!h.events.some((e) => e.type === "custom-message" && String((e as Any).data.content).includes("doesn't support thinking levels")), "no clamp notice when the level holds");
 });
+
+// ── Item 2: usage-drift probe ────────────────────────────────────────
+test("refreshUsage warns and does NOT wipe usage when the stats reply drifts (silent $0.00 guard)", async () => {
+  const h = makeHarness();
+  (h.rust as Any).accumulateUsage({ input: 500, output: 100, cacheRead: 0, cacheWrite: 0 });
+  h.setActive(false);
+  h.setStats({ cost: 0, sessionId: "x" }); // success reply but NO tokens block → drift
+  await (h.rust as Any).refreshUsage();
+  assert.equal(h.rust.getUsage().input, 500, "drifted reply must not replace the accumulated usage");
+  assert.ok(h.events.some((e) => e.type === "custom-message" && String((e as Any).data.content).includes("usage wire-shape may have drifted")), "authoritative drift warned");
+});
+
+test("a message_end with drifted usage warns once (live path) and doesn't accumulate", () => {
+  const h = makeHarness();
+  h.emit({ type: "agent_start" });
+  h.emit({ type: "message_end", message: { role: "assistant", usage: { promptTokens: 10, completionTokens: 2 } } }); // renamed fields
+  assert.equal(h.rust.getUsage().input, 0, "drifted usage not accumulated");
+  const stuck = (e: PiServiceEvent) => e.type === "custom-message" && String((e as Any).data.content).includes("live cost estimate may be stuck");
+  assert.equal(h.events.filter(stuck).length, 1, "warned once");
+  h.emit({ type: "message_end", message: { role: "assistant", usage: { promptTokens: 5 } } });
+  assert.equal(h.events.filter(stuck).length, 1, "one-shot — no repeat warning");
+});

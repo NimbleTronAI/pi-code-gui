@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "../../rust-events.js";
 import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS } from "../../agent-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
@@ -316,4 +316,23 @@ test("commandsReplyLooksDrifted: real drift — entries present but unparsed, or
   assert.equal(commandsReplyLooksDrifted({ list: [{ name: "x" }] }), true);
   // commands moved to a non-empty array while `commands` is absent.
   assert.equal(commandsReplyLooksDrifted({ items: [{ invocationName: "y" }], commands: undefined }), true);
+});
+
+test("tokenFieldsLookDrifted: numeric input/output (even all-zero) is NOT drift; absent/renamed IS", () => {
+  // Legit all-zero session (verified against the binary: fresh get_session_stats → numeric 0s).
+  assert.equal(tokenFieldsLookDrifted({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }), false);
+  assert.equal(tokenFieldsLookDrifted({ input: 1200, output: 340 }), false);
+  // Drift: object missing, or the fields renamed / non-numeric.
+  assert.equal(tokenFieldsLookDrifted(undefined), true);
+  assert.equal(tokenFieldsLookDrifted(null), true);
+  assert.equal(tokenFieldsLookDrifted({ promptTokens: 10, completionTokens: 2 }), true); // renamed
+  assert.equal(tokenFieldsLookDrifted({ input: "10", output: "2" }), true);              // stringified
+});
+
+test("sessionStatsLookDrifted: reads data.tokens; legit-zero passes, missing/renamed tokens flag", () => {
+  assert.equal(sessionStatsLookDrifted({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 }), false);
+  assert.equal(sessionStatsLookDrifted({ tokens: { input: 5, output: 3 }, cost: 0.01 }), false);
+  assert.equal(sessionStatsLookDrifted({ cost: 0 }), true);              // no tokens block → drift
+  assert.equal(sessionStatsLookDrifted({ usage: { input: 5 } }), true); // moved to `usage` → drift
+  assert.equal(sessionStatsLookDrifted(null), true);
 });

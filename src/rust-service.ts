@@ -15,7 +15,7 @@
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted } from "./rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
@@ -498,7 +498,16 @@ export class RustService implements PiBackend {
       // this live per-round accumulate is what climbs the cost mid-run. Keep it the ONLY mid-run
       // usage writer — see the no-mid-run-refresh note at the agent_settled snap below.
       const mu = (event as { message?: { usage?: unknown } }).message?.usage;
-      if (mu && typeof mu === "object") { this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus(); }
+      if (mu && typeof mu === "object") {
+        // Secondary drift net on the live path: a usage object without numeric token fields
+        // means a rename — accumulate would silently add 0 and the live cost would stall. Warn
+        // once (a distinct, never-cleared cap so it doesn't flap with the authoritative "usage").
+        if (tokenFieldsLookDrifted(mu)) {
+          this.warnDegraded("usage-shape", "A Rust assistant message carried usage without the expected numeric token fields — the live cost estimate may be stuck; the usage wire-shape may have drifted.");
+        } else {
+          this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus();
+        }
+      }
     }
     // After a turn, re-sync state so the (now-written) session file path,
     // model, and settings are captured for status + reload persistence.
@@ -682,7 +691,16 @@ export class RustService implements PiBackend {
     if (this.host.getAgentRunActive()) { return; }
     try {
       const r = await this.process.request(RUST_RPC.getSessionStats, {}, 8000);
-      if (r.success) { this.applyUsage(r.data); this.recordCapOk("usage"); }
+      if (r.success) {
+        // A `success` reply whose token fields aren't numeric means the usage wire-shape drifted
+        // (field rename/move). Warn instead of applying — otherwise every token reads 0 and the
+        // status bar shows a silent "$0.00" on a billing session. Mirrors the get_state probe.
+        if (sessionStatsLookDrifted(r.data)) {
+          this.warnDegraded("usage", "Rust Pi's usage reply is missing the expected numeric token fields — its usage wire-shape may have drifted, so the cost readout could be wrong or $0. Check for a rust-pi update.");
+        } else {
+          this.applyUsage(r.data); this.recordCapOk("usage");
+        }
+      }
     } catch (e: unknown) {
       piWarn(`refreshUsage failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("usage", "Couldn't read Rust Pi's token/cost usage — the usage readout may be missing or stale.");
