@@ -15,7 +15,7 @@
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
@@ -331,7 +331,14 @@ export class RustService implements PiBackend {
       const models = await proc.request(RUST_RPC.getAvailableModels, {}, 15000);
       const list = parseRustModels(models.data);
       if (models.success && list.length > 0) { this._availableModels = list; this.host.setCycleModels(list); this.recordCapOk("models"); }
-      else { this.warnDegraded("models", "Rust Pi returned no model list — model switching (/model) may be unavailable this session."); }
+      else {
+        // Distinguish "genuinely no models" from "entries arrived but none parsed" (a shape
+        // rename would otherwise silently empty the picker behind the generic notice).
+        if (modelsReplyLooksDrifted(models.data)) {
+          piWarn("get_available_models returned entries that parsed to 0 models — rust-pi's model shape may have drifted (see parseRustModels).");
+        }
+        this.warnDegraded("models", "Rust Pi returned no model list — model switching (/model) may be unavailable this session.");
+      }
     } catch (e: unknown) {
       piWarn(`Rust get_available_models failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("models", "Couldn't load the Rust model list — model switching (/model) may be unavailable this session.");
@@ -340,6 +347,11 @@ export class RustService implements PiBackend {
     try {
       const msgs = await proc.request(RUST_RPC.getMessages, {}, 15000);
       const entries = parseRustEntries(msgs.data);
+      // A reply that still carries messages but parsed to nothing means the history shape
+      // drifted — otherwise resume just renders an empty conversation with no signal.
+      if (entries.length === 0 && entriesReplyLooksDrifted(msgs.data)) {
+        piWarn("get_messages returned entries that parsed to 0 messages — rust-pi's history shape may have drifted (see parseRustEntries).");
+      }
       this.entries = entries;
       this.captureContextFromMessages(msgs.data);
       this.host.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });

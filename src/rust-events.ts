@@ -237,10 +237,33 @@ export function parseRustEntries(data: unknown): any[] {
  *  must NOT warn. Drift is: a non-empty `commands` array whose items lack the known name fields,
  *  or (shape moved) no `commands` array but some other non-empty array in the reply. Pure. */
 export function commandsReplyLooksDrifted(data: unknown): boolean {
+  return listReplyLooksDrifted(data, "commands");
+}
+
+/** Shared shape check behind the per-reply drift probes. Call ONLY after the parse yielded
+ *  nothing: a reply is "drifted" when it still carries items — either under the expected key
+ *  (present but unparsable → the item shape changed) or under some other key (the list moved).
+ *  A genuinely empty reply (`{key: []}`, or `{}`) is NOT drift, which is what keeps a legitimately
+ *  empty list from warning on every start. Pure. */
+function listReplyLooksDrifted(data: unknown, key: string): boolean {
   if (!data || typeof data !== "object") { return false; }
+  if (Array.isArray(data)) { return data.length > 0; } // bare array form
   const d = data as Record<string, unknown>;
-  if (Array.isArray(d.commands)) { return d.commands.length > 0; } // items present but unparsed → drift
-  return Object.values(d).some((v) => Array.isArray(v) && v.length > 0); // commands moved elsewhere
+  if (Array.isArray(d[key])) { return d[key].length > 0; } // items present but unparsed → drift
+  return Object.values(d).some((v) => Array.isArray(v) && v.length > 0); // list moved elsewhere
+}
+
+/** get_available_models parsed to nothing but the reply still carries entries → the model shape
+ *  drifted (we require {provider,id} strings). Without this, a rename silently empties the
+ *  /model picker and the cycle list with only the generic "returned no model list" notice. */
+export function modelsReplyLooksDrifted(data: unknown): boolean {
+  return listReplyLooksDrifted(data, "models");
+}
+
+/** get_messages parsed to nothing but the reply still carries entries → the history shape
+ *  drifted. Without this, a rename renders an empty conversation on resume with no signal. */
+export function entriesReplyLooksDrifted(data: unknown): boolean {
+  return listReplyLooksDrifted(data, "messages");
 }
 
 /** A token-bearing object (a get_session_stats `tokens` block, or a message_end `usage` object)

@@ -2,7 +2,7 @@
 // Run with `pnpm run test:unit`. Shapes mirror real rust-pi 0.1.18 RPC output.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "../../rust-events.js";
+import { normalizeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "../../rust-events.js";
 import { shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS } from "../../agent-events.js";
 
 // ── normalizeRustEvent ────────────────────────────────────────────────
@@ -349,4 +349,21 @@ test("sessionStatsLookDrifted: reads data.tokens; legit-zero passes, missing/ren
   assert.equal(sessionStatsLookDrifted({ cost: 0 }), true);              // no tokens block → drift
   assert.equal(sessionStatsLookDrifted({ usage: { input: 5 } }), true); // moved to `usage` → drift
   assert.equal(sessionStatsLookDrifted(null), true);
+});
+
+// ── models / entries drift probes ────────────────────────────────────
+test("modelsReplyLooksDrifted: entries present but unparsed → drift; genuinely empty → not", () => {
+  assert.equal(modelsReplyLooksDrifted({ models: [{ name: "renamed-shape" }] }), true);
+  assert.equal(modelsReplyLooksDrifted({ models: [] }), false, "empty list is not drift");
+  assert.equal(modelsReplyLooksDrifted({}), false);
+  assert.equal(modelsReplyLooksDrifted({ available: [{ id: "x" }] }), true, "list moved to another key");
+  assert.equal(modelsReplyLooksDrifted([{ id: "x" }]), true, "bare array form");
+  assert.equal(modelsReplyLooksDrifted(null), false);
+});
+
+test("entriesReplyLooksDrifted: same contract on the history reply", () => {
+  assert.equal(entriesReplyLooksDrifted({ messages: [{ role: "user" }] }), true);
+  assert.equal(entriesReplyLooksDrifted({ messages: [] }), false, "a fresh session is not drift");
+  assert.equal(entriesReplyLooksDrifted({ history: [{ role: "user" }] }), true, "moved key");
+  assert.equal(entriesReplyLooksDrifted({}), false);
 });
