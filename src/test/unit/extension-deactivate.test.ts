@@ -40,3 +40,30 @@ test("deactivate() iterates a COPY of sessions (dispose splices the live array m
     "the pre-fix loop (iterating the live array while disposing) must not come back",
   );
 });
+
+// ── session teardown invariants (audit H10: zombie tabs) ─────────────
+test("removeSession() is reachable only from the dispose callback and closeSession()", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ext = readFileSync(join(here, "..", "..", "extension.js"), "utf-8");
+
+  // removeSession only UNLISTS a session. Calling it on a session whose panel is still visible
+  // leaves a dead tab that keeps its webview memory (retainContextWhenHidden: true) and later
+  // fires handlePanelDispose on an already-disposed service. Anything that wants the session
+  // gone must go through closeSession(), which disposes the panel and lets the callback do the
+  // rest. The only legitimate callers are therefore handlePanelDispose and closeSession's own
+  // no-live-panel fallback.
+  const bodyOf = (decl: string): string => {
+    const start = ext.indexOf(decl);
+    assert.notEqual(start, -1, `${decl} not found`);
+    const end = ext.indexOf("\n}", start);
+    return ext.slice(start, end === -1 ? undefined : end);
+  };
+
+  // Strip comments first — prose that MENTIONS removeSession() would otherwise inflate the count
+  // (this test's own explanatory comment did exactly that on the first attempt).
+  const code = ext.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const total = [...code.matchAll(/removeSession\(/g)].length - 1; // minus the declaration
+  assert.ok(bodyOf("function handlePanelDispose").includes("removeSession("), "the dispose callback unlists");
+  assert.ok(bodyOf("function closeSession").includes("removeSession("), "closeSession has the no-panel fallback");
+  assert.equal(total, 2, `removeSession must have exactly those 2 call sites; found ${total}`);
+});

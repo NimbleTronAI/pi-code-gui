@@ -569,7 +569,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await initSessionInBackground(context, newSw, { openPath: forkedPath, runtime: originRuntime });
 
     if (!newSw.initialized) {
-      removeSession(newSw);
+      closeSession(newSw);
       throw new Error("Failed to initialize forked session.");
     }
 
@@ -1599,8 +1599,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
         if (action === DISABLE) {
           await vscode.workspace.getConfiguration("pi-code-gui")
             .update("rustExtensions", "disabled", vscode.ConfigurationTarget.Workspace);
-          sw.piService.dispose();
-          removeSession(sw);
+          closeSession(sw);
           addSession(context, runtime);
         } else if (action === OPEN) {
           await vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustExtensions");
@@ -1623,8 +1622,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
         "Retry",
       );
       if (action === "Retry") {
-        sw.piService.dispose();
-        removeSession(sw);
+        closeSession(sw);
         addSession(context, runtime);
       }
     }
@@ -1712,6 +1710,26 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   if (readyPath) { void recordSessionRuntime(readyPath, sw.piService.runtime); }
 
   piDebug(`Pi Code Gui session ${sw.id} ready`);
+}
+
+/**
+ * Close a session AND its tab. removeSession() only unlists it — three callers used it on a
+ * session whose panel was already visible (fork failure, "Disable for Rust", and Retry after an
+ * init failure), leaving a dead "Pi Code Gui" tab that is no longer in `sessions`, still holds
+ * its full webview memory (retainContextWhenHidden: true), and whose eventual close fires
+ * handlePanelDispose on an already-disposed service. Three Retry clicks left three zombies.
+ *
+ * Disposing the panel fires onDidDispose → handlePanelDispose → piService.dispose() +
+ * removeSession(), so this must NOT also dispose the service itself. The trailing guard covers
+ * the case where there was no live panel to fire that callback.
+ */
+function closeSession(sw: SessionWindow): void {
+  sw.webviewPanel.dispose();
+  if (sessions.includes(sw)) {
+    // No onDidDispose fired (panel already gone) — unlist it explicitly.
+    sw.piService.dispose();
+    removeSession(sw);
+  }
 }
 
 function removeSession(sw: SessionWindow): void {
