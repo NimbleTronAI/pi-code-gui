@@ -142,7 +142,7 @@ export function processWriteUpdate(el: ToolEl, text: string): void {
 export function renderWriteContentBlock(el: ToolEl): void {
     var tc = el.querySelector(".tool-content");
     if (!tc) {return;}
-    var writeState: any = el._writeState || {};
+    var writeState: Partial<WriteToolState> = el._writeState || {};
     var content = writeState.content || "";
     var lang = writeState.lang;
     var active = el.getAttribute("data-status") !== "done" && el.getAttribute("data-status") !== "error";
@@ -485,7 +485,7 @@ export const readToolRenderer = {
       text = text.replace(/\n?\[Truncated[^\]]*\](?:\n|$)/g, "");
       text = text.replace(/\n?\[\d+ more lines in file[^\]]*\](?:\n|$)/g, "");
 
-      var readState: any = el._readState || {};
+      var readState: ReadToolState = el._readState || {};
       var lang = readState.lang;
 
       // Syntax-highlighted code in a scrollable container when tall.
@@ -511,7 +511,7 @@ export const readToolRenderer = {
 
       if (trunc && trunc.truncated) {
         // Case 1: SDK hard truncation (50KB or 2000 lines)
-        contNextOffset = (readState.offset || 0) + trunc.outputLines;
+        contNextOffset = ((readState.offset as number) || 0) + trunc.outputLines;
         contRemaining = trunc.totalLines - contNextOffset;
         hasMore = contRemaining > 0;
       } else if (userMoreMatch) {
@@ -857,7 +857,7 @@ function isInterruptedByQueue(result: any): boolean {
   try {
     var content = result && result.content;
     if (!Array.isArray(content)) { return false; }
-    return content.some(function (c: any): any {
+    return content.some(function (c: TextPart): boolean {
       return c && c.type === "text" && typeof c.text === "string" &&
         c.text.indexOf("queued user message") !== -1;
     });

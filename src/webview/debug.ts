@@ -109,7 +109,7 @@ export function dumpChatStructure(): Record<string, unknown> {
   };
 }
 
-export function summary(): Record<string, unknown> {
+export function summary(): PiDebugSummary {
   const s = dumpChatStructure();
   const el = debugEventLog.slice(-30);
   const dl = debugDomLog.slice(-30);

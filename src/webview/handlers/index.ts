@@ -72,8 +72,8 @@ export function defaultMessageRenderer(data: any): HTMLElement {
       content = data.content;
     } else if (Array.isArray(data.content)) {
       content = data.content
-        .filter(function (c: any): boolean { return c.type === "text"; })
-        .map(function (c: any): any { return c.text; })
+        .filter(function (c: TextPart): boolean { return c.type === "text"; })
+        .map(function (c: TextPart): string { return c.text; })
         .join("\n");
     }
 
@@ -1747,7 +1747,7 @@ export function renderInlineCustomMessage(data: any): void {
     var customType = data.customType || "custom";
     var content = typeof data.content === "string"
       ? data.content
-      : (Array.isArray(data.content) ? data.content.filter(function (c: any): boolean { return c.type === "text"; }).map(function (c: any): any { return c.text; }).join("\n") : "");
+      : (Array.isArray(data.content) ? data.content.filter(function (c: TextPart): boolean { return c.type === "text"; }).map(function (c: TextPart): string { return c.text; }).join("\n") : "");
 
     // Check for existing card to update in-place (polling refresh)
     var existing = state.chatContainer.querySelector('[data-custom-type="' + customType + '"]');
@@ -1802,7 +1802,7 @@ export function handleCustomMessage(data: MsgData<"custom-message">): void {
       if (typeof data.content === "string") {
         infoContent = data.content;
       } else if (Array.isArray(data.content)) {
-        infoContent = data.content.filter(function (c: any): boolean { return c.type === "text"; }).map(function (c: any): any { return c.text; }).join("\n");
+        infoContent = data.content.filter(function (c: TextPart): boolean { return c.type === "text"; }).map(function (c: TextPart): string { return c.text; }).join("\n");
       }
       if (infoContent) {
         var infoEl = document.createElement("div");
@@ -2203,10 +2203,10 @@ export function handleBashEnd(data: Record<string, unknown>): void {
       if (!block) {return;}
     }
     var result = {
-      content: data.output ? [{ type: "text", text: data.output }] : [],
+      content: data.output ? [{ type: "text", text: data.output as string }] : [],
       details: { exitCode: data.exitCode, cancelled: data.cancelled },
     };
-    bashToolRenderer.finalize(block, result as any, data.isError as boolean, data.entryId as any);
+    bashToolRenderer.finalize(block, result, data.isError as boolean, data.entryId as string | undefined);
     delete state.currentToolBlocks[callId as string];
     delete state.bashBlocks[callId as string];
     delete state.bashOutputs[callId as string];
@@ -2235,7 +2235,7 @@ export function handleDebugCommand(): void {
     // last /debug, so run it once, reproduce the issue, then run it again for a full trace.
     var alreadyOn = window.__piDebug.enabled(true);
     void alreadyOn;
-    var summary = window.__piDebug.summary() as { chat: any; dupes: string[]; orphanBash: string[]; orphanTool: string[]; lastEvents: any[]; lastDomChanges: any[] };
+    var summary = window.__piDebug.summary();
 
     // Build full text for clipboard copy + console dump
     var copyText = "Pi Code GUI — Debug Dump\n" +

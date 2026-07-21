@@ -40,7 +40,7 @@ interface Window {
     domLog(n?: number): unknown[];
     bashBlocks(): unknown[];
     toolBlocks(): unknown[];
-    summary(): Record<string, unknown>;
+    summary(): PiDebugSummary;
     _queueEvents?: unknown[];
   };
   __piRegisterToolRenderer?: (name: string, renderer: unknown) => void;
@@ -50,6 +50,38 @@ interface Window {
   ) => void;
   __vscode: ReturnType<typeof acquireVsCodeApi>;
   morphdom: typeof morphdom;
+}
+
+/** One part of a content array. The `.filter(c => c.type === "text").map(c => c.text)` idiom
+ *  appears in half a dozen places and annotated its callbacks `any` in every one of them. */
+interface TextPart {
+  type: string;
+  text: string;
+}
+
+/** Renderer state hung off a write/read tool card. Named so the readers can stop declaring their
+ *  locals `any` just because the `|| {}` fallback doesn't fit a required-field shape. */
+interface WriteToolState {
+  content: string;
+  lang?: string;
+  rawPath?: unknown;
+}
+interface ReadToolState {
+  rawPath?: unknown;
+  lang?: string;
+  compact?: unknown;
+  offset?: unknown;
+}
+
+/** What __piDebug.summary() returns. Declared here, not in debug.ts, so global.d.ts can name it
+ *  without a top-level import (which would stop this file being a global augmentation). */
+interface PiDebugSummary {
+  chat: Record<string, unknown>;
+  dupes: string[];
+  orphanBash: string[];
+  orphanTool: string[];
+  lastEvents: Array<{ ts: number; type: string; dataKeys: string[]; callId: string; id: string; fromMessage: boolean; toolName: string; stackDepth: number }>;
+  lastDomChanges: Array<{ ts: number; action: string; tag: string; id: string; classes: string; status: string; text: string; parentId: string }>;
 }
 
 // Event data shape (from extension host to webview)
@@ -131,12 +163,12 @@ interface HTMLElement {
   // be waived on exactly this line — there is no top-level-import form that preserves the file.
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   _toolBlock?: import("./components/tool-block.js").ToolBlock;
-  _writeState?: { content: string; lang?: string; rawPath?: unknown };
+  _writeState?: WriteToolState;
   _writePending?: string | null;
   _writeRafId?: number | null;
   _editEdits?: Array<{ oldText: string; newText: string }>;
   _editLang?: string;
-  _readState?: { rawPath?: unknown; lang?: string; compact?: unknown; offset?: unknown };
+  _readState?: ReadToolState;
   _readCollapseState?: {
     previewText: string;
     fullText: string;
