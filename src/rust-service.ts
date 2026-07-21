@@ -674,6 +674,12 @@ export class RustService implements PiBackend {
   /** Pull cumulative token/cost usage from the Rust subprocess (get_session_stats). */
   private async refreshUsage(): Promise<void> {
     if (!this.process) { return; }
+    // Never take the authoritative snap while a turn is active. get_session_stats only counts
+    // PERSISTED messages, so mid-turn it reads ~0, and applyUsage replaces this.usage wholesale
+    // — a mid-run refresh would WIPE the live accumulate toward zero. The terminal snaps
+    // (agent_end / agent_settled) run with the run flag already cleared, so they're unaffected;
+    // this guards the one remaining mid-turn caller, compact() → refreshState() → refreshUsage().
+    if (this.host.getAgentRunActive()) { return; }
     try {
       const r = await this.process.request(RUST_RPC.getSessionStats, {}, 8000);
       if (r.success) { this.applyUsage(r.data); this.recordCapOk("usage"); }
