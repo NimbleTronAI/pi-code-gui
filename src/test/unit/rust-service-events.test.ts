@@ -20,6 +20,8 @@ interface Harness {
   setActive(v: boolean): void;
   getActive(): boolean;
   setStats(data: Any): void;            // control the get_session_stats reply
+  setModels(list: Any[]): void;         // control the get_available_models reply
+  setModelsFail(v: boolean): void;
   setState(data: Any): void;            // control the get_state reply
   requests: string[];                   // command names the fake process saw
 }
@@ -36,6 +38,8 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
   // The run flag is owned by the RustService instance now (see PiBackend); drive it through the
   // instance rather than a host callback.
   let stats: Any = { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 };
+  let models: Any[] = [{ provider: "p", id: "m1" }];
+  let modelsFail = false;
   let stateData: Any = { model: { id: "deepseek-v4-pro", provider: "deepseek", api: "openai-completions", reasoning: true }, thinkingLevel: "high" };
   const rustRef: { current: RustService | null } = { current: null };
 
@@ -78,6 +82,10 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
       if (command === "get_session_stats") { return { type: "response", success: true, data: stats } as Any; }
       if (command === "get_state") { return { type: "response", success: true, data: stateData } as Any; }
       if (command === "get_messages") { return { type: "response", success: true, data: { messages: [] } } as Any; }
+      if (command === "get_available_models") {
+        if (modelsFail) { throw new Error("rpc down"); }
+        return { type: "response", success: true, data: { models } } as Any;
+      }
       return { type: "response", success: true, data: {} } as Any;
     },
   };
@@ -94,6 +102,8 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
     getActive: () => (rust as Any).getAgentRunActive(),
     setStats: (data) => { stats = data; },
     setState: (data) => { stateData = data; },
+    setModels: (list: Any[]) => { models = list; },
+    setModelsFail: (v: boolean) => { modelsFail = v; },
   };
 }
 
@@ -240,4 +250,31 @@ test("a message_end with drifted usage warns once (live path) and doesn't accumu
   assert.equal(h.events.filter(stuck).length, 1, "warned once");
   h.emit({ type: "message_end", message: { role: "assistant", usage: { promptTokens: 5 } } });
   assert.equal(h.events.filter(stuck).length, 1, "one-shot — no repeat warning");
+});
+
+// ── getAvailableModels refresh (audit H8) ────────────────────────────
+test("getAvailableModels re-queries the binary, so a mid-session key add isn't stale", async () => {
+  const h = makeHarness();
+  assert.deepEqual((await h.rust.getAvailableModels()).map((m) => m.id), ["m1"]);
+  // A provider key added mid-session → the binary now reports another model.
+  h.setModels([{ provider: "p", id: "m1" }, { provider: "p", id: "m2" }]);
+  (h.rust as Any)._modelsFetchedAt = 0; // expire the TTL
+  assert.deepEqual((await h.rust.getAvailableModels()).map((m) => m.id), ["m1", "m2"], "picker sees the new model");
+});
+
+test("getAvailableModels serves the cache inside the TTL (no RPC storm)", async () => {
+  const h = makeHarness();
+  await h.rust.getAvailableModels();
+  const n = h.requests.filter((c) => c === "get_available_models").length;
+  await h.rust.getAvailableModels();
+  await h.rust.getAvailableModels();
+  assert.equal(h.requests.filter((c) => c === "get_available_models").length, n, "no extra round-trips");
+});
+
+test("getAvailableModels falls back to the cached list when the refresh fails", async () => {
+  const h = makeHarness();
+  assert.deepEqual((await h.rust.getAvailableModels()).map((m) => m.id), ["m1"]);
+  h.setModelsFail(true);
+  (h.rust as Any)._modelsFetchedAt = 0;
+  assert.deepEqual((await h.rust.getAvailableModels()).map((m) => m.id), ["m1"], "keeps the last good list");
 });

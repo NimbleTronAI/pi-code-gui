@@ -123,6 +123,9 @@ export interface RustDeps {
   createProcess?(opts: RustProcessOpts): RustProcess;
 }
 
+/** How long a fetched model list is served before getAvailableModels re-queries the binary. */
+const MODELS_TTL_MS = 5000;
+
 export class RustService implements PiBackend {
   private process: RustProcess | null = null;
   private initializing = false;
@@ -133,6 +136,8 @@ export class RustService implements PiBackend {
   private slashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
   /** Available models from get_available_models (owned here; read via getAvailableModels). */
   private _availableModels: CycleModel[] = [];
+  /** When _availableModels was last refreshed (TTL guard for getAvailableModels). */
+  private _modelsFetchedAt = 0;
   /** The active model identity — OWNED here (captured from get_state/applyState), read
    *  by PiService via the PiBackend getModel() seam instead of pushed up to a host field. */
   private _model: { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null = null;
@@ -330,7 +335,7 @@ export class RustService implements PiBackend {
     try {
       const models = await proc.request(RUST_RPC.getAvailableModels, {}, 15000);
       const list = parseRustModels(models.data);
-      if (models.success && list.length > 0) { this._availableModels = list; this.host.setCycleModels(list); this.recordCapOk("models"); }
+      if (models.success && list.length > 0) { this._availableModels = list; this._modelsFetchedAt = Date.now(); this.host.setCycleModels(list); this.recordCapOk("models"); }
       else {
         // Distinguish "genuinely no models" from "entries arrived but none parsed" (a shape
         // rename would otherwise silently empty the picker behind the generic notice).
@@ -1043,7 +1048,30 @@ export class RustService implements PiBackend {
   /** The Rust catalog captured from get_available_models at init (includes custom
    *  models.json entries) — RustService owns this list (a step toward backend state
    *  ownership); PiService's picker reads it via the PiBackend seam. */
-  getAvailableModels(): Promise<CycleModel[]> { return Promise.resolve(this._availableModels); }
+  /** Models for the /model picker. Re-queries the binary instead of serving the init-time
+   *  snapshot: a user who adds a provider key or edits models.json mid-session would otherwise
+   *  see a stale picker until they opened a new session (the SDK path re-queries every time, so
+   *  this was a runtime asymmetry). User-initiated path, but TTL-guarded so repeated opens don't
+   *  hammer the RPC. Falls back to the last good list whenever the refresh fails or comes back
+   *  empty — the picker can never end up WORSE than the cached snapshot. */
+  async getAvailableModels(): Promise<CycleModel[]> {
+    const now = Date.now();
+    if (this.process && now - this._modelsFetchedAt > MODELS_TTL_MS) {
+      try {
+        const r = await this.process.request(RUST_RPC.getAvailableModels, {}, 15000);
+        const list = parseRustModels(r.data);
+        if (r.success && list.length > 0) {
+          this._availableModels = list;
+          this.host.setCycleModels(list); // keep /model cycling in sync with the picker
+          this._modelsFetchedAt = now;
+          this.recordCapOk("models");
+        }
+      } catch (e: unknown) {
+        piWarn(`Rust get_available_models refresh failed: ${e instanceof Error ? e.message : String(e)} — using the cached model list.`);
+      }
+    }
+    return this._availableModels;
+  }
   /** The active model identity (owned here; PiService reads it via the seam). */
   getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null { return this._model; }
   /** The active thinking level (owned here; PiService reads it via the seam). */
