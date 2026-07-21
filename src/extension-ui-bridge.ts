@@ -123,10 +123,15 @@ export function createExtensionUIBridge(deps: UIBridgeDeps): ExtensionUIBridge {
       // Show as a widget card so status is visible in VS Code.
       if (status === null || status === undefined) {
         widgetTexts.delete(`status-${key}`);
+        widgetLastUpdate.delete(`status-${key}`);
         emit({ type: "widget-update", data: { key: `status-${key}`, content: null } });
       } else {
         const content = `**${key}** ${status}`;
         widgetTexts.set(`status-${key}`, content);
+        // Stamp the sweep timer too: it iterates widgetLastUpdate, so a status-* widget that
+        // never wrote here could never be idle-evicted — defeating the sweep for exactly the
+        // widgets an extension leaves behind.
+        widgetLastUpdate.set(`status-${key}`, now());
         emit({ type: "widget-update", data: { key: `status-${key}`, content } });
       }
     },

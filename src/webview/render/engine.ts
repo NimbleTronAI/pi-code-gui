@@ -21,6 +21,9 @@ import { isRenderableImageSrc } from "../../shared/webview-format.js";
 
 // Imported for local use AND re-exported so existing call sites keep working; the
 // implementation is the shared, quote-escaping, headlessly-testable one.
+/** Cap on retained full-texts for truncated tool results (see the write site below). */
+const MAX_TRUNCATION_TEXTS = 50;
+
 import { escapeHtml } from "../../shared/escape-html.js";
 export { escapeHtml };
 
@@ -609,6 +612,13 @@ export function renderToolResultTruncated(text: string, maxLines = 50): string {
     preview: previewLines.join("\n"),
     full: text,
   };
+  // Bounded: this holds the FULL text of every truncated tool result, and was only ever cleared
+  // by resetChat() — so a long session with large read/bash output accumulated all of it for the
+  // lifetime of the view. Keep the most recent entries (older cards fall back to their preview).
+  const ids = Object.keys(state.truncationTexts);
+  if (ids.length > MAX_TRUNCATION_TEXTS) {
+    for (const old of ids.slice(0, ids.length - MAX_TRUNCATION_TEXTS)) { delete state.truncationTexts[old]; }
+  }
 
   return html`
     <div class="tool-result-truncated" id="${id}" data-hidden="${hiddenCount}" data-expanded="0">

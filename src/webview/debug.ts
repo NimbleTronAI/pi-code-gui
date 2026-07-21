@@ -7,7 +7,12 @@ const debugEventLog: Array<{ ts: number; type: string; dataKeys: string[]; callI
 const debugMaxEvents = 500;
 const debugDomLog: Array<{ ts: number; action: string; tag: string; id: string; classes: string; status: string; text: string; parentId: string }> = [];
 const debugMaxDomLog = 200;
-let debugEnabled = true;
+// OFF by default. This was shipped enabled: every non-delta message ran logEvent, which
+// constructs an Error to sample the stack, and a MutationObserver watched the whole chat
+// container slicing textContent for every added/removed node — a permanent tax on every user.
+// The /debug command turns it on (handleDebugCommand), so the diagnostic workflow still works:
+// run /debug, reproduce, run /debug again for the captured trace.
+let debugEnabled = false;
 
 // ── Queue event tracking ─────────────────────────────────────
 const _queueEvents: Array<{ ts: number; steering: number; followUp: number; streaming: boolean }> = [];

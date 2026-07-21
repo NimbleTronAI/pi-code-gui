@@ -2248,11 +2248,18 @@ export function handleBashEnd(data: Record<string, unknown>) {
 
 export function handleDebugCommand(): void {
     hideWelcome();
+    // Collection is OFF by default (it constructs an Error per event to sample the stack and runs
+    // a MutationObserver over the whole chat container — too expensive to ship always-on). Turn
+    // it on here so /debug remains the way in: this dump shows whatever was captured since the
+    // last /debug, so run it once, reproduce the issue, then run it again for a full trace.
+    var alreadyOn = window.__piDebug.enabled(true);
+    void alreadyOn;
     var summary = window.__piDebug.summary() as { chat: any; dupes: string[]; orphanBash: string[]; orphanTool: string[]; lastEvents: any[]; lastDomChanges: any[] };
 
     // Build full text for clipboard copy + console dump
     var copyText = "Pi Code GUI — Debug Dump\n" +
-      "==========================\n\n" +
+      "==========================\n" +
+      "(event/DOM capture is now ON; re-run /debug after reproducing for a full trace)\n\n" +
       "Chat Container:\n" + JSON.stringify(summary.chat, null, 2) + "\n\n" +
       "Tracker State:\n" +
       "state.bashBlocks: " + JSON.stringify(Object.keys(state.bashBlocks)) + "\n" +
