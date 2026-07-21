@@ -6,7 +6,16 @@ import {
   formatTokens, hideWelcome, resetChat, scrollToBottom, updateStreamingState,
   setupCodeBlockHandlers,
 } from "../render/engine.js";
-import { validateExtensionToWebview } from "../../shared/protocol.js";
+import { validateExtensionToWebview, type ExtensionToWebview } from "../../shared/protocol.js";
+
+/** The `data` payload of a given extension→webview message, derived FROM THE SCHEMA.
+ *
+ *  These handlers all took `data: any`, so the Zod validator was the only thing checking the
+ *  shape — at runtime, warn-only. Deriving the type here moves that check to compile time: a
+ *  handler that reads a field the schema doesn't define, or treats an optional field as
+ *  required, is now a build error. */
+type MsgData<T extends ExtensionToWebview["type"]> =
+  Extract<ExtensionToWebview, { type: T }> extends { data?: infer D } ? D : never;
 import { linkifyPlain } from "../../shared/linkify.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
@@ -159,7 +168,6 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "bash-end":           handleBashEnd(msg.data); break;
       case "custom-message":     handleCustomMessage(msg.data); break;
       case "user-messages-list": handleUserMessagesList(msg.data); break;
-      case "scoped-models-update": handleScopedModelsUpdate(msg.data); break;
       case "settings-update":    handleSettingsUpdate(msg.data); break;
       case "revealEntry":        handleRevealEntry(msg.entryId, msg.toolCallId); break;
 
@@ -301,11 +309,11 @@ export function handleAgentEnd() {
   // ═══ Turn Lifecycle ════════════════════════════════════
   // ═══ Turn Lifecycle ════════════════════════════════════
 
-export function handleTurnStart(_data: any) {
+export function handleTurnStart(_data: MsgData<"turn-start">) {
     hideWelcome();
   }
 
-export function handleTurnEnd(data: any) {
+export function handleTurnEnd(data: MsgData<"turn-end">) {
     if (data && data.message && data.message.role === "assistant" && data.message.errorMessage) {
       if (state.currentAssistantEl) {
         addErrorToElement(state.currentAssistantEl, data.message.errorMessage);
@@ -316,7 +324,7 @@ export function handleTurnEnd(data: any) {
   // ═══ Message Lifecycle ═════════════════════════════════
   // ═══ Message Lifecycle ═════════════════════════════════
 
-export function handleChatMessage(data: any) {
+export function handleChatMessage(data: MsgData<"chat-message">) {
     // Dedup: skip if same role+content as last user message
     if (data.role === "user" && data.content === state.lastUserMessageContent) {return;}
     if (data.role === "user") {
@@ -351,7 +359,7 @@ export function handleChatMessage(data: any) {
     scrollToBottom();
   }
 
-export function handleAssistantStart(data: any) {
+export function handleAssistantStart(data: MsgData<"assistant-start">) {
     hideWelcome();
     removeWorkingIndicator();
 
@@ -367,7 +375,7 @@ export function handleAssistantStart(data: any) {
     scrollToBottom();
   }
 
-export function handleAssistantEnd(data: any) {
+export function handleAssistantEnd(data: MsgData<"assistant-end">) {
     // Finalize the assistant message
     if (state.currentAssistantEl) {
       // Flush any pending batched renders before finalizing
@@ -517,7 +525,7 @@ export function _flushStreamRender() {
     }
   }
 
-export function handleStreamDelta(data: any) {
+export function handleStreamDelta(data: MsgData<"stream-delta">) {
     hideWelcome();
     if (!state.currentAssistantEl) {
       // Safety: create container if assistant-start was missed
@@ -576,7 +584,7 @@ export function _flushThinkingRender() {
     }
   }
 
-export function handleThinkingDelta(data: any) {
+export function handleThinkingDelta(data: MsgData<"thinking-delta">) {
     if (data.done) {
       _flushThinkingRender();
       // Finalize: update component with done=true (removes spinner, sets button)
@@ -662,7 +670,7 @@ export function sbModelText(modelId: string) {
     return "\u03C0 " + short;
   }
 
-export function handleStatusUpdate(data: any) {
+export function handleStatusUpdate(data: MsgData<"status-update">) {
     if (data.reset) {return;}
 
     // Persist the session identity into VS Code's webview state store. On reload,
@@ -697,7 +705,7 @@ export function handleStatusUpdate(data: any) {
     setSbDot(data.isStreaming ? "streaming" : "idle");
   }
 
-export function handleStatus(data: any) {
+export function handleStatus(data: MsgData<"status">) {
     setSbRuntime(data.runtime);
     if (data.ready) {
       state.promptInput.disabled = false;
@@ -715,14 +723,14 @@ export function handleStatus(data: any) {
     }
   }
 
-export function handleBatchStart(data: any) {
+export function handleBatchStart(data: MsgData<"batch-start">) {
     state._inBatch = true;
     // If restoring history, hide state.welcome immediately — no flash
     if (data.hasEntries) { hideWelcome(); }
     document.body.classList.add("no-animate");
   }
 
-export function handleBatchEnd(_data: any) {
+export function handleBatchEnd(_data: MsgData<"batch-end">) {
     state._inBatch = false;
     document.body.classList.remove("no-animate");
     // Force-scroll to bottom after batch replay.  Triple-rAF ensures
@@ -815,14 +823,14 @@ export function handleQueueUpdate(data: any) {
     }
   }
 
-export function handleCompactionStart(data: any) {
+export function handleCompactionStart(data: MsgData<"compaction-start">) {
     state.isCompacting = true;
     removeCompactionIndicator();
     addCompactionIndicator(data.reason === "manual" ? "Compacting..." : "Auto-compacting...");
     updateStreamingState();
   }
 
-export function handleCompactionEnd(data: any) {
+export function handleCompactionEnd(data: MsgData<"compaction-end">) {
     state.isCompacting = false;
     removeCompactionIndicator();
     if (data.aborted) {
@@ -835,7 +843,7 @@ export function handleCompactionEnd(data: any) {
     updateStreamingState();
   }
 
-export function handleAutoRetryStart(data: any) {
+export function handleAutoRetryStart(data: MsgData<"auto-retry-start">) {
     state.isRetrying = true;
     // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. Finalize the
     // FAILED attempt's still-running tool/bash blocks (muted "retried" — not success, not
@@ -875,7 +883,7 @@ function finalizeInFlightBlocksForRetry() {
     });
   }
 
-export function handleAutoRetryEnd(data: any) {
+export function handleAutoRetryEnd(data: MsgData<"auto-retry-end">) {
     state.isRetrying = false;
     removeRetryIndicator();
     if (!data.success) {
@@ -884,7 +892,7 @@ export function handleAutoRetryEnd(data: any) {
     updateStreamingState();
   }
 
-export function handleThinkingLevelChanged(data: any) {
+export function handleThinkingLevelChanged(data: MsgData<"thinking-level-changed">) {
     // The single Thinking/Reasoning chip is owned by status-update (renderThinkingBadge,
     // backend-composed). A thinking-level-changed event is always followed by a
     // reportStatus, so writing the chip here would only flash the deprecated uncomposed
@@ -894,7 +902,7 @@ export function handleThinkingLevelChanged(data: any) {
 
   // ═══ Error Handling ════════════════════════════════════
 
-export function handleError(data: any) {
+export function handleError(data: MsgData<"error">) {
     hideWelcome();
     removeWorkingIndicator();
     removeCompactionIndicator();
@@ -1565,7 +1573,7 @@ export function handleInsertCommand(command: string) {
   // ═══ #1: Compaction Summary Message ═══════════════════════
   // ═══ #1: Compaction Summary Message ═══════════════════════
 
-export function handleCompactionSummaryMessage(data: any) {
+export function handleCompactionSummaryMessage(data: MsgData<"compaction-summary-message">) {
     hideWelcome();
     var el = document.createElement("div");
     el.className = "compaction-summary";
@@ -1593,7 +1601,7 @@ export function handleCompactionSummaryMessage(data: any) {
 
   // ═══ #2: User Message Selector ════════════════════════════
 
-export function handleUserMessagesList(data: any) {
+export function handleUserMessagesList(data: MsgData<"user-messages-list">) {
     state.userMessageHistory = (data.messages || []).reverse();
   }
 
@@ -1648,19 +1656,13 @@ export function closeUserMsgSelector() {
 
   // ═══ #3: Settings Panel ═══════════════════════════════════
 
-export function handleSettingsUpdate(data: any) {
+export function handleSettingsUpdate(data: MsgData<"settings-update">) {
     if (data) {
       state.settingsState = data;
       // Consume the showImages toggle at render time: hide chat-message images
       // via a body class (CSS in media/style.css). Without this the toggle was
       // wired end-to-end but never affected what the user saw.
       document.body.classList.toggle("pi-hide-images", data.showImages === false);
-      renderSettingsPanel();
-    }
-  }
-
-export function handleScopedModelsUpdate(data: any) {
-    if (data && data.models) {
       renderSettingsPanel();
     }
   }
@@ -1774,7 +1776,7 @@ export function renderInlineCustomMessage(data: any) {
     scrollToBottom();
   }
 
-export function handleCustomMessage(data: any) {
+export function handleCustomMessage(data: MsgData<"custom-message">) {
     hideWelcome();
     var customType = data.customType || "custom";
 
@@ -1877,7 +1879,7 @@ function statusKeySelector(key: string): string {
   return `[data-status-key="${esc}"]`;
 }
 
-export function handleWidgetUpdate(data: any) {
+export function handleWidgetUpdate(data: MsgData<"widget-update">) {
     if (!data || !data.key) {return;}
 
     var key = data.key;
@@ -1897,7 +1899,7 @@ export function handleWidgetUpdate(data: any) {
         delete state.widgetCards[key];
       }
       // Also remove from state.liveCards
-      delete state.liveCards[key as string];
+      delete state.liveCards[key];
       // Hide panel if empty
       var remaining = state.livePanel.querySelectorAll(".live-card");
       if (remaining.length === 0) {
@@ -1924,7 +1926,7 @@ export function handleWidgetUpdate(data: any) {
       });
       state.livePanel.appendChild(card);
       state.widgetCards[key] = card;
-      state.liveCards[key as string] = card;
+      state.liveCards[key] = card;
     }
     state.livePanel.classList.add("visible");
   }
@@ -2009,7 +2011,7 @@ export function getSlashCommands() {
 
   // Slash commands that should be handled locally (not sent to LLM)
 
-export function handleSlashCommandsUpdate(data: any) {
+export function handleSlashCommandsUpdate(data: MsgData<"slash-commands-update">) {
     if (data && data.commands && Array.isArray(data.commands)) {
       state.extensionSlashCommands = data.commands;
       // Re-filter autocomplete if it's currently open

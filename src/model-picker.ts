@@ -2,7 +2,7 @@
 // QuickPick item shapes are plain data the shell hands to vscode.window.showQuickPick, so the
 // available→choice mapping, the static fallback list, the check/★ labelling, and the
 // scoped-models mapping are all unit-tested.
-/* eslint-disable @typescript-eslint/no-explicit-any -- runtime model/session objects are dynamically typed */
+ 
 
 export interface ModelCost { input: number; output: number; }
 export interface ModelChoice { label: string; provider: string; modelId: string; cost?: ModelCost; contextWindow?: number; }
