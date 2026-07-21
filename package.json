@@ -294,12 +294,14 @@
         "pi-code-gui.anthropicApiKey": {
           "type": "string",
           "default": "",
-          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime)"
+          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime)",
+          "scope": "application"
         },
         "pi-code-gui.openaiApiKey": {
           "type": "string",
           "default": "",
-          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime)"
+          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime)",
+          "scope": "application"
         },
         "pi-code-gui.systemPromptAppend": {
           "type": "string",
@@ -352,7 +354,8 @@
         "pi-code-gui.sessionDir": {
           "type": "string",
           "default": "",
-          "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir."
+          "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir.",
+          "scope": "machine-overridable"
         },
         "pi-code-gui.defaultRuntime": {
           "type": "string",
@@ -383,7 +386,8 @@
         "pi-code-gui.rustBinaryPath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual."
+          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual.",
+          "scope": "machine"
         },
         "pi-code-gui.rustInstallMethod": {
           "type": "string",
@@ -398,7 +402,8 @@
             "Run the official `curl | sh` installer in a terminal. Easiest and sets up PATH, but runs a remote script and may rename an existing TypeScript `pi` command to `legacy-pi`.",
             "Open the install guide; the extension detects the binary after you finish installing it yourself."
           ],
-          "markdownDescription": "How **PiGui: Install Rust Pi** installs the binary when you opt in. You can still choose at install time; this just pre-selects an option."
+          "markdownDescription": "How **PiGui: Install Rust Pi** installs the binary when you opt in. You can still choose at install time; this just pre-selects an option.",
+          "scope": "machine"
         },
         "pi-code-gui.rustExtensionPolicy": {
           "type": "string",
@@ -438,7 +443,8 @@
         "pi-code-gui.rustAgentDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`), where the extension writes its managed `models.json` (the bundled Pi model catalog). Empty (default) uses an extension-managed folder so the full-catalog write never clobbers your own `~/.pi/agent`; `auth.json` is seeded from `~/.pi/agent` for OAuth, and API keys resolve from the environment. Set a path to force a specific location. Sessions are unaffected (placed via `--session-dir`)."
+          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`), where the extension writes its managed `models.json` (the bundled Pi model catalog). Empty (default) uses an extension-managed folder so the full-catalog write never clobbers your own `~/.pi/agent`; `auth.json` is seeded from `~/.pi/agent` for OAuth, and API keys resolve from the environment. Set a path to force a specific location. Sessions are unaffected (placed via `--session-dir`).",
+          "scope": "machine-overridable"
         }
       }
     },
@@ -631,5 +637,19 @@
   "dependencies": {
     "highlight.js": "^11.11.1",
     "morphdom": "^2.7.8"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Pi runs an agent that executes tools and can spawn the Rust Pi binary. In an untrusted workspace the binary path, install method, agent/session directories and API keys are ignored from workspace settings.",
+      "restrictedConfigurations": [
+        "pi-code-gui.rustBinaryPath",
+        "pi-code-gui.rustInstallMethod",
+        "pi-code-gui.anthropicApiKey",
+        "pi-code-gui.openaiApiKey",
+        "pi-code-gui.sessionDir",
+        "pi-code-gui.rustAgentDir"
+      ]
+    }
   }
 }
