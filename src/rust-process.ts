@@ -69,6 +69,11 @@ export class RustProcess {
   private child: ChildProcessWithoutNullStreams | null = null;
   private stdoutBuf = "";
   private stderrBuf = "";
+  /** Rolling tail of stderr for crash diagnostics. onStderr DRAINS stderrBuf line-by-line, so
+   *  that buffer only ever holds a trailing partial line and can't serve as history — a pending
+   *  request rejected by a mid-session crash would otherwise carry no clue why. Capped so a
+   *  chatty binary can't grow it unbounded. */
+  private stderrTail = "";
   private seq = 0;
   private pending = new Map<string, { resolve: (r: RustResponse) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private disposed = false;
@@ -101,7 +106,7 @@ export class RustProcess {
     });
     child.on("exit", (code, signal) => {
       piDebug(`RustProcess: exited code=${code} signal=${signal}`);
-      this.failAllPending(new Error(`Rust process exited (code ${code ?? "?"})`));
+      this.failAllPending(new Error(`Rust process exited (code ${code ?? "?"})${this.stderrHint()}`));
       if (!this.disposed) { this.opts.onExit(code, signal); }
     });
 
@@ -118,7 +123,7 @@ export class RustProcess {
       child.once("error", settleReject);
       child.once("exit", (code) => {
         if (code !== 0 && code !== null) {
-          settleReject(new Error(`Rust process exited immediately (code ${code}): ${this.stderrBuf.trim().slice(0, 400)}`));
+          settleReject(new Error(`Rust process exited immediately (code ${code})${this.stderrHint()}`));
         }
       });
       if (this.opts.readyCommand) {
@@ -158,6 +163,8 @@ export class RustProcess {
    *  raw remediation hint go to debug. Everything else is genuine stderr. */
   private handleStderrLine(line: string): void {
     if (!line.trim()) { return; }
+    this.stderrTail += line + "\n";
+    if (this.stderrTail.length > 4000) { this.stderrTail = this.stderrTail.slice(-2000); }
     const diag = classifyRustLoadError(line);
     if (diag) {
       const key = `${diag.kind}:${diag.packageName ?? ""}`;
@@ -229,6 +236,12 @@ export class RustProcess {
    *  disposed — used to detect a crash during the init handshake. */
   isAlive(): boolean {
     return !!this.child && !this.disposed && this.child.exitCode === null;
+  }
+
+  /** Trailing stderr, formatted for attaching to a rejection ("" when the binary said nothing). */
+  private stderrHint(): string {
+    const t = this.stderrTail.trim();
+    return t ? ` — last stderr: ${t.slice(-500)}` : "";
   }
 
   private failAllPending(err: Error): void {

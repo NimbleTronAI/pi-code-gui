@@ -24,6 +24,7 @@ process.stdin.on("data", (d) => {
     else if (o.type === "emit2") process.stdout.write(JSON.stringify({ type: "evA" }) + "\\n" + JSON.stringify({ type: "evB" }) + "\\n");
     else if (o.type === "garbage") process.stdout.write("this is not json\\n" + JSON.stringify({ type: "evC" }) + "\\n");
     else if (o.type === "bye") process.exit(3);
+    else if (o.type === "crash") { process.stderr.write("panic: something exploded\\n"); setTimeout(() => process.exit(9), 30); }
   }
 });
 setInterval(() => {}, 60000);
@@ -138,4 +139,21 @@ test("spawn() rejects on readiness timeout when readyCommand is never answered",
 test("spawn() rejects when the process exits immediately", async () => {
   const { rp } = spawnFake({ binaryPath: process.execPath, args: ["-e", "process.exit(2)"] });
   await assert.rejects(() => rp.spawn(), /exited immediately/);
+});
+
+test("a pending request rejected by a crash carries the binary's stderr", async () => {
+  // onStderr drains stderrBuf line-by-line, so a retained tail is what makes this possible;
+  // without it a mid-session crash rejected in-flight RPCs with a bare "exited (code N)".
+  const { rp } = spawnFake();
+  await rp.spawn();
+  await assert.rejects(
+    rp.request("crash", {}, 5000),
+    (e: Error) => {
+      assert.match(e.message, /Rust process exited/, "still says what happened");
+      assert.match(e.message, /last stderr/, "carries the stderr tail");
+      assert.match(e.message, /panic: something exploded/, "includes the binary's own words");
+      return true;
+    },
+  );
+  rp.dispose();
 });
