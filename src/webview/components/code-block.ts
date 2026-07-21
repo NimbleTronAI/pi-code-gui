@@ -14,7 +14,6 @@
 
 import type { Component } from "./types.js";
 import { escapeHtml as sharedEscapeHtml } from "../../shared/escape-html.js";
-import { html, safe } from "../render/html.js";
 import { highlightCode } from "../highlight.js";
 
 export interface CodeBlockProps {

@@ -1,7 +1,7 @@
 import typescriptEslint from "typescript-eslint";
 
 export default [
-  { ignores: ["src/webview/**", "dist/**", "out/**", ".pi/**"] },
+  { ignores: ["dist/**", "out/**", ".pi/**"] },
   {
     files: ["src/**/*.ts"],
     plugins: { "@typescript-eslint": typescriptEslint.plugin },
@@ -20,6 +20,9 @@ export default [
       "@typescript-eslint/no-unused-vars": ["error", {
         argsIgnorePattern: "^_",
         caughtErrors: "all",
+        // `_e` marks a deliberately-unused catch binding. The no-empty rule still bans a silent
+        // catch, so this only allows "handled, but the error object isn't needed".
+        caughtErrorsIgnorePattern: "^_",
         varsIgnorePattern: "^_",
       }],
 
@@ -58,6 +61,35 @@ export default [
       "@typescript-eslint/no-floating-promises": "off",
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/explicit-function-return-type": "off",
+    },
+  },
+
+  // The webview is compiled by its own project (tsconfig.json excludes src/webview), so typed
+  // linting has to be pointed at it explicitly — otherwise every file is a "not found by the
+  // project service" parse error. This block is what brought the 4,300-line webview under the
+  // same rules as the rest of src/, having been `ignores`d entirely.
+  {
+    files: ["src/webview/**/*.ts"],
+    languageOptions: {
+      parser: typescriptEslint.parser,
+      parserOptions: {
+        // projectService is inherited from the block above and takes precedence over `project`,
+        // so it must be switched off here for the webview tsconfig to be used.
+        projectService: false,
+        project: ["./tsconfig.webview.json"],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      // DEBT, ratcheted — not an exemption. These two are errors everywhere else; in the webview
+      // they are warnings because there are 125 `any`s and 82 missing return types across ~4,300
+      // lines that sit at ~7% test coverage, and rewriting them blind would be reckless. The
+      // `lint` script caps total warnings at the current count, so the number can only go DOWN:
+      // adding a new `any` here fails CI just like anywhere else. Everything the project actually
+      // relies on (no-empty, no-unused-vars, no-floating-promises, no-unnecessary-type-assertion)
+      // is enforced as an ERROR here, as it is elsewhere.
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/explicit-function-return-type": "warn",
     },
   },
 ];

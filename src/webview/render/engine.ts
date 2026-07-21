@@ -7,8 +7,7 @@
 // stay private; only the public API is exported.
 
 import { state, type AppState } from "../state.js";
-import { logEvent, logDom } from "../debug.js";
-import { highlightCode } from "../highlight.js";
+import { logEvent } from "../debug.js";
 import { html, safe } from "./html.js";
 import { CodeBlock } from "../components/code-block.js";
 import { ThinkingBlock } from "../components/thinking-block.js";
@@ -247,7 +246,7 @@ export function renderBlock(token: MarkedToken): Node {
       const btokens = token.tokens as MarkedTokens | undefined;
       if (btokens) {
         for (let j = 0; j < btokens.length; j++) {
-          el.appendChild(renderBlock(btokens[j]!));
+          el.appendChild(renderBlock(btokens[j]));
         }
       }
       return el;
@@ -304,7 +303,7 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
   if (!tokens || tokens.length === 0) {return "";}
   let result = "";
   for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]!;
+    const t = tokens[i];
     switch (t.type) {
       case "text":
         result += escapeHtml(t.text as string);
@@ -316,10 +315,10 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
         result += html`<em>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</em>`;
         break;
       case "codespan":
-        result += html`<code>${t.text as string}</code>`;
+        result += html`<code>${t.text}</code>`;
         break;
       case "link":
-        result += html`<a href="${t.href as string}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
+        result += html`<a href="${t.href}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
         break;
       case "del":
         result += html`<del>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</del>`;
@@ -538,7 +537,7 @@ export function renderDiffMarkup(diffText: string): string {
 function parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
   const match = line.match(/^([+\-\s])(\s*\d*)\s(.*)$/);
   if (!match) {return null;}
-  return { prefix: match[1]!, lineNum: match[2]!, content: match[3]! };
+  return { prefix: match[1], lineNum: match[2], content: match[3] };
 }
 
 function diffWords(oldStr: string, newStr: string): { removed: string; added: string } {

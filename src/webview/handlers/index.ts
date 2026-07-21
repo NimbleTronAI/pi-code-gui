@@ -1,14 +1,9 @@
 import { state } from "../state.js";
-import { logEvent, logDom, summary as debugSummary, debugEventLog } from "../debug.js";
+import { logEvent } from "../debug.js";
 import {
-  renderMarkdown, renderBlock, renderInline, patchBlockList,
+  renderMarkdown, renderBlock, patchBlockList,
   escapeHtml, createMessageEl, createThinkingBlock, morphRender,
-  truncate, formatTokens, renderToolResult, renderFileContent,
-  renderDiffMarkup, formatToolError, getLangFromPath,
-  getCompactReadLabel, registerToolRenderer, getToolRenderer,
-  hideWelcome, resetChat, scrollToBottom, updateStreamingState,
-  renderToolResultTruncated, renderBlockToHTML,
-  shortenPath, renderCodeBlockHTML,
+  formatTokens, hideWelcome, resetChat, scrollToBottom, updateStreamingState,
   setupCodeBlockHandlers,
 } from "../render/engine.js";
 import { validateExtensionToWebview } from "../../shared/protocol.js";
@@ -19,9 +14,7 @@ import { InlineCard } from "../components/inline-card.js";
 import { Dialog } from "../components/dialog.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
-  writeToolRenderer, editToolRenderer, readToolRenderer,
-  bashToolRenderer, defaultToolRenderer,
-  insertToolBlock,
+  bashToolRenderer, insertToolBlock,
 } from "../tools/index.js";
 
 
@@ -95,7 +88,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
     });
     lc.el._component = lc; // attach for later updating
     state.livePanel.appendChild(lc.el);
-    state.liveCards[key as string] = lc.el;
+    state.liveCards[key] = lc.el;
     state.livePanel.classList.add("visible");
     return lc.el;
   }
@@ -118,7 +111,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
         console.warn("[pi-gui] Webview message validation failed:", vr.error, "msg:", JSON.stringify(msg).substring(0, 300));
         // Show a visible diagnostic notification
         var diagKey = "pi-gui-diagnostic-" + Date.now();
-        var diag = createLiveCard(diagKey, "pi-gui-diagnostic", "Protocol Error",
+        createLiveCard(diagKey, "pi-gui-diagnostic", "Protocol Error",
           "Message validation error for type `" + (msg.type || "unknown") + "`:\n```\n" +
           vr.error.substring(0, 500) + "\n```");
         // Don't block — fall through to existing handler for backward compat
@@ -294,13 +287,13 @@ export function handleAgentEnd() {
 
     // Also finalize any dangling bash blocks that were never closed
     Object.keys(state.bashBlocks).forEach(function (id) {
-      var block = state.bashBlocks[id as string];
+      var block = state.bashBlocks[id];
       if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
         logEvent("agent-end:ORPHAN-BASH", { toolCallId: id, inDOM: !!block.parentElement });
         block.setAttribute("data-status", "done");
         var footer = block.querySelector(".bash-footer");
         if (footer) { footer.innerHTML = '<span class="exit-code">exit: -</span> <span>(ended)</span>'; }
-        delete state.bashBlocks[id as string];
+        delete state.bashBlocks[id];
         delete state.bashOutputs[id];
       }
     });
@@ -311,7 +304,7 @@ export function handleAgentEnd() {
   // ═══ Turn Lifecycle ════════════════════════════════════
   // ═══ Turn Lifecycle ════════════════════════════════════
 
-export function handleTurnStart(data: any) {
+export function handleTurnStart(_data: any) {
     hideWelcome();
   }
 
@@ -425,7 +418,7 @@ export function handleAssistantEnd(data: any) {
           // Mark any pending tool blocks as errored
           if (data.toolCalls) {
             data.toolCalls.forEach(function (tcId: string) {
-              var entry = state.currentToolBlocks[tcId as string];
+              var entry = state.currentToolBlocks[tcId];
               var block = entry ? ((entry as any).el || entry) : null;
               if (block) {
                 var statusEl = block.querySelector(".tool-status");
@@ -434,7 +427,7 @@ export function handleAssistantEnd(data: any) {
                   statusEl.className = "tool-status error";
                 }
                 block.setAttribute("data-status", "error");
-                delete state.currentToolBlocks[tcId as string];
+                delete state.currentToolBlocks[tcId];
               }
             });
           }
@@ -732,7 +725,7 @@ export function handleBatchStart(data: any) {
     document.body.classList.add("no-animate");
   }
 
-export function handleBatchEnd(data: any) {
+export function handleBatchEnd(_data: any) {
     state._inBatch = false;
     document.body.classList.remove("no-animate");
     // Force-scroll to bottom after batch replay.  Triple-rAF ensures
@@ -874,12 +867,12 @@ function finalizeInFlightBlocksForRetry() {
     state.currentToolBlocks = {};
 
     Object.keys(state.bashBlocks).forEach(function (id) {
-      var bash = state.bashBlocks[id as string];
+      var bash = state.bashBlocks[id];
       if (bash && bash.getAttribute && bash.getAttribute("data-status") === "running") {
         bash.setAttribute("data-status", "done");
         var footer = bash.querySelector(".bash-footer");
         if (footer) { footer.innerHTML = '<span class="exit-code">exit: -</span> <span>(retried)</span>'; }
-        delete state.bashBlocks[id as string];
+        delete state.bashBlocks[id];
         delete state.bashOutputs[id];
       }
     });
@@ -1006,7 +999,6 @@ export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs:
         if (span) {span.textContent = "0s";}
         clearInterval(el._countdownInterval);
       } else {
-        var spans = el.querySelectorAll("span");
         var textNode = el.querySelector(".message-content");
         if (textNode) {
           textNode.innerHTML =
@@ -1768,7 +1760,6 @@ export function renderInlineCustomMessage(data: any) {
           escapeHtmlFn: escapeHtml,
         });
       } else if (renderer) {
-        var body = existing.querySelector(".custom-message-body");
         var bodyEl = existing.querySelector(".custom-message-body") as HTMLElement;
         if (bodyEl) { bodyEl.innerHTML = ""; renderer(data, bodyEl, escapeHtml); }
       } else {
@@ -1787,7 +1778,7 @@ export function renderInlineCustomMessage(data: any) {
     });
     ic.el._component = ic; // attach for later updating
 
-    state.chatContainer.appendChild(ic.el as HTMLElement);
+    state.chatContainer.appendChild(ic.el);
     scrollToBottom();
   }
 
@@ -1836,10 +1827,10 @@ export function handleCustomMessage(data: any) {
   }
 
 export function dismissLiveCard(key: string) {
-    var card = state.liveCards[key as string];
+    var card = state.liveCards[key];
     if (card) {
       card.remove();
-      delete state.liveCards[key as string];
+      delete state.liveCards[key];
     }
     var widgetCard = state.widgetCards[key];
     if (widgetCard) {
@@ -1859,7 +1850,7 @@ export function clearLivePanel(): void {
     var toRemove = [];
     for (var key in state.liveCards) {
       if (state.liveCards.hasOwnProperty(key)) {
-        var card = state.liveCards[key as string];
+        var card = state.liveCards[key];
         if (card && card.getAttribute("data-widget") !== "true") {
           toRemove.push(key);
         }
@@ -1886,7 +1877,7 @@ export function handleRegisterMessageRenderer(data: any) {
     if (!data.customType || !data.sourceCode) {return;}
     try {
       // CSP blocks eval().  Inject a <script nonce> tag instead.
-      var nonce = (document.querySelector("script[nonce]") as HTMLScriptElement | null)?.getAttribute("nonce");
+      var nonce = (document.querySelector("script[nonce]"))?.getAttribute("nonce");
       if (!nonce) {
         console.warn("[pi-gui] Cannot register renderer: no CSP nonce found");
         return;
@@ -1941,7 +1932,7 @@ export function handleWidgetUpdate(data: any) {
     // Create or update widget card
     var card = state.widgetCards[key];
     if (card) {
-      (card as HTMLElement).querySelector(".live-card-content")!.innerHTML = renderMarkdown(content);
+      (card).querySelector(".live-card-content")!.innerHTML = renderMarkdown(content);
     } else {
       card = document.createElement("div");
       card.className = "live-card";
@@ -1951,7 +1942,7 @@ export function handleWidgetUpdate(data: any) {
         <div class="live-card-label">${key}</div>
         <button class="live-card-close" title="Dismiss">&times;</button>
         <div class="live-card-content">${safe(renderMarkdown(content))}</div>`;
-      (card as HTMLElement).querySelector(".live-card-close")!.addEventListener("click", function () {
+      (card).querySelector(".live-card-close")!.addEventListener("click", function () {
         dismissLiveCard(key);
       });
       state.livePanel.appendChild(card);
@@ -1969,16 +1960,15 @@ export function handleStatusWidget(key: string, content: string | null) {
     if (content === null || content === undefined) {
       // Remove status indicator
       var existingStatus = statusBar.querySelector('[data-status-key="' + key + '"]');
-      if (existingStatus) {(existingStatus as HTMLElement).remove();}
+      if (existingStatus) {(existingStatus).remove();}
       // Also clean up any legacy live-card
       var legacy = state.widgetCards[key];
-      if (legacy) {(legacy as HTMLElement).remove(); delete state.widgetCards[key];}
-      delete state.liveCards[key as string];
+      if (legacy) {(legacy).remove(); delete state.widgetCards[key];}
+      delete state.liveCards[key];
       return;
     }
 
     // Parse markdown content: **key** value → bold key + value
-    var displayText = content;
     var match = content.match(/^\*\*(.+?)\*\*\s*(.*)/);
     var label = match ? match[1] : key;
     var value = match ? match[2] : content;
@@ -1996,8 +1986,8 @@ export function handleStatusWidget(key: string, content: string | null) {
 
     // Clean up any legacy live-card
     var legacy = state.widgetCards[key];
-    if (legacy) {(legacy as HTMLElement).remove(); delete state.widgetCards[key];}
-    delete state.liveCards[key as string];
+    if (legacy) {(legacy).remove(); delete state.widgetCards[key];}
+    delete state.liveCards[key];
   }
 
 export function clearWidgetCards() {
@@ -2150,11 +2140,11 @@ export function handleRevealEntry(entryId: string, toolCallId: string) {
 
     if (!el) {return;}
 
-    (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
-    (el as HTMLElement).style.transition = "background 0.2s, box-shadow 0.2s";
-    (el as HTMLElement).style.background = "var(--vscode-list-hoverBackground)";
-    (el as HTMLElement).style.boxShadow = "0 0 0 2px var(--vscode-focusBorder)";
-    (el as HTMLElement).style.borderRadius = "4px";
+    (el).scrollIntoView({ behavior: "smooth", block: "center" });
+    (el).style.transition = "background 0.2s, box-shadow 0.2s";
+    (el).style.background = "var(--vscode-list-hoverBackground)";
+    (el).style.boxShadow = "0 0 0 2px var(--vscode-focusBorder)";
+    (el).style.borderRadius = "4px";
     setTimeout(function () {
       (el as HTMLElement).style.background = "";
       (el as HTMLElement).style.boxShadow = "";
@@ -2199,7 +2189,7 @@ export function handleBashStart(data: Record<string, unknown>) {
       entryId: data.entryId as string,
       fromMessage: false,
     });
-    insertToolBlock(block as HTMLElement);
+    insertToolBlock(block);
     state.bashBlocks[callId as string] = block;
     state.bashOutputs[callId as string] = "";
     state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
@@ -2235,7 +2225,7 @@ export function handleBashEnd(data: Record<string, unknown>) {
       content: data.output ? [{ type: "text", text: data.output }] : [],
       details: { exitCode: data.exitCode, cancelled: data.cancelled },
     };
-    bashToolRenderer.finalize(block as any, result as any, data.isError as boolean, data.entryId as any);
+    bashToolRenderer.finalize(block, result as any, data.isError as boolean, data.entryId as any);
     delete state.currentToolBlocks[callId as string];
     delete state.bashBlocks[callId as string];
     delete state.bashOutputs[callId as string];
