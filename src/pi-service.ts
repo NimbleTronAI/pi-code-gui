@@ -26,7 +26,7 @@ import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from
 import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
-import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
+import { backendCapabilityDefaults, flipsStateEagerly, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
 import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
@@ -861,7 +861,7 @@ export class PiService {
       }
 
       case "reload": {
-        await this.session.reload();
+        await this.backend?.reloadContext();
         // Re-send initial messages so the webview reflects updated extensions/skills
         await this.sendInitialMessages();
         this.emitSlashCommands();
@@ -912,7 +912,7 @@ export class PiService {
   /**
    * Export the conversation to HTML at `outputPath`. Runtime-aware: the
    * TypeScript SDK session exports directly; Rust shells out to `pi --export`
-   * (rawSession is null under Rust). Returns the written path.
+   * (there is no in-process session under Rust). Returns the written path.
    */
   async exportToHtml(outputPath: string): Promise<string> {
     // Delegated to the active backend (PiBackend.exportToHtml): Rust shells out to
@@ -1290,10 +1290,7 @@ export class PiService {
     // state via the RustHost callback only on success (optimistic-safe); the SDK
     // flips eagerly then pushes to the session. The wire call itself is now the
     // backend primitive (setAutoCompaction), not inline RPC/session plumbing.
-    // Exhaustive so a third runtime must declare its flip policy rather than defaulting to eager.
-    if (this._backendKind === "rust") { /* echo-on-success via the host callback (below) */ }
-    else if (this._backendKind === "typescript") { this._autoCompactionEnabled = next; }
-    else { assertNever(this._backendKind, "runtime"); }
+    if (flipsStateEagerly(this._backendKind)) { this._autoCompactionEnabled = next; }
     await this.backend?.setAutoCompaction(next);
     this.emitSettings();
     return this._autoCompactionEnabled;
@@ -1303,9 +1300,7 @@ export class PiService {
     const next = !this._autoRetryEnabled;
     // Same flip policy as auto-compaction. setAutoRetry is a no-op on the SDK (no
     // session toggle); Rust applies it over RPC and echoes state via the host callback.
-    if (this._backendKind === "rust") { /* echo-on-success via the host callback (below) */ }
-    else if (this._backendKind === "typescript") { this._autoRetryEnabled = next; }
-    else { assertNever(this._backendKind, "runtime"); }
+    if (flipsStateEagerly(this._backendKind)) { this._autoRetryEnabled = next; }
     await this.backend?.setAutoRetry(next);
     this.emitSettings();
     return this._autoRetryEnabled;
@@ -1430,8 +1425,15 @@ export class PiService {
   }
   get sessionIdValue(): string | null { return this.sessionId; }
   get initialized(): boolean { return this.session !== null || this._rust !== null; }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  get rawSession(): any { return this.session; }
+
+  /** Reload context files / extensions / skills in-session. False when the active runtime has no
+   *  in-session reload (Rust), so callers can explain instead of reaching for a raw session.
+   *  Replaces the former `rawSession: any` getter that let extension.ts call .reload() straight
+   *  through the PiBackend seam. */
+  async reloadContext(): Promise<boolean> {
+    if (!this.capabilities.reloadContext) { return false; }
+    return (await this.backend?.reloadContext()) ?? false;
+  }
   /** Expose the model runtime for dynamic model pickers in the webview */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get modelRuntimeInstance(): any { return this.modelRuntime; }

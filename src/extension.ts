@@ -620,7 +620,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         if (sw.piService.isStreaming) { await sw.piService.abort(); }
         vscode.window.showInformationMessage("Compacting context...");
-        // Runtime-aware: rawSession is null under Rust (RPC `compact` instead).
+        // Runtime-aware: there is no in-process session under Rust (RPC `compact` instead).
         await sw.piService.compact();
         vscode.window.showInformationMessage("Context compacted.");
         sessionTreeProvider?.refresh();
@@ -671,14 +671,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage("No active Pi session.");
         return;
       }
-      // rawSession is null under Rust; the Rust runtime loads extensions/skills at
-      // startup with no in-session reload — start a new Rust session to pick up changes.
-      if (sw.piService.runtime === "rust") {
-        vscode.window.showInformationMessage("Reload context is available for TypeScript Pi sessions; start a new Rust session to reload its extensions and skills.");
-        return;
-      }
       try {
-        await sw.piService.rawSession.reload();
+        // Goes through the PiBackend seam. A runtime with no in-session reload (Rust loads
+        // extensions/skills at startup) reports false rather than exposing a raw session.
+        if (!(await sw.piService.reloadContext())) {
+          vscode.window.showInformationMessage("Reload context is available for TypeScript Pi sessions; start a new Rust session to reload its extensions and skills.");
+          return;
+        }
         await sw.piService.sendInitialMessages();
         // Push updated slash commands after extension reload
         sw.piService.emitSlashCommands();

@@ -39,6 +39,7 @@ class FakeBackend implements PiBackend {
   setAgentRunActive(v: boolean) { this._active = v; }
   isStreaming() { return this._streaming; }
   setStreaming(v: boolean) { this._streaming = v; }
+  async reloadContext() { this.log("reloadContext"); return this.kind === "typescript"; }
   async setAutoCompaction(enabled: boolean) { this.log("setAutoCompaction", enabled); }
   async setAutoRetry(enabled: boolean) { this.log("setAutoRetry", enabled); }
   async exportToHtml(p: string) { this.log("exportToHtml", p); return p; }

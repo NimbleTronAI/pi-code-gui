@@ -825,6 +825,13 @@ export class SdkService implements PiBackend {
   setStreaming(v: boolean): void { this._isStreaming = v; }
 
   /** Toggle auto-compaction on the session (if the SDK build exposes the setter). */
+  /** The SDK session reloads extensions/skills/context files in place. */
+  async reloadContext(): Promise<boolean> {
+    if (!this.session?.reload) { return false; }
+    await this.session.reload();
+    return true;
+  }
+
   async setAutoCompaction(enabled: boolean): Promise<void> {
     if (this.session && typeof this.session.setAutoCompactionEnabled === "function") {
       await this.session.setAutoCompactionEnabled(enabled);

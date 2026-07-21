@@ -961,6 +961,10 @@ export class RustService implements PiBackend {
     } catch { /* keep the optimistic level */ }
   }
 
+  /** rust-pi loads extensions/skills at startup and exposes no in-session reload RPC, so this
+   *  reports false rather than pretending to succeed. capabilities.reloadContext is false too. */
+  async reloadContext(): Promise<boolean> { return false; }
+
   async setAutoCompaction(enabled: boolean): Promise<void> {
     const r = await this.requestOrError(RUST_RPC.setAutoCompaction, { enabled }, "Could not toggle auto-compaction");
     if (r) { this.host.setAutoCompactionEnabled(enabled); }

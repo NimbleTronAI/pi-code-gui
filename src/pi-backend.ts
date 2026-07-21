@@ -1,7 +1,12 @@
 // PiBackend — the formal contract for the ~15% of a session that genuinely diverges
 // between the two runtimes. PiService (the orchestrator) holds one `PiBackend` and
-// delegates the primitive operations to it, instead of the old `if (_backendKind ===
-// "rust")` branch that appeared in ~15 methods and forced null-returning SDK getters.
+// delegates the primitive operations to it. This REDUCED the old `if (_backendKind === "rust")`
+// branching (which appeared in ~15 methods and forced null-returning SDK getters) — it did not
+// eliminate it: a handful of runtime-IDENTITY checks remain in PiService (backend selection,
+// init/dispose routing), and extension.ts still reaches past this seam via
+// PiService.sessionManagerInstance for the clone/fork/export session-file paths. Those are
+// genuinely SDK-shaped and not yet modelled here; do not read this interface as a complete
+// boundary.
 //
 // The split is deliberate: PRIMITIVES (send a prompt, abort, set the model on the wire,
 // read usage, …) live behind this interface and are implemented by SdkService /
@@ -10,7 +15,7 @@
 // in PiService — it's runtime-agnostic and calls these primitives. Backends advertise
 // what they can do via `capabilities` (a data flag) rather than PiService hard-coding
 // `!isRust` conditionals.
-import type { Runtime } from "./types.js";
+import { assertNever, type Runtime } from "./types.js";
 
 /** A backend's usage snapshot. Shared shape across runtimes (RustService already used
  *  it; SdkService now computes the same from its SessionManager). */
@@ -49,6 +54,24 @@ export interface BackendCapabilities {
    *  transport shows a read-only reasoning on/off badge rather than a graded picker).
    *  Depends on the active model's api, so it's a method, not a static flag. */
   thinkingLevelLive(): boolean;
+}
+
+/** Whether PiService should flip its own settings state EAGERLY on a toggle, or wait for the
+ *  backend to echo the change back.
+ *
+ *  This is the one genuine state divergence between the runtimes: the SDK applies the setting
+ *  in-process, so flipping immediately is safe and keeps the UI responsive; the Rust RPC may
+ *  reject or clamp the request, so its state is only flipped by the host callback on success.
+ *
+ *  Exhaustive on Runtime — a third runtime is a compile error here, which is the point: it must
+ *  declare a flip policy rather than silently inheriting "eager". Expressed as a predicate
+ *  because the previous inline form needed an if-branch whose only body was a comment. */
+export function flipsStateEagerly(runtime: Runtime): boolean {
+  switch (runtime) {
+    case "typescript": return true;
+    case "rust": return false;
+    default: return assertNever(runtime, "runtime");
+  }
 }
 
 /** The single source of truth for a runtime's DEFAULT capability flags. Both backends and the
@@ -119,6 +142,10 @@ export interface PiBackend {
   setAgentRunActive(v: boolean): void;
   isStreaming(): boolean;
   setStreaming(v: boolean): void;
+  /** Reload context files / extensions / skills in-session. Returns false when the runtime has
+   *  no in-session reload (Rust loads them at startup), so the caller can say so instead of
+   *  reaching through to a raw session object. Guarded by capabilities.reloadContext. */
+  reloadContext(): Promise<boolean>;
   /** Toggle auto-compaction on the backend. */
   setAutoCompaction(enabled: boolean): Promise<void>;
   /** Toggle auto-retry on the backend. */

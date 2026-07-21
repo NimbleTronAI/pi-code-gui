@@ -4,7 +4,7 @@
 // been hand-corrected in the fallback, proving the drift risk).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backendCapabilityDefaults, type BackendCapabilities } from "../../pi-backend.js";
+import { backendCapabilityDefaults, flipsStateEagerly, type BackendCapabilities } from "../../pi-backend.js";
 
 const staticFlags = (c: BackendCapabilities) => ({
   kind: c.kind, bridgeTools: c.bridgeTools, customCards: c.customCards, toolsPicker: c.toolsPicker,
@@ -42,4 +42,10 @@ test("every gated flag except exportHtml is exactly !rust", () => {
     assert.equal(ts[k], true, `${k} on for TS`);
     assert.equal(rs[k], false, `${k} off for Rust`);
   }
+});
+
+// ── the one genuine state divergence ─────────────────────────────────
+test("flipsStateEagerly: TS flips immediately, Rust waits for the wire echo", () => {
+  assert.equal(flipsStateEagerly("typescript"), true, "SDK applies in-process — safe to flip now");
+  assert.equal(flipsStateEagerly("rust"), false, "RPC may reject/clamp — flip only on the echo");
 });
