@@ -1664,15 +1664,10 @@ export function handleSettingsUpdate(data: any) {
 
 export function handleScopedModelsUpdate(data: any) {
     if (data && data.models) {
-      state.scopedModels = data.models;
-      renderScopedModels();
       renderSettingsPanel();
     }
   }
 
-export function renderScopedModels() {
-    // Scoped models removed from UI
-  }
 
 export function renderSettingsPanel() {
     if (!state.settingsOverlay || !state.settingsOpen) {return;}
@@ -1844,29 +1839,6 @@ export function dismissLiveCard(key: string) {
     }
   }
 
-export function clearLivePanel(): void {
-    // Only clear transient cards (non-widget cards).
-    // Widget cards persist until the extension explicitly clears them.
-    var toRemove = [];
-    for (var key in state.liveCards) {
-      if (state.liveCards.hasOwnProperty(key)) {
-        var card = state.liveCards[key];
-        if (card && card.getAttribute("data-widget") !== "true") {
-          toRemove.push(key);
-        }
-      }
-    }
-    for (var i = 0; i < toRemove.length; i++) {
-      var c = state.liveCards[toRemove[i]];
-      if (c) {c.remove();}
-      delete state.liveCards[toRemove[i]];
-    }
-    // Hide the panel if nothing remains
-    var remaining = state.livePanel.querySelectorAll(".live-card");
-    if (remaining.length === 0) {
-      state.livePanel.classList.remove("visible");
-    }
-  }
 
   // ── Widget Bridge ─────────────────────────────────────
   // ── Widget Bridge ─────────────────────────────────────
@@ -1990,14 +1962,6 @@ export function handleStatusWidget(key: string, content: string | null) {
     delete state.liveCards[key];
   }
 
-export function clearWidgetCards() {
-    for (var key in state.widgetCards) {
-      if (state.widgetCards.hasOwnProperty(key)) {
-        state.widgetCards[key].remove();
-      }
-    }
-    state.widgetCards = {};
-  }
 
   // ═══ Interactive Dialog Bridge ═══════════════════════════
 

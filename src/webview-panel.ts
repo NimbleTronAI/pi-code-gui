@@ -252,7 +252,6 @@ export class PiWebviewPanel {
           // Request settings state (#3)
           case "getSettings":
             this.piService.emitSettings();
-            this.piService.emitScopedModels();
             break;
 
           // Context budget picker

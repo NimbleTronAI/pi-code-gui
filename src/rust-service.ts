@@ -61,7 +61,7 @@ export interface RustHost {
   reportStatus(): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendInitialMessages(entries: any[]): Promise<void>;
-  /** emitScopedModels + emitSettings + emitSlashCommands, after the handshake. */
+  /** emitSettings + emitSlashCommands, after the handshake. */
   emitPostInitState(): void;
   showDialog(
     dialogType: "select" | "confirm" | "input",

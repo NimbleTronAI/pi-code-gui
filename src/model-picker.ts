@@ -50,14 +50,3 @@ export function buildModelPickerItems(models: ModelChoice[], currentId: string |
   });
 }
 
-/** Map a session's scopedModels (per-turn model overrides) to {provider, id, thinkingLevel},
- *  dropping entries with no model. Pure. */
-export function mapScopedModels(scopedModels: any[]): Array<{ provider: string; id: string; thinkingLevel: string }> {
-  return (scopedModels ?? [])
-    .filter((s: Record<string, unknown>) => s.model !== null && s.model !== undefined)
-    .map((s: Record<string, unknown>) => ({
-      provider: (s.model as Record<string, unknown>).provider as string,
-      id: (s.model as Record<string, unknown>).id as string,
-      thinkingLevel: (s.thinkingLevel as string) ?? "off",
-    }));
-}

@@ -52,7 +52,6 @@ export interface AppState {
   settingsOpen: boolean;
 
   // ── Scoped models
-  scopedModels: unknown[];
 
   // ── Overlay state
   userMsgSelectorOpen: boolean;
@@ -138,7 +137,6 @@ export const state: AppState = {
   settingsState: { autoCompaction: true, autoRetry: true, showImages: true },
   settingsOpen: false,
 
-  scopedModels: [],
 
   userMsgSelectorOpen: false,
   userMsgSelectedIdx: 0,

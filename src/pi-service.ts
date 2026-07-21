@@ -33,7 +33,7 @@ import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
 import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
-import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, mapScopedModels, type ModelChoice } from "./model-picker.js";
+import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, type ModelChoice } from "./model-picker.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -338,7 +338,6 @@ export class PiService {
 
     this.reportStatus();
     try {
-      this.emitScopedModels();
       this.emitSettings();
       this.emitSlashCommands();
     } catch (e: unknown) {
@@ -480,7 +479,7 @@ export class PiService {
       handleAgentEvent: (e) => this.handleAgentEvent(e),
       reportStatus: () => this.reportStatus(),
       sendInitialMessages: (entries) => this.sendInitialMessages(entries),
-      emitPostInitState: () => { this.emitScopedModels(); this.emitSettings(); this.emitSlashCommands(); },
+      emitPostInitState: () => { this.emitSettings(); this.emitSlashCommands(); },
       showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
       rememberReasoning: () => { this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
@@ -1289,14 +1288,6 @@ export class PiService {
   }
 
   /** Get scoped models from the session */
-  getScopedModels(): Array<{ provider: string; id: string; thinkingLevel: string }> {
-    if (!this.session || !this.session.scopedModels) { return []; }
-    return mapScopedModels(this.session.scopedModels);
-  }
-
-  emitScopedModels(): void {
-    this.emit({ type: "scoped-models-update", data: { models: this.getScopedModels() } });
-  }
 
   emitSettings(): void {
     this.emit({

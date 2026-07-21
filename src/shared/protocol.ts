@@ -308,14 +308,6 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
     }),
   }),
 
-  // Scoped models
-  z.object({
-    type: z.literal("scoped-models-update"),
-    data: z.object({
-      models: z.array(z.object({ provider: z.string(), id: z.string(), thinkingLevel: z.string() })),
-    }),
-  }),
-
   // Settings
   z.object({
     type: z.literal("settings-update"),

@@ -32,10 +32,6 @@ export function truncate(text: string, maxLen: number): string {
   return text.substring(0, maxLen) + "...";
 }
 
-export function shortenPath(filePath: string): string {
-  if (!filePath) {return "";}
-  return filePath;
-}
 
 // ═══ Tool Renderer Registry ═════════════════════════════════
 

@@ -1,7 +1,7 @@
 // Headless tests for the extracted model picker core (src/model-picker.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FALLBACK_MODELS, formatModelDetail, toModelChoices, buildModelPickerItems, mapScopedModels } from "../../model-picker.js";
+import { FALLBACK_MODELS, formatModelDetail, toModelChoices, buildModelPickerItems } from "../../model-picker.js";
 
 type Any = ReturnType<typeof JSON.parse>;
 const STAR = "★";
@@ -57,15 +57,3 @@ test("FALLBACK_MODELS is a non-empty static list with no pricing", () => {
   assert.ok(FALLBACK_MODELS.every((m) => m.provider && m.modelId && m.cost === undefined));
 });
 
-test("mapScopedModels: drops null-model entries, defaults thinkingLevel to off", () => {
-  const out = mapScopedModels([
-    { model: { provider: "anthropic", id: "a" }, thinkingLevel: "high" },
-    { model: null, thinkingLevel: "low" },      // dropped
-    { model: { provider: "openai", id: "b" } },  // no level → "off"
-  ] as Any);
-  assert.deepEqual(out, [
-    { provider: "anthropic", id: "a", thinkingLevel: "high" },
-    { provider: "openai", id: "b", thinkingLevel: "off" },
-  ]);
-  assert.deepEqual(mapScopedModels(undefined as Any), []);
-});
