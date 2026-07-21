@@ -102,6 +102,17 @@ let packagesTreeView: vscode.TreeView<any> | null = null;
 let packageService: PiPackageService | null = null;
 
 /** The primary (first) session — used for status bar and tree provider */
+/** Register the global phase-3/4 commands once per host. Idempotent. */
+function registerPhaseCommands(context: vscode.ExtensionContext): void {
+  if (phaseCommandsRegistered) { return; }
+  phaseCommandsRegistered = true;
+  // Resolve the live target each invocation — binding to one session's service would leave
+  // these pointing at a disposed session after a tab change/close.
+  const resolvePiService = (): PiService | undefined => (activeSessionWindow ?? primarySession())?.piService;
+  registerPhase3Commands(context, resolvePiService);
+  registerPhase4Commands(context, resolvePiService);
+}
+
 function primarySession(): SessionWindow | undefined {
   return sessions[0];
 }
@@ -190,7 +201,7 @@ async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promi
   await context.globalState.update("rustVersionWarned", detected);
   void vscode.window.showWarningMessage(
     `Rust Pi ${detected} is installed, but this extension is tested against ${pinnedVersion}. ` +
-    "If you hit odd behaviour, run “PiGui: Install Pi” for the managed build, or update the extension.",
+    "If you hit odd behaviour, run “PiGui: Install Rust Pi” for the managed build, or update the extension.",
   );
 }
 
@@ -905,6 +916,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // (Cmd+/, Cmd+L, etc.) work immediately — the async SDK
   // init chain in initSessionInBackground can take seconds.
   registerEarlyCommands(context);
+  // Phase 3/4 commands are GLOBAL and must exist for the whole window lifetime. They used to be
+  // registered inside initSessionInBackground behind `!phaseCommandsRegistered && sw ===
+  // primarySession()`, which sat past every early return — so if the first session failed to
+  // init (Pi not installed, rust-extension conflict, init error) the commands never registered.
+  // Two of those early returns don't removeSession(), so the failed session stayed sessions[0]
+  // forever and no later session could ever satisfy `sw === primarySession()`: cycleModel
+  // (Ctrl+P), pickThinkingLevel, login and resumeSession were "command not found" for the rest
+  // of the window, EVEN AFTER the user installed Pi. They already resolve the live service per
+  // invocation and warn when it isn't ready, so registering them up front is safe.
+  registerPhaseCommands(context);
 
   // ── Step 3c: Detect installed runtimes and set menu context keys ──
   // Runs before session restore so runtime-aware UI settles correctly.
@@ -1328,6 +1349,13 @@ async function pickRuntime(placeHolder = "Choose a runtime for the new Pi sessio
 // sees the keybinding mapped but the command missing.
 
 function registerEarlyCommands(context: vscode.ExtensionContext): void {
+  // ── installPi ───────────────────────────────────────
+  // Contributed in package.json but never registered, so invoking it from the Command Palette
+  // (or following a notification that names it) failed with "command not found".
+  context.subscriptions.push(
+    vscode.commands.registerCommand("pi-code-gui.installPi", async () => { await installPi(); }),
+  );
+
   // ── pickCommand (Cmd+/) ─────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-code-gui.pickCommand", async () => {
@@ -1610,17 +1638,6 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     ).then((a) => {
       if (a === "Open Setting") { void vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustExtensions"); }
     });
-  }
-
-  // Phase 3/4 commands are global — register once (re-registering on every
-  // primary-session init just threw "already registered" and logged noise).
-  if (!phaseCommandsRegistered && sw === primarySession()) {
-    phaseCommandsRegistered = true;
-    // Resolve the live target each invocation — binding to sw.piService would
-    // point these global commands at the first session even after it's disposed.
-    const resolvePiService = (): PiService | undefined => (activeSessionWindow ?? primarySession())?.piService;
-    registerPhase3Commands(context, resolvePiService);
-    registerPhase4Commands(context, resolvePiService);
   }
 
   // Ensure tree provider is registered (safe to call multiple times)
