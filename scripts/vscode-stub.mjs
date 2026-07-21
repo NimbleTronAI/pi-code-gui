@@ -20,6 +20,16 @@ globalThis.__vscodeMock = control;
 const rec = (kind, payload) => { control.calls.push({ kind, ...payload }); };
 
 export const window = {
+  registerTreeDataProvider: () => ({ dispose() {} }),
+  createTreeView: () => ({ dispose() {}, onDidChangeVisibility: () => ({ dispose() {} }), reveal: async () => {} }),
+  createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {}, text: "", tooltip: "", command: undefined }),
+  createOutputChannel: () => ({ appendLine() {}, append() {}, show() {}, clear() {}, dispose() {} }),
+  createWebviewPanel: () => ({ webview: { html: "", onDidReceiveMessage: () => ({ dispose() {} }), postMessage: async () => true, asWebviewUri: (u) => u, cspSource: "vscode-webview:" }, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }), reveal() {}, dispose() {}, title: "" }),
+  registerWebviewPanelSerializer: () => ({ dispose() {} }),
+  onDidChangeActiveTextEditor: () => ({ dispose() {} }),
+  activeTextEditor: undefined,
+  visibleTextEditors: [],
+  showTextDocument: async () => ({}),
   showInformationMessage: async (message, ...items) => { rec("info", { message }); return items[0]; },
   showWarningMessage: async (message, ...items) => { rec("warn", { message }); return items[0]; },
   showErrorMessage: async (message, ...items) => { rec("error", { message }); return items[0]; },
@@ -29,7 +39,14 @@ export const window = {
   createTerminal: () => ({ sendText: () => {}, show: () => {}, dispose: () => {} }),
 };
 
+export const languages = { createDiagnosticCollection: () => ({ set: () => {}, delete: () => {}, clear: () => {}, dispose: () => {} }) };
+
 export const workspace = {
+  workspaceFolders: undefined,
+  onDidChangeConfiguration: () => ({ dispose() {} }),
+  onDidChangeWorkspaceFolders: () => ({ dispose() {} }),
+  createFileSystemWatcher: () => ({ onDidCreate: () => ({ dispose() {} }), onDidChange: () => ({ dispose() {} }), onDidDelete: () => ({ dispose() {} }), dispose: () => {} }),
+  fs: { readFile: async () => new Uint8Array(), writeFile: async () => {}, stat: async () => ({ type: 1, size: 0 }) },
   getConfiguration: (section) => ({
     get: (key, dflt) => {
       const full = section ? `${section}.${key}` : key;
@@ -42,6 +59,8 @@ export const workspace = {
 };
 
 export const commands = {
+  registerCommand: () => ({ dispose() {} }),
+  getCommands: async () => [],
   executeCommand: async (command, ...args) => { rec("command", { command, args }); return undefined; },
 };
 
@@ -59,6 +78,44 @@ export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3
 export const QuickPickItemKind = { Separator: -1, Default: 0 };
 export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 };
 export class ThemeIcon { constructor(id) { this.id = id; } }
-export const EventEmitter = class { constructor() { this.event = () => ({ dispose() {} }); } fire() {} dispose() {} };
+/** A REAL EventEmitter. The previous stub returned a no-op `event()` that DISCARDED the
+ *  listener and a `fire()` that did nothing — any test of a tree provider or event-driven
+ *  component would have looked correct while delivering nothing. */
+export class EventEmitter {
+  constructor() {
+    this._listeners = [];
+    this.event = (listener) => {
+      this._listeners.push(listener);
+      return { dispose: () => { this._listeners = this._listeners.filter((l) => l !== listener); } };
+    };
+  }
+  fire(value) { for (const l of [...this._listeners]) { l(value); } }
+  dispose() { this._listeners = []; }
+}
 
-export default { window, workspace, commands, env, Uri, ConfigurationTarget, QuickPickItemKind, ProgressLocation, ThemeIcon, EventEmitter };
+export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
+export class TreeItem {
+  constructor(label, collapsibleState) {
+    this.label = label;
+    this.collapsibleState = collapsibleState ?? TreeItemCollapsibleState.None;
+  }
+}
+export class ThemeColor { constructor(id) { this.id = id; } }
+export class MarkdownString {
+  constructor(value = "") { this.value = value; this.isTrusted = false; }
+  appendMarkdown(v) { this.value += v; return this; }
+  appendText(v) { this.value += v; return this; }
+}
+export class Disposable {
+  constructor(fn) { this._fn = fn; }
+  dispose() { this._fn?.(); }
+  static from(...items) { return new Disposable(() => items.forEach((i) => i?.dispose?.())); }
+}
+export class RelativePattern { constructor(base, pattern) { this.base = base; this.pattern = pattern; } }
+export const TreeItemCheckboxState = { Unchecked: 0, Checked: 1 };
+export const ViewColumn = { Active: -1, Beside: -2, One: 1, Two: 2 };
+export const StatusBarAlignment = { Left: 1, Right: 2 };
+export const ExtensionMode = { Production: 1, Development: 2, Test: 3 };
+export const UIKind = { Desktop: 1, Web: 2 };
+
+export default { window, workspace, commands, env, languages, Uri, ConfigurationTarget, QuickPickItemKind, ProgressLocation, ThemeIcon, EventEmitter, TreeItem, TreeItemCollapsibleState, ThemeColor, MarkdownString, Disposable, RelativePattern, ViewColumn, StatusBarAlignment, ExtensionMode, UIKind };

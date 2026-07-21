@@ -2272,9 +2272,14 @@ export async function deactivate(): Promise<void> {
     const fp = sw.piService.sessionFilePath;
     if (fp) { await recordSessionRuntime(fp, sw.piService.runtime); }
   }
-  for (const sw of sessions) {
+  // Iterate a SNAPSHOT: webviewPanel.dispose() fires onDidDispose → handlePanelDispose →
+  // removeSession → sessions.splice(), so disposing while iterating the live array skipped
+  // every other session — orphaning its Rust subprocess and, for a TypeScript session, never
+  // running the unflushed _rewriteFile() (losing conversation entries) on an ordinary window
+  // close with more than one tab open. The panel callback already disposes the service, so
+  // calling piService.dispose() here too would double-dispose the ones that DID get cleaned up.
+  for (const sw of [...sessions]) {
     sw.webviewPanel.dispose();
-    sw.piService.dispose();
   }
   sessions.length = 0;
   // Stop output-channel writes last, so a late log during teardown can't throw
