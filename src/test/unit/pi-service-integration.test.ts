@@ -5,6 +5,9 @@
 // optimistic-vs-eager toggle-flip divergence. This was the audits' deferred integration gap.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PiService } from "../../pi-service.js";
 import { backendCapabilityDefaults, type PiBackend, type BackendUsage } from "../../pi-backend.js";
 import type { Runtime, PiServiceEvent } from "../../types.js";
@@ -130,4 +133,64 @@ test("toggleAutoRetry: same optimistic-vs-eager divergence", async () => {
   const rbefore = rs.pi.autoRetryEnabled;
   await rs.pi.toggleAutoRetry();
   assert.equal(rs.pi.autoRetryEnabled, rbefore, "Rust did NOT flip eagerly");
+});
+
+// ── Rust session_info append: never write while the binary owns the file ──
+// rust-pi owns its session JSONL and appends to it as a turn progresses. Our session_info
+// append is O_APPEND, but if the binary writes via a tracked offset instead, an interleaved
+// write could clobber ours — unknowable under the clean-room wall. So we only ever write while
+// the binary is idle, and at dispose only AFTER the child is torn down.
+function rustPiWithSessionFile(): { pi: PiService; backend: FakeBackend; file: string; dir: string; entries: () => Any[] } {
+  const { pi, backend } = makePi("rust");
+  const dir = mkdtempSync(join(tmpdir(), "pi-sessinfo-"));
+  const file = join(dir, "session.jsonl");
+  writeFileSync(file, JSON.stringify({ type: "message", id: "m1" }) + "\n");
+  // RustService-only members PiService reaches for directly (not part of PiBackend).
+  (backend as Any).getSessionPath = () => file;
+  (backend as Any).clearQueueIfAny = () => {};
+  (backend as Any).captureContext = () => {};
+  const entries = () => readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+  return { pi, backend, file, dir, entries };
+}
+const names = (es: Any[]) => es.filter((e) => e.type === "session_info").map((e) => e.name);
+
+test("setSessionName writes immediately when the binary is IDLE", () => {
+  const { pi, dir, entries } = rustPiWithSessionFile();
+  try {
+    pi.setSessionName("idle title");
+    assert.deepEqual(names(entries()), ["idle title"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("setSessionName DEFERS the write while a turn is in flight", () => {
+  const { pi, backend, dir, entries } = rustPiWithSessionFile();
+  try {
+    backend.setAgentRunActive(true);
+    pi.setSessionName("mid-turn title");
+    assert.deepEqual(names(entries()), [], "nothing written into the JSONL mid-turn");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a deferred name is flushed when the run ends", () => {
+  const { pi, backend, dir, entries } = rustPiWithSessionFile();
+  try {
+    backend.setAgentRunActive(true);
+    pi.setSessionName("deferred title");
+    assert.deepEqual(names(entries()), []);
+    // agent_end clears the run flag → the pending entry lands.
+    (pi as Any).handleAgentEvent({ type: "agent_end", messages: [] });
+    assert.deepEqual(names(entries()), ["deferred title"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("dispose tears the child down BEFORE appending the name", () => {
+  const { pi, backend, dir, entries } = rustPiWithSessionFile();
+  try {
+    backend.setAgentRunActive(true);
+    pi.setSessionName("dispose title");
+    assert.deepEqual(names(entries()), [], "still pending");
+    pi.dispose();
+    assert.equal(backend.saw("dispose").length, 1, "child disposed");
+    assert.deepEqual(names(entries()), ["dispose title"], "appended after teardown");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
