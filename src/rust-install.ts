@@ -12,7 +12,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { piLog, piWarn } from "./logger.js";
 import { refreshRuntimeContext } from "./runtime-detection.js";
-import { detectRustBinary } from "./rust-resolver.js";
+import { detectRustBinary, invalidateRustBinaryCache } from "./rust-resolver.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import pinnedRust from "./rust-pi-version.json";
 
@@ -111,6 +111,7 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         await vscode.workspace.getConfiguration("pi-code-gui").update("rustBinaryPath", dest, vscode.ConfigurationTarget.Global);
         piLog(`Managed Rust install: placed binary at ${dest}`);
 
+        invalidateRustBinaryCache();
         const status = detectRustBinary();
         if (!status.installed) {
           vscode.window.showWarningMessage(
@@ -176,6 +177,7 @@ async function manualInstallRust(): Promise<boolean> {
 }
 
 async function detectAndRefresh(): Promise<boolean> {
+  invalidateRustBinaryCache();
   const status = detectRustBinary();
   if (status.installed) {
     await refreshRuntimeContext(true);

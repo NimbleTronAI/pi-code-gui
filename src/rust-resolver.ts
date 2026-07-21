@@ -101,7 +101,27 @@ function candidatePaths(): string[] {
  * Locate the Rust Pi binary. Synchronous (file checks + a short `--version`
  * probe) so it can run during activation before the first session is created.
  */
+/** Memoised result + the moment it was taken. detectRustBinary walks $PATH x 3 names doing
+ *  realpathSync + openSync/readSync per candidate, then execFileSync(binary, ["--version"]) with
+ *  a 5s timeout — all SYNCHRONOUS, on the extension-host thread. It was uncached and called from
+ *  ~8 sites, including twice per package in the packages tree (pi-package-service → rustInfo →
+ *  rust-packages, each re-detecting), so N packages meant 2N blocking subprocess spawns.
+ *  A short TTL keeps "install Pi then it appears" responsive without re-probing in a loop. */
+let _detectCache: { at: number; value: RustInstallStatus } | null = null;
+const DETECT_TTL_MS = 5000;
+
+/** Drop the memoised detection (after an install, or when the binary path setting changes). */
+export function invalidateRustBinaryCache(): void { _detectCache = null; }
+
 export function detectRustBinary(): RustInstallStatus {
+  const now = Date.now();
+  if (_detectCache && now - _detectCache.at < DETECT_TTL_MS) { return _detectCache.value; }
+  const value = detectRustBinaryUncached();
+  _detectCache = { at: now, value };
+  return value;
+}
+
+function detectRustBinaryUncached(): RustInstallStatus {
   const seen = new Set<string>();
   for (const cand of candidatePaths()) {
     let resolved: string;

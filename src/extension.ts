@@ -2295,7 +2295,11 @@ function formatEntryLabel(entry: any): { label: string; tooltip: string; type: s
   }
 
   // Fallback for unknown entry types
-  return { label: `[${entry.type}]`, tooltip: JSON.stringify(entry, null, 2), type: entry.type, fullText: "" };
+  // Unrecognised entry: show the type and a BOUNDED preview. This used to stringify the whole
+  // entry — a large tool result or replayed message could be megabytes, built on every render.
+  const raw = JSON.stringify(entry, null, 2) ?? "";
+  const tooltip = raw.length > 2000 ? `${raw.slice(0, 2000)}\n… (${raw.length - 2000} more characters)` : raw;
+  return { label: `[${entry.type}]`, tooltip, type: entry.type, fullText: "" };
 }
 
 function getEntryCount(sw: SessionWindow): number {

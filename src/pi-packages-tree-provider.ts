@@ -54,6 +54,18 @@ function srcLabel(source: string): string {
 // ── Providers ────────────────────────────────────────────
 
 export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeItem> {
+  /** Coalesced full-tree refresh. Banner and safety lookups complete independently — up to 100
+   *  concurrent marketplace fetches, each previously firing its own FULL-tree change event, so a
+   *  single search could re-render the whole tree a hundred times. Batch them into one frame. */
+  private _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private fireRefresh(): void {
+    if (this._refreshTimer) { return; }
+    this._refreshTimer = setTimeout(() => {
+      this._refreshTimer = null;
+      this._onDidChangeTreeData.fire();
+    }, 50);
+  }
+
   private _onDidChangeTreeData = new vscode.EventEmitter<PkgTreeItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -106,7 +118,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     for (const pkg of this.installed) {
       if (this.installedSafety.has(pkg.source)) { continue; }
       this.pkgService.getSafetyInfo(pkg.source).then((info) => {
-        if (info) { this.installedSafety.set(pkg.source, info); this._onDidChangeTreeData.fire(); }
+        if (info) { this.installedSafety.set(pkg.source, info); this.fireRefresh(); }
       }).catch(() => {});
     }
   }
@@ -163,7 +175,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
           this.pkgService.fetchBannerImage(mp.repository).then((url) => {
             if (url) {
               mp.bannerUrl = url;
-              this._onDidChangeTreeData.fire();
+              this.fireRefresh();
             }
           }).catch(() => {});
         }
@@ -185,7 +197,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
           this.pkgService.fetchBannerImage(mp.repository).then((url) => {
             if (url) {
               mp.bannerUrl = url;
-              this._onDidChangeTreeData.fire();
+              this.fireRefresh();
             }
           }).catch(() => {});
         }
