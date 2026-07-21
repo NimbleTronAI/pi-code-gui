@@ -9,8 +9,9 @@ It is the bridge between the SDK's internal event model and the VS Code UI layer
 
 ## Why it exists
 
-The Pi SDK emits low-level events (`agent_start`, `message_start`, `message_update`,
-`message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`,
+The Pi SDK emits low-level events (`agent_start`, `agent_end`, `agent_settled`,
+`message_start`, `message_update`, `message_end`, `tool_execution_start`,
+`tool_execution_update`, `tool_execution_end`,
 `compaction_start`, `compaction_end`, `auto_retry_start`, `auto_retry_end`,
 `session_info_changed`, `thinking_level_changed`, `queue_update`). These events
 carry raw message content (arrays of content blocks with text, thinking, and
@@ -33,6 +34,7 @@ The translation layer:
 |-----------|---------------------------|
 | `agent_start` | `agent-start` |
 | `agent_end` | `agent-end` + `status-update` |
+| `agent_settled` | `status-update` (final idle confirmation; no duplicate `agent-end`) |
 | `message_start` (user) | `chat-message` (from `sendInitialMessages` replay) |
 | `message_start` (assistant) | `assistant-start` |
 | `message_end` (user) | *(no emission — user messages are emitted via `chat-message`)* |
@@ -62,4 +64,4 @@ the prompt. Previously they were silently dropped.
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-05-27 — added turn-end, message_update error, clarified user message_end
+> **Last updated:** 2026-07-21 — handle SDK 0.80 agent_settled as final idle confirmation

@@ -1180,6 +1180,16 @@ export class PiService {
         this.reportStatus();
         break;
 
+      // SDK 0.80 emits this after retries and queued follow-ups have finished.
+      // agent_end already closes the rendered response; settled only confirms
+      // the session is fully idle, so do not emit a duplicate agent-end.
+      case "agent_settled":
+        this._isStreaming = false;
+        this.currentAssistantToolCalls.clear();
+        this.turnIndex = 0;
+        this.reportStatus();
+        break;
+
       case "turn_start":
         this.emit({ type: "turn-start" });
         break;

@@ -5,6 +5,8 @@ starts with `## [YYYY-MM-DD] <action> | <description>`. Actions:
 `ingest` (new page), `update` (existing page changed), `lint` (quality
 pass performed), `archive` (page moved to archive).
 
+## [2026-07-21] update | Event Translation — handle SDK 0.80 agent_settled as final idle confirmation without duplicate agent-end
+
 ## [2026-07-19] update | PiService and SDK initialization — migrated to ModelRuntime and loaded extension providers before default-model resolution
 
 ## [2026-07-19] update | PiService and Bridge Tools — delegated session persistence to SessionManager APIs to prevent headerless files and first-response EEXIST failures

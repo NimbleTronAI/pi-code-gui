@@ -44,6 +44,21 @@ suite("PiService session persistence", () => {
     );
   });
 
+  test("agent_settled marks the session idle without an unhandled-event diagnostic", () => {
+    const events: Array<{ type: string; data?: { customType?: string; isStreaming?: boolean } }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    service._isStreaming = true;
+    service.sessionManager = { getEntries: () => [] };
+    service.onEvent((event: { type: string; data?: { customType?: string; isStreaming?: boolean } }) => events.push(event));
+
+    service.handleAgentEvent({ type: "agent_settled" });
+
+    assert.strictEqual(service._isStreaming, false);
+    assert.ok(events.some((event) => event.type === "status-update" && event.data?.isStreaming === false));
+    assert.ok(!events.some((event) => event.type === "custom-message" && event.data?.customType === "pi-gui-diagnostic"));
+  });
+
   test("active tool selection uses a SessionManager custom entry instead of raw file writes", () => {
     const sessionFile = path.join(tempDir, "new-session.jsonl");
     const appended: Array<{ customType: string; data: unknown }> = [];
