@@ -427,6 +427,20 @@ export interface ValidationError {
  * Returns the parsed message or an error string.
  * Unknown fields are stripped (zod strips by default in v4).
  */
+/** The set of message types the EXTENSION→WEBVIEW schema knows, derived from the schema itself.
+ *  postMessage() is typed for that direction but is also used for a handful of webview-shaped
+ *  messages, so it needs to know which types are actually validatable. That used to be a
+ *  hand-maintained list of 15 string literals in webview-panel.ts — guaranteed to drift the
+ *  moment a message was added. */
+const EXTENSION_TO_WEBVIEW_TYPES: ReadonlySet<string> = new Set(
+  ExtensionToWebviewSchema.options.map((o) => (o.shape.type as { value: string }).value),
+);
+
+/** True when `type` belongs to the extension→webview schema (and so can be validated). */
+export function isExtensionToWebviewType(type: unknown): boolean {
+  return typeof type === "string" && EXTENSION_TO_WEBVIEW_TYPES.has(type);
+}
+
 export function validateExtensionToWebview(
   msg: unknown,
 ): ValidationResult<ExtensionToWebview> | ValidationError {

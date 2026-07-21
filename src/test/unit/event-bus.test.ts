@@ -73,3 +73,17 @@ test("emitSafe skips validation entirely (no diagnostic even for an invalid even
   assert.equal(seen.length, 1); // just the event, no diagnostic
   assert.equal(seen[0].type, "whatever");
 });
+
+// ── M1: the outbound gate is schema-derived, not a hand-maintained list ──
+test("isExtensionToWebviewType is derived from the schema (no drifting literal list)", async () => {
+  const { isExtensionToWebviewType } = await import("../../shared/protocol.js");
+  // Extension→webview types validate…
+  assert.equal(isExtensionToWebviewType("status-update"), true);
+  assert.equal(isExtensionToWebviewType("chat-message"), true);
+  // …webview→extension types are not this schema's business…
+  assert.equal(isExtensionToWebviewType("prompt"), false);
+  assert.equal(isExtensionToWebviewType("openFile"), false);
+  // …and unknown/garbage is not silently treated as validatable.
+  assert.equal(isExtensionToWebviewType("totally-made-up"), false);
+  assert.equal(isExtensionToWebviewType(undefined), false);
+});

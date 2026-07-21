@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
-import { validateExtensionToWebview, validateWebviewToExtension, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
+import { validateExtensionToWebview, validateWebviewToExtension, isExtensionToWebviewType, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
 import { piWarn } from "./logger.js";
 import { safeExternalUrlString, safeWorkspaceFilePath } from "./shared/webview-nav-guard.js";
 
@@ -387,12 +387,11 @@ export class PiWebviewPanel {
     // through this typed method but belong to the other schema.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const msgType = (message as any).type;
-    if (msgType && msgType !== "prompt" && msgType !== "abort" && msgType !== "slashCommand" &&
-        msgType !== "pickModel" && msgType !== "pickThinkingLevel" &&
-        msgType !== "pickContextBudget" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
-        msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" && msgType !== "openUrl" &&
-        msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "clearQueue" &&
-        msgType !== "resendUserMessage") {
+    // Validate only what this schema actually covers, decided BY the schema rather than by a
+    // hand-maintained list of 15 literals that drifted the moment a message type was added.
+    // Warn-only on purpose: EventBus is the authoritative gate and already surfaces a diagnostic
+    // card, so raising a second one here would double-report a single drift.
+    if (isExtensionToWebviewType(msgType)) {
       const result = validateExtensionToWebview(message);
       if (!result.success) {
         piWarn(`postMessage validation failed for type "${msgType}": ${result.error}`);

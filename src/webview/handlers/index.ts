@@ -108,13 +108,10 @@ export function createLiveCard(key: string, customType: string, label: string, c
     if (!skipValidation) {
       var vr = validateExtensionToWebview(msg);
       if (!vr.success) {
+        // Log only. The extension side (EventBus) is the authoritative gate and already shows a
+        // diagnostic card for a failed message, so raising a second card here meant ONE schema
+        // drift produced TWO user-visible errors — while still rendering the payload either way.
         console.warn("[pi-gui] Webview message validation failed:", vr.error, "msg:", JSON.stringify(msg).substring(0, 300));
-        // Show a visible diagnostic notification
-        var diagKey = "pi-gui-diagnostic-" + Date.now();
-        createLiveCard(diagKey, "pi-gui-diagnostic", "Protocol Error",
-          "Message validation error for type `" + (msg.type || "unknown") + "`:\n```\n" +
-          vr.error.substring(0, 500) + "\n```");
-        // Don't block — fall through to existing handler for backward compat
       }
     }
 
