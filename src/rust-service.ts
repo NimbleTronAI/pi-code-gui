@@ -68,10 +68,9 @@ export interface RustHost {
     prompt: string,
     extras: { options?: string[]; defaultValue?: string },
   ): Promise<unknown> | undefined;
-  // Shared PiService state RustService reads/writes:
-  getAgentRunActive(): boolean;
-  setAgentRunActive(v: boolean): void;
-  setStreaming(v: boolean): void;
+  // Shared PiService state RustService reads/writes. (The run/streaming flags used to live here
+  // as get/setAgentRunActive + setStreaming; RustService now owns them — see PiBackend — so the
+  // event loop reads its own copy without a host round-trip.)
   /** Level is owned by RustService now; this is the orchestration hook that fires when it
    *  changes (PiService remembers the last non-off level for the off→on toggle). */
   rememberReasoning(): void;
@@ -462,7 +461,7 @@ export class RustService implements PiBackend {
     // routeRustEvent reads agentRunActive BEFORE handleAgentEvent clears it, so
     // the isRealAgentEnd dedupe sees the pre-delegate flag — a duplicate
     // agent_end won't trigger a second state re-sync.
-    const routing = routeRustEvent(event, queueNonEmpty, this.host.getAgentRunActive());
+    const routing = routeRustEvent(event, queueNonEmpty, this._agentRunActive);
     // rust-pi never emits queue_update; when it consumes a queued steer/
     // follow-up the message reappears here as a user turn — drop it from the
     // synthetic queue so the pending indicator clears.
@@ -538,8 +537,8 @@ export class RustService implements PiBackend {
       piWarn(`Rust process exited during init (code ${code ?? "?"})`);
       return;
     }
-    this.host.setStreaming(false);
-    this.host.setAgentRunActive(false);
+    this._isStreaming = false;
+    this._agentRunActive = false;
     // Clear any pending steer/queue indicator — the process that owned it is gone.
     if (this.steering.length || this.followUp.length) {
       this.steering = [];
@@ -688,7 +687,7 @@ export class RustService implements PiBackend {
     // — a mid-run refresh would WIPE the live accumulate toward zero. The terminal snaps
     // (agent_end / agent_settled) run with the run flag already cleared, so they're unaffected;
     // this guards the one remaining mid-turn caller, compact() → refreshState() → refreshUsage().
-    if (this.host.getAgentRunActive()) { return; }
+    if (this._agentRunActive) { return; }
     try {
       const r = await this.process.request(RUST_RPC.getSessionStats, {}, 8000);
       if (r.success) {
@@ -1032,6 +1031,16 @@ export class RustService implements PiBackend {
   getThinkingLevel(): string { return this._thinkingLevel; }
   /** Sync the stored level from a streamed thinking_level_changed echo (no wire call). */
   applyThinkingLevel(level: string): void { this._thinkingLevel = level; }
+
+  // Run/streaming flags — OWNED here now (PiService applies them from the event stream via these
+  // setters and reads via the getters). The event loop reads its own copy directly for the
+  // agent_end dedupe (routeRustEvent) and the mid-turn usage guard — no host round-trip.
+  private _agentRunActive = false;
+  private _isStreaming = false;
+  getAgentRunActive(): boolean { return this._agentRunActive; }
+  setAgentRunActive(v: boolean): void { this._agentRunActive = v; }
+  isStreaming(): boolean { return this._isStreaming; }
+  setStreaming(v: boolean): void { this._isStreaming = v; }
   /** The on-disk session file, or null. CONTRACT: a fresh Rust session has no
    *  file until the binary writes its first turn (it's captured from get_state's
    *  `sessionFile`), so this is null between init and the first turn — callers

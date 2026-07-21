@@ -102,11 +102,9 @@ export class PiService {
   /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
    *  user's prior Reasoning level (falls back to the model's highest). */
   private _lastReasoningLevel: string | undefined;
-  private _isStreaming = false;
-  /** Guards against rust-pi emitting agent_end twice for one run (observed on
-   *  the abort/error path); the duplicate would double-emit agent-end and
-   *  double-refresh state. Set on agent_start, cleared on the first agent_end. */
-  private _agentRunActive = false;
+  // The run/streaming flags are OWNED by the active backend now (see PiBackend); PiService reads
+  // them via `this.backend` and applies the event-stream mutations through its setters. The
+  // agent_end double-emit dedupe (which the run flag guards) lives in RustService.handleEvent.
   /** Event types already logged as unhandled, so upstream protocol drift is
    *  surfaced once in the output channel rather than flooding it per event. */
   private _warnedUnknownEvents = new Set<string>();
@@ -458,9 +456,6 @@ export class PiService {
       sendInitialMessages: (entries) => this.sendInitialMessages(entries),
       emitPostInitState: () => { this.emitScopedModels(); this.emitSettings(); this.emitSlashCommands(); },
       showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
-      getAgentRunActive: () => this._agentRunActive,
-      setAgentRunActive: (v) => { this._agentRunActive = v; },
-      setStreaming: (v) => { this._isStreaming = v; },
       rememberReasoning: () => { this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
       getCycleModels: () => this.cycleModels,
@@ -595,7 +590,7 @@ export class PiService {
     // the % reportStatus emits), and reportStatus after, reflecting post-event state.
     const r = translateAgentEvent(event, {
       backendKind: this._backendKind,
-      agentRunActive: this._agentRunActive,
+      agentRunActive: this.backend?.getAgentRunActive() ?? false,
       lookups: indexEntries(this.sessionManager?.getEntries?.() ?? []),
       userMessages: this._userMessages,
       toolCalls: this.currentAssistantToolCalls,
@@ -603,8 +598,10 @@ export class PiService {
       prepareArgs: (toolName, args) => this._prepareToolArgs(toolName, args),
     });
 
-    if (r.setAgentRunActive !== undefined) { this._agentRunActive = r.setAgentRunActive; }
-    if (r.setStreaming !== undefined) { this._isStreaming = r.setStreaming; }
+    // The run/streaming flags are owned by the backend now — apply the event-stream mutations
+    // through it (RustService reads its own copy directly in its event loop).
+    if (r.setAgentRunActive !== undefined) { this.backend?.setAgentRunActive(r.setAgentRunActive); }
+    if (r.setStreaming !== undefined) { this.backend?.setStreaming(r.setStreaming); }
     if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
     if (r.turnIndex === "reset") { this.turnIndex = 0; }
     else if (r.turnIndex === "increment") { this.turnIndex++; }
@@ -718,7 +715,7 @@ export class PiService {
         // Both are expressed by the backend's capability flag.
         thinkingLive: this.capabilities.thinkingLevelLive(),
         reasoning: this._model?.reasoning,
-        isStreaming: this._isStreaming,
+        isStreaming: this.backend?.isStreaming() ?? false,
         sessionId: this.sessionId ?? undefined,
         // On-disk session file (null until the first write). The webview persists this
         // into VS Code's webview state so deserializeWebviewPanel can re-attach the
@@ -740,14 +737,15 @@ export class PiService {
     // Dispatch trace (debug-level): mode + the streaming state the decision keys off.
     // Enable the "Pi Code Gui" output channel's Debug level to capture this — it's how
     // we pin the trigger of a preempting dispatch (see prompt-guard.ts).
-    piDebug(`sendPrompt runtime=${this._backendKind} mode=${mode ?? "prompt"} agentRunActive=${this._agentRunActive} streaming=${this._isStreaming} len=${text.length}`);
+    const agentRunActive = this.backend?.getAgentRunActive() ?? false;
+    piDebug(`sendPrompt runtime=${this._backendKind} mode=${mode ?? "prompt"} agentRunActive=${agentRunActive} streaming=${this.backend?.isStreaming() ?? false} len=${text.length}`);
 
     // Never let a mode-less conversational prompt preempt an in-flight turn: a real
     // mid-stream follow-up arrives as steer/queue, so this is a stale/duplicate dispatch
     // that on Rust forks the session from root and orphans + double-bills the live run.
     // Drop it and log the call site so the (still-unconfirmed) trigger is captured.
-    if (shouldDropPreemptingPrompt(mode, this._agentRunActive, text)) {
-      piWarn(`Dropped a fresh prompt that would preempt an in-flight turn (runtime=${this._backendKind}, streaming=${this._isStreaming}). A mid-stream follow-up should arrive as steer/queue — a mode-less prompt here is a stale/duplicate dispatch. Text: ${JSON.stringify(text.slice(0, 80))}`);
+    if (shouldDropPreemptingPrompt(mode, agentRunActive, text)) {
+      piWarn(`Dropped a fresh prompt that would preempt an in-flight turn (runtime=${this._backendKind}, streaming=${this.backend?.isStreaming() ?? false}). A mid-stream follow-up should arrive as steer/queue — a mode-less prompt here is a stale/duplicate dispatch. Text: ${JSON.stringify(text.slice(0, 80))}`);
       piDebug(`Preempting-prompt call site:\n${new Error("preempting-prompt dispatch").stack}`);
       this.emit({ type: "custom-message", data: { customType: "info", content: "Ignored a duplicate prompt that arrived while the current turn was still running.", timestamp: Date.now() } });
       return;
@@ -1384,7 +1382,7 @@ export class PiService {
 
   // ── Getters ────────────────────────────────────────────
 
-  get isStreaming(): boolean { return this._isStreaming; }
+  get isStreaming(): boolean { return this.backend?.isStreaming() ?? false; }
   get model(): { id?: string; name?: string; provider?: string } | null { return this._model; }
   /** The effective thinking level for the current model (stored level clamped to
    *  what the model honors) — so the status bar, picker, and cycle all show what's

@@ -33,7 +33,8 @@ const CONFIG: RustSessionConfig = { defaultThinkingLevel: "off", rustExtensionPo
 function makeHarness(opts: { contextWindow?: number } = {}): Harness {
   const events: PiServiceEvent[] = [];
   const requests: string[] = [];
-  let agentRunActive = false;
+  // The run flag is owned by the RustService instance now (see PiBackend); drive it through the
+  // instance rather than a host callback.
   let stats: Any = { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 };
   let stateData: Any = { model: { id: "deepseek-v4-pro", provider: "deepseek", api: "openai-completions", reasoning: true }, thinkingLevel: "high" };
   const rustRef: { current: RustService | null } = { current: null };
@@ -41,24 +42,24 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
   const host: RustHost = {
     emit: (e) => events.push(e),
     handleAgentEvent: (event: Any) => {
-      // Mirror PiService.handleAgentEvent: translate, apply the run/stream flags + captureContext.
+      // Mirror PiService.handleAgentEvent: translate, apply the run flag through the backend
+      // instance (which now owns it) + captureContext.
+      const rust = rustRef.current as Any;
       const state: AgentTranslateState = {
-        backendKind: "rust", agentRunActive,
+        backendKind: "rust", agentRunActive: rust.getAgentRunActive(),
         lookups: { entries: [], byMessageId: new Map(), byToolCallId: new Map() },
         userMessages: [], toolCalls: new Map(), now: 0, prepareArgs: (_n, a) => a,
       };
       const r = translateAgentEvent(event, state);
-      if (r.setAgentRunActive !== undefined) { agentRunActive = r.setAgentRunActive; }
-      if (r.effects.captureContext) { (rustRef.current as Any).captureContext(r.effects.captureUsage); }
+      if (r.setAgentRunActive !== undefined) { rust.setAgentRunActive(r.setAgentRunActive); }
+      if (r.setStreaming !== undefined) { rust.setStreaming(r.setStreaming); }
+      if (r.effects.captureContext) { rust.captureContext(r.effects.captureUsage); }
       for (const ev of r.events) { events.push(ev); }
     },
     reportStatus: () => {},
     sendInitialMessages: async () => {},
     emitPostInitState: () => {},
     showDialog: () => undefined,
-    getAgentRunActive: () => agentRunActive,
-    setAgentRunActive: (v) => { agentRunActive = v; },
-    setStreaming: () => {},
     rememberReasoning: () => {},
     setSessionId: () => {},
     getCycleModels: () => [],
@@ -89,8 +90,8 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
   return {
     rust, events, requests,
     emit: (event) => (rust as Any).handleEvent(event),
-    setActive: (v) => { agentRunActive = v; },
-    getActive: () => agentRunActive,
+    setActive: (v) => { (rust as Any).setAgentRunActive(v); },
+    getActive: () => (rust as Any).getAgentRunActive(),
     setStats: (data) => { stats = data; },
     setState: (data) => { stateData = data; },
   };

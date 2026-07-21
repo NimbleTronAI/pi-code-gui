@@ -815,6 +815,15 @@ export class SdkService implements PiBackend {
   /** Sync the stored level from a streamed thinking_level_changed echo (no wire call). */
   applyThinkingLevel(level: string): void { this._thinkingLevel = level; }
 
+  // Run/streaming flags — owned by the backend (PiService applies them from the event stream
+  // via these setters and reads via the getters). The SDK doesn't read them itself.
+  private _agentRunActive = false;
+  private _isStreaming = false;
+  getAgentRunActive(): boolean { return this._agentRunActive; }
+  setAgentRunActive(v: boolean): void { this._agentRunActive = v; }
+  isStreaming(): boolean { return this._isStreaming; }
+  setStreaming(v: boolean): void { this._isStreaming = v; }
+
   /** Toggle auto-compaction on the session (if the SDK build exposes the setter). */
   async setAutoCompaction(enabled: boolean): Promise<void> {
     if (this.session && typeof this.session.setAutoCompactionEnabled === "function") {

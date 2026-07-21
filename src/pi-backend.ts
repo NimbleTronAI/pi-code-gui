@@ -110,6 +110,15 @@ export interface PiBackend {
   /** Update the STORED thinking level WITHOUT a wire call — the echo path for a streamed
    *  `thinking_level_changed` event (the wire already changed; we're just syncing state). */
   applyThinkingLevel(level: string): void;
+  /** The in-flight run flag + the streaming flag — OWNED by the backend (both are driven from
+   *  the agent event stream via translateAgentEvent, which PiService applies through these
+   *  setters). PiService reads them for the preempting-prompt guard and the status bar; RustService
+   *  reads its OWN copy directly for the agent_end dedupe and the mid-turn usage guard, so its
+   *  event loop doesn't round-trip through a host callback. */
+  getAgentRunActive(): boolean;
+  setAgentRunActive(v: boolean): void;
+  isStreaming(): boolean;
+  setStreaming(v: boolean): void;
   /** Toggle auto-compaction on the backend. */
   setAutoCompaction(enabled: boolean): Promise<void>;
   /** Toggle auto-retry on the backend. */

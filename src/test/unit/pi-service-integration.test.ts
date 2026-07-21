@@ -30,6 +30,12 @@ class FakeBackend implements PiBackend {
   getThinkingLevel() { return "off"; }
   async setThinkingLevel(level: string) { this.log("setThinkingLevel", level); return level; }
   applyThinkingLevel(level: string) { this.log("applyThinkingLevel", level); }
+  private _active = false;
+  private _streaming = false;
+  getAgentRunActive() { return this._active; }
+  setAgentRunActive(v: boolean) { this._active = v; }
+  isStreaming() { return this._streaming; }
+  setStreaming(v: boolean) { this._streaming = v; }
   async setAutoCompaction(enabled: boolean) { this.log("setAutoCompaction", enabled); }
   async setAutoRetry(enabled: boolean) { this.log("setAutoRetry", enabled); }
   async exportToHtml(p: string) { this.log("exportToHtml", p); return p; }
@@ -67,7 +73,7 @@ test("the backend accessor routes to the active runtime's backend", () => {
 // ── sendPrompt dispatch matrix ───────────────────────────────────────
 test("sendPrompt: a mode-less prompt that would preempt an in-flight turn is DROPPED (not sent)", async () => {
   const { pi, backend, events } = makePi("rust");
-  (pi as Any)._agentRunActive = true; // a turn is live
+  backend.setAgentRunActive(true); // a turn is live (the flag is backend-owned now)
   await pi.sendPrompt("stale duplicate", undefined, undefined);
   assert.equal(backend.saw("sendPrompt").length, 0, "not forwarded to the backend");
   assert.ok(events.some((e) => e.type === "custom-message" && String((e as Any).data.content).includes("Ignored a duplicate prompt")));
