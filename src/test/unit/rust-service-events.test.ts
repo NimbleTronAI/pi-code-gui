@@ -20,6 +20,7 @@ interface Harness {
   setActive(v: boolean): void;
   getActive(): boolean;
   setStats(data: Any): void;            // control the get_session_stats reply
+  setState(data: Any): void;            // control the get_state reply
   requests: string[];                   // command names the fake process saw
 }
 
@@ -34,6 +35,7 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
   const requests: string[] = [];
   let agentRunActive = false;
   let stats: Any = { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 };
+  let stateData: Any = { model: { id: "deepseek-v4-pro", provider: "deepseek", api: "openai-completions", reasoning: true }, thinkingLevel: "high" };
   const rustRef: { current: RustService | null } = { current: null };
 
   const host: RustHost = {
@@ -73,7 +75,7 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
     request: async (command: string): Promise<RustResponse> => {
       requests.push(command);
       if (command === "get_session_stats") { return { type: "response", success: true, data: stats } as Any; }
-      if (command === "get_state") { return { type: "response", success: true, data: { model: { id: "deepseek-v4-pro", provider: "deepseek", api: "openai-completions", reasoning: true }, thinkingLevel: "high" } } as Any; }
+      if (command === "get_state") { return { type: "response", success: true, data: stateData } as Any; }
       if (command === "get_messages") { return { type: "response", success: true, data: { messages: [] } } as Any; }
       return { type: "response", success: true, data: {} } as Any;
     },
@@ -90,8 +92,11 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
     setActive: (v) => { agentRunActive = v; },
     getActive: () => agentRunActive,
     setStats: (data) => { stats = data; },
+    setState: (data) => { stateData = data; },
   };
 }
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 // ── Item 6: compact() mid-turn wipe guard ────────────────────────────
 test("refreshUsage is skipped while a turn is active — /compact mid-turn can't wipe live usage", async () => {
@@ -111,4 +116,36 @@ test("refreshUsage is skipped while a turn is active — /compact mid-turn can't
   h.setStats({ tokens: { input: 900, output: 200, cacheRead: 0, cacheWrite: 0 }, cost: 0 });
   await (h.rust as Any).refreshUsage();
   assert.equal(h.rust.getUsage().input, 900, "authoritative snap applied when idle");
+});
+
+// ── Item 3: non-blocking setThinkingLevel ────────────────────────────
+test("setThinkingLevel returns the optimistic level, then reconciles via a fire-and-forget get_state", async () => {
+  const h = makeHarness();
+  h.setState({ model: { id: "deepseek-v4-pro", provider: "deepseek" }, thinkingLevel: "high" });
+  const returned = await h.rust.setThinkingLevel("high");
+  assert.equal(returned, "high", "returns without waiting on the clamp re-read");
+  await flush();
+  assert.equal(h.requests.includes("get_state"), true, "reconcile issued get_state fire-and-forget");
+});
+
+test("setThinkingLevel: a model clamp reconciles async + emits a chat info notice", async () => {
+  const h = makeHarness();
+  // Non-reasoning model: the binary forces the level to "off" on the re-read.
+  h.setState({ model: { id: "gpt-4o", provider: "openai" }, thinkingLevel: "off" });
+  const returned = await h.rust.setThinkingLevel("high");
+  assert.equal(returned, "high", "optimistic first");
+  await flush();
+  assert.equal(h.rust.getThinkingLevel(), "off", "clamp reconciled from get_state");
+  const notice = h.events.find((e) => e.type === "custom-message" && String((e as Any).data.content).includes("doesn't support thinking levels"));
+  assert.ok(notice, "async clamp notice emitted");
+  assert.ok(String((notice as Any).data.content).includes('staying at "off"'));
+});
+
+test("setThinkingLevel: no clamp → no notice", async () => {
+  const h = makeHarness();
+  h.setState({ model: { id: "deepseek-v4-pro", provider: "deepseek" }, thinkingLevel: "high" });
+  await h.rust.setThinkingLevel("high");
+  await flush();
+  assert.equal(h.rust.getThinkingLevel(), "high");
+  assert.ok(!h.events.some((e) => e.type === "custom-message" && String((e as Any).data.content).includes("doesn't support thinking levels")), "no clamp notice when the level holds");
 });

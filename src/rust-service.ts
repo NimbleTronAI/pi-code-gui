@@ -892,17 +892,32 @@ export class RustService implements PiBackend {
     return this._model;
   }
 
-  /** Set the thinking level on the wire (RPC), re-reading state so the returned level
-   *  reflects the binary's clamp (a non-reasoning model forces "off"). */
+  /** Set the thinking level on the wire (RPC). Returns the OPTIMISTIC level immediately so the
+   *  quick-pick never blocks; the binary's clamp (a non-reasoning model forces "off") is
+   *  reconciled fire-and-forget — see reconcileThinkingLevel. Previously this awaited an inline
+   *  get_state, freezing the picker for up to 8 s. */
   async setThinkingLevel(level: string): Promise<string> {
     const resp = await this.requestOrError(RUST_RPC.setThinkingLevel, { level }, "Could not set thinking level");
     if (!resp) { return this._thinkingLevel; }
-    this._thinkingLevel = level;
+    this._thinkingLevel = level; // optimistic
+    void this.reconcileThinkingLevel(level);
+    return this._thinkingLevel;
+  }
+
+  /** Fire-and-forget after set_thinking_level: re-read get_state to capture the binary's clamp,
+   *  update state + status, and — if the model clamped the level — surface it as a chat info
+   *  message a beat later. Keeps the picker responsive; the status chip and (if needed) the
+   *  notice arrive when the round-trip returns. */
+  private async reconcileThinkingLevel(requested: string): Promise<void> {
     try {
       const st = await this.request(RUST_RPC.getState, {}, 8000);
-      if (st?.success) { this.applyState(st.data); }
-    } catch { /* keep optimistic level */ }
-    return this._thinkingLevel;
+      if (!st?.success) { return; }
+      this.applyState(st.data);
+      if (this._thinkingLevel !== requested) {
+        this.host.emit({ type: "custom-message", data: { customType: "info", content: `${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${this._thinkingLevel}".`, timestamp: Date.now() } });
+      }
+      this.host.reportStatus();
+    } catch { /* keep the optimistic level */ }
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
