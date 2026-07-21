@@ -587,7 +587,7 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "pnpm run check:cleanroom && pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
-    "lint": "eslint src --max-warnings 74",
+    "lint": "eslint src --max-warnings 68",
     "test": "pnpm run test:unit",
     "test:unit": "pnpm run compile-tests && pnpm run compile-tests:webview && node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js",
     "test:rust-smoke": "node scripts/rust-smoke.mjs",

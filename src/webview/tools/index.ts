@@ -60,7 +60,7 @@ export const writeToolRenderer = {
       block._writeState = { lang: lang, content: "", rawPath: rawPath };
 
       if (typeof fileContent === "string" && fileContent) {
-        block._writeState!.content = fileContent;
+        block._writeState.content = fileContent;
         renderWriteContentBlock(block);
       }
 
@@ -439,7 +439,7 @@ export const readToolRenderer = {
           }
           var tb = el._toolBlock;
           if (tb) {
-            (tb).update({ pathExtra: rangeLabel } as any);
+            tb.update({ pathExtra: rangeLabel });
           } else {
             var pathEl = el.querySelector(".tool-path");
             if (pathEl && pathEl.textContent) {
@@ -507,8 +507,8 @@ export const readToolRenderer = {
 
       // Syntax-highlighted code in a scrollable container when tall.
       // No expand/collapse — just native scroll.
-      (tr as HTMLElement).style.maxHeight = "20rem";
-      (tr as HTMLElement).style.overflowY = "auto";
+      tr.style.maxHeight = "20rem";
+      tr.style.overflowY = "auto";
       tr.innerHTML = "";
       var cb = new CodeBlock({ code: text, lang: lang, showHeader: true, showCopy: true });
       cb.mount(tr);

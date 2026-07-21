@@ -127,7 +127,9 @@ interface HTMLElement {
   // to the rAF/pending slots (declared non-nullable), stores an unknown-typed rawPath (declared
   // string), and calls .update()/.getResultEl() on _toolBlock (declared unknown).
   // Inline import() keeps this file a GLOBAL augmentation (a top-level import would turn it
-  // into a module and silently drop every declaration here).
+  // into a module and silently drop every declaration here), so consistent-type-imports has to
+  // be waived on exactly this line — there is no top-level-import form that preserves the file.
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   _toolBlock?: import("./components/tool-block.js").ToolBlock;
   _writeState?: { content: string; lang?: string; rawPath?: unknown };
   _writePending?: string | null;
