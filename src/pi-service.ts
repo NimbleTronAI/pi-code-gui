@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn, registerSecret } from "./logger.js";
+import { getApiKey } from "./secrets.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
@@ -393,8 +394,10 @@ export class PiService {
           // Register before use: the logger scrubs these exact values from every log line and
           // from the error text that reaches the webview (a custom/self-hosted key matches no
           // vendor prefix, so pattern-matching alone would miss it).
-          anthropicApiKey: registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
-          openaiApiKey: registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
+          // SecretStorage is the source of truth (settings are migrated + cleared at activation);
+          // the settings read remains as a fallback for a value written after startup.
+          anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
+          openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
         };
       },
@@ -432,8 +435,10 @@ export class PiService {
           // Register before use: the logger scrubs these exact values from every log line and
           // from the error text that reaches the webview (a custom/self-hosted key matches no
           // vendor prefix, so pattern-matching alone would miss it).
-          anthropicApiKey: registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
-          openaiApiKey: registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
+          // SecretStorage is the source of truth (settings are migrated + cleared at activation);
+          // the settings read remains as a fallback for a value written after startup.
+          anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
+          openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           defaultModelProvider: cfg.get<string>("defaultModelProvider"),
           defaultModelId: cfg.get<string>("defaultModelId"),
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",

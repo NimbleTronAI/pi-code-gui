@@ -7,6 +7,7 @@ import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
 import { initLogger, disposeLogger, piLog, piDebug, piWarn, redactSecrets } from "./logger.js";
+import { initSecrets } from "./secrets.js";
 import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
@@ -203,6 +204,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
   initRustModels(context);
+  // Load API keys from SecretStorage, migrating any still sitting in plaintext settings. Awaited
+  // because the config seam that serves them (SdkDeps/RustDeps.config()) is synchronous; it is a
+  // keychain read, not I/O that can hang on a user prompt.
+  await initSecrets(
+    context.secrets,
+    (setting) => vscode.workspace.getConfiguration("pi-code-gui").get<string>(setting),
+    async (setting) => {
+      const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+      // Clear every scope the value could have been written to before the settings were scoped.
+      await cfg.update(setting, undefined, vscode.ConfigurationTarget.Global);
+      try { await cfg.update(setting, undefined, vscode.ConfigurationTarget.Workspace); } catch { /* no workspace */ }
+    },
+  );
   piLog(`Pi Code Gui v${context.extension.packageJSON.version} starting... (dev=${context.extensionMode === vscode.ExtensionMode.Development})`);
 
   // After extension host restart, workspace folders may not be available yet.

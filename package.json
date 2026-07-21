@@ -294,13 +294,13 @@
         "pi-code-gui.anthropicApiKey": {
           "type": "string",
           "default": "",
-          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime)",
+          "description": "API key (overrides ANTHROPIC_API_KEY at runtime). Stored in VS Code's SecretStorage: a value entered here is moved into secure storage on the next window reload and this setting is cleared, so the key is not kept in settings.json and is not carried by Settings Sync.",
           "scope": "application"
         },
         "pi-code-gui.openaiApiKey": {
           "type": "string",
           "default": "",
-          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime)",
+          "description": "API key (overrides OPENAI_API_KEY at runtime). Stored in VS Code's SecretStorage: a value entered here is moved into secure storage on the next window reload and this setting is cleared, so the key is not kept in settings.json and is not carried by Settings Sync.",
           "scope": "application"
         },
         "pi-code-gui.systemPromptAppend": {
