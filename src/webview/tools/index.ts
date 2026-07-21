@@ -63,11 +63,11 @@ export const writeToolRenderer = {
 
       return block;
     },
-    update: function (el: ToolEl, partialResult: ToolPartialResult) {
+    update: function (el: ToolEl, partialResult: ToolPartialResult): void {
       if (!partialResult || !partialResult.content) {return;}
       var text = partialResult.content
-        .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-        .map(function (c: { type: string; text: string }) { return c.text; })
+        .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+        .map(function (c: { type: string; text: string }): string { return c.text; })
         .join("\n");
       if (!text) {return;}
 
@@ -75,7 +75,7 @@ export const writeToolRenderer = {
       // Prevents bursty re-renders when write-tool args stream token by token.
       (el as any)._writePending = text;
       if (!(el as any)._writeRafId) {
-        (el as any)._writeRafId = requestAnimationFrame(function () {
+        (el as any)._writeRafId = requestAnimationFrame(function (): void {
           (el as any)._writeRafId = null;
           if ((el as any)._writePending) {
             processWriteUpdate(el, (el as any)._writePending);
@@ -84,7 +84,7 @@ export const writeToolRenderer = {
         });
       }
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
       // Flush any pending rAF render
       if ((el as any)._writeRafId) { cancelAnimationFrame((el as any)._writeRafId); (el as any)._writeRafId = null; }
       if ((el as any)._writePending) { processWriteUpdate(el, (el as any)._writePending); (el as any)._writePending = null; }
@@ -112,8 +112,8 @@ export const writeToolRenderer = {
       // Only show error output (matching TUI: result hidden on success)
       if (isError && result && result.content) {
         var errorText = result.content
-          .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-          .map(function (c: { type: string; text: string }) { return c.text; })
+          .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+          .map(function (c: { type: string; text: string }): string { return c.text; })
           .join("\n");
         var tr = tb ? (tb).getResultEl() : el.querySelector(".tool-result");
         if (tr && errorText) {
@@ -124,7 +124,7 @@ export const writeToolRenderer = {
   };
 
   /** Process a write tool update from streaming JSON args. */
-export function processWriteUpdate(el: ToolEl, text: string) {
+export function processWriteUpdate(el: ToolEl, text: string): void {
     try {
       var args = JSON.parse(text);
       if (args.content && typeof args.content === "string") {
@@ -149,7 +149,7 @@ export function processWriteUpdate(el: ToolEl, text: string) {
   }
 
   /** Update the .tool-content area of a write block with highlighted file content. */
-export function renderWriteContentBlock(el: ToolEl) {
+export function renderWriteContentBlock(el: ToolEl): void {
     var tc = el.querySelector(".tool-content");
     if (!tc) {return;}
     var writeState: any = (el as any)._writeState || {};
@@ -216,7 +216,7 @@ export function renderWriteContentBlock(el: ToolEl) {
   }
 
 export const editToolRenderer = {
-    create: function (data: ToolData) {
+    create: function (data: ToolData): HTMLElement {
       hideWelcome();
       var rawPath = data.args && (data.args.path || data.args.file_path || data.args.filePath);
       var edits = normalizeEditArgs(data.args);
@@ -242,11 +242,11 @@ export const editToolRenderer = {
 
       return block;
     },
-    update: function (el: ToolEl, partialResult: ToolPartialResult) {
+    update: function (el: ToolEl, partialResult: ToolPartialResult): void {
       if (!partialResult || !partialResult.content) {return;}
       var text = partialResult.content
-        .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-        .map(function (c: { type: string; text: string }) { return c.text; })
+        .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+        .map(function (c: { type: string; text: string }): string { return c.text; })
         .join("\n");
       if (!text) {return;}
 
@@ -265,7 +265,7 @@ export const editToolRenderer = {
         // JSON incomplete during streaming — expected, not an error
       }
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
       var tb = (el as any)._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -287,8 +287,8 @@ export const editToolRenderer = {
       var text = "";
       if (result && result.content) {
         text = result.content
-          .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-          .map(function (c: { type: string; text: string }) { return c.text; })
+          .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+          .map(function (c: { type: string; text: string }): string { return c.text; })
           .join("\n");
       }
       // The Pi SDK's edit tool returns the diff in result.details.diff,
@@ -321,7 +321,7 @@ export const editToolRenderer = {
   };
 
   /** Render per-edit mini-diffs into the .tool-content of an edit block. */
-export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; newText: string }>) {
+export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; newText: string }>): void {
     var tc = el.querySelector(".tool-content");
     if (!tc) {return;}
     var active = el.getAttribute("data-status") !== "done" && el.getAttribute("data-status") !== "error";
@@ -354,7 +354,7 @@ export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; n
 
     if (active && scrollView) {
       scrollView.scrollTop = scrollView.scrollHeight;
-      requestAnimationFrame(function () {
+      requestAnimationFrame(function (): void {
         var blocks = scrollView!.querySelectorAll(".edit-old, .edit-new");
         for (var b = 0; b < blocks.length; b++) {
           if (blocks[b].scrollHeight > blocks[b].clientHeight) {
@@ -373,7 +373,7 @@ export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; n
   // for SKILL.md, AGENTS.md, and other resource files.
 
 export const readToolRenderer = {
-    create: function (data: ToolData) {
+    create: function (data: ToolData): HTMLElement {
       hideWelcome();
       var rawPath = data.args && (data.args.path || data.args.file_path || data.args.filePath);
       var offset = data.args && data.args.offset;
@@ -410,14 +410,14 @@ export const readToolRenderer = {
 
       return block;
     },
-    update: function (el: ToolEl, partialResult: ToolPartialResult) {
+    update: function (el: ToolEl, partialResult: ToolPartialResult): void {
       // Parse complete args from tool-update or tool_execution_start DEDUP handler
       // and patch the header with offset/limit range when they arrive (they often
       // stream in after the initial tool-start from message_update).
       if (!partialResult || !partialResult.content) {return;}
       var text = partialResult.content
-        .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-        .map(function (c: { type: string; text: string }) { return c.text; })
+        .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+        .map(function (c: { type: string; text: string }): string { return c.text; })
         .join("");
       if (!text) {return;}
       try {
@@ -446,7 +446,7 @@ export const readToolRenderer = {
         // JSON incomplete during streaming — expected, not an error
       }
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
       var tb = (el as any)._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -465,8 +465,8 @@ export const readToolRenderer = {
       var text = "";
       if (result && result.content) {
         text = result.content
-          .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-          .map(function (c: { type: string; text: string }) { return c.text; })
+          .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+          .map(function (c: { type: string; text: string }): string { return c.text; })
           .join("\n");
       }
 
@@ -535,7 +535,7 @@ export const readToolRenderer = {
         var contEl = document.createElement("div");
         contEl.style.cssText = "margin-top:6px;font-size:0.8em;color:var(--vscode-descriptionForeground);cursor:pointer;text-decoration:underline;";
         contEl.textContent = "\u25BC Continue reading (" + contRemaining + " lines remaining)";
-        contEl.addEventListener("click", function () {
+        contEl.addEventListener("click", function (): void {
           // Insert into the input bar — user reviews and presses Enter.
           // Auto-submitting would create a new agent turn / read block,
           // which is surprising when you expected inline expansion.
@@ -555,22 +555,22 @@ export const readToolRenderer = {
   // ── Default (generic) tool renderer ──────────────────────
 
 export const defaultToolRenderer = {
-    create: function (data: ToolData) {
+    create: function (data: ToolData): HTMLElement {
       return createToolBlock(data.toolName, data.toolCallId, "pending", data.args);
     },
-    update: function (el: ToolEl, partialResult: ToolPartialResult) {
+    update: function (el: ToolEl, partialResult: ToolPartialResult): void {
       var tr = el.querySelector(".tool-result");
       if (!tr || !partialResult || !partialResult.content) {return;}
       var text = partialResult.content
-        .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-        .map(function (c: { type: string; text: string }) { return c.text; })
+        .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+        .map(function (c: { type: string; text: string }): string { return c.text; })
         .join("\n");
       if (!text) {return;}
       var lines = (text).split("\n");
       var displayText = lines.length > 60 ? "...\n" + lines.slice(-60).join("\n") : text;
       morphRender(tr, renderToolResult(displayText));
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
       var statusEl = el.querySelector(".tool-status");
       if (statusEl) {
         statusEl.textContent = isError ? "error" : "done";
@@ -583,8 +583,8 @@ export const defaultToolRenderer = {
       var text = "";
       if (result && result.content) {
         text = result.content
-          .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-          .map(function (c: { type: string; text: string }) { return c.text; })
+          .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+          .map(function (c: { type: string; text: string }): string { return c.text; })
           .join("\n");
       }
       var tr = el.querySelector(".tool-result");
@@ -621,19 +621,19 @@ export const bashToolRenderer = {
       state.bashOutputs[data.toolCallId] = "";
       return block;
     },
-    update: function (_el: ToolEl, _partialResult: ToolPartialResult) {
+    update: function (_el: ToolEl, _partialResult: ToolPartialResult): void {
       // Only accumulate from bash-output events, not from tool-update.
       // tool-update events contain JSON-serialized args that would
       // leak noise ({}{}{}{}) into the output div.
       // Output is handled exclusively by handleBashOutput.
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
       var toolCallId = el.id.replace(/^(entry-|bash-)/, "");
       var text = "";
       if (result && result.content) {
         text = result.content
-          .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
-          .map(function (c: { type: string; text: string }) { return c.text; })
+          .filter(function (c: { type: string; text: string }): boolean { return c.type === "text"; })
+          .map(function (c: { type: string; text: string }): string { return c.text; })
           .join("\n");
       }
       var outEl = el.querySelector(".bash-output");
@@ -668,7 +668,7 @@ export const bashToolRenderer = {
   // Falls back to appendChild when there's no assistant anchor (e.g.
   // during initial replay).
 
-  function insertToolBlock(block: HTMLElement) {
+  function insertToolBlock(block: HTMLElement): void {
     var anchor = state.lastToolInsertionEl || state.currentAssistantEl;
     if (anchor && anchor.parentNode === state.chatContainer) {
       // Insert after anchor
@@ -690,7 +690,7 @@ export const bashToolRenderer = {
   // ═══ Message Renderer Registry ════════════════════════════
   // ═══ Tool Lifecycle ════════════════════════════════════
 
-export function handleToolStart(data: any) {
+export function handleToolStart(data: any): void {
     hideWelcome();
 
     // Stop thinking spinner — tool execution means thinking is done
@@ -829,7 +829,7 @@ export function handleToolStart(data: any) {
     scrollToBottom();
   }
 
-export function handleToolUpdate(data: any) {
+export function handleToolUpdate(data: any): void {
     // Ensure thinking spinner stays hidden during tool execution
     if (state.currentThinkingEl) {
       var _tb2 = state.currentThinkingEl._component;
@@ -856,14 +856,14 @@ function isInterruptedByQueue(result: any): boolean {
   try {
     var content = result && result.content;
     if (!Array.isArray(content)) { return false; }
-    return content.some(function (c: any) {
+    return content.some(function (c: any): any {
       return c && c.type === "text" && typeof c.text === "string" &&
         c.text.indexOf("queued user message") !== -1;
     });
   } catch (_e) { return false; }
 }
 
-export function handleToolEnd(data: any) {
+export function handleToolEnd(data: any): void {
     // Downgrade the "Skipped due to queued user message" abort from a red error
     // to a neutral result — the result text still explains what happened.
     if (data && data.isError && isInterruptedByQueue(data.result)) {

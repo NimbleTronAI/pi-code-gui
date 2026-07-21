@@ -41,7 +41,7 @@ import {
   // renderers that produce DOM for the live panel.
 
 
-export function registerMessageRenderer(customType: string, rendererFn: (data: any, container: HTMLElement, ...args: any[]) => void) {
+export function registerMessageRenderer(customType: string, rendererFn: (data: any, container: HTMLElement, ...args: any[]) => void): void {
     state.messageRenderers[customType] = rendererFn;
   }
 
@@ -55,15 +55,15 @@ export function getMessageRenderer(customType: string) {
   // Default message renderer: creates a collapsible live-panel card.
   // Each invocation creates a NEW card — notifications and custom messages
   // stack rather than silently replacing each other.
-export function defaultMessageRenderer(data: any) {
+export function defaultMessageRenderer(data: any): HTMLElement {
     var customType = data.customType || "custom";
     var content = "";
     if (typeof data.content === "string") {
       content = data.content;
     } else if (Array.isArray(data.content)) {
       content = data.content
-        .filter(function (c: any) { return c.type === "text"; })
-        .map(function (c: any) { return c.text; })
+        .filter(function (c: any): boolean { return c.type === "text"; })
+        .map(function (c: any): any { return c.text; })
         .join("\n");
     }
 
@@ -81,7 +81,7 @@ export function defaultMessageRenderer(data: any) {
   /** Create a collapsible live-panel card. Returns the card element.
    *  @param key Unique key for storage and dismissal.
    *  Backward compat: if called with 3 args (old signature), auto-generates key. */
-export function createLiveCard(key: string, customType: string, label: string, content: string) {
+export function createLiveCard(key: string, customType: string, label: string, content: string): HTMLElement {
     // Backward compat: old 3-arg call createLiveCard(customType, label, content)
     if (content === undefined) {
       content = label;
@@ -93,7 +93,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
       cardType: customType,
       label: label,
       content: renderMarkdown(content),
-      onDismiss: function () { dismissLiveCard(key); },
+      onDismiss: function (): void { dismissLiveCard(key); },
     });
     lc.el._component = lc; // attach for later updating
     state.livePanel.appendChild(lc.el);
@@ -105,7 +105,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
   // ═══ Event Router ═══════════════════════════════════════
   // ═══ Event Router ═══════════════════════════════════════
 
-  window.addEventListener("message", function (event) {
+  window.addEventListener("message", function (event): void {
     var msg = event.data;
 
     // ── Layer 1: Runtime protocol validation ───────────────
@@ -205,7 +205,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
   // ═══ Agent Lifecycle ═══════════════════════════════════
   // ═══ Agent Lifecycle ═══════════════════════════════════
 
-export function handleAgentStart() {
+export function handleAgentStart(): void {
     logEvent("agent-start", { bashBlocksN: Object.keys(state.bashBlocks).length, toolBlocksN: Object.keys(state.currentToolBlocks).length });
     state.isStreaming = true;
     state.queueMode = "steer";  // reset to default on new stream
@@ -219,7 +219,7 @@ export function handleAgentStart() {
     setSbDot("streaming");
   }
 
-export function handleAgentEnd() {
+export function handleAgentEnd(): void {
     setSbDot("idle");
     // Stop thinking spinner (safety net) — use component API if available
     if (state.currentThinkingEl) {
@@ -276,7 +276,7 @@ export function handleAgentEnd() {
     }
 
     // Finalize any pending tool blocks
-    Object.keys(state.currentToolBlocks).forEach(function (id) {
+    Object.keys(state.currentToolBlocks).forEach(function (id): void {
       var entry = state.currentToolBlocks[id];
       var block = (entry as any).el || entry;
       if (block && block.getAttribute("data-status") === "running") {
@@ -291,7 +291,7 @@ export function handleAgentEnd() {
     state.currentToolBlocks = {};
 
     // Also finalize any dangling bash blocks that were never closed
-    Object.keys(state.bashBlocks).forEach(function (id) {
+    Object.keys(state.bashBlocks).forEach(function (id): void {
       var block = state.bashBlocks[id];
       if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
         logEvent("agent-end:ORPHAN-BASH", { toolCallId: id, inDOM: !!block.parentElement });
@@ -309,11 +309,11 @@ export function handleAgentEnd() {
   // ═══ Turn Lifecycle ════════════════════════════════════
   // ═══ Turn Lifecycle ════════════════════════════════════
 
-export function handleTurnStart(_data: MsgData<"turn-start">) {
+export function handleTurnStart(_data: MsgData<"turn-start">): void {
     hideWelcome();
   }
 
-export function handleTurnEnd(data: MsgData<"turn-end">) {
+export function handleTurnEnd(data: MsgData<"turn-end">): void {
     if (data && data.message && data.message.role === "assistant" && data.message.errorMessage) {
       if (state.currentAssistantEl) {
         addErrorToElement(state.currentAssistantEl, data.message.errorMessage);
@@ -324,7 +324,7 @@ export function handleTurnEnd(data: MsgData<"turn-end">) {
   // ═══ Message Lifecycle ═════════════════════════════════
   // ═══ Message Lifecycle ═════════════════════════════════
 
-export function handleChatMessage(data: MsgData<"chat-message">) {
+export function handleChatMessage(data: MsgData<"chat-message">): void {
     // Dedup: skip if same role+content as last user message
     if (data.role === "user" && data.content === state.lastUserMessageContent) {return;}
     if (data.role === "user") {
@@ -359,7 +359,7 @@ export function handleChatMessage(data: MsgData<"chat-message">) {
     scrollToBottom();
   }
 
-export function handleAssistantStart(data: MsgData<"assistant-start">) {
+export function handleAssistantStart(data: MsgData<"assistant-start">): void {
     hideWelcome();
     removeWorkingIndicator();
 
@@ -375,7 +375,7 @@ export function handleAssistantStart(data: MsgData<"assistant-start">) {
     scrollToBottom();
   }
 
-export function handleAssistantEnd(data: MsgData<"assistant-end">) {
+export function handleAssistantEnd(data: MsgData<"assistant-end">): void {
     // Finalize the assistant message
     if (state.currentAssistantEl) {
       // Flush any pending batched renders before finalizing
@@ -422,7 +422,7 @@ export function handleAssistantEnd(data: MsgData<"assistant-end">) {
           addErrorToElement(state.currentAssistantEl, data.errorMessage || "Operation aborted");
           // Mark any pending tool blocks as errored
           if (data.toolCalls) {
-            data.toolCalls.forEach(function (tcId: string) {
+            data.toolCalls.forEach(function (tcId: string): void {
               var entry = state.currentToolBlocks[tcId];
               var block = entry ? ((entry as any).el || entry) : null;
               if (block) {
@@ -453,10 +453,10 @@ export function handleAssistantEnd(data: MsgData<"assistant-end">) {
   // all prior completed blocks are untouched. This avoids O(n²)
   // full-content re-renders during streaming.
 
-export function _scheduleStreamRender(contentEl: HTMLElement) {
+export function _scheduleStreamRender(contentEl: HTMLElement): void {
     if (state._streamRafId) {return;}
     state._streamContentEl = contentEl;
-    state._streamRafId = requestAnimationFrame(function () {
+    state._streamRafId = requestAnimationFrame(function (): void {
       state._streamRafId = null;
       if (!state._streamContentEl) {return;}
       var el = state._streamContentEl;
@@ -490,7 +490,7 @@ export function _scheduleStreamRender(contentEl: HTMLElement) {
   }
 
   /** Flush any pending rAF render immediately (called before finalize). */
-export function _flushStreamRender() {
+export function _flushStreamRender(): void {
     // Flush thinking text first so it's visible in the final render
     _flushThinkingRender();
     if (state._streamRafId) {
@@ -525,7 +525,7 @@ export function _flushStreamRender() {
     }
   }
 
-export function handleStreamDelta(data: MsgData<"stream-delta">) {
+export function handleStreamDelta(data: MsgData<"stream-delta">): void {
     hideWelcome();
     if (!state.currentAssistantEl) {
       // Safety: create container if assistant-start was missed
@@ -552,10 +552,10 @@ export function handleStreamDelta(data: MsgData<"stream-delta">) {
   // Uses textContent (no HTML parse) for efficiency, batched
   // per animation frame like stream deltas.
 
-export function _scheduleThinkingRender(el: HTMLElement) {
+export function _scheduleThinkingRender(el: HTMLElement): void {
     if (state._thinkingRafId) {return;}
     state._thinkingEl = el;
-    state._thinkingRafId = requestAnimationFrame(function () {
+    state._thinkingRafId = requestAnimationFrame(function (): void {
       state._thinkingRafId = null;
       if (!state._thinkingEl) {return;}
       var el = state._thinkingEl;
@@ -569,7 +569,7 @@ export function _scheduleThinkingRender(el: HTMLElement) {
     });
   }
 
-export function _flushThinkingRender() {
+export function _flushThinkingRender(): void {
     if (state._thinkingRafId) {
       cancelAnimationFrame(state._thinkingRafId);
       state._thinkingRafId = null;
@@ -584,7 +584,7 @@ export function _flushThinkingRender() {
     }
   }
 
-export function handleThinkingDelta(data: MsgData<"thinking-delta">) {
+export function handleThinkingDelta(data: MsgData<"thinking-delta">): void {
     if (data.done) {
       _flushThinkingRender();
       // Finalize: update component with done=true (removes spinner, sets button)
@@ -621,7 +621,7 @@ let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
 let sbUsage = document.getElementById("pi-sb-usage");
 
-function setSbRuntime(runtime: string | undefined) {
+function setSbRuntime(runtime: string | undefined): void {
     if (!sbRuntime || !runtime) {return;}
     const isRust = runtime === "rust";
     sbRuntime.textContent = isRust ? "π Rust" : "π TS";
@@ -630,7 +630,7 @@ function setSbRuntime(runtime: string | undefined) {
     sbRuntime.classList.toggle("pi-sb-runtime--ts", !isRust);
   }
 
-export function setSbDot(state: string) {
+export function setSbDot(state: string): void {
     if (!sbDot) {return;}
     sbDot.textContent = state === "streaming" ? "\u25CF" : "\u25CB";
   }
@@ -644,7 +644,7 @@ export function setSbDot(state: string) {
 // openai-completions IS live since pi_agent_rust 6c5f43b3.) Undefined thinkingLive
 // (e.g. the init "status" event) keeps the graded form; status-update corrects it.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function renderThinkingBadge(data: any) {
+function renderThinkingBadge(data: any): void {
     if (!sbThinking) {return;}
     // The backend composes the single Thinking/Reasoning chip (pi-service thinkingStatus):
     // "thinking: off", "thinking: on · reasoning: <level>", or a read-only
@@ -660,7 +660,7 @@ function renderThinkingBadge(data: any) {
     else { sbThinking.classList.add("sb-readonly"); }
   }
 
-export function sbModelText(modelId: string) {
+export function sbModelText(modelId: string): string {
     var short = modelId || "Pi";
     // Shorten known prefixes for compact display
     if (short.startsWith("anthropic/")) {short = short.slice(10);}
@@ -670,7 +670,7 @@ export function sbModelText(modelId: string) {
     return "\u03C0 " + short;
   }
 
-export function handleStatusUpdate(data: MsgData<"status-update">) {
+export function handleStatusUpdate(data: MsgData<"status-update">): void {
     if (data.reset) {return;}
 
     // Persist the session identity into VS Code's webview state store. On reload,
@@ -705,7 +705,7 @@ export function handleStatusUpdate(data: MsgData<"status-update">) {
     setSbDot(data.isStreaming ? "streaming" : "idle");
   }
 
-export function handleStatus(data: MsgData<"status">) {
+export function handleStatus(data: MsgData<"status">): void {
     setSbRuntime(data.runtime);
     if (data.ready) {
       state.promptInput.disabled = false;
@@ -723,23 +723,23 @@ export function handleStatus(data: MsgData<"status">) {
     }
   }
 
-export function handleBatchStart(data: MsgData<"batch-start">) {
+export function handleBatchStart(data: MsgData<"batch-start">): void {
     state._inBatch = true;
     // If restoring history, hide state.welcome immediately — no flash
     if (data.hasEntries) { hideWelcome(); }
     document.body.classList.add("no-animate");
   }
 
-export function handleBatchEnd(_data: MsgData<"batch-end">) {
+export function handleBatchEnd(_data: MsgData<"batch-end">): void {
     state._inBatch = false;
     document.body.classList.remove("no-animate");
     // Force-scroll to bottom after batch replay.  Triple-rAF ensures
     // layout has settled (highlight.js code blocks, syntax spans, etc.)
     // before we read scrollHeight.  Falls back to scrollIntoView which
     // triggers a layout pass if needed.
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        requestAnimationFrame(function () {
+    requestAnimationFrame(function (): void {
+      requestAnimationFrame(function (): void {
+        requestAnimationFrame(function (): void {
           var container = state.chatContainer;
           if (container.lastElementChild) {
             container.lastElementChild.scrollIntoView({ block: "end", behavior: "instant" });
@@ -751,7 +751,7 @@ export function handleBatchEnd(_data: MsgData<"batch-end">) {
     });
   }
 
-export function handleQueueUpdate(data: any) {
+export function handleQueueUpdate(data: any): void {
     // Track for /debug inspection
     (window.__piDebug._queueEvents = window.__piDebug._queueEvents || []).push({
       ts: Date.now(),
@@ -775,14 +775,14 @@ export function handleQueueUpdate(data: any) {
     var result = "";
 
     // Steering messages — already interrupting, show with label
-    steering.forEach(function (m: any) {
+    steering.forEach(function (m: any): void {
       result += html`<div class="queue-row">
         <span class="queue-label">Steer:</span>
         <span class="queue-text">${m}</span></div>`;
     });
 
     // Follow-up messages — queued, with promote button
-    followUp.forEach(function (m: any, i: number) {
+    followUp.forEach(function (m: any, i: number): void {
       result += html`<div class="queue-row">
         <span class="queue-label">Queue:</span>
         <span class="queue-text">${m}</span>
@@ -798,8 +798,8 @@ export function handleQueueUpdate(data: any) {
     el.innerHTML = result;
 
     // Wire promote buttons
-    el.querySelectorAll(".queue-promote-btn").forEach(function (btn) {
-      btn.addEventListener("click", function () {
+    el.querySelectorAll(".queue-promote-btn").forEach(function (btn): void {
+      btn.addEventListener("click", function (): void {
         var idx = parseInt(btn.getAttribute("data-idx") || "0", 10);
         var msg = (data.followUp || [])[idx];
         if (msg) {
@@ -812,7 +812,7 @@ export function handleQueueUpdate(data: any) {
     // Wire clear button
     var clearBtn = el.querySelector(".queue-clear-btn");
     if (clearBtn) {
-      clearBtn.addEventListener("click", function () {
+      clearBtn.addEventListener("click", function (): void {
         window.__vscode.postMessage({ type: "clearQueue" });
       });
     }
@@ -823,14 +823,14 @@ export function handleQueueUpdate(data: any) {
     }
   }
 
-export function handleCompactionStart(data: MsgData<"compaction-start">) {
+export function handleCompactionStart(data: MsgData<"compaction-start">): void {
     state.isCompacting = true;
     removeCompactionIndicator();
     addCompactionIndicator(data.reason === "manual" ? "Compacting..." : "Auto-compacting...");
     updateStreamingState();
   }
 
-export function handleCompactionEnd(data: MsgData<"compaction-end">) {
+export function handleCompactionEnd(data: MsgData<"compaction-end">): void {
     state.isCompacting = false;
     removeCompactionIndicator();
     if (data.aborted) {
@@ -843,7 +843,7 @@ export function handleCompactionEnd(data: MsgData<"compaction-end">) {
     updateStreamingState();
   }
 
-export function handleAutoRetryStart(data: MsgData<"auto-retry-start">) {
+export function handleAutoRetryStart(data: MsgData<"auto-retry-start">): void {
     state.isRetrying = true;
     // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. Finalize the
     // FAILED attempt's still-running tool/bash blocks (muted "retried" — not success, not
@@ -859,8 +859,8 @@ export function handleAutoRetryStart(data: MsgData<"auto-retry-start">) {
 
 /** Mark the failed attempt's running tool/bash blocks as "retried" (muted) and clear the live
  *  correlation maps so the re-run starts fresh. Used on auto-retry-start. */
-function finalizeInFlightBlocksForRetry() {
-    Object.keys(state.currentToolBlocks).forEach(function (id) {
+function finalizeInFlightBlocksForRetry(): void {
+    Object.keys(state.currentToolBlocks).forEach(function (id): void {
       var entry = state.currentToolBlocks[id];
       var block = (entry as any).el || entry;
       if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
@@ -871,7 +871,7 @@ function finalizeInFlightBlocksForRetry() {
     });
     state.currentToolBlocks = {};
 
-    Object.keys(state.bashBlocks).forEach(function (id) {
+    Object.keys(state.bashBlocks).forEach(function (id): void {
       var bash = state.bashBlocks[id];
       if (bash && bash.getAttribute && bash.getAttribute("data-status") === "running") {
         bash.setAttribute("data-status", "done");
@@ -883,7 +883,7 @@ function finalizeInFlightBlocksForRetry() {
     });
   }
 
-export function handleAutoRetryEnd(data: MsgData<"auto-retry-end">) {
+export function handleAutoRetryEnd(data: MsgData<"auto-retry-end">): void {
     state.isRetrying = false;
     removeRetryIndicator();
     if (!data.success) {
@@ -892,7 +892,7 @@ export function handleAutoRetryEnd(data: MsgData<"auto-retry-end">) {
     updateStreamingState();
   }
 
-export function handleThinkingLevelChanged(data: MsgData<"thinking-level-changed">) {
+export function handleThinkingLevelChanged(data: MsgData<"thinking-level-changed">): void {
     // The single Thinking/Reasoning chip is owned by status-update (renderThinkingBadge,
     // backend-composed). A thinking-level-changed event is always followed by a
     // reportStatus, so writing the chip here would only flash the deprecated uncomposed
@@ -902,7 +902,7 @@ export function handleThinkingLevelChanged(data: MsgData<"thinking-level-changed
 
   // ═══ Error Handling ════════════════════════════════════
 
-export function handleError(data: MsgData<"error">) {
+export function handleError(data: MsgData<"error">): void {
     hideWelcome();
     removeWorkingIndicator();
     removeCompactionIndicator();
@@ -937,7 +937,7 @@ export function addWorkingIndicator(): void {
     // Animate spinner
     var frames = ["○", "◔", "◐", "◓"];
     var frame = 0;
-    el._spinnerInterval = setInterval(function () {
+    el._spinnerInterval = setInterval(function (): void {
       frame = (frame + 1) % frames.length;
       var s = el.querySelector(".working-spinner");
       if (s) {s.textContent = frames[frame];}
@@ -952,7 +952,7 @@ export function removeWorkingIndicator(): void {
     }
   }
 
-export function addCompactionIndicator(message: string) {
+export function addCompactionIndicator(message: string): void {
     var existing = document.getElementById("compaction-indicator");
     if (existing) {existing.remove();}
     var el = document.createElement("div");
@@ -967,14 +967,14 @@ export function addCompactionIndicator(message: string) {
 
     var frames = ["◇", "◆", "◇", "◆"];
     var frame = 0;
-    el._spinnerInterval = setInterval(function () {
+    el._spinnerInterval = setInterval(function (): void {
       frame = (frame + 1) % frames.length;
       var s = el.querySelector(".working-spinner");
       if (s) {s.textContent = frames[frame];}
     }, 400);
   }
 
-export function removeCompactionIndicator() {
+export function removeCompactionIndicator(): void {
     var el = document.getElementById("compaction-indicator");
     if (el) {
       if (el._spinnerInterval) {clearInterval(el._spinnerInterval);}
@@ -982,7 +982,7 @@ export function removeCompactionIndicator() {
     }
   }
 
-export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs: number) {
+export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs: number): void {
     var existing = document.getElementById("retry-indicator");
     if (existing) {existing.remove();}
     var el = document.createElement("div");
@@ -997,7 +997,7 @@ export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs:
 
     // Countdown
     var remaining = delayMs;
-    el._countdownInterval = setInterval(function () {
+    el._countdownInterval = setInterval(function (): void {
       remaining -= 1000;
       if (remaining <= 0) {
         var span = el.querySelector(".retry-countdown");
@@ -1014,7 +1014,7 @@ export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs:
     }, 1000);
   }
 
-export function removeRetryIndicator() {
+export function removeRetryIndicator(): void {
     var el = document.getElementById("retry-indicator");
     if (el) {
       if (el._countdownInterval) {clearInterval(el._countdownInterval);}
@@ -1025,7 +1025,7 @@ export function removeRetryIndicator() {
   // ═══ UI Helpers — Chat additions ═══════════════════════
   // ═══ UI Helpers — Chat additions ═══════════════════════
 
-export function addStatusMessage(message: string) {
+export function addStatusMessage(message: string): void {
     var el = document.createElement("div");
     el.className = "message assistant";
     el.innerHTML = html`<div class="message-content muted">${message}</div>`;
@@ -1033,7 +1033,7 @@ export function addStatusMessage(message: string) {
     scrollToBottom();
   }
 
-export function showQuickstartGuide() {
+export function showQuickstartGuide(): void {
     // Remove any previous guide
     var existing = document.getElementById("quickstart-guide");
     if (existing) {existing.remove();}
@@ -1079,7 +1079,7 @@ export function showQuickstartGuide() {
     state.chatContainer.appendChild(el);
   }
 
-export function addErrorMessage(message: string) {
+export function addErrorMessage(message: string): void {
     var el = document.createElement("div");
     el.className = "message assistant";
 
@@ -1119,7 +1119,7 @@ export function addErrorMessage(message: string) {
     scrollToBottom();
   }
 
-export function addErrorToElement(parentEl: HTMLElement, message: string) {
+export function addErrorToElement(parentEl: HTMLElement, message: string): void {
     if (!parentEl) {return;}
     var errorEl = document.createElement("div");
     errorEl.className = 'message-content error'; errorEl.style.cssText = 'margin-top: 8px; padding: 4px 0;';
@@ -1132,21 +1132,21 @@ export function addErrorToElement(parentEl: HTMLElement, message: string) {
 
   // ═══ Attachment Handling ═══════════════════════════════
 
-export function generateAttId() {
+export function generateAttId(): string {
     return "att_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
   }
 
-export function clearAttachments() {
+export function clearAttachments(): void {
     // Revoke blob URLs to free memory
-    state.attachments.forEach(function (a) {
+    state.attachments.forEach(function (a): void {
       if (a.blobUrl) {URL.revokeObjectURL(a.blobUrl);}
     });
     state.attachments = [];
     renderAttachments();
   }
 
-export function removeAttachment(id: string) {
-    var idx = state.attachments.findIndex(function (a) { return a.id === id; });
+export function removeAttachment(id: string): void {
+    var idx = state.attachments.findIndex(function (a): boolean { return a.id === id; });
     if (idx === -1) {return;}
     var att = state.attachments[idx];
     if (att.blobUrl) {URL.revokeObjectURL(att.blobUrl);}
@@ -1190,8 +1190,8 @@ export function renderAttachments(): void {
     state.attachmentBar.innerHTML = result;
 
     // Delegate click events for remove buttons
-    state.attachmentBar.querySelectorAll(".att-remove").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
+    state.attachmentBar.querySelectorAll(".att-remove").forEach(function (btn): void {
+      btn.addEventListener("click", function (e): void {
         var id = (e.target as HTMLElement).getAttribute("data-att-id");
         if (id) {removeAttachment(id);}
       });
@@ -1200,7 +1200,7 @@ export function renderAttachments(): void {
 
   // ── Paste handler ──────────────────────────────────────
 
-  state.promptInput.addEventListener("paste", function (e) {
+  state.promptInput.addEventListener("paste", function (e): void {
     var items = e.clipboardData?.items;
     if (!items) {return;}
     if (!items) {return;}
@@ -1225,7 +1225,7 @@ export function renderAttachments(): void {
 
     // Process image items
     for (var j = 0; j < imageItems.length; j++) {
-      (function (item) {
+      (function (item): void {
         var file = item.getAsFile();
         if (!file) {return;}
 
@@ -1241,8 +1241,8 @@ export function renderAttachments(): void {
           blobUrl: blobUrl, // immediate preview
         });
 
-        var reader = new FileReader(); reader.onload = function () { var result = reader.result as string; // "data:image/png;base64,..."
-          var att = state.attachments.find(function (a) { return a.id === attId; });
+        var reader = new FileReader(); reader.onload = function (): void { var result = reader.result as string; // "data:image/png;base64,..."
+          var att = state.attachments.find(function (a): boolean { return a.id === attId; });
           if (att) {
             att.data = result.split(",")[1]; // just the base64 payload
           }
@@ -1256,7 +1256,7 @@ export function renderAttachments(): void {
 
     // Process file items
     for (var k = 0; k < fileItems.length; k++) {
-      (function (item) {
+      (function (item): void {
         var file = item.getAsFile();
         if (!file) {return;}
 
@@ -1274,8 +1274,8 @@ export function renderAttachments(): void {
         // Read text files; mark binary files
         if (item.type.startsWith("text/") || !item.type) {
           var reader = new FileReader();
-          reader.onload = function () {
-            var att = state.attachments.find(function (a) { return a.id === attId; });
+          reader.onload = function (): void {
+            var att = state.attachments.find(function (a): boolean { return a.id === attId; });
             if (att) {
               att.data = reader.result as string;
             }
@@ -1283,7 +1283,7 @@ export function renderAttachments(): void {
           };
           reader.readAsText(file);
         } else {
-          var att = state.attachments.find(function (a) { return a.id === attId; });
+          var att = state.attachments.find(function (a): boolean { return a.id === attId; });
           if (att) {
             att.data = "[Binary file: " + file.name + "]";
           }
@@ -1369,12 +1369,12 @@ export function sendPrompt(): void {
 
   state.sendButton.addEventListener("click", sendPrompt);
 
-  state.abortButton.addEventListener("click", function () {
+  state.abortButton.addEventListener("click", function (): void {
     window.__vscode.postMessage({ type: "abort" });
   });
 
   // Steer dropdown — toggles between Steer and Queue mode
-  state.steerDropdown.addEventListener("click", function () {
+  state.steerDropdown.addEventListener("click", function (): void {
     state.queueMode = state.queueMode === "steer" ? "queue" : "steer";
     if (state.queueMode === "queue") {
       state.sendButton.textContent = "Queue";
@@ -1389,30 +1389,30 @@ export function sendPrompt(): void {
 
   // ── In-webview status bar click handlers ─────────────
   if (sbRuntime) {
-    sbRuntime.addEventListener("click", function () {
+    sbRuntime.addEventListener("click", function (): void {
       window.__vscode.postMessage({ type: "switchRuntime" });
     });
   }
   if (sbModel) {
-    sbModel.addEventListener("click", function () {
+    sbModel.addEventListener("click", function (): void {
       window.__vscode.postMessage({ type: "pickModel" });
     });
   }
   if (sbThinking) {
-    sbThinking.addEventListener("click", function () {
+    sbThinking.addEventListener("click", function (): void {
       // Read-only reasoning badge (no-op transport): not clickable.
       if (sbThinking && sbThinking.classList.contains("sb-readonly")) {return;}
       window.__vscode.postMessage({ type: "pickThinkingLevel" });
     });
   }
   if (sbUsage) {
-    sbUsage.addEventListener("click", function () {
+    sbUsage.addEventListener("click", function (): void {
       window.__vscode.postMessage({ type: "pickContextBudget" });
     });
   }
 let sbSettings = document.getElementById("pi-sb-settings");
   if (sbSettings) {
-    sbSettings.addEventListener("click", function () {
+    sbSettings.addEventListener("click", function (): void {
       toggleSettingsPanel();
     });
   }
@@ -1421,7 +1421,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
   setupCodeBlockHandlers();
 
   // Handle external links and close overlays on outside clicks
-  document.addEventListener("click", function (e) {
+  document.addEventListener("click", function (e): void {
     var target = e.target as HTMLElement;
     if (target && target.tagName === "A" && (target as HTMLAnchorElement).href) {
       e.preventDefault();
@@ -1439,7 +1439,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
   });
 
-  state.promptInput.addEventListener("keydown", function (e) {
+  state.promptInput.addEventListener("keydown", function (e): void {
     // #8: Tab to accept slash autocomplete
     if (state.slashAutocompleteOpen && e.key === "Tab") {
       e.preventDefault();
@@ -1518,7 +1518,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
   });
 
-  state.promptInput.addEventListener("input", function () {
+  state.promptInput.addEventListener("input", function (): void {
     // Save cursor position before height recalculation — setting
     // height:auto then height:Npx can reset selection in VS Code's
     // Chromium, causing garbled text when typing mid-input after
@@ -1564,7 +1564,7 @@ export function resizePromptInput(): void {
     state.promptInput.style.overflowY = state.promptInput.scrollHeight > maxHeight ? "auto" : "hidden";
   }
 
-export function handleInsertCommand(command: string) {
+export function handleInsertCommand(command: string): void {
     state.promptInput.value = command + " ";
     state.promptInput.focus();
     resizePromptInput();
@@ -1573,7 +1573,7 @@ export function handleInsertCommand(command: string) {
   // ═══ #1: Compaction Summary Message ═══════════════════════
   // ═══ #1: Compaction Summary Message ═══════════════════════
 
-export function handleCompactionSummaryMessage(data: MsgData<"compaction-summary-message">) {
+export function handleCompactionSummaryMessage(data: MsgData<"compaction-summary-message">): void {
     hideWelcome();
     var el = document.createElement("div");
     el.className = "compaction-summary";
@@ -1590,7 +1590,7 @@ export function handleCompactionSummaryMessage(data: MsgData<"compaction-summary
     var toggle = document.getElementById(summaryId + "-toggle");
     var contentEl2 = document.getElementById(summaryId + "-content");
     if (toggle && contentEl2) {
-      toggle.addEventListener("click", function () {
+      toggle.addEventListener("click", function (): void {
       var visible = contentEl2 && contentEl2.style.display !== "none";
       if (contentEl2) { contentEl2.style.display = visible ? "none" : "block"; }
       if (toggle) { toggle.textContent = visible ? "Compacted from " + tokenStr + " tokens (click to expand)" : "Compacted from " + tokenStr + " tokens"; }
@@ -1601,11 +1601,11 @@ export function handleCompactionSummaryMessage(data: MsgData<"compaction-summary
 
   // ═══ #2: User Message Selector ════════════════════════════
 
-export function handleUserMessagesList(data: MsgData<"user-messages-list">) {
+export function handleUserMessagesList(data: MsgData<"user-messages-list">): void {
     state.userMessageHistory = (data.messages || []).reverse();
   }
 
-export function showUserMessageSelector() {
+export function showUserMessageSelector(): void {
     if (state.userMessageHistory.length === 0) {return;}
     closeAllOverlays();
     state.userMsgSelectorOpen = true;
@@ -1622,8 +1622,8 @@ export function showUserMessageSelector() {
 
     // Click handlers
     var items = state.userMsgOverlay.querySelectorAll(".user-msg-item");
-    items.forEach(function (item) {
-      item.addEventListener("click", function (this: HTMLElement) {
+    items.forEach(function (item): void {
+      item.addEventListener("click", function (this: HTMLElement): void {
         var idx = parseInt(this.getAttribute("data-idx") || "0", 10);
         if (idx >= 0 && idx < state.userMessageHistory.length) {
           var text = state.userMessageHistory[idx].text;
@@ -1636,9 +1636,9 @@ export function showUserMessageSelector() {
     });
   }
 
-export function highlightUserMsgItem() {
+export function highlightUserMsgItem(): void {
     var items = state.userMsgOverlay.querySelectorAll(".user-msg-item");
-    items.forEach(function (item: any, i: number) {
+    items.forEach(function (item: any, i: number): void {
       if (i === state.userMsgSelectedIdx) {
         item.classList.add("selected");
         item.scrollIntoView({ block: "nearest" });
@@ -1648,7 +1648,7 @@ export function highlightUserMsgItem() {
     });
   }
 
-export function closeUserMsgSelector() {
+export function closeUserMsgSelector(): void {
     state.userMsgSelectorOpen = false;
     state.userMsgSelectedIdx = 0;
     state.userMsgOverlay.classList.remove("visible");
@@ -1656,7 +1656,7 @@ export function closeUserMsgSelector() {
 
   // ═══ #3: Settings Panel ═══════════════════════════════════
 
-export function handleSettingsUpdate(data: MsgData<"settings-update">) {
+export function handleSettingsUpdate(data: MsgData<"settings-update">): void {
     if (data) {
       state.settingsState = data;
       // Consume the showImages toggle at render time: hide chat-message images
@@ -1668,7 +1668,7 @@ export function handleSettingsUpdate(data: MsgData<"settings-update">) {
   }
 
 
-export function renderSettingsPanel() {
+export function renderSettingsPanel(): void {
     if (!state.settingsOverlay || !state.settingsOpen) {return;}
     var result = '<div class="settings-title">Settings</div>';
 
@@ -1692,8 +1692,8 @@ export function renderSettingsPanel() {
 
     // Wire toggle clicks
     var togglesEls = state.settingsOverlay.querySelectorAll(".settings-toggle");
-    togglesEls.forEach(function (el) {
-      el.addEventListener("click", function (e) {
+    togglesEls.forEach(function (el): void {
+      el.addEventListener("click", function (e): void {
         e.stopPropagation();
         var key = el.getAttribute("data-key");
         if (key === "autoCompaction") { window.__vscode.postMessage({ type: "toggleAutoCompaction" }); }
@@ -1703,7 +1703,7 @@ export function renderSettingsPanel() {
     });
   }
 
-export function toggleSettingsPanel() {
+export function toggleSettingsPanel(): void {
     if (state.settingsOpen) {
       closeAllOverlays();
     } else {
@@ -1714,7 +1714,7 @@ export function toggleSettingsPanel() {
     }
   }
 
-export function closeAllOverlays() {
+export function closeAllOverlays(): void {
     state.settingsOpen = false;
     state.userMsgSelectorOpen = false;
     state.slashAutocompleteOpen = false;
@@ -1733,11 +1733,11 @@ export function closeAllOverlays() {
  * cards in-place when the same customType reappears (polling).
  * Action buttons with data-command execute slash commands.
  */
-export function renderInlineCustomMessage(data: any) {
+export function renderInlineCustomMessage(data: any): void {
     var customType = data.customType || "custom";
     var content = typeof data.content === "string"
       ? data.content
-      : (Array.isArray(data.content) ? data.content.filter(function (c: any) { return c.type === "text"; }).map(function (c: any) { return c.text; }).join("\n") : "");
+      : (Array.isArray(data.content) ? data.content.filter(function (c: any): boolean { return c.type === "text"; }).map(function (c: any): any { return c.text; }).join("\n") : "");
 
     // Check for existing card to update in-place (polling refresh)
     var existing = state.chatContainer.querySelector('[data-custom-type="' + customType + '"]');
@@ -1776,7 +1776,7 @@ export function renderInlineCustomMessage(data: any) {
     scrollToBottom();
   }
 
-export function handleCustomMessage(data: MsgData<"custom-message">) {
+export function handleCustomMessage(data: MsgData<"custom-message">): void {
     hideWelcome();
     var customType = data.customType || "custom";
 
@@ -1792,7 +1792,7 @@ export function handleCustomMessage(data: MsgData<"custom-message">) {
       if (typeof data.content === "string") {
         infoContent = data.content;
       } else if (Array.isArray(data.content)) {
-        infoContent = data.content.filter(function (c: any) { return c.type === "text"; }).map(function (c: any) { return c.text; }).join("\n");
+        infoContent = data.content.filter(function (c: any): boolean { return c.type === "text"; }).map(function (c: any): any { return c.text; }).join("\n");
       }
       if (infoContent) {
         var infoEl = document.createElement("div");
@@ -1820,7 +1820,7 @@ export function handleCustomMessage(data: MsgData<"custom-message">) {
     defaultMessageRenderer(data);
   }
 
-export function dismissLiveCard(key: string) {
+export function dismissLiveCard(key: string): void {
     var card = state.liveCards[key];
     if (card) {
       card.remove();
@@ -1844,7 +1844,7 @@ export function dismissLiveCard(key: string) {
 
 
 /** Bridge: extension host registers a renderer by source code. */
-export function handleRegisterMessageRenderer(data: any) {
+export function handleRegisterMessageRenderer(data: any): void {
     if (!data.customType || !data.sourceCode) {return;}
     try {
       // CSP blocks eval().  Inject a <script nonce> tag instead.
@@ -1861,7 +1861,7 @@ export function handleRegisterMessageRenderer(data: any) {
       document.head.appendChild(script);
       var renderer = (window as any)[fnName];
       if (typeof renderer === "function") {
-        var boundRenderer = function(d: any, el: HTMLElement) {
+        var boundRenderer = function(d: any, el: HTMLElement): void {
           renderer(d, el, escapeHtml);
         };
         registerMessageRenderer(data.customType, boundRenderer);
@@ -1879,7 +1879,7 @@ function statusKeySelector(key: string): string {
   return `[data-status-key="${esc}"]`;
 }
 
-export function handleWidgetUpdate(data: MsgData<"widget-update">) {
+export function handleWidgetUpdate(data: MsgData<"widget-update">): void {
     if (!data || !data.key) {return;}
 
     var key = data.key;
@@ -1921,7 +1921,7 @@ export function handleWidgetUpdate(data: MsgData<"widget-update">) {
         <div class="live-card-label">${key}</div>
         <button class="live-card-close" title="Dismiss">&times;</button>
         <div class="live-card-content">${safe(renderMarkdown(content))}</div>`;
-      (card).querySelector(".live-card-close")!.addEventListener("click", function () {
+      (card).querySelector(".live-card-close")!.addEventListener("click", function (): void {
         dismissLiveCard(key);
       });
       state.livePanel.appendChild(card);
@@ -1932,7 +1932,7 @@ export function handleWidgetUpdate(data: MsgData<"widget-update">) {
   }
 
 /** Render a status-* widget as an inline indicator in the status bar. */
-export function handleStatusWidget(key: string, content: string | null) {
+export function handleStatusWidget(key: string, content: string | null): void {
     var statusBar = document.getElementById("pi-extension-status");
     if (!statusBar) {return;}
 
@@ -1972,7 +1972,7 @@ export function handleStatusWidget(key: string, content: string | null) {
 
   // ═══ Interactive Dialog Bridge ═══════════════════════════
 
-export function handleShowDialog(data: any) {
+export function handleShowDialog(data: any): void {
     if (!data || !data.id) {return;}
     var dlg = new Dialog({
       dialogType: data.dialogType || "confirm",
@@ -2011,7 +2011,7 @@ export function getSlashCommands() {
 
   // Slash commands that should be handled locally (not sent to LLM)
 
-export function handleSlashCommandsUpdate(data: MsgData<"slash-commands-update">) {
+export function handleSlashCommandsUpdate(data: MsgData<"slash-commands-update">): void {
     if (data && data.commands && Array.isArray(data.commands)) {
       state.extensionSlashCommands = data.commands;
       // Re-filter autocomplete if it's currently open
@@ -2021,14 +2021,14 @@ export function handleSlashCommandsUpdate(data: MsgData<"slash-commands-update">
     }
   }
 
-export function updateSlashAutocomplete(filter: string) {
+export function updateSlashAutocomplete(filter: string): void {
     if (!filter || filter.length === 0) {
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
       return;
     }
     var f = filter.toLowerCase();
-    var matches = getSlashCommands().filter(function (sc) { return sc.cmd.toLowerCase().indexOf(f) === 0; });
+    var matches = getSlashCommands().filter(function (sc): boolean { return sc.cmd.toLowerCase().indexOf(f) === 0; });
     if (matches.length === 0) {
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
@@ -2051,8 +2051,8 @@ export function updateSlashAutocomplete(filter: string) {
 
     // Wire click handlers
     var items = state.slashAutocomplete.querySelectorAll(".slash-item");
-    items.forEach(function (item) {
-      item.addEventListener("click", function (this: HTMLElement) {
+    items.forEach(function (item): void {
+      item.addEventListener("click", function (this: HTMLElement): void {
         var cmd = item.getAttribute("data-cmd");
         if (cmd) {
           state.promptInput.value = cmd + " ";
@@ -2068,7 +2068,7 @@ export function updateSlashAutocomplete(filter: string) {
   // ═══ #9: Scroll-to-entry ═══════════════════════════════════
   // ═══ #9: Scroll-to-entry ═══════════════════════════════════
 
-export function handleRevealEntry(entryId: string, toolCallId: string) {
+export function handleRevealEntry(entryId: string, toolCallId: string): void {
     if (!entryId && !toolCallId) {return;}
     var el: HTMLElement | null = null;
 
@@ -2116,7 +2116,7 @@ export function handleRevealEntry(entryId: string, toolCallId: string) {
     (el).style.background = "var(--vscode-list-hoverBackground)";
     (el).style.boxShadow = "0 0 0 2px var(--vscode-focusBorder)";
     (el).style.borderRadius = "4px";
-    setTimeout(function () {
+    setTimeout(function (): void {
       (el as HTMLElement).style.background = "";
       (el as HTMLElement).style.boxShadow = "";
       (el as HTMLElement).style.borderRadius = "";
@@ -2130,7 +2130,7 @@ export function handleRevealEntry(entryId: string, toolCallId: string) {
   // with the extension host's bash-* event stream.  They delegate
   // to the bash tool renderer registered in the tool renderer registry.
 
-export function handleBashStart(data: Record<string, unknown>) {
+export function handleBashStart(data: Record<string, unknown>): void {
     // Stop thinking spinner — bash execution means thinking is done
     if (state.currentThinkingEl) {
       var _tb3 = state.currentThinkingEl._component as any;
@@ -2167,7 +2167,7 @@ export function handleBashStart(data: Record<string, unknown>) {
     scrollToBottom();
   }
 
-export function handleBashOutput(data: Record<string, unknown>) {
+export function handleBashOutput(data: Record<string, unknown>): void {
     var callId = data.toolCallId;
     var block = state.bashBlocks[callId as string];
     if (!block) {
@@ -2184,7 +2184,7 @@ export function handleBashOutput(data: Record<string, unknown>) {
     scrollToBottom();
   }
 
-export function handleBashEnd(data: Record<string, unknown>) {
+export function handleBashEnd(data: Record<string, unknown>): void {
     var callId = data.toolCallId;
     var block = state.bashBlocks[callId as string];
     if (!block) {
@@ -2306,15 +2306,15 @@ export function handleDebugCommand(): void {
     // Wire Copy All button
     var copyBtn = el.querySelector(".debug-copy-all-btn");
     if (copyBtn!) {
-      copyBtn.addEventListener("click", function (e) {
+      copyBtn.addEventListener("click", function (e): void {
         e.preventDefault();
         e.stopPropagation(); // don't toggle the details element
-        navigator.clipboard.writeText(copyText).then(function () {
+        navigator.clipboard.writeText(copyText).then(function (): void {
           copyBtn!.textContent = "✓ Copied!";
-          setTimeout(function () { copyBtn!.textContent = "📋 Copy All"; }, 2000);
-        }, function () {
+          setTimeout(function (): void { copyBtn!.textContent = "📋 Copy All"; }, 2000);
+        }, function (): void {
           copyBtn!.textContent = "✗ Failed";
-          setTimeout(function () { copyBtn!.textContent = "📋 Copy All"; }, 2000);
+          setTimeout(function (): void { copyBtn!.textContent = "📋 Copy All"; }, 2000);
         });
       });
     }

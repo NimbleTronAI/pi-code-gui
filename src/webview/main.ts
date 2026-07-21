@@ -61,9 +61,9 @@ state.chatContainer.addEventListener("wheel", markGesture, { passive: true });
 state.chatContainer.addEventListener("touchstart", markGesture, { passive: true });
 state.chatContainer.addEventListener("touchmove", markGesture, { passive: true });
 state.chatContainer.addEventListener("keydown", markGesture);
-state.chatContainer.addEventListener("mousedown", () => { pointerDown = true; markGesture(); });
-window.addEventListener("mouseup", () => { pointerDown = false; });
-state.chatContainer.addEventListener("scroll", () => {
+state.chatContainer.addEventListener("mousedown", (): void => { pointerDown = true; markGesture(); });
+window.addEventListener("mouseup", (): void => { pointerDown = false; });
+state.chatContainer.addEventListener("scroll", (): void => {
   const atBottom = atChatBottom();
   if (atBottom) { state.hasScrolledUp = false; }                        // any return to bottom re-arms
   else if (shouldUnpinOnScroll(atBottom, pointerDown, Date.now() - lastGestureAt)) {
@@ -71,7 +71,7 @@ state.chatContainer.addEventListener("scroll", () => {
   }                                                                      // else: a reflow event — leave the pin as-is
 });
 
-document.addEventListener("visibilitychange", () => {
+document.addEventListener("visibilitychange", (): void => {
   if (document.visibilityState === "visible") {
     if (!state.hasScrolledUp) {
       scrollToBottom();

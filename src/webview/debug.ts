@@ -30,7 +30,7 @@ export function logEvent(type: string, data: Record<string, unknown> | undefined
     id: data ? (data.entryId || data.toolCallId || "") as string : "",
     fromMessage: data ? !!data.fromMessage : false,
     toolName: data ? (data.toolName || "") as string : "",
-    stackDepth: (() => { const s = new Error().stack; return s ? s.split("\n").length : 0; })(),
+    stackDepth: ((): number => { const s = new Error().stack; return s ? s.split("\n").length : 0; })(),
   };
   debugEventLog.push(entry);
   if (debugEventLog.length > debugMaxEvents) {debugEventLog.shift();}
@@ -117,7 +117,7 @@ export function summary(): Record<string, unknown> {
   const bKeys = new Set(Object.keys(state.bashBlocks));
   const tKeys = new Set(Object.keys(state.currentToolBlocks));
   const dupes: string[] = [];
-  bKeys.forEach((k) => { if (tKeys.has(k)) { dupes.push(k); } });
+  bKeys.forEach((k): void => { if (tKeys.has(k)) { dupes.push(k); } });
 
   const realOrphans: string[] = [];
   const container = state.chatContainer;
@@ -142,7 +142,7 @@ export function summary(): Record<string, unknown> {
   }
 
   const orphanBash: string[] = [];
-  bKeys.forEach((k) => { if (!tKeys.has(k)) { orphanBash.push(k); } });
+  bKeys.forEach((k): void => { if (!tKeys.has(k)) { orphanBash.push(k); } });
 
   return {
     chat: s,
@@ -201,9 +201,9 @@ window.__piDebug = {
 
 export function initDebugObserver(): void {
   if (typeof MutationObserver === "undefined") {return;}
-  debugObserver = new MutationObserver((mutations: MutationRecord[]) => {
+  debugObserver = new MutationObserver((mutations: MutationRecord[]): void => {
     if (!debugEnabled) {return;}
-    mutations.forEach((m) => {
+    mutations.forEach((m): void => {
       for (let i = 0; i < m.addedNodes.length; i++) {
         logDom("added", m.addedNodes[i]);
       }

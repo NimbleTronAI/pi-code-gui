@@ -40,7 +40,7 @@ export class InlineCard implements Component<InlineCardProps> {
     this.bodyEl = this.el.querySelector(".custom-message-body")!;
 
     // Wire action buttons: data-command sends slash command
-    this.el.addEventListener("click", (e) => {
+    this.el.addEventListener("click", (e): void => {
       const btn = (e.target as HTMLElement).closest("[data-command]");
       if (btn) {
         e.preventDefault();

@@ -45,7 +45,7 @@ export class ThinkingBlock implements Component<ThinkingBlockProps> {
     this.lineCountEl = this.el.querySelector(".thinking-line-count")!;
 
     // Wire toggle
-    this.expandBtn.addEventListener("click", () => this.toggle());
+    this.expandBtn.addEventListener("click", (): void => this.toggle());
 
     // Set initial content via textContent (safe, no HTML parse)
     this.setContent(props.content);

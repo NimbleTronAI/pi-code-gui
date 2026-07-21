@@ -95,7 +95,7 @@ export function createToolBlock(toolName: string, toolCallId: string, status: st
   return block;
 }
 
-export function hideWelcome() {
+export function hideWelcome(): void {
   if (state._inBatch) {return;}
   if (state.welcome) {
     state.welcome.remove();
@@ -103,7 +103,7 @@ export function hideWelcome() {
   }
 }
 
-export function resetChat() {
+export function resetChat(): void {
   logEvent("resetChat", {
     bashBlocksN: Object.keys(state.bashBlocks).length,
     toolBlocksN: Object.keys(state.currentToolBlocks).length,
@@ -131,7 +131,7 @@ export function resetChat() {
 
 export function scrollToBottom(): void {
   if (!state.hasScrolledUp) {
-    requestAnimationFrame(function () {
+    requestAnimationFrame(function (): void {
       state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
     });
   }
@@ -178,7 +178,7 @@ export function renderMarkdownSafe(text: string): string {
 function postProcessMarkedHTML(html: string): string {
   return html.replace(
     /<pre><code(?: class="language-(\w*)")?>([\s\S]*?)<\/code><\/pre>/g,
-    function (m: string, lang: string, code: string) {
+    function (m: string, lang: string, code: string): string {
       const decoded = code
         .replace(/&amp;/g, "&")
         .replace(/&lt;/g, "<")
@@ -399,9 +399,9 @@ export function renderBlockToHTML(token: MarkedToken): string {
 
 // ═══ Code Block Handlers ══════════════════════════════════
 
-export function setupCodeBlockHandlers() {
+export function setupCodeBlockHandlers(): void {
   // ── Click delegation for tool blocks, copy buttons, file paths ──
-  state.chatContainer.addEventListener("click", function (e: MouseEvent) {
+  state.chatContainer.addEventListener("click", function (e: MouseEvent): void {
     const target = e.target as HTMLElement | null;
     // Show-more button for truncated tool results
     const showMoreBtn = target?.closest(".show-more-btn");
@@ -447,13 +447,13 @@ export function setupCodeBlockHandlers() {
     if (!pre) {return;}
     const text = pre.textContent || "";
     navigator.clipboard.writeText(text).then(
-      function () {
+      function (): void {
         btn.textContent = "Copied!";
-        setTimeout(function () { btn.textContent = "Copy"; }, 2000);
+        setTimeout(function (): void { btn.textContent = "Copy"; }, 2000);
       },
-      function () {
+      function (): void {
         btn.textContent = "Failed";
-        setTimeout(function () { btn.textContent = "Copy"; }, 2000);
+        setTimeout(function (): void { btn.textContent = "Copy"; }, 2000);
       },
     );
   });

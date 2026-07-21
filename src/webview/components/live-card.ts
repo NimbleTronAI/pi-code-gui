@@ -47,9 +47,9 @@ export class LiveCard implements Component<LiveCardProps> {
     // Wire events
     this.el.querySelector(".live-card-label")!.addEventListener(
       "click",
-      () => this.toggle(),
+      (): void => this.toggle(),
     );
-    this.closeBtn.addEventListener("click", (e) => {
+    this.closeBtn.addEventListener("click", (e): void => {
       e.stopPropagation();
       if (props.onDismiss) { props.onDismiss(); }
       this.destroy();
