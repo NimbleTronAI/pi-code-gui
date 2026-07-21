@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as vscode from "vscode";
 
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
-import { piDebug, piWarn } from "./logger.js";
+import { piDebug, piWarn, registerSecret } from "./logger.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
@@ -77,6 +77,13 @@ export function resolvePiPackagePath(): string {
 }
 
 // ── PiService ────────────────────────────────────────────
+
+/** Register a configured secret with the logger and hand it back, so the config object is built
+ *  and the redaction list is populated in one expression. */
+function registerAndReturnSecret(value: string | undefined): string | undefined {
+  registerSecret(value);
+  return value;
+}
 
 export class PiService {
   /** The TypeScript SDK runtime (module loading, auth, registry, session manager,
@@ -383,8 +390,11 @@ export class PiService {
           defaultModelId: cfg.get<string>("defaultModelId"),
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel")?.trim() || "off",
           rustExtensionPolicy: cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced",
-          anthropicApiKey: cfg.get<string>("anthropicApiKey"),
-          openaiApiKey: cfg.get<string>("openaiApiKey"),
+          // Register before use: the logger scrubs these exact values from every log line and
+          // from the error text that reaches the webview (a custom/self-hosted key matches no
+          // vendor prefix, so pattern-matching alone would miss it).
+          anthropicApiKey: registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
+          openaiApiKey: registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
         };
       },
@@ -419,8 +429,11 @@ export class PiService {
       config: () => {
         const cfg = vscode.workspace.getConfiguration("pi-code-gui");
         return {
-          anthropicApiKey: cfg.get<string>("anthropicApiKey"),
-          openaiApiKey: cfg.get<string>("openaiApiKey"),
+          // Register before use: the logger scrubs these exact values from every log line and
+          // from the error text that reaches the webview (a custom/self-hosted key matches no
+          // vendor prefix, so pattern-matching alone would miss it).
+          anthropicApiKey: registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
+          openaiApiKey: registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           defaultModelProvider: cfg.get<string>("defaultModelProvider"),
           defaultModelId: cfg.get<string>("defaultModelId"),
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",

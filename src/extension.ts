@@ -6,7 +6,7 @@ import { resolveWorkspaceCwd } from "./workspace.js";
 import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
-import { initLogger, disposeLogger, piLog, piDebug, piWarn } from "./logger.js";
+import { initLogger, disposeLogger, piLog, piDebug, piWarn, redactSecrets } from "./logger.js";
 import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
@@ -1567,12 +1567,12 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
 
     sw.webviewPanel.postMessage({
       type: "error",
-      data: { message: `Pi init failed: ${result.error}` },
+      data: { message: redactSecrets(`Pi init failed: ${result.error}`) },
     });
 
     if (!primarySession() || primarySession() === sw) {
       const action = await vscode.window.showErrorMessage(
-        `Pi init failed: ${result.error}`,
+        redactSecrets(`Pi init failed: ${result.error}`),
         "Retry",
       );
       if (action === "Retry") {
