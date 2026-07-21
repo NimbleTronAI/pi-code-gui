@@ -2,11 +2,11 @@
 // taken verbatim from real ~/.pi/agent sessions. Run via `pnpm run test:unit`.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { mkdirSync } from "node:fs";
-import { isRustSessionHeader, collectJsonlFiles, summarizeSessionFile } from "../../session-format.js";
+import { isRustSessionHeader, collectJsonlFiles, summarizeSessionFile, clearSessionSummaryCache } from "../../session-format.js";
 
 // Real headers (see ~/.pi/agent/sessions-rust vs ~/.pi/agent/sessions).
 const RUST_HEADER = '{"type":"session","version":3,"id":"6f051218","timestamp":"2026-06-06T15:04:01.670Z","cwd":"/home/node","provider":"deepseek","modelId":"deepseek-v4-pro","thinkingLevel":"off"}';
@@ -121,4 +121,33 @@ test("summarizeSessionFile: session_info name overrides; skips malformed lines",
 test("summarizeSessionFile: empty file → null; missing file → null (no throw)", () => {
   assert.equal(summarizeSessionFile(write("blank.jsonl", "   \n")), null);
   assert.equal(summarizeSessionFile(join(dir, "ghost.jsonl")), null);
+});
+
+// ── summary cache (audit: the Open Sessions sweep re-read ~95 MB per refresh) ──
+test("summarizeSessionFile caches on (mtime,size) and re-parses when the file changes", () => {
+  clearSessionSummaryCache();
+  const dir = mkdtempSync(join(tmpdir(), "sess-cache-"));
+  const f = join(dir, "s.jsonl");
+  try {
+    writeFileSync(f, [
+      JSON.stringify({ type: "session", timestamp: "2026-01-01T00:00:00Z", cwd: "/w" }),
+      JSON.stringify({ type: "message", message: { role: "user", content: "first" } }),
+    ].join("\n") + "\n");
+
+    const a = summarizeSessionFile(f);
+    const b = summarizeSessionFile(f);
+    assert.equal(a?.summary.messageCount, 1);
+    assert.equal(a, b, "unchanged file → the cached object is returned (no re-parse)");
+
+    // Append a turn: size changes → the cache must invalidate.
+    appendFileSync(f, JSON.stringify({ type: "message", message: { role: "user", content: "second" } }) + "\n");
+    const c = summarizeSessionFile(f);
+    assert.notEqual(c, a, "changed file → re-parsed");
+    assert.equal(c?.summary.messageCount, 2, "the new turn is counted");
+
+    clearSessionSummaryCache();
+    const d = summarizeSessionFile(f);
+    assert.notEqual(d, c, "clearing the cache forces a re-parse");
+    assert.equal(d?.summary.messageCount, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

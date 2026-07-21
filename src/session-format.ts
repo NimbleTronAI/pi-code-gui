@@ -58,9 +58,51 @@ export function collectJsonlFiles(dir: string, maxDepth: number): string[] {
   return out;
 }
 
+export type SessionFileSummary = { summary: SessionSummary; cwd?: string } | null;
+
+/** Parsed-summary cache, keyed by path and invalidated by (mtimeMs, size).
+ *
+ *  The Open Sessions sweep re-summarizes EVERY session file on every refresh — a mature
+ *  workspace is ~178 files / ~95 MB — with a synchronous readFileSync each, on the extension
+ *  host thread. Session JSONLs are append-only and most never change between refreshes, so
+ *  keying on the stat makes a repeat sweep cost one statSync per file instead of re-reading and
+ *  re-parsing everything. A changed file (new mtime or size) re-parses normally.
+ *
+ *  Returned objects are SHARED with the cache — treat them as read-only (the only caller,
+ *  listRustSessions, just collects and sorts them). */
+const summaryCache = new Map<string, { key: string; value: SessionFileSummary }>();
+const SUMMARY_CACHE_MAX = 2000;
+
+/** Drop all cached summaries (tests, and any future explicit invalidation). */
+export function clearSessionSummaryCache(): void { summaryCache.clear(); }
+
 /** Read one JSONL session file into a SessionSummary (best-effort). Returns the
- *  recorded cwd alongside so callers can filter by workspace. Null on any failure. */
-export function summarizeSessionFile(filePath: string): { summary: SessionSummary; cwd?: string } | null {
+ *  recorded cwd alongside so callers can filter by workspace. Null on any failure.
+ *  Cached on (mtimeMs, size) — see summaryCache. */
+export function summarizeSessionFile(filePath: string): SessionFileSummary {
+  // stat first: it is the cache key AND supplies `modified`, so a hit costs one syscall.
+  let modified: number | undefined;
+  let cacheKey = "";
+  try {
+    const st = fs.statSync(filePath);
+    modified = st.mtimeMs;
+    cacheKey = `${st.mtimeMs}:${st.size}`;
+    const hit = summaryCache.get(filePath);
+    if (hit && hit.key === cacheKey) { return hit.value; }
+  } catch { /* unstatable: fall through and parse uncached */ }
+
+  const value = parseSessionFile(filePath, modified);
+  if (cacheKey) {
+    if (summaryCache.size >= SUMMARY_CACHE_MAX) {
+      const oldest = summaryCache.keys().next().value;
+      if (oldest !== undefined) { summaryCache.delete(oldest); }
+    }
+    summaryCache.set(filePath, { key: cacheKey, value });
+  }
+  return value;
+}
+
+function parseSessionFile(filePath: string, modified: number | undefined): SessionFileSummary {
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
     const lines = raw.split("\n").filter((l) => l.trim());
@@ -97,9 +139,6 @@ export function summarizeSessionFile(filePath: string): { summary: SessionSummar
         }
       }
     }
-
-    let modified: number | undefined;
-    try { modified = fs.statSync(filePath).mtimeMs; } catch { /* ignore */ }
 
     return {
       summary: {
