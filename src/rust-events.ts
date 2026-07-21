@@ -202,7 +202,13 @@ export function parseRustModels(data: unknown): RustModelEntry[] {
       id: m.id,
       name: typeof m.name === "string" ? m.name : undefined,
       contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
-      cost: m.cost && typeof m.cost.input === "number" ? { input: m.cost.input, output: m.cost.output } : undefined,
+      // BOTH rates must be numeric. Guarding only `input` let a half-formed cost through with
+      // `output: undefined`, which propagates as NaN through computeTokenCost and renders a NaN
+      // cost chip. Dropping the whole cost instead surfaces "$??" (costKnown false) — an honest
+      // unknown beats a wrong number.
+      cost: m.cost && typeof m.cost.input === "number" && typeof m.cost.output === "number"
+        ? { input: m.cost.input, output: m.cost.output }
+        : undefined,
     }));
 }
 

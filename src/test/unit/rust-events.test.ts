@@ -254,6 +254,20 @@ test("parseRustModels: accepts a bare array and drops malformed entries", () => 
   assert.deepEqual(out.map((m) => m.id), ["y"]);
 });
 
+test("parseRustModels: a half-formed cost is dropped, not passed through as NaN", () => {
+  // Guarding only cost.input let `output: undefined` reach computeTokenCost → NaN cost chip.
+  const out = parseRustModels({ models: [
+    { provider: "p", id: "full", cost: { input: 3, output: 15 } },
+    { provider: "p", id: "no-output", cost: { input: 3 } },
+    { provider: "p", id: "bad-output", cost: { input: 3, output: "15" } },
+    { provider: "p", id: "no-input", cost: { output: 15 } },
+  ]});
+  assert.deepEqual(out.find((m) => m.id === "full")?.cost, { input: 3, output: 15 });
+  for (const id of ["no-output", "bad-output", "no-input"]) {
+    assert.equal(out.find((m) => m.id === id)?.cost, undefined, `${id} → cost dropped`);
+  }
+});
+
 test("parseRustModels: null/garbage → []", () => {
   assert.deepEqual(parseRustModels(null), []);
   assert.deepEqual(parseRustModels({}), []);
