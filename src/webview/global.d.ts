@@ -122,13 +122,19 @@ interface WebviewEventData {
 interface HTMLElement {
   _component?: unknown;
   _rawText?: string;
-  _toolBlock?: unknown;
-  _writeState?: { content: string; lang?: string; rawPath?: string };
-  _writePending?: string;
-  _writeRafId?: number;
-  _editEdits?: unknown[];
+  // Corrected to match what the renderers actually store. These were only ever reached through
+  // `(el as any)._x`, so the declarations drifted from reality unchecked: the code assigns null
+  // to the rAF/pending slots (declared non-nullable), stores an unknown-typed rawPath (declared
+  // string), and calls .update()/.getResultEl() on _toolBlock (declared unknown).
+  // Inline import() keeps this file a GLOBAL augmentation (a top-level import would turn it
+  // into a module and silently drop every declaration here).
+  _toolBlock?: import("./components/tool-block.js").ToolBlock;
+  _writeState?: { content: string; lang?: string; rawPath?: unknown };
+  _writePending?: string | null;
+  _writeRafId?: number | null;
+  _editEdits?: Array<{ oldText: string; newText: string }>;
   _editLang?: string;
-  _readState?: { rawPath: string; lang?: string; compact?: unknown; offset?: number };
+  _readState?: { rawPath?: unknown; lang?: string; compact?: unknown; offset?: unknown };
   _readCollapseState?: {
     previewText: string;
     fullText: string;

@@ -74,7 +74,10 @@ export class ToolBlock implements Component<ToolBlockProps> {
     container.appendChild(this.el);
   }
 
-  update(props: ToolBlockProps): void {
+  /** Apply a PARTIAL patch. Every field is guarded individually below, and callers pass patches
+   *  like { status, entryId } — the signature required the full props, which only type-checked
+   *  because every call site went through an `as any` cast. */
+  update(props: Partial<ToolBlockProps>): void {
     if (props.status) {
       this.el.setAttribute("data-status", props.status);
       this.statusEl.textContent = props.status;

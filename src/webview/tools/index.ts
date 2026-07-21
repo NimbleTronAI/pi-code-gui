@@ -25,6 +25,9 @@ type ToolResult = {
   details?: Record<string, unknown>;
   text?: string;
 };
+/** A tool-card element. The `_toolBlock` / `_writeState` / … expandos the renderers hang off it
+ *  are declared on HTMLElement in global.d.ts — they were reached through `(el as any)._x` casts
+ *  in 37 places, which defeated checking on state that was ALREADY typed. */
 type ToolEl = HTMLElement;
 import { CodeBlock } from "../components/code-block.js";
 
@@ -53,11 +56,11 @@ export const writeToolRenderer = {
         status: "running",
       });
       var block = tb.el;
-      (block as any)._toolBlock = tb; // attach component for update/finalize
-      (block as any)._writeState = { lang: lang, content: "", rawPath: rawPath };
+      block._toolBlock = tb; // attach component for update/finalize
+      block._writeState = { lang: lang, content: "", rawPath: rawPath };
 
       if (typeof fileContent === "string" && fileContent) {
-        (block as any)._writeState!.content = fileContent;
+        block._writeState!.content = fileContent;
         renderWriteContentBlock(block);
       }
 
@@ -73,23 +76,23 @@ export const writeToolRenderer = {
 
       // rAF-batched: accumulate latest args JSON, flush once per frame.
       // Prevents bursty re-renders when write-tool args stream token by token.
-      (el as any)._writePending = text;
-      if (!(el as any)._writeRafId) {
-        (el as any)._writeRafId = requestAnimationFrame(function (): void {
-          (el as any)._writeRafId = null;
-          if ((el as any)._writePending) {
-            processWriteUpdate(el, (el as any)._writePending);
-            (el as any)._writePending = null;
+      el._writePending = text;
+      if (!el._writeRafId) {
+        el._writeRafId = requestAnimationFrame(function (): void {
+          el._writeRafId = null;
+          if (el._writePending) {
+            processWriteUpdate(el, el._writePending);
+            el._writePending = null;
           }
         });
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
       // Flush any pending rAF render
-      if ((el as any)._writeRafId) { cancelAnimationFrame((el as any)._writeRafId); (el as any)._writeRafId = null; }
-      if ((el as any)._writePending) { processWriteUpdate(el, (el as any)._writePending); (el as any)._writePending = null; }
+      if (el._writeRafId) { cancelAnimationFrame(el._writeRafId); el._writeRafId = null; }
+      if (el._writePending) { processWriteUpdate(el, el._writePending); el._writePending = null; }
 
-      var tb = (el as any)._toolBlock;
+      var tb = el._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
       } else {
@@ -127,13 +130,17 @@ export const writeToolRenderer = {
 export function processWriteUpdate(el: ToolEl, text: string): void {
     try {
       var args = JSON.parse(text);
+      // create() always sets _writeState before an update can arrive. Asserted rather than
+      // guarded ON PURPOSE: adding a guard here would change runtime behaviour (a would-be
+      // TypeError becomes a silent no-op) inside what is meant to be a types-only change. If
+      // that invariant is worth defending, it deserves its own commit and a test.
       if (args.content && typeof args.content === "string") {
-        (el as any)._writeState.content = args.content;
+        el._writeState!.content = args.content;
         renderWriteContentBlock(el);
       }
       if (args.path) {
-        (el as any)._writeState!.rawPath = args.path;
-        (el as any)._writeState.lang = getLangFromPath(args.path);
+        el._writeState!.rawPath = args.path;
+        el._writeState!.lang = getLangFromPath(args.path);
         var pathEl = el.querySelector(".tool-path");
         if (pathEl) {pathEl.textContent = args.path;}
       }
@@ -142,7 +149,7 @@ export function processWriteUpdate(el: ToolEl, text: string): void {
       // Expected during streaming; only log if it persists (not a real error).
       var match = text.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"/);
       if (match) {
-        (el as any)._writeState!.content = match[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+        el._writeState!.content = match[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\t/g, "\t");
         renderWriteContentBlock(el);
       }
     }
@@ -152,7 +159,7 @@ export function processWriteUpdate(el: ToolEl, text: string): void {
 export function renderWriteContentBlock(el: ToolEl): void {
     var tc = el.querySelector(".tool-content");
     if (!tc) {return;}
-    var writeState: any = (el as any)._writeState || {};
+    var writeState: any = el._writeState || {};
     var content = writeState.content || "";
     var lang = writeState.lang;
     var active = el.getAttribute("data-status") !== "done" && el.getAttribute("data-status") !== "error";
@@ -232,7 +239,7 @@ export const editToolRenderer = {
         pathExtra: editLabel,
       });
       var block = tb.el;
-      (block as any)._toolBlock = tb;
+      block._toolBlock = tb;
 
       if (Array.isArray(edits) && edits.length > 0) {
         block._editEdits = edits;
@@ -254,7 +261,7 @@ export const editToolRenderer = {
         var args = JSON.parse(text);
         var edits = normalizeEditArgs(args);
         if (Array.isArray(edits) && edits.length > 0) {
-          (el as any)._editEdits = edits;
+          el._editEdits = edits;
           // Update edit count in header
           var editLabel = edits.length > 1 ? " (" + edits.length + " edits)" : "";
           var pathEl = el.querySelector(".tool-path");
@@ -266,7 +273,7 @@ export const editToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
-      var tb = (el as any)._toolBlock;
+      var tb = el._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
       } else {
@@ -282,7 +289,7 @@ export const editToolRenderer = {
       }
 
       // Re-render previews to collapse to max 3 now that streaming is done
-      if ((el as any)._editEdits) { renderEditPreviews(el, (el as any)._editEdits); }
+      if (el._editEdits) { renderEditPreviews(el, el._editEdits); }
 
       var text = "";
       if (result && result.content) {
@@ -298,7 +305,7 @@ export const editToolRenderer = {
       // duplicating the diff in .tool-result would be redundant (TUI matches
       // this — formatEditResult only returns a diff when it differs from the
       // preview).
-      var hasPreviews = !!(el as any)._editEdits;
+      var hasPreviews = !!el._editEdits;
       var diffText = !hasPreviews ? (result?.details?.diff as string | undefined) : undefined;
       if (diffText) {
         text = text ? text + "\n" + diffText : diffText;
@@ -325,7 +332,7 @@ export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; n
     var tc = el.querySelector(".tool-content");
     if (!tc) {return;}
     var active = el.getAttribute("data-status") !== "done" && el.getAttribute("data-status") !== "error";
-    var lang = (el as any)._editLang;
+    var lang = el._editLang;
     // Build edit previews inline (no surrounding whitespace).
     var result = "";
 
@@ -395,7 +402,7 @@ export const readToolRenderer = {
         pathExtra: rangeLabel,
       });
       var block = tb.el;
-      (block as any)._toolBlock = tb;
+      block._toolBlock = tb;
 
       // Add compact label below header if applicable
       if (compact) {
@@ -406,7 +413,7 @@ export const readToolRenderer = {
       }
 
       // Store path, offset, and language for result rendering
-      (block as any)._readState = { rawPath: rawPath, lang: rawPath ? getLangFromPath(rawPath as string) : undefined, compact: compact, offset: offset };
+      block._readState = { rawPath: rawPath, lang: rawPath ? getLangFromPath(rawPath as string) : undefined, compact: compact, offset: offset };
 
       return block;
     },
@@ -430,7 +437,7 @@ export const readToolRenderer = {
             rangeLabel = ":" + offset;
             if (limit !== undefined) {rangeLabel += "-" + (offset + limit - 1);}
           }
-          var tb = (el as any)._toolBlock;
+          var tb = el._toolBlock;
           if (tb) {
             (tb).update({ pathExtra: rangeLabel } as any);
           } else {
@@ -447,7 +454,7 @@ export const readToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
-      var tb = (el as any)._toolBlock;
+      var tb = el._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
       } else {
@@ -495,7 +502,7 @@ export const readToolRenderer = {
       text = text.replace(/\n?\[Truncated[^\]]*\](?:\n|$)/g, "");
       text = text.replace(/\n?\[\d+ more lines in file[^\]]*\](?:\n|$)/g, "");
 
-      var readState: any = (el as any)._readState || {};
+      var readState: any = el._readState || {};
       var lang = readState.lang;
 
       // Syntax-highlighted code in a scrollable container when tall.
@@ -695,9 +702,12 @@ export function handleToolStart(data: any): void {
 
     // Stop thinking spinner — tool execution means thinking is done
     if (state.currentThinkingEl) {
-      var _tb = state.currentThinkingEl._component;
+      // _rawText is accumulated ON THE COMPONENT (handlers/index.ts: `tb._rawText = …`), not on
+      // the element — reading it from the element would silently pass "" and wipe the thinking
+      // content. Narrow to the shape actually used instead of moving the read.
+      var _tb = state.currentThinkingEl._component as { update: (p: { content: string; done: boolean }) => void; _rawText?: string } | undefined;
       if (_tb) {
-        (_tb as any).update({ content: (_tb as any)._rawText || "", done: true });
+        _tb.update({ content: _tb._rawText || "", done: true });
       } else {
         var thSpinner = state.currentThinkingEl.querySelector(".thinking-spinner");
         if (thSpinner) {thSpinner.remove();}
@@ -832,9 +842,12 @@ export function handleToolStart(data: any): void {
 export function handleToolUpdate(data: any): void {
     // Ensure thinking spinner stays hidden during tool execution
     if (state.currentThinkingEl) {
-      var _tb2 = state.currentThinkingEl._component;
+      // _rawText is accumulated ON THE COMPONENT (handlers/index.ts: `tb._rawText = …`), not on
+      // the element — reading it from the element would silently pass "" and wipe the thinking
+      // content. Narrow to the shape actually used instead of moving the read.
+      var _tb2 = state.currentThinkingEl._component as { update: (p: { content: string; done: boolean }) => void; _rawText?: string } | undefined;
       if (_tb2) {
-        (_tb2 as any).update({ content: (_tb2 as any)._rawText || "", done: true });
+        _tb2.update({ content: _tb2._rawText || "", done: true });
       } else {
         var thSpinner = state.currentThinkingEl.querySelector(".thinking-spinner");
         if (thSpinner) {thSpinner.remove();}
