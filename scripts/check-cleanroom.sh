@@ -42,13 +42,17 @@ SETTINGS=${CLEANROOM_SETTINGS_PATH:-".claude/settings.json"}
 
 # Where to scan for live references, and which paths are exempt (decision record,
 # wiki log/archive, and this wall's own scripts — they legitimately name the shapes).
-SCAN_ROOTS=(src scripts media agent-wiki AGENTS.md README.md)
+SCAN_ROOTS=(src scripts media agent-wiki .claude .github .githooks .devcontainer .vscode AGENTS.md README.md CONTRIBUTING.md CHANGELOG.md)
 EXEMPT_GLOBS=(
   '!agent-wiki/log.md'
   '!agent-wiki/archive/**'
   '!scripts/check-cleanroom.sh'
   '!scripts/check-cleanroom-smoke.sh'
   '!scripts/hook-cleanroom-bash.sh'
+  # The deny-rule registry itself must NAME the paths it denies — that is its job. Its contents
+  # are validated structurally by check (1) above, not by this text scan.
+  '!.claude/settings.json'
+  '!tmp/cleanroom-kit/**'
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -67,7 +71,17 @@ settings_path, needle = sys.argv[1], sys.argv[2]
 with open(settings_path) as f:
     settings = json.load(f)
 deny = settings.get("permissions", {}).get("deny", [])
-ok = any(rule.startswith("Read(") and needle in rule for rule in deny)
+# A rule must actually COVER the needle's sources, not merely mention the string. The old check
+# was `needle in rule`, which a decorative rule like Read(/nonexistent/pi_agent_rust/x) satisfied
+# while denying nothing. Require a recursive Read() glob rooted at ** or /.
+import re as _re
+_pat = _re.compile(r"^Read\((?P<glob>.+)\)$")
+def _covers(rule):
+    m = _pat.match(rule.strip())
+    if not m: return False
+    g = m.group("glob")
+    return needle in g and g.endswith("/**") and (g.startswith("**/") or g.startswith("/"))
+ok = any(_covers(r) for r in deny)
 sys.exit(0 if ok else 1)
 PY
         echo "ok: settings deny a Read() of ${needle}* sources"
@@ -77,6 +91,48 @@ PY
     fi
 done
 
+# ââ (1b) the Bash PreToolUse hook + the WebFetch deny âââââââââ
+# AGENTS.md promises "permissions.deny Read()/WebFetch rules + a Bash PreToolUse hook".
+# Only the Read() rules were ever asserted, so deleting the whole hooks block passed, and the
+# WebFetch rule was never checked at all.
+if python3 - "$SETTINGS" <<'HOOKCHK'; then
+import json, sys
+with open(sys.argv[1]) as f:
+    settings = json.load(f)
+entries = settings.get("hooks", {}).get("PreToolUse", [])
+ok = any(
+    e.get("matcher") == "Bash"
+    and any("hook-cleanroom-bash.sh" in (h.get("command") or "") for h in e.get("hooks", []))
+    for e in entries
+)
+sys.exit(0 if ok else 1)
+HOOKCHK
+    echo "ok: a Bash PreToolUse hook runs the clean-room guard"
+else
+    echo "FAIL: $SETTINGS has no Bash PreToolUse hook running scripts/hook-cleanroom-bash.sh"
+    fails=$((fails + 1))
+fi
+
+if python3 - "$SETTINGS" <<'WEBCHK'; then
+import json, sys
+with open(sys.argv[1]) as f:
+    settings = json.load(f)
+deny = settings.get("permissions", {}).get("deny", [])
+sys.exit(0 if any(r.strip().startswith("WebFetch(") for r in deny) else 1)
+WEBCHK
+    echo "ok: a WebFetch deny rule is present"
+else
+    echo "FAIL: $SETTINGS has no WebFetch() deny rule (the wall must cover fetching source too)"
+    fails=$((fails + 1))
+fi
+
+# rg MUST exist: a missing rg exited 127 and fell through to the PASS branch below, so the
+# whole scan silently reported ok on a machine that simply lacked ripgrep.
+if ! command -v rg >/dev/null 2>&1; then
+    echo "FAIL: ripgrep (rg) is not installed â the source-path scan cannot run"
+    echo "check-cleanroom: FAIL (cannot verify)"
+    exit 1
+fi
 # ── (2) no live repo file references the dependency-source paths ─────────────
 # rg exits 1 when nothing matches (PASS); 0 = matches (FAIL); 2 = error (fail LOUD).
 exempt_args=()
@@ -84,8 +140,10 @@ for g in "${EXEMPT_GLOBS[@]}"; do exempt_args+=(--iglob "$g"); done
 
 matches=$(rg -n "$SOURCE_PATH_RE" "${SCAN_ROOTS[@]}" "${exempt_args[@]}" 2>&1)
 rc=$?
-if [[ $rc -eq 2 ]]; then
-    echo "FAIL: rg errored (a renamed root?): $matches"
+if [[ $rc -ne 0 && $rc -ne 1 ]]; then
+    # ANY status other than hit(0)/no-match(1) is an error: 2 = rg error, 127 = not found, ...
+    # The old test caught only rc==2 and treated everything else as "no matches".
+    echo "FAIL: rg exited $rc (a renamed root? a broken pattern?): $matches"
     fails=$((fails + 1))
 elif [[ $rc -eq 0 ]]; then
     echo "FAIL: live files reference restricted dependency-source paths:"
