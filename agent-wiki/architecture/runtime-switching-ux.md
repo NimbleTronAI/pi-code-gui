@@ -1,7 +1,7 @@
 # Runtime Switching UX
 
 > **Status:** active
-> **Last updated:** 2026-06-05
+> **Last updated:** 2026-07-21 — added the `sessionHistoryScope` (unified vs perRuntime) past-session filter, the `server-process`/`archive` runtime icons, and a pointer to `rustExtensionPolicy` + the `--no-extensions` self-heal.
 
 How users discover, choose, and switch between the TypeScript and Rust runtimes.
 See [Runtime Selection](runtime-selection.md) for the engine side.
@@ -26,7 +26,11 @@ the setting. One-off commands never mutate the default.
 
 - **Sessions tree** — `makeSessionItem` / `makePastSessionItem` prefix the
   description with a `TS` / `Rust` badge and add a `Runtime:` tooltip line; past
-  Rust sessions use a distinct icon.
+  Rust sessions use the `server-process` ThemeIcon, TS sessions `archive`
+  (`extension.ts`).
+- **Past-session scope** — `pi-code-gui.sessionHistoryScope` (`"unified"` default,
+  or `"perRuntime"`) controls whether the past-sessions list merges both runtimes'
+  session pools or shows only the active runtime's (`refreshPastSessionsList`).
 - **Status-bar chip** — `pi-sb-runtime` shows `π TS` / `π Rust`; clicking it runs
   `switchRuntime`. Fed by the `runtime` field added to the `status` /
   `status-update` protocol messages (`reportStatus`, the ready post, and the
@@ -47,6 +51,15 @@ targets a missing runtime triggers the install gate in
 `initSessionInBackground`, which routes to `installPi()` (TS) or the
 `installRust` dialog (managed download / curl / manual / detect). Nothing is
 installed without an explicit choice.
+
+## Rust extensions & self-heal
+
+Rust sessions spawn with an extension policy from `pi-code-gui.rustExtensionPolicy`
+(default `"balanced"`) and a `rustExtensions` mode (`"auto" | "enabled" | "disabled"`).
+On `"auto"`, if startup fails with the extension-conflict signature,
+`RustService.initialize` retries once with `--no-extensions` and surfaces a one-time
+info toast — so a broken extension can't block the session (see
+[Runtime Selection](runtime-selection.md) for the engine side).
 
 ## Resume-follows-origin & restore
 
