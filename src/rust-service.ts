@@ -270,10 +270,17 @@ export class RustService implements PiBackend {
           await this.spawn(status.binaryPath, args, cwd, env);
         } catch (e2: unknown) {
           const msg2 = e2 instanceof Error ? e2.message : String(e2);
+          // dispose() BEFORE dropping the reference: spawn() rejects on the readiness-probe
+          // timeout while the child is still ALIVE, and nulling the handle first orphans it
+          // (initializeRust also nulls PiService._rust on failure, so the Retry path's
+          // dispose() has nothing left to kill). The orphan lingers holding its fds, its
+          // --session-dir, and the SQLite index. Mirrors the handshake-failure paths below.
+          this.process?.dispose();
           this.process = null;
           return { success: false, error: `Failed to start Rust Pi: ${msg2}`, errorKind: isRustExtensionConflict(msg2) ? "rust-extension-conflict" : undefined };
         }
       } else {
+        this.process?.dispose(); // same orphan risk as above — kill before dropping the handle
         this.process = null;
         return { success: false, error: `Failed to start Rust Pi: ${msg}`, errorKind: isRustExtensionConflict(msg) ? "rust-extension-conflict" : undefined };
       }

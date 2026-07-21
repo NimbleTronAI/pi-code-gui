@@ -225,3 +225,51 @@ test("initialize (fresh): passes --thinking with the configured default, INCLUDI
     } finally { svc.dispose(); }
   }
 });
+
+// ── Spawn-failure teardown (audit: orphaned child) ───────────────────
+// RustProcess.spawn() rejects when the readiness probe (get_state) times out — and in that
+// case the child is still ALIVE. Nulling this.process without disposing orphaned it: PiService
+// also nulls _rust on a failed init, so the Retry path's dispose() had nothing left to kill,
+// and the orphan lingered holding its fds, --session-dir and SQLite index.
+test("a spawn failure disposes the subprocess instead of orphaning it", async () => {
+  const { host } = makeHost();
+  let disposed = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    // A process that is constructed (so this.process is set) but fails to become ready.
+    createProcess: (_opts: RustProcessOpts) => ({
+      spawn: async () => { throw new Error("Rust process did not become ready in time"); },
+      dispose: () => { disposed++; },
+      isAlive: () => true,
+      request: async () => ({ type: "response", success: false }),
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, false, "init reports failure");
+  assert.equal(disposed, 1, "the still-alive child was disposed, not orphaned");
+});
+
+test("a spawn failure on the --no-extensions retry also disposes (both failure paths)", async () => {
+  const { host } = makeHost();
+  let disposed = 0;
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (_opts: RustProcessOpts) => ({
+      // First attempt fails with the extension-conflict signature → RustService retries with
+      // --no-extensions; the retry fails too. BOTH paths must dispose.
+      // The real conflict signature (isRustExtensionConflict: "missing field" + "parameters").
+      spawn: async () => { attempts++; throw new Error("invalid extension manifest: missing field `parameters` at line 3"); },
+      dispose: () => { disposed++; },
+      isAlive: () => true,
+      request: async () => ({ type: "response", success: false }),
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, false);
+  assert.equal(attempts, 2, "retried once with --no-extensions");
+  assert.equal(disposed, 2, "both the original and the retry child were disposed");
+});

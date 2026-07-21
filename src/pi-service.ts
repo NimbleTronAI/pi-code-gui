@@ -349,6 +349,11 @@ export class PiService {
    */
   private async initializeRust(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     this._backendKind = "rust";
+    // Dispose any prior runtime before overwriting the handle. Every caller currently
+    // disposes first, so this is a no-op today — but without it, a future caller that
+    // doesn't would orphan a live subprocess (the same leak fixed in RustService's
+    // spawn-failure paths). Cheap invariant, not a behavior change.
+    this._rust?.dispose();
     this._rust = new RustService(this.makeRustHost(), this.makeRustDeps());
     const result = await this._rust.initialize(opts);
     // Mirror the pre-extraction contract: a failed init nulls the live runtime
