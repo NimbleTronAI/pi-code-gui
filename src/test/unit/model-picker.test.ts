@@ -3,7 +3,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FALLBACK_MODELS, formatModelDetail, toModelChoices, buildModelPickerItems } from "../../model-picker.js";
 
-type Any = ReturnType<typeof JSON.parse>;
 const STAR = "★";
 const CHECK = "$(check)";
 
