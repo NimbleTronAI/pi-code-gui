@@ -141,8 +141,21 @@ function isUsableAuth(file: string): boolean {
 
 /** Make the relocated agent dir usable for OAuth: link/copy ~/.pi/agent/auth.json. */
 function seedAuth(dir: string): string | null {
-  const src = path.join(os.homedir(), ".pi", "agent", "auth.json");
-  const dst = path.join(dir, "auth.json");
+  return seedAuthFrom(path.join(os.homedir(), ".pi", "agent", "auth.json"), path.join(dir, "auth.json"), dir);
+}
+
+/**
+ * Seed `dst` from the user's real auth.json so OAuth logins apply to the relocated Rust agent
+ * home. Exported for tests (the caller derives `src` from the home dir).
+ *
+ * A SYMLINK is preferred because it tracks future `/login`s automatically. When symlinking is
+ * unavailable we fall back to a copy — and a copy is what this used to get permanently wrong:
+ * the old code returned early whenever `dst` merely EXISTED, so that copy was never refreshed.
+ * A user in that state would run /login, see it succeed, and Rust would keep authenticating with
+ * a stale credential forever. Now a copied dst is upgraded to a symlink when possible, and
+ * otherwise re-copied whenever the source is newer, so a login is picked up at the next session.
+ */
+export function seedAuthFrom(src: string, dst: string, dirLabel = ""): string | null {
   // Never seed (or keep) a link to a missing/empty/corrupt source — the binary
   // would just mark it auth.json.corrupt. API keys still resolve from the env.
   if (!isUsableAuth(src)) {
@@ -152,11 +165,38 @@ function seedAuth(dir: string): string | null {
     } catch { /* dst absent — nothing to clean up */ }
     return null;
   }
-  if (fs.existsSync(dst)) { return null; }
+
+  let dstStat: fs.Stats | null = null;
+  try { dstStat = fs.lstatSync(dst); } catch { /* absent */ }
+
+  // A symlink already tracks the source; nothing to do.
+  if (dstStat?.isSymbolicLink()) { return null; }
+
+  if (dstStat) {
+    // A previous COPY. Try to upgrade it to a symlink so it stops going stale; if that still
+    // isn't possible, refresh it whenever the source has moved on (i.e. after a new login).
+    try {
+      fs.unlinkSync(dst);
+      fs.symlinkSync(src, dst);
+      return null;
+    } catch { /* symlinks still unavailable — fall through to a refreshed copy */ }
+    try {
+      const srcM = fs.statSync(src).mtimeMs;
+      if (dstStat.mtimeMs < srcM || !fs.existsSync(dst)) { fs.copyFileSync(src, dst); }
+      return null;
+    } catch (e) {
+      return `Couldn't refresh auth.json in "${dirLabel || path.dirname(dst)}": ${msg(e)}. A new \`pi login\` may not apply to Rust (API keys via environment still work).`;
+    }
+  }
+
+  // Nothing there yet: prefer a symlink, fall back to a copy.
   try { fs.symlinkSync(src, dst); return null; }
   catch {
-    try { fs.copyFileSync(src, dst); return `Copied auth.json into "${dir}" (symlink unavailable) — it won't track future logins; re-run after \`pi login\`.`; }
-    catch (e) { return `Couldn't seed auth.json into "${dir}": ${msg(e)}. OAuth logins won't apply to Rust there (API keys via environment still work).`; }
+    try {
+      fs.copyFileSync(src, dst);
+      return `Copied auth.json into "${dirLabel || path.dirname(dst)}" (symlink unavailable) — it is refreshed at session start, so re-open the session after \`pi login\`.`;
+    }
+    catch (e) { return `Couldn't seed auth.json into "${dirLabel || path.dirname(dst)}": ${msg(e)}. OAuth logins won't apply to Rust there (API keys via environment still work).`; }
   }
 }
 
