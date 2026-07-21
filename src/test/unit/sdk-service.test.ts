@@ -320,3 +320,107 @@ test("runtime API keys from config are applied to the model runtime", async () =
   assert.equal(out.success, true, out.error);
   assert.deepEqual(applied, [["anthropic", "sk-ant"], ["openai", "sk-oai"]]);
 });
+
+// ── init: session-open branches + resume restore (audit H12) ─────────
+// The DEFAULT runtime's most common real-world path — continueRecent after a VS Code restart —
+// plus openPath resume, the EEXIST regenerate guard, the context-budget clamp and the
+// default-model override, none of which had coverage.
+
+/** An init env whose SessionManager records which open-path ran, with a capturable
+ *  createAgentSession and scriptable session entries / fileExists. */
+function initEnv(opts: {
+  entries?: Any[];
+  sessionFile?: string;
+  fileExists?: (f: string) => boolean;
+  continueThrows?: boolean;
+  config?: Partial<SdkConfig>;
+} = {}): { host: SdkHost; deps: SdkDeps; calls: string[]; agentOpts: () => Any } {
+  const calls: string[] = [];
+  let agentOpts: Any = null;
+  const mgr = () => ({ getSessionFile: () => opts.sessionFile, getEntries: () => opts.entries ?? [] });
+  const sdk = fakeSdk({
+    SessionManager: {
+      create: () => { calls.push("create"); return mgr(); },
+      open: () => { calls.push("open"); return mgr(); },
+      continueRecent: async () => {
+        calls.push("continueRecent");
+        if (opts.continueThrows) { throw new Error("no recent session"); }
+        return mgr();
+      },
+    },
+    createAgentSession: async (o: Any) => { agentOpts = o; return { session: { id: "session-1" } }; },
+  });
+  const env = makeEnv({
+    config: opts.config,
+    modules: (absPath: string): Any => {
+      if (absPath.includes("pi-ai/dist/index.js")) { return fakeAi(); }
+      if (absPath.includes("providers/all.js")) { return { getBuiltinModel: () => null, builtinModels: () => ({ getModels: () => [], complete: async () => ({}) }) }; }
+      if (absPath.includes("typebox")) { return { Type: {} }; }
+      if (absPath.endsWith("dist/index.js")) { return sdk; }
+      throw new Error(`unexpected import: ${absPath}`);
+    },
+  });
+  if (opts.fileExists) { (env.deps as Any).fileExists = opts.fileExists; }
+  return { host: env.host, deps: env.deps, calls, agentOpts: () => agentOpts };
+}
+
+test("init (fresh=false, no openPath) CONTINUES the recent session — the VS Code restart path", async () => {
+  const { host, deps, calls } = initEnv();
+  const out = await new SdkService(host, deps).initialize({ fresh: false, openPath: null });
+  assert.equal(out.success, true);
+  assert.deepEqual(calls, ["continueRecent"]);
+  assert.equal(out.isResuming, true);
+});
+
+test("continueRecent failure falls back to creating a session (no hard failure)", async () => {
+  const { host, deps, calls } = initEnv({ continueThrows: true });
+  const out = await new SdkService(host, deps).initialize({ fresh: false, openPath: null });
+  assert.equal(out.success, true, "init still succeeds");
+  assert.deepEqual(calls, ["continueRecent", "create"]);
+});
+
+test("openPath resumes through SessionManager.open (Past Sessions)", async () => {
+  const { host, deps, calls } = initEnv();
+  const out = await new SdkService(host, deps).initialize({ fresh: false, openPath: "/sessions/x.jsonl" });
+  assert.deepEqual(calls, ["open"]);
+  assert.equal(out.isResuming, true);
+});
+
+test("resume restores the LAST model_change and thinking_level_change from the session", async () => {
+  const { host, deps } = initEnv({ entries: [
+    { type: "model_change", provider: "anthropic", modelId: "older-model" },
+    { type: "thinking_level_change", thinkingLevel: "low" },
+    { type: "model_change", provider: "anthropic", modelId: "newer-model" },
+    { type: "thinking_level_change", thinkingLevel: "high" },
+  ]});
+  const out = await new SdkService(host, deps).initialize({ fresh: false, openPath: "/sessions/x.jsonl" });
+  assert.equal(out.model?.id, "newer-model", "reverse walk takes the LAST model_change");
+  assert.equal(out.thinkingLevel, "high", "and the LAST thinking_level_change");
+});
+
+test("a FRESH session ignores prior entries — no restore", async () => {
+  const { host, deps } = initEnv({ entries: [{ type: "model_change", provider: "anthropic", modelId: "must-not-restore" }] });
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.notEqual(out.model?.id, "must-not-restore");
+  assert.equal(out.isResuming, false);
+});
+
+test("a fresh session regenerates its path while one already exists (EEXIST guard)", async () => {
+  let probes = 0;
+  const { host, deps, calls } = initEnv({ sessionFile: "/sessions/collide.jsonl", fileExists: () => probes++ < 2 });
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.equal(out.success, true);
+  assert.equal(calls.filter((c) => c === "create").length, 3, "initial create + 2 regenerations, then the path was free");
+});
+
+test("contextBudget clamps the model's contextWindow for the session", async () => {
+  const { host, deps, agentOpts } = initEnv({ config: { contextBudget: 12_345 } });
+  await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.equal(agentOpts()?.model?.contextWindow, 12_345);
+});
+
+test("defaultModelProvider/defaultModelId override the auto-selected model", async () => {
+  const { host, deps } = initEnv({ config: { defaultModelProvider: "anthropic", defaultModelId: "my-default" } });
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.equal(out.model?.id, "my-default");
+});
