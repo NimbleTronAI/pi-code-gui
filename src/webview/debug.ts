@@ -184,12 +184,12 @@ window.__piDebug = {
     return Object.keys(state.currentToolBlocks).map((k) => {
       const e = state.currentToolBlocks[k];
       if (!e) { return { id: k, status: "MISSING", tag: "?", hasRenderer: false }; }
-      const el = "tagName" in e ? e : e.el;
+      const el = e.el;
       return {
         id: k,
         status: el.getAttribute ? el.getAttribute("data-status") : "?",
         tag: el.tagName,
-        hasRenderer: !("tagName" in e) && !!e.renderer,
+        hasRenderer: !!e.renderer,
       };
     });
   },

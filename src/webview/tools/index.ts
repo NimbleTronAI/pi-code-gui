@@ -11,38 +11,7 @@ import { highlightCode } from "../highlight.js";
 import { html, safe } from "../render/html.js";
 import { ToolBlock } from "../components/tool-block.js";
 
-// ── Tool data shapes ─────────────────────────────────────────
-type ToolData = Record<string, unknown> & {
-  toolCallId: string;
-  toolName: string;
-  entryId?: string;
-  args?: Record<string, unknown>;
-  fromMessage?: boolean;
-};
-type ToolPartialResult = { content?: Array<{ type: string; text: string }> };
-/** The SDK's hard-truncation report. Already declared on WebviewEventData in global.d.ts;
- *  naming it here too is what lets `result.details.truncation` be read without a cast. */
-type Truncation = {
-  truncated: boolean;
-  truncatedBy?: string;
-  totalLines: number;
-  outputLines: number;
-  outputBytes: number;
-  maxBytes?: number;
-  maxLines?: number;
-  firstLineExceedsLimit?: boolean;
-};
-type ToolResult = {
-  content?: Array<{ type: string; text: string }>;
-  // Intersected rather than replaced: `details` carries arbitrary per-tool keys, but truncation
-  // is the one the read renderer actually destructures.
-  details?: { truncation?: Truncation } & Record<string, unknown>;
-  text?: string;
-};
-/** A tool-card element. The `_toolBlock` / `_writeState` / … expandos the renderers hang off it
- *  are declared on HTMLElement in global.d.ts — they were reached through `(el as any)._x` casts
- *  in 37 places, which defeated checking on state that was ALREADY typed. */
-type ToolEl = HTMLElement;
+import type { ToolData, ToolPartialResult, ToolResult, ToolEl, ToolRenderer } from "./types.js";
 import { CodeBlock } from "../components/code-block.js";
 
 
@@ -764,35 +733,36 @@ export function handleToolStart(data: any): void {
       if (existingBash && !existingTool) {
         state.currentToolBlocks[callId] = { el: existingBash, renderer: bashToolRenderer };
       }
-      // Update status on whichever block we have
-      var block = existingTool ? ((existingTool as any).el || existingTool) : existingBash;
-      if (block && block.getAttribute && block.getAttribute("data-status") === "pending") {
-        block.setAttribute("data-status", "running");
-        var statusEl = block.querySelector(".tool-status");
+      // Update status on whichever block we have. Non-null: the enclosing branch is
+      // `existingTool || existingBash`, so when existingTool is absent existingBash is present.
+      var dedupBlock: ToolEl = existingTool ? existingTool.el : existingBash!;
+      if (dedupBlock && dedupBlock.getAttribute && dedupBlock.getAttribute("data-status") === "pending") {
+        dedupBlock.setAttribute("data-status", "running");
+        var statusEl = dedupBlock.querySelector(".tool-status");
         if (statusEl) {
           statusEl.textContent = "running";
           statusEl.className = "tool-status running";
         }
       }
-      // If the new data has a path but the existing block shows "...", update it
+      // If the new data has a path but the existing dedupBlock shows "...", update it
       var newPath = data.args && (data.args.path || data.args.file_path || data.args.filePath);
-      if (newPath && block) {
-        var pathEl = block.querySelector(".tool-path");
+      if (newPath && dedupBlock) {
+        var pathEl = dedupBlock.querySelector(".tool-path");
         if (pathEl && pathEl.textContent === "...") {
           pathEl.textContent = newPath;
           pathEl.setAttribute("data-path", newPath);
         }
         // Also update internal state so lang/syntax highlighting work
-        if ((block)._readState && !(block)._readState!.rawPath) {
-          (block)._readState!.rawPath = newPath;
-          (block)._readState!.lang = getLangFromPath(newPath);
+        if ((dedupBlock)._readState && !(dedupBlock)._readState.rawPath) {
+          (dedupBlock)._readState.rawPath = newPath;
+          (dedupBlock)._readState.lang = getLangFromPath(newPath);
         }
-        if ((block)._writeState && !(block)._writeState!.rawPath) {
-          (block)._writeState!.rawPath = newPath;
-          (block)._writeState!.lang = getLangFromPath(newPath);
+        if ((dedupBlock)._writeState && !(dedupBlock)._writeState.rawPath) {
+          (dedupBlock)._writeState.rawPath = newPath;
+          (dedupBlock)._writeState.lang = getLangFromPath(newPath);
         }
         // Update ToolBlock component if present
-        var tb = (block)._toolBlock;
+        var tb = (dedupBlock)._toolBlock;
         if (tb) { (tb).update({ filePath: newPath }); }
       }
       // When tool_execution_start fires (fromMessage=false), it carries
@@ -802,15 +772,19 @@ export function handleToolStart(data: any): void {
       // previews that were missing because oldText/newText hadn't
       // arrived yet during streaming).
       if (!data.fromMessage) {
-        var dedupRenderer = existingTool ? (existingTool as any).renderer : bashToolRenderer;
-        if (dedupRenderer && (dedupRenderer).update && data.args) {
-          (dedupRenderer).update(block, {
+        var dedupRenderer: ToolRenderer | undefined = existingTool ? existingTool.renderer : bashToolRenderer;
+        // The `update` check stays even though the type says it is always present: extensions
+        // register renderers through registerToolRenderer(renderer: unknown), which CASTS. A
+        // third-party renderer missing a method is reachable at runtime, so this guards a real
+        // boundary rather than a type-system one. `typeof` says that, and satisfies the compiler.
+        if (dedupRenderer && typeof dedupRenderer.update === "function" && data.args) {
+          dedupRenderer.update(dedupBlock, {
             content: [{ type: "text", text: JSON.stringify(data.args, null, 2) }],
           });
         }
         // Also repair the inline args display (tool-args <code>) if it
         // was rendered from incomplete streaming data.
-        var argsEl = block?.querySelector?.(".tool-args");
+        var argsEl = dedupBlock?.querySelector?.(".tool-args");
         if (argsEl && data.args) {
           var codeEl = argsEl.querySelector("code");
           if (codeEl) {
@@ -821,8 +795,8 @@ export function handleToolStart(data: any): void {
         }
       }
 
-      if (data.entryId && block && block.id && !block.id.startsWith("entry-")) {
-        block.id = "entry-" + data.entryId;
+      if (data.entryId && dedupBlock && dedupBlock.id && !dedupBlock.id.startsWith("entry-")) {
+        dedupBlock.id = "entry-" + data.entryId;
       }
       return;
     }
@@ -830,7 +804,7 @@ export function handleToolStart(data: any): void {
     // Look up the renderer for this tool name.
     // Fall back to defaultToolRenderer for unregistered tools (e.g. extension tools).
     var renderer = getToolRenderer(data.toolName) || defaultToolRenderer;
-    var block = (renderer as any).create(data);
+    var block = renderer.create(data);
     if (!block) { console.warn("[pi-gui] tool renderer returned null for", data.toolName); return; }
 
     if (data.entryId && !block.id.startsWith("entry-")) {
@@ -870,9 +844,9 @@ export function handleToolUpdate(data: any): void {
 
     var entry = state.currentToolBlocks[data.toolCallId];
     if (!entry) {return;}
-    var block = (entry as any).el || entry;
-    var renderer = (entry as any).renderer || defaultToolRenderer;
-    (renderer).update(block, data.partialResult);
+    var block = entry.el;
+    var renderer = entry.renderer || defaultToolRenderer;
+    renderer.update(block, data.partialResult);
     scrollToBottom();
   }
 
@@ -924,9 +898,9 @@ export function handleToolEnd(data: any): void {
       }
       return;
     }
-    var block = (entry as any).el || entry;
-    var renderer = (entry as any).renderer || defaultToolRenderer;
-    (renderer).finalize(block, data.result, data.isError, data.entryId);
+    var block = entry.el;
+    var renderer = entry.renderer || defaultToolRenderer;
+    renderer.finalize(block, data.result, data.isError, data.entryId);
     delete state.currentToolBlocks[callId];
     scrollToBottom();
   }

@@ -288,7 +288,7 @@ export function handleAgentEnd(): void {
     // Finalize any pending tool blocks
     Object.keys(state.currentToolBlocks).forEach(function (id): void {
       var entry = state.currentToolBlocks[id];
-      var block = (entry as any).el || entry;
+      var block = entry?.el;
       if (block && block.getAttribute("data-status") === "running") {
         var statusEl = block.querySelector(".tool-status");
         if (statusEl) {
@@ -434,7 +434,7 @@ export function handleAssistantEnd(data: MsgData<"assistant-end">): void {
           if (data.toolCalls) {
             data.toolCalls.forEach(function (tcId: string): void {
               var entry = state.currentToolBlocks[tcId];
-              var block = entry ? ((entry as any).el || entry) : null;
+              var block = entry ? entry.el : null;
               if (block) {
                 var statusEl = block.querySelector(".tool-status");
                 if (statusEl) {
@@ -872,7 +872,7 @@ export function handleAutoRetryStart(data: MsgData<"auto-retry-start">): void {
 function finalizeInFlightBlocksForRetry(): void {
     Object.keys(state.currentToolBlocks).forEach(function (id): void {
       var entry = state.currentToolBlocks[id];
-      var block = (entry as any).el || entry;
+      var block = entry?.el;
       if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
         var statusEl = block.querySelector(".tool-status");
         if (statusEl) { statusEl.textContent = "retried"; statusEl.className = "tool-status pending"; }
@@ -2155,9 +2155,9 @@ export function handleBashStart(data: Record<string, unknown>): void {
     var callId = data.toolCallId;
 
     // DEDUP: If tool-start already created a block for this callId, don't create a second.
-    if (state.currentToolBlocks[callId as string]) {
-      var entry = state.currentToolBlocks[callId as string];
-      state.bashBlocks[callId as string] = (entry as any).el || entry;
+    var dedupEntry = state.currentToolBlocks[callId as string];
+    if (dedupEntry) {
+      state.bashBlocks[callId as string] = dedupEntry.el;
       state.bashOutputs[callId as string] = state.bashOutputs[callId as string] || "";
       return;
     }
@@ -2182,7 +2182,7 @@ export function handleBashOutput(data: Record<string, unknown>): void {
     var block = state.bashBlocks[callId as string];
     if (!block) {
       var entry = state.currentToolBlocks[callId as string];
-      block = entry ? ((entry as any).el || entry) : null;
+      block = entry ? entry.el : undefined;
       if (!block) {return;}
     }
     state.bashOutputs[callId as string] = (state.bashOutputs[callId as string] || "") + (data.output || "");
@@ -2199,7 +2199,7 @@ export function handleBashEnd(data: Record<string, unknown>): void {
     var block = state.bashBlocks[callId as string];
     if (!block) {
       var entry = state.currentToolBlocks[callId as string];
-      block = entry ? ((entry as any).el || entry) : null;
+      block = entry ? entry.el : undefined;
       if (!block) {return;}
     }
     var result = {

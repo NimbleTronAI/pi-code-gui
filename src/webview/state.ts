@@ -1,3 +1,5 @@
+import type { ToolBlockEntry, ToolRenderer } from "./tools/types.js";
+
 // ── Shared application state ────────────────────────────────
 //
 // Single source of truth for all mutable state in the webview.
@@ -18,7 +20,7 @@ export interface AppState {
   currentThinkingEl: HTMLElement | null;
 
   // ── Tool execution tracking
-  currentToolBlocks: Record<string, { el: HTMLElement; renderer?: unknown } | HTMLElement | undefined>;
+  currentToolBlocks: Record<string, ToolBlockEntry | undefined>;
   assistantToolCallIds: Record<string, boolean>;
   /** Last tool/batch block inserted after the current assistant message.
    *  Subsequent tools insert after this one to preserve call order. */
@@ -40,7 +42,7 @@ export interface AppState {
   }>;
 
   // ── Bash execution blocks
-  bashBlocks: Record<string, HTMLElement>;
+  bashBlocks: Record<string, HTMLElement | undefined>;
   bashOutputs: Record<string, string>;
 
   // ── Truncation text store
@@ -61,11 +63,7 @@ export interface AppState {
   slashSelectedIdx: number;
 
   // ── Tool renderer registry
-  toolRenderers: Record<string, {
-    create: (data: Record<string, unknown>) => HTMLElement;
-    update: (el: HTMLElement, partialResult: Record<string, unknown>) => void;
-    finalize: (el: HTMLElement, result: Record<string, unknown>, isError: boolean, entryId?: string) => void;
-  }>;
+  toolRenderers: Record<string, ToolRenderer>;
 
   // ── Stream rendering (RAF-batched)
   _streamRafId: number | null;
