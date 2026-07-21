@@ -194,7 +194,7 @@ export function renderWriteContentBlock(el: ToolEl): void {
    *  Mirrors the Pi SDK's prepareEditArguments: some models send
    *  oldText/newText as top-level fields instead of inside an
    *  edits[] array, and some send edits as a JSON string. */
-  function normalizeEditArgs(args: any): any[] | undefined {
+  function normalizeEditArgs(args: Record<string, unknown> | undefined): unknown {
     if (!args) { return undefined; }
     // Parse string-style edits (some models send edits as JSON text)
     if (typeof args.edits === "string") {
@@ -863,7 +863,7 @@ export function handleToolUpdate(data: MsgData<"tool-update">): void {
 /** rust-pi aborts an in-flight tool call when the user queues/steers a message,
  *  returning isError with this sentinel in the result text. It's not a failure —
  *  the tool re-runs in the next turn — so callers render it neutrally. */
-function isInterruptedByQueue(result: any): boolean {
+function isInterruptedByQueue(result: ToolResult | undefined): boolean {
   try {
     var content = result && result.content;
     if (!Array.isArray(content)) { return false; }

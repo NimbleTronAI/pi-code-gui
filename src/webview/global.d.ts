@@ -84,6 +84,17 @@ interface PiDebugSummary {
   lastDomChanges: Array<{ ts: number; action: string; tag: string; id: string; classes: string; status: string; text: string; parentId: string }>;
 }
 
+/** An extension-authored custom message. Everything is optional and `content` is deliberately
+ *  `unknown` rather than a union: it arrives either as a string or as a content array, and both
+ *  readers already branch on typeof / Array.isArray before touching it. The index signature keeps
+ *  the whole object forwardable to a third-party renderer as `rawData`. */
+interface CustomMessageData {
+  customType?: string;
+  content?: unknown;
+  display?: boolean;
+  [key: string]: unknown;
+}
+
 // Event data shape (from extension host to webview)
 interface WebviewEventData {
   [key: string]: unknown;

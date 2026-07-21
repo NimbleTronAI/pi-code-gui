@@ -80,16 +80,12 @@ export default [
         tsconfigRootDir: import.meta.dirname,
       },
     },
-    rules: {
-      // DEBT, ratcheted — not an exemption. These two are errors everywhere else; in the webview
-      // they are warnings because there are 125 `any`s and 82 missing return types across ~4,300
-      // lines that sit at ~7% test coverage, and rewriting them blind would be reckless. The
-      // `lint` script caps total warnings at the current count, so the number can only go DOWN:
-      // adding a new `any` here fails CI just like anywhere else. Everything the project actually
-      // relies on (no-empty, no-unused-vars, no-floating-promises, no-unnecessary-type-assertion)
-      // is enforced as an ERROR here, as it is elsewhere.
-      "@typescript-eslint/no-explicit-any": "warn",
-      "@typescript-eslint/explicit-function-return-type": "warn",
-    },
+    // No rule overrides. src/webview used to downgrade no-explicit-any and
+    // explicit-function-return-type to warnings — 125 `any`s and 82 missing return types — with
+    // the `lint` script capping the count so it could only go down. Both are now at zero, so the
+    // webview inherits the same ERROR severity as the rest of src/ and the cap is gone: there is
+    // no budget left to spend. A new `any` here fails the build. If one is ever genuinely
+    // unavoidable, it needs an eslint-disable line stating why, which is reviewable in a way that
+    // a number never was.
   },
 ];

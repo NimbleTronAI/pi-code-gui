@@ -51,7 +51,7 @@ import {
   // renderers that produce DOM for the live panel.
 
 
-export function registerMessageRenderer(customType: string, rendererFn: (data: any, container: HTMLElement, ...args: any[]) => void): void {
+export function registerMessageRenderer(customType: string, rendererFn: AppState["messageRenderers"][string]): void {
     state.messageRenderers[customType] = rendererFn;
   }
 
@@ -65,7 +65,7 @@ export function getMessageRenderer(customType: string): AppState["messageRendere
   // Default message renderer: creates a collapsible live-panel card.
   // Each invocation creates a NEW card — notifications and custom messages
   // stack rather than silently replacing each other.
-export function defaultMessageRenderer(data: any): HTMLElement {
+export function defaultMessageRenderer(data: CustomMessageData): HTMLElement {
     var customType = data.customType || "custom";
     var content = "";
     if (typeof data.content === "string") {
@@ -1743,7 +1743,7 @@ export function closeAllOverlays(): void {
  * cards in-place when the same customType reappears (polling).
  * Action buttons with data-command execute slash commands.
  */
-export function renderInlineCustomMessage(data: any): void {
+export function renderInlineCustomMessage(data: CustomMessageData): void {
     var customType = data.customType || "custom";
     var content = typeof data.content === "string"
       ? data.content
@@ -1869,10 +1869,15 @@ export function handleRegisterMessageRenderer(data: MsgData<"registerMessageRend
       script.textContent =
         "window['" + fnName + "'] = function(data, containerEl, escapeHtml) { " + data.sourceCode + " }";
       document.head.appendChild(script);
-      var renderer = (window as any)[fnName];
+      // The <script> injected two lines up defines window[fnName] at runtime, so this read is
+      // genuinely dynamic. The cast states the contract that same script literally writes
+      // (`function(data, containerEl, escapeHtml)`), and the typeof check below still verifies it
+      // at runtime — the `!` is only because narrowing doesn't survive into the closure.
+      type InjectedRenderer = (d: unknown, el: HTMLElement, esc: (s: string) => string) => void;
+      var renderer = (window as unknown as Record<string, unknown>)[fnName] as InjectedRenderer | undefined;
       if (typeof renderer === "function") {
-        var boundRenderer = function(d: any, el: HTMLElement): void {
-          renderer(d, el, escapeHtml);
+        var boundRenderer = function(d: unknown, el: HTMLElement): void {
+          renderer!(d, el, escapeHtml);
         };
         registerMessageRenderer(data.customType, boundRenderer);
       }
