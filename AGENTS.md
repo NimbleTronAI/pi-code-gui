@@ -97,7 +97,8 @@ bypass VS Code's buffer tracking and cause dirty-state mismatches.
 - Pi packages: installed to `.pi/npm/node_modules/` (project) or global npm.
   The `.pi/` directory is gitignored.
 - API keys: Pi SDK's `AuthStorage` (system keychain via keytar) or runtime
-  override from `pi-code-gui.anthropicApiKey` / `pi-code-gui.openaiApiKey`.
+  resolved by pi itself (env vars / `~/.pi/agent/auth.json` via `/login`). The extension
+  contributes no API-key settings; legacy values are migrated into SecretStorage.
   Never written to disk as plaintext.
 - Open session paths: `context.workspaceState` (VS Code workspace storage) —
   per-workspace, survives window reloads.

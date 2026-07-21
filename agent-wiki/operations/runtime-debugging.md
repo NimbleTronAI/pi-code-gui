@@ -41,7 +41,8 @@ and captures every level regardless of the UI filter.
    reinstall command.
 3. **Session files** — `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl` (default pool).
 4. **API keys** — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` in the
-   env, or the `pi-code-gui.anthropicApiKey` / `openaiApiKey` settings.
+   env, or a credential stored by `/login` (`~/.pi/agent/auth.json`). The API-key settings
+   were removed; any legacy value now lives in SecretStorage.
 
 ## Both
 

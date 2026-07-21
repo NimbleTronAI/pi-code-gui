@@ -291,18 +291,6 @@
           "default": true,
           "description": "Prompt to install Pi if not found"
         },
-        "pi-code-gui.anthropicApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key (overrides ANTHROPIC_API_KEY at runtime). Stored in VS Code's SecretStorage: a value entered here is moved into secure storage on the next window reload and this setting is cleared, so the key is not kept in settings.json and is not carried by Settings Sync.",
-          "scope": "application"
-        },
-        "pi-code-gui.openaiApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key (overrides OPENAI_API_KEY at runtime). Stored in VS Code's SecretStorage: a value entered here is moved into secure storage on the next window reload and this setting is cleared, so the key is not kept in settings.json and is not carried by Settings Sync.",
-          "scope": "application"
-        },
         "pi-code-gui.systemPromptAppend": {
           "type": "string",
           "default": "",
@@ -642,12 +630,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Pi runs an agent that executes tools and can spawn the Rust Pi binary. In an untrusted workspace the binary path, install method, agent/session directories and API keys are ignored from workspace settings.",
+      "description": "Pi runs an agent that executes tools and can spawn the Rust Pi binary. In an untrusted workspace the binary path, install method and agent/session directories are ignored from workspace settings.",
       "restrictedConfigurations": [
         "pi-code-gui.rustBinaryPath",
         "pi-code-gui.rustInstallMethod",
-        "pi-code-gui.anthropicApiKey",
-        "pi-code-gui.openaiApiKey",
         "pi-code-gui.sessionDir",
         "pi-code-gui.rustAgentDir"
       ]

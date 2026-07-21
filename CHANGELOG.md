@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Removed
+- **The `pi-code-gui.anthropicApiKey` / `pi-code-gui.openaiApiKey` settings.** Keys in `settings.json` are plaintext, carried by Settings Sync, and — because VS Code settings are globally readable — retrievable by *any* other installed extension. Authenticate the way pi itself does: run **`/login`** (stores the credential in `~/.pi/agent/auth.json`, shared with the CLI/TUI and used by both runtimes), or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in the environment (in a devcontainer, `containerEnv` or the compose `environment:` block). **Existing values are migrated automatically:** on the next window reload any key still in your settings is moved into VS Code's SecretStorage and cleared from `settings.json`, so nothing needs re-entering and nothing breaks. Secrets are also now scrubbed from the output channel and from error text shown in the chat.
+
 ### Fixed
 - **Rust sessions now honor the configured default thinking level.** A fresh Rust session passed `--thinking` to the binary only when the default was *not* `off`, but rust-pi defaults a reasoning model to `high` when the flag is absent (verified live) — so a configured default of `off` silently started the model at `high` while the status bar showed `off`. Fresh sessions now always pass `--thinking` (including `off`); restored sessions keep their own recorded level, as before.
 

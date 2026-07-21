@@ -273,8 +273,6 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `pi-code-gui.promptToInstall` | boolean | `true` | Prompt to install Pi if not found |
-| `pi-code-gui.anthropicApiKey` | string | `""` | Runtime Anthropic API key (overrides env var, not persisted to disk) |
-| `pi-code-gui.openaiApiKey` | string | `""` | Runtime OpenAI API key (overrides env var, not persisted to disk) |
 | `pi-code-gui.systemPromptAppend` | string | `""` | Additional instructions appended to the system prompt |
 | `pi-code-gui.enableSkills` | boolean | `true` | Load project and global pi skills |
 | `pi-code-gui.enableContextFiles` | boolean | `true` | Inject project context files |
