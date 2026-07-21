@@ -1,4 +1,4 @@
-import { state } from "../state.js";
+import { state, type AppState } from "../state.js";
 import { logEvent } from "../debug.js";
 import {
   renderMarkdown, renderBlock, patchBlockList,
@@ -45,7 +45,7 @@ export function registerMessageRenderer(customType: string, rendererFn: (data: a
     state.messageRenderers[customType] = rendererFn;
   }
 
-export function getMessageRenderer(customType: string) {
+export function getMessageRenderer(customType: string): AppState["messageRenderers"][string] | undefined {
     return state.messageRenderers[customType];
   }
 
@@ -1999,7 +1999,7 @@ export function handleShowDialog(data: any): void {
   // Dynamic slash commands populated from installed extensions (e.g. /tldr)
 
   // Full slash command list (builtins + extensions, with extensions first for dedup)
-export function getSlashCommands() {
+export function getSlashCommands(): Array<{ cmd: string; desc: string }> {
     // When the extension host has pushed a complete slash-command list
     // (extension + builtin + prompt templates), use it directly.
     if (state.extensionSlashCommands.length > 0) {

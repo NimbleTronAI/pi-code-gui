@@ -45,8 +45,8 @@ export class InlineCard implements Component<InlineCardProps> {
       if (btn) {
         e.preventDefault();
         const cmd = btn.getAttribute("data-command");
-        if (cmd && (window as any).__vscode) {
-          (window as any).__vscode.postMessage({
+        if (cmd && window.__vscode) {
+          window.__vscode.postMessage({
             type: "slashCommand",
             command: cmd,
           });

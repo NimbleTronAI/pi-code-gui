@@ -20,9 +20,23 @@ type ToolData = Record<string, unknown> & {
   fromMessage?: boolean;
 };
 type ToolPartialResult = { content?: Array<{ type: string; text: string }> };
+/** The SDK's hard-truncation report. Already declared on WebviewEventData in global.d.ts;
+ *  naming it here too is what lets `result.details.truncation` be read without a cast. */
+type Truncation = {
+  truncated: boolean;
+  truncatedBy?: string;
+  totalLines: number;
+  outputLines: number;
+  outputBytes: number;
+  maxBytes?: number;
+  maxLines?: number;
+  firstLineExceedsLimit?: boolean;
+};
 type ToolResult = {
   content?: Array<{ type: string; text: string }>;
-  details?: Record<string, unknown>;
+  // Intersected rather than replaced: `details` carries arbitrary per-tool keys, but truncation
+  // is the one the read renderer actually destructures.
+  details?: { truncation?: Truncation } & Record<string, unknown>;
   text?: string;
 };
 /** A tool-card element. The `_toolBlock` / `_writeState` / … expandos the renderers hang off it
@@ -526,10 +540,10 @@ export const readToolRenderer = {
       var contNextOffset = 0;
       var contRemaining = 0;
 
-      if (trunc && (trunc as any).truncated) {
+      if (trunc && trunc.truncated) {
         // Case 1: SDK hard truncation (50KB or 2000 lines)
-        contNextOffset = (readState.offset || 0) + (trunc as any).outputLines;
-        contRemaining = (trunc as any).totalLines - contNextOffset;
+        contNextOffset = (readState.offset || 0) + trunc.outputLines;
+        contRemaining = trunc.totalLines - contNextOffset;
         hasMore = contRemaining > 0;
       } else if (userMoreMatch) {
         // Case 2: User-specified limit with more content in file

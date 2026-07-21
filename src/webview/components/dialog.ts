@@ -165,8 +165,8 @@ export class Dialog implements Component<DialogProps> {
   }
 
   private postResponse(value: unknown): void {
-    if (typeof (window as any).__vscode !== "undefined") {
-      (window as any).__vscode.postMessage({
+    if (typeof window.__vscode !== "undefined") {
+      window.__vscode.postMessage({
         type: "extension_ui_response",
         id: this.props.id,
         value: value,
