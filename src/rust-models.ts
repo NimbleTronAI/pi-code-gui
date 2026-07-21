@@ -206,6 +206,16 @@ export function seedAuthFrom(src: string, dst: string, dirLabel = ""): string | 
  * additions (PI_CODING_AGENT_DIR) plus non-fatal warnings. Throws RustModelsError
  * on a fatal problem the caller must surface.
  */
+/** Re-seed ~/.pi/agent/auth.json into the Rust agent dir. setupRustModels() does this at spawn,
+ *  but a mid-session /login writes a credential the already-seeded dir may not reflect. Returns a
+ *  warning string, or null when the seed is in place. */
+export function reseedRustAuth(): string | null {
+  if (!_ctx) { return "Rust models support not initialized."; }
+  const dir = resolveAgentDir(_ctx);
+  ensureDir(dir);
+  return seedAuth(dir);
+}
+
 export function setupRustModels(): { piEnv: Record<string, string>; warnings: string[] } {
   if (!_ctx) { throw new RustModelsError("Rust models support not initialized (internal error)."); }
   const warnings: string[] = [];

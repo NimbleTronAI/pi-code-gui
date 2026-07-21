@@ -12,6 +12,11 @@ import { join } from "node:path";
 import { PiService } from "../../pi-service.js";
 import { backendCapabilityDefaults, type PiBackend, type BackendUsage } from "../../pi-backend.js";
 import type { Runtime, PiServiceEvent } from "../../types.js";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+
+/** repo/src — these tests read pi-service.ts as text for the structural guards at the bottom. */
+const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src");
 
 type Any = ReturnType<typeof JSON.parse>;
 
@@ -199,4 +204,30 @@ test("dispose tears the child down BEFORE appending the name", () => {
     assert.equal(backend.saw("dispose").length, 1, "child disposed");
     assert.deepEqual(names(entries()), ["dispose title"], "appended after teardown");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── regression guards for the two runtime-gated slash commands ────────────
+// Both failed the same way: a code path that only ever worked on the TypeScript backend, with
+// no signal on Rust. Structural checks, because both live behind private members that need a
+// real vscode + a real SDK to construct.
+test("/login builds its deps from the SHARED runtime, not the SDK session's", () => {
+  const src = readFileSync(join(SRC, "pi-service.ts"), "utf-8");
+  const body = src.slice(src.indexOf("private async makeAuthFlowDeps"));
+  const decl = body.slice(0, body.indexOf("\n  }"));
+
+  assert.match(decl, /modelRuntime: await this\.sharedModelRuntime\(\)/,
+    "must use the lazily-built runtime — it is the only one that exists on Rust");
+  assert.doesNotMatch(decl, /modelRuntime: this\.modelRuntime\b/,
+    "this.modelRuntime is null on Rust, which made /login return before showing any prompt");
+});
+
+test("/tools' unsupported-runtime notice goes to the chat, not a notification popup", () => {
+  const src = readFileSync(join(SRC, "pi-service.ts"), "utf-8");
+  const body = src.slice(src.indexOf("async pickActiveTools"));
+  const guard = body.slice(0, body.indexOf("if (!this.session)"));
+
+  assert.match(guard, /this\.emit\(\{ type: "custom-message"/,
+    "the answer belongs where /tools was typed");
+  assert.doesNotMatch(guard, /vscode\.window\.show(Information|Warning|Error)Message/,
+    "a popup for a command typed in the chat is the thing being fixed");
 });

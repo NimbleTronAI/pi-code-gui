@@ -127,3 +127,40 @@ test("makeAuthInteraction: a cancelled prompt (undefined input) throws 'Login ca
   const it = makeAuthInteraction(() => {}, new AbortController().signal, ui);
   await assert.rejects(() => it.prompt({ type: "text", message: "x" }), /Login cancelled/);
 });
+
+// ── /login on Rust ───────────────────────────────────────────
+// PiService passed `this.modelRuntime` into these deps — the SDK session's runtime, which is
+// null on Rust. runLogin's `if (!rt) throw` then fired before the first QuickPick, so /login
+// on a Rust session showed nothing at all and looked like an unimplemented command.
+
+test("runLogin: a null runtime throws rather than silently doing nothing", async () => {
+  const { ui } = fakeUI();
+  await assert.rejects(
+    () => runLogin({ modelRuntime: null, getActiveModel: () => null, setModel: async () => {}, ui }),
+    /not initialized/i,
+    "the failure must be loud — a silent return is what hid this bug",
+  );
+});
+
+test("runLogin: afterLogin fires once a credential is stored (Rust re-seeds auth on it)", async () => {
+  const seen: string[] = [];
+  const { ui } = fakeUI({ picks: [{ authType: "api_key" }, { id: "openai", name: "OpenAI" }] });
+  await runLogin({ ...deps(fakeRuntime(), ui), afterLogin: (name) => seen.push(name) });
+  assert.deepEqual(seen, ["OpenAI"]);
+});
+
+test("runLogin: afterLogin does NOT fire when the user cancels", async () => {
+  const seen: string[] = [];
+  const { ui } = fakeUI({ picks: [undefined] });
+  await runLogin({ ...deps(fakeRuntime(), ui), afterLogin: (name) => seen.push(name) });
+  assert.deepEqual(seen, [], "no credential was stored, so nothing should be re-seeded");
+});
+
+test("runLogin: afterLogin does NOT fire when the login call fails", async () => {
+  const seen: string[] = [];
+  const rt = fakeRuntime({ login: async () => { throw new Error("bad key"); } });
+  const { ui, log } = fakeUI({ picks: [{ authType: "api_key" }, { id: "openai", name: "OpenAI" }] });
+  await runLogin({ ...deps(rt, ui), afterLogin: (name) => seen.push(name) });
+  assert.deepEqual(seen, []);
+  assert.ok(log.some((l) => l.startsWith("error:Failed to log in")));
+});

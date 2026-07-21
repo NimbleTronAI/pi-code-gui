@@ -27,6 +27,9 @@ export interface AuthFlowDeps {
   modelRuntime: any;
   getActiveModel(): { id?: string; provider?: string } | null;
   setModel(provider: string, id: string): Promise<void>;
+  /** Called after a credential is successfully stored. Rust uses it to re-seed auth.json into
+   *  the agent dir the binary reads, and to say that it applies to the NEXT session. */
+  afterLogin?(providerName: string): void;
   ui: AuthUI;
 }
 
@@ -135,6 +138,7 @@ export async function runLogin(deps: AuthFlowDeps): Promise<void> {
     });
     await rt.refresh(); // async — reload the dynamic catalog with the new credential
     await completeLogin(deps, provider.id, provider.name, previousModel);
+    deps.afterLogin?.(provider.name);
   } catch (e: any) {
     const msg = e?.message ?? String(e);
     if (!/cancel|abort/i.test(msg)) { ui.error(`Failed to log in to ${provider.name}: ${msg}`); }

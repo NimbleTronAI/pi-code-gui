@@ -9,7 +9,7 @@ import { confirmRendererConsent } from "./renderer-consent.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
-import { setupRustModels } from "./rust-models.js";
+import { setupRustModels, reseedRustAuth } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
@@ -1332,15 +1332,15 @@ export class PiService {
    *  back to the raw first message. ModelRuntime.create() resolves auth from env/auth.json
    *  itself, so no key plumbing is needed. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _summaryRuntime: any = null;
+  private _sharedRuntime: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async summaryRuntime(): Promise<any> {
-    if (this.modelRuntime) { return this.modelRuntime; }       // TS: reuse the session's runtime
-    if (this._summaryRuntime) { return this._summaryRuntime; } // Rust: cached lazy one
+  private async sharedModelRuntime(): Promise<any> {
+    if (this.modelRuntime) { return this.modelRuntime; }      // TS: reuse the session's runtime
+    if (this._sharedRuntime) { return this._sharedRuntime; }  // Rust: cached lazy one
     try {
       const SDK = await importWithRetry(path.join(resolvePiPackagePath(), "dist/index.js"), 2, 300);
-      this._summaryRuntime = await SDK.ModelRuntime.create();
-      return this._summaryRuntime;
+      this._sharedRuntime = await SDK.ModelRuntime.create();
+      return this._sharedRuntime;
     } catch (e: unknown) {
       piWarn(`Tab summary: no ModelRuntime available (${e instanceof Error ? e.message : String(e)}) — keeping the raw first message.`);
       return null;
@@ -1354,7 +1354,7 @@ export class PiService {
   async generateTabSummary(userInput: string): Promise<string | null> {
     if (!this._model) { return null; }
     try {
-      const rt = await this.summaryRuntime();
+      const rt = await this.sharedModelRuntime();
       if (!rt) { return null; }
       const model = rt.getModel(this._model.provider, this._model.id);
       if (!model) { return null; }
@@ -1585,7 +1585,9 @@ export class PiService {
   /** Open a QuickPick to select which tools are active for this session. */
   async pickActiveTools(): Promise<boolean> {
     if (!this.capabilities.toolsPicker) {
-      vscode.window.showInformationMessage("Per-session tool selection isn't available for Rust sessions — Rust uses its full built-in tool set.");
+      // In the chat, not a notification popup: /tools is typed in the chat, so the answer
+      // belongs where the question was asked.
+      this.emit({ type: "custom-message", data: { customType: "info", content: "Per-session tool selection isn't available for Rust sessions — Rust uses its full built-in tool set.", timestamp: Date.now() } });
       return false;
     }
     if (!this.session) {
@@ -1637,16 +1639,31 @@ export class PiService {
    * API-key and OAuth flows. We adapt those callbacks to VS Code UI (input boxes / quick
    * picks / browser-open) via makeAuthInteraction. Replaces the removed AuthStorage flow.
    */
-  async login(): Promise<void> { return runLogin(this.makeAuthFlowDeps()); }
+  async login(): Promise<void> { return runLogin(await this.makeAuthFlowDeps()); }
 
   /** Provider logout. Lists stored credentials and removes the chosen one; env vars /
    *  models.json config are untouched. See auth-flow.ts. */
-  async logout(): Promise<void> { return runLogout(this.makeAuthFlowDeps()); }
+  async logout(): Promise<void> { return runLogout(await this.makeAuthFlowDeps()); }
+
+  /** After a credential is stored. On Rust the binary reads auth.json from its own agent dir,
+   *  so re-seed it — and say plainly that a RUNNING session won't pick the credential up, since
+   *  rust-pi reads auth at startup. Silent on TS, where the session already holds the runtime. */
+  private afterLoginForRuntime(providerName: string): void {
+    if (this.capabilities.kind !== "rust") { return; }
+    const warning = reseedRustAuth();
+    if (warning) { piWarn(`Rust auth re-seed after login: ${warning}`); }
+    this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Rust reads credentials at startup, so start a new session for it to take effect.`, timestamp: Date.now() } });
+  }
 
   /** Real (vscode-backed) deps for the extracted, headlessly-tested login/logout flow. */
-  private makeAuthFlowDeps(): AuthFlowDeps {
+  private async makeAuthFlowDeps(): Promise<AuthFlowDeps> {
     return {
-      modelRuntime: this.modelRuntime,
+      // NOT this.modelRuntime — that is the SDK session's runtime and is null on Rust, so
+      // runLogin threw "Pi session not initialized" before showing a single prompt and the
+      // whole command looked like it did nothing. sharedModelRuntime() is the same lazily
+      // built runtime that already gives Rust its tab titles.
+      modelRuntime: await this.sharedModelRuntime(),
+      afterLogin: (providerName) => this.afterLoginForRuntime(providerName),
       getActiveModel: () => this._model,
       setModel: (provider, id) => this.setModel(provider, id),
       ui: {
