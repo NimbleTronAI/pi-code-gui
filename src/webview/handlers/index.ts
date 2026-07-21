@@ -761,7 +761,7 @@ export function handleBatchEnd(_data: MsgData<"batch-end">): void {
     });
   }
 
-export function handleQueueUpdate(data: any): void {
+export function handleQueueUpdate(data: MsgData<"queue-update">): void {
     // Track for /debug inspection
     (window.__piDebug._queueEvents = window.__piDebug._queueEvents || []).push({
       ts: Date.now(),
@@ -785,14 +785,14 @@ export function handleQueueUpdate(data: any): void {
     var result = "";
 
     // Steering messages — already interrupting, show with label
-    steering.forEach(function (m: any): void {
+    steering.forEach(function (m): void {
       result += html`<div class="queue-row">
         <span class="queue-label">Steer:</span>
         <span class="queue-text">${m}</span></div>`;
     });
 
     // Follow-up messages — queued, with promote button
-    followUp.forEach(function (m: any, i: number): void {
+    followUp.forEach(function (m, i: number): void {
       result += html`<div class="queue-row">
         <span class="queue-label">Queue:</span>
         <span class="queue-text">${m}</span>
@@ -1648,7 +1648,7 @@ export function showUserMessageSelector(): void {
 
 export function highlightUserMsgItem(): void {
     var items = state.userMsgOverlay.querySelectorAll(".user-msg-item");
-    items.forEach(function (item: any, i: number): void {
+    items.forEach(function (item, i: number): void {
       if (i === state.userMsgSelectedIdx) {
         item.classList.add("selected");
         item.scrollIntoView({ block: "nearest" });
@@ -1854,7 +1854,7 @@ export function dismissLiveCard(key: string): void {
 
 
 /** Bridge: extension host registers a renderer by source code. */
-export function handleRegisterMessageRenderer(data: any): void {
+export function handleRegisterMessageRenderer(data: MsgData<"registerMessageRenderer">): void {
     if (!data.customType || !data.sourceCode) {return;}
     try {
       // CSP blocks eval().  Inject a <script nonce> tag instead.
@@ -1982,7 +1982,7 @@ export function handleStatusWidget(key: string, content: string | null): void {
 
   // ═══ Interactive Dialog Bridge ═══════════════════════════
 
-export function handleShowDialog(data: any): void {
+export function handleShowDialog(data: MsgData<"show_dialog">): void {
     if (!data || !data.id) {return;}
     var dlg = new Dialog({
       dialogType: data.dialogType || "confirm",

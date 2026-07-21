@@ -180,3 +180,66 @@ test("every writer into currentToolBlocks stores the {el, renderer} object form"
     "that calls .getAttribute() on it",
   );
 });
+
+// ── numeric-string and non-string tool args (zero-any commit 2) ──────────────
+//
+// Tool args arrive as `Record<string, unknown>` on the wire — model-emitted JSON. Two places
+// consumed them as if they were already the right primitive, which the `data: any` on the
+// handlers hid. Both are pinned here because both are behaviour changes, not typing.
+
+test("read: a numeric-STRING offset adds instead of concatenating (range label)", () => {
+  reset();
+  toolsMod.handleToolStart({
+    toolCallId: "n1", toolName: "read",
+    args: { path: "big.ts", offset: "10", limit: "5" }, // strings, as a model may emit them
+    fromMessage: false,
+  });
+  const el = stateMod.state.currentToolBlocks["n1"].el;
+  const pathText = el.textContent || "";
+  // Before: ":" + "10" then "10" + "5" - 1 === "105" - 1 === 104  →  ":10-104"
+  assert.ok(pathText.includes(":10-14"), `range label should be :10-14, got: ${pathText.slice(0, 120)}`);
+  assert.ok(!pathText.includes(":10-104"), "the string-concatenation result must not come back");
+});
+
+test("read: continue-reading offset is numeric when the stored offset is a string", () => {
+  reset();
+  toolsMod.handleToolStart({
+    toolCallId: "n2", toolName: "read",
+    args: { path: "big.ts", offset: "100" },
+    fromMessage: false,
+  });
+  toolsMod.handleToolEnd({
+    toolCallId: "n2", toolName: "read", isError: false,
+    result: {
+      content: [{ type: "text", text: "line\n" }],
+      // truncated: offset(100) + outputLines(50) = 150, of 400 total → 250 remaining
+      details: { truncation: { truncated: true, totalLines: 400, outputLines: 50, outputBytes: 1 } },
+    },
+  });
+  const el = (globalThis as any).document.getElementById("chat-container").textContent || "";
+  // Before: ("100" || 0) + 50 === "10050", remaining 400 - 10050 → negative → link suppressed.
+  assert.ok(el.includes("250 lines remaining"), `expected 250 remaining, got: ${el.slice(-200)}`);
+});
+
+test("tool-start dedup ignores a non-string path instead of rendering [object Object]", () => {
+  reset();
+  toolsMod.handleToolStart({ toolCallId: "n3", toolName: "read", args: { path: "real.ts" }, fromMessage: true });
+  const el = stateMod.state.currentToolBlocks["n3"].el;
+
+  // Second tool-start for the same call, carrying a malformed path.
+  toolsMod.handleToolStart({ toolCallId: "n3", toolName: "read", args: { path: { nested: "oops" } }, fromMessage: false });
+
+  const pathEl = el.querySelector(".tool-path");
+  assert.ok(pathEl, "the card has a path element");
+  assert.ok(!(pathEl.textContent || "").includes("[object Object]"), "a non-string path must not be stringified into the DOM");
+});
+
+test("tool-end with NO result finalizes the card instead of throwing", () => {
+  reset();
+  toolsMod.handleToolStart({ toolCallId: "n4", toolName: "write", args: { path: "x.ts", content: "c" }, fromMessage: false });
+  const el = stateMod.state.currentToolBlocks["n4"].el;
+  // protocol.ts marks tool-end.data.result optional; every finalize already guards `result &&`,
+  // which is why the signature — not the callers — was what needed to change.
+  assert.doesNotThrow(() => toolsMod.handleToolEnd({ toolCallId: "n4", toolName: "write", isError: false }));
+  assert.equal(el.getAttribute("data-status"), "done");
+});

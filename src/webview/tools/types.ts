@@ -45,7 +45,10 @@ export type ToolEl = HTMLElement;
 export interface ToolRenderer {
   create: (data: ToolData) => ToolEl;
   update: (el: ToolEl, partialResult: ToolPartialResult) => void;
-  finalize: (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) => void;
+  // `result` is optional on the wire (protocol.ts: tool-end.data.result.optional()), and every
+  // implementation already guards `result &&` before touching it. Saying so here is what stops
+  // the handler needing an `any` to pass a possibly-absent result through.
+  finalize: (el: ToolEl, result: ToolResult | undefined, isError: boolean, entryId?: string) => void;
 }
 
 /** A live tool card, keyed by toolCallId in `state.currentToolBlocks`.

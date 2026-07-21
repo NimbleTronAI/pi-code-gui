@@ -12,6 +12,10 @@ import { html, safe } from "../render/html.js";
 import { ToolBlock } from "../components/tool-block.js";
 
 import type { ToolData, ToolPartialResult, ToolResult, ToolEl, ToolRenderer } from "./types.js";
+import type { ExtensionToWebview } from "../../shared/protocol.js";
+
+/** Payload of one ExtensionToWebview message, same helper handlers/index.ts uses. */
+type MsgData<T extends ExtensionToWebview["type"]> = Extract<ExtensionToWebview, { type: T }> extends { data?: infer D } ? D : never;
 import { CodeBlock } from "../components/code-block.js";
 
 
@@ -70,7 +74,7 @@ export const writeToolRenderer = {
         });
       }
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
+    finalize: function (el: ToolEl, result: ToolResult | undefined, isError: boolean, entryId?: string): void {
       // Flush any pending rAF render
       if (el._writeRafId) { cancelAnimationFrame(el._writeRafId); el._writeRafId = null; }
       if (el._writePending) { processWriteUpdate(el, el._writePending); el._writePending = null; }
@@ -255,7 +259,7 @@ export const editToolRenderer = {
         // JSON incomplete during streaming — expected, not an error
       }
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
+    finalize: function (el: ToolEl, result: ToolResult | undefined, isError: boolean, entryId?: string): void {
       var tb = el._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -370,8 +374,10 @@ export const readToolRenderer = {
       var limit = data.args && data.args.limit;
       var rangeLabel = "";
       if (offset !== undefined) {
-        rangeLabel = ":" + (offset as number);
-        if (limit !== undefined) {rangeLabel += "-" + ((offset as number) + (limit as number) - 1);}
+        // Same numeric-string hazard as the continue-reading offset below: `offset + limit`
+        // concatenates unless both are coerced.
+        rangeLabel = ":" + Number(offset);
+        if (limit !== undefined) {rangeLabel += "-" + (Number(offset) + Number(limit) - 1);}
       }
 
       var compact = getCompactReadLabel(rawPath as string);
@@ -436,7 +442,7 @@ export const readToolRenderer = {
         // JSON incomplete during streaming — expected, not an error
       }
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
+    finalize: function (el: ToolEl, result: ToolResult | undefined, isError: boolean, entryId?: string): void {
       var tb = el._toolBlock;
       if (tb) {
         (tb).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -511,7 +517,7 @@ export const readToolRenderer = {
 
       if (trunc && trunc.truncated) {
         // Case 1: SDK hard truncation (50KB or 2000 lines)
-        contNextOffset = ((readState.offset as number) || 0) + trunc.outputLines;
+        contNextOffset = (Number(readState.offset) || 0) + trunc.outputLines;
         contRemaining = trunc.totalLines - contNextOffset;
         hasMore = contRemaining > 0;
       } else if (userMoreMatch) {
@@ -560,7 +566,7 @@ export const defaultToolRenderer = {
       var displayText = lines.length > 60 ? "...\n" + lines.slice(-60).join("\n") : text;
       morphRender(tr, renderToolResult(displayText));
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
+    finalize: function (el: ToolEl, result: ToolResult | undefined, isError: boolean, entryId?: string): void {
       var statusEl = el.querySelector(".tool-status");
       if (statusEl) {
         statusEl.textContent = isError ? "error" : "done";
@@ -617,7 +623,7 @@ export const bashToolRenderer = {
       // leak noise ({}{}{}{}) into the output div.
       // Output is handled exclusively by handleBashOutput.
     },
-    finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string): void {
+    finalize: function (el: ToolEl, result: ToolResult | undefined, isError: boolean, entryId?: string): void {
       var toolCallId = el.id.replace(/^(entry-|bash-)/, "");
       var text = "";
       if (result && result.content) {
@@ -680,7 +686,7 @@ export const bashToolRenderer = {
   // ═══ Message Renderer Registry ════════════════════════════
   // ═══ Tool Lifecycle ════════════════════════════════════
 
-export function handleToolStart(data: any): void {
+export function handleToolStart(data: MsgData<"tool-start">): void {
     hideWelcome();
 
     // Stop thinking spinner — tool execution means thinking is done
@@ -745,7 +751,11 @@ export function handleToolStart(data: any): void {
         }
       }
       // If the new data has a path but the existing dedupBlock shows "...", update it
-      var newPath = data.args && (data.args.path || data.args.file_path || data.args.filePath);
+      // Tool args are `unknown` on the wire. Everything below writes newPath into textContent
+      // and data-path and hands it to getLangFromPath(string), so a non-string value used to
+      // render as "[object Object]" and mis-detect the language. Now it is simply ignored.
+      var rawNewPath = data.args && (data.args.path || data.args.file_path || data.args.filePath);
+      var newPath = typeof rawNewPath === "string" ? rawNewPath : "";
       if (newPath && dedupBlock) {
         var pathEl = dedupBlock.querySelector(".tool-path");
         if (pathEl && pathEl.textContent === "...") {
@@ -827,7 +837,7 @@ export function handleToolStart(data: any): void {
     scrollToBottom();
   }
 
-export function handleToolUpdate(data: any): void {
+export function handleToolUpdate(data: MsgData<"tool-update">): void {
     // Ensure thinking spinner stays hidden during tool execution
     if (state.currentThinkingEl) {
       // _rawText is accumulated ON THE COMPONENT (handlers/index.ts: `tb._rawText = …`), not on
@@ -864,7 +874,7 @@ function isInterruptedByQueue(result: any): boolean {
   } catch (_e) { return false; }
 }
 
-export function handleToolEnd(data: any): void {
+export function handleToolEnd(data: MsgData<"tool-end">): void {
     // Downgrade the "Skipped due to queued user message" abort from a red error
     // to a neutral result — the result text still explains what happened.
     if (data && data.isError && isInterruptedByQueue(data.result)) {
