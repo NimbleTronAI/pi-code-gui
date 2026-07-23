@@ -67,6 +67,10 @@ class of bugs.
 - **Token-diff streaming:** During streaming, only the last assistant message
   block is morphdom-updated — the rest is static. This avoids full re-renders
   on every token delta.
+- **Markdown links:** Inline token rendering recurses through marked's nested
+  text tokens, so links render correctly inside list items and other compound
+  structures. Delegated clicks use `closest("a[href]")` and only forward
+  `http`, `https`, and `mailto` URLs to the extension host.
 - **Batch replay:** On initial load, the chat container gets a `.no-animate`
   class so history messages render instantly without fade-in animations.
 - **Thinking collapse:** Thinking blocks show a scrollable preview with a
@@ -133,4 +137,4 @@ the entire class of HTML injection and CSS token leakage bugs.
 - [Streaming Pipeline](streaming-pipeline.md) — RAF-batched rendering
 - [Component System Proposal](component-system-proposal.md) — proposed architectural upgrade
 
-> **Last updated:** 2026-05-19 — All 7 steps complete (Zod, safe HTML, components, dialogs, status bar)
+> **Last updated:** 2026-07-23 — fixed nested Markdown link rendering and restricted delegated URL opening to safe schemes

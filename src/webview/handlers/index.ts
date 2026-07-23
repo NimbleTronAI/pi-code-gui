@@ -11,6 +11,7 @@ import {
   shortenPath, renderCodeBlockHTML,
   setupCodeBlockHandlers,
 } from "../render/engine.js";
+import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
 import { validateExtensionToWebview } from "../../shared/protocol.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
@@ -1344,10 +1345,13 @@ let sbSettings = document.getElementById("pi-sb-settings");
 
   // Handle external links and close overlays on outside clicks
   document.addEventListener("click", function (e) {
-    var target = e.target as HTMLElement;
-    if (target && target.tagName === "A" && (target as HTMLAnchorElement).href) {
+    var target = e.target instanceof Element ? e.target : null;
+    var link = target?.closest("a[href]") as HTMLAnchorElement | null;
+    if (link) {
       e.preventDefault();
-      window.__vscode.postMessage({ type: "openUrl", url: (target as HTMLAnchorElement).href });
+      if (isAllowedMarkdownLink(link.href)) {
+        window.__vscode.postMessage({ type: "openUrl", url: link.href });
+      }
     }
     // Close overlays when clicking outside (except the status bar gear)
     if (state.settingsOpen && !state.settingsOverlay.contains(target) && target !== sbSettings && !sbSettings?.contains(target)) {

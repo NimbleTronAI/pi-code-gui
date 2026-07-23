@@ -10,6 +10,7 @@ import { state, type AppState } from "../state.js";
 import { logEvent, logDom } from "../debug.js";
 import { highlightCode } from "../highlight.js";
 import { html, safe } from "./html.js";
+import { renderInlineTokens, type MarkdownTokens } from "./markdown-inline.js";
 import { CodeBlock } from "../components/code-block.js";
 import { ThinkingBlock } from "../components/thinking-block.js";
 
@@ -377,46 +378,7 @@ function renderTableBlock(token: MarkedToken): HTMLTableElement {
 }
 
 export function renderInline(tokens: MarkedTokens | undefined): string {
-  if (!tokens || tokens.length === 0) {return "";}
-  let result = "";
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]!;
-    switch (t.type) {
-      case "text":
-        result += escapeHtml(t.text as string);
-        break;
-      case "strong":
-        result += html`<strong>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</strong>`;
-        break;
-      case "em":
-        result += html`<em>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</em>`;
-        break;
-      case "codespan":
-        result += html`<code>${t.text as string}</code>`;
-        break;
-      case "link":
-        result += html`<a href="${t.href as string}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
-        break;
-      case "del":
-        result += html`<del>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</del>`;
-        break;
-      case "image":
-        result += html`<img src="${t.href as string}" alt="${t.text as string}">`;
-        break;
-      case "br":
-        result += "<br>";
-        break;
-      case "html":
-        result += (t.text as string) || (t.raw as string) || "";
-        break;
-      case "escape":
-        result += escapeHtml(t.text as string);
-        break;
-      default:
-        result += escapeHtml((t.raw as string) || (t.text as string) || "");
-    }
-  }
-  return result;
+  return renderInlineTokens(tokens as MarkdownTokens | undefined, escapeHtml);
 }
 
 // ═══ Token-diff Streaming ═════════════════════════════════
