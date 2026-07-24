@@ -198,6 +198,22 @@
     text-align: center;
   }
 
+  .pi-waiting-indicator {
+    color: var(--fg-secondary);
+
+    .message-content {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45em;
+      min-height: 1.6em;
+    }
+
+    .working-spinner {
+      color: var(--accent);
+      transition: opacity 0.15s ease;
+    }
+  }
+
   /* ═══ Welcome ═══════════════════════════════════════════ */
 
   .welcome-message {

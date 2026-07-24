@@ -5,6 +5,10 @@ starts with `## [YYYY-MM-DD] <action> | <description>`. Actions:
 `ingest` (new page), `update` (existing page changed), `lint` (quality
 pass performed), `archive` (page moved to archive).
 
+## [2026-07-24] update | Webview Frontend — match Pi TUI's Working spinner and keep it below assistant/tool output until the agent ends
+
+## [2026-07-23] update | Webview Frontend — show an immediate animated Pi waiting indicator after submitting a new prompt
+
 ## [2026-07-23] update | Webview Frontend — render Markdown links nested in list text tokens and restrict delegated URL opening to safe schemes
 
 ## [2026-07-21] update | Event Translation — handle SDK 0.80 agent_settled as final idle confirmation without duplicate agent-end

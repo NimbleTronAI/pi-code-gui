@@ -669,6 +669,7 @@ export const bashToolRenderer = {
   // during initial replay).
 
   function insertToolBlock(block: HTMLElement) {
+    var waitingIndicator = document.getElementById("working-indicator");
     var anchor = state.lastToolInsertionEl || state.currentAssistantEl;
     if (anchor && anchor.parentNode === state.chatContainer) {
       // Insert after anchor
@@ -682,6 +683,10 @@ export const bashToolRenderer = {
       state.chatContainer.appendChild(block);
     }
     state.lastToolInsertionEl = block;
+    // Keep the active Pi status at the bottom, after assistant and tool output.
+    if (waitingIndicator && waitingIndicator.parentNode === state.chatContainer) {
+      state.chatContainer.appendChild(waitingIndicator);
+    }
   }
 
   // Exported for handleBashStart in handlers/index.ts

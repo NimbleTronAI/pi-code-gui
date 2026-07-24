@@ -12,6 +12,12 @@ import {
   setupCodeBlockHandlers,
 } from "../render/engine.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
+import {
+  nextWaitingFrame,
+  PI_TUI_SPINNER_FRAMES,
+  shouldPlaceWaitingIndicatorAfterMessage,
+  shouldShowPromptWaitingIndicator,
+} from "../render/waiting-indicator.js";
 import { validateExtensionToWebview } from "../../shared/protocol.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
@@ -212,8 +218,8 @@ export function handleAgentStart() {
     // Do NOT clear the live panel here — extension cards (like tldr summaries)
     // should persist across prompts and be replaced only when new output of
     // the same type arrives, or when the extension explicitly removes them.
-    removeWorkingIndicator();
     addWorkingIndicator();
+    moveWorkingIndicatorToBottom();
     updateStreamingState();
     setSbDot("streaming");
   }
@@ -334,7 +340,8 @@ export function handleChatMessage(data: any) {
     }
 
     hideWelcome();
-    removeWorkingIndicator(); // Hide working indicator when we get a response
+    // Keep the working indicator throughout the complete agent run. It is
+    // removed only by agent_end/error, not by intermediate message events.
 
     var el = createMessageEl(data.role);
     // #9: Entry ID for scroll-to
@@ -355,12 +362,15 @@ export function handleChatMessage(data: any) {
       }
     }
     state.chatContainer.appendChild(el);
+    if (shouldPlaceWaitingIndicatorAfterMessage(data.role)) {
+      var waitingIndicator = document.getElementById("working-indicator");
+      if (waitingIndicator) {state.chatContainer.appendChild(waitingIndicator);}
+    }
     scrollToBottom();
   }
 
 export function handleAssistantStart(data: any) {
     hideWelcome();
-    removeWorkingIndicator();
 
     // Create the assistant container eagerly before any content arrives
     state.currentAssistantEl = createMessageEl("assistant");
@@ -371,6 +381,7 @@ export function handleAssistantStart(data: any) {
     state.assistantToolCallIds = {};
     state.lastToolInsertionEl = null;  // New turn — reset tool insertion anchor
     state.chatContainer.appendChild(state.currentAssistantEl);
+    moveWorkingIndicatorToBottom();
     scrollToBottom();
   }
 
@@ -532,6 +543,7 @@ export function handleStreamDelta(data: any) {
       state.currentThinkingEl = null;
       state._streamPrevTokens = [];
       state.chatContainer.appendChild(state.currentAssistantEl);
+      moveWorkingIndicatorToBottom();
     }
     var contentEl = state.currentAssistantEl.querySelector(".message-content");
     if (contentEl) {
@@ -543,6 +555,7 @@ export function handleStreamDelta(data: any) {
       // Schedule a single render per animation frame
       _scheduleStreamRender(contentEl);
     }
+    moveWorkingIndicatorToBottom();
     scrollToBottom();
   }
 
@@ -851,20 +864,30 @@ export function addWorkingIndicator(): void {
     if (existing) {return;}
     var el = document.createElement("div");
     el.id = "working-indicator";
-    el.className = "message assistant";
-    el.innerHTML =
-      '<div class="message-content"><span class="working-spinner">○</span> Working...</div>';
+    el.className = "message assistant pi-waiting-indicator";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-label", "Pi is thinking");
+    el.innerHTML = html`
+      <div class="message-content">
+        <span class="working-spinner" aria-hidden="true">${PI_TUI_SPINNER_FRAMES[0]}</span>
+        <span class="pi-waiting-text">Working...</span>
+      </div>`;
     state.chatContainer.appendChild(el);
     scrollToBottom();
 
-    // Animate spinner
-    var frames = ["○", "◔", "◐", "◓"];
     var frame = 0;
     el._spinnerInterval = setInterval(function () {
-      frame = (frame + 1) % frames.length;
-      var s = el.querySelector(".working-spinner");
-      if (s) {s.textContent = frames[frame];}
-    }, 300);
+      frame = nextWaitingFrame(frame);
+      var spinner = el.querySelector(".working-spinner");
+      if (spinner) {spinner.textContent = PI_TUI_SPINNER_FRAMES[frame];}
+    }, 80);
+  }
+
+export function moveWorkingIndicatorToBottom(): void {
+    var indicator = document.getElementById("working-indicator");
+    if (indicator && indicator.parentNode === state.chatContainer && indicator !== state.chatContainer.lastElementChild) {
+      state.chatContainer.appendChild(indicator);
+    }
   }
 
 export function removeWorkingIndicator(): void {
@@ -1279,12 +1302,20 @@ export function sendPrompt(): void {
         };
       });
 
+    var wasStreaming = state.isStreaming;
     window.__vscode.postMessage({
       type: "prompt",
       text: text,
       images: images.length > 0 ? images : undefined,
-      mode: state.isStreaming ? state.queueMode : undefined,
+      mode: wasStreaming ? state.queueMode : undefined,
     });
+
+    // Give immediate feedback while the extension host prepares the request.
+    // Queued/steering prompts already have an active response indicator.
+    if (shouldShowPromptWaitingIndicator(wasStreaming)) {
+      hideWelcome();
+      addWorkingIndicator();
+    }
 
     state.promptInput.value = "";
     state.promptInput.style.height = "auto";

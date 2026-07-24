@@ -1,0 +1,31 @@
+import * as assert from "node:assert";
+import {
+  nextWaitingFrame,
+  PI_TUI_SPINNER_FRAMES,
+  shouldKeepWaitingIndicator,
+  shouldPlaceWaitingIndicatorAfterMessage,
+  shouldShowPromptWaitingIndicator,
+} from "../webview/render/waiting-indicator.js";
+
+suite("Webview prompt waiting indicator", () => {
+  test("shows immediately for a new idle prompt but not for queued or steering prompts", () => {
+    assert.strictEqual(shouldShowPromptWaitingIndicator(false), true);
+    assert.strictEqual(shouldShowPromptWaitingIndicator(true), false);
+  });
+
+  test("places a pending indicator after the echoed user message", () => {
+    assert.strictEqual(shouldPlaceWaitingIndicatorAfterMessage("user"), true);
+    assert.strictEqual(shouldPlaceWaitingIndicatorAfterMessage("assistant"), false);
+  });
+
+  test("uses Pi TUI spinner frames while the agent is active", () => {
+    assert.deepStrictEqual(PI_TUI_SPINNER_FRAMES, ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+    assert.strictEqual(nextWaitingFrame(0), 1);
+    assert.strictEqual(nextWaitingFrame(9), 0);
+    assert.strictEqual(shouldKeepWaitingIndicator("assistant-start"), true);
+    assert.strictEqual(shouldKeepWaitingIndicator("stream-delta"), true);
+    assert.strictEqual(shouldKeepWaitingIndicator("tool-start"), true);
+    assert.strictEqual(shouldKeepWaitingIndicator("agent-end"), false);
+    assert.strictEqual(shouldKeepWaitingIndicator("error"), false);
+  });
+});

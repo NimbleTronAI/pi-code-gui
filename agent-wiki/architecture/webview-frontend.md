@@ -71,6 +71,12 @@ class of bugs.
   text tokens, so links render correctly inside list items and other compound
   structures. Delegated clicks use `closest("a[href]")` and only forward
   `http`, `https`, and `mailto` URLs to the extension host.
+- **Agent working indicator:** Submitting a new idle prompt immediately inserts
+  Pi TUI's Braille spinner and `Working...`. It uses the same ten 80ms
+  frames as `pi-tui` (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`), remains visible throughout text and
+  tool output, and is repeatedly moved behind the latest output so it stays at
+  the bottom of the active run. Only agent completion, failure, or abort removes
+  it. Steering and queued prompts reuse the active indicator.
 - **Batch replay:** On initial load, the chat container gets a `.no-animate`
   class so history messages render instantly without fade-in animations.
 - **Thinking collapse:** Thinking blocks show a scrollable preview with a
@@ -137,4 +143,4 @@ the entire class of HTML injection and CSS token leakage bugs.
 - [Streaming Pipeline](streaming-pipeline.md) — RAF-batched rendering
 - [Component System Proposal](component-system-proposal.md) — proposed architectural upgrade
 
-> **Last updated:** 2026-07-23 — fixed nested Markdown link rendering and restricted delegated URL opening to safe schemes
+> **Last updated:** 2026-07-24 — matched the Pi TUI working spinner and kept it below all active agent output
