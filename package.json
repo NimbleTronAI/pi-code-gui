@@ -268,12 +268,12 @@
         "pi-code-gui.anthropicApiKey": {
           "type": "string",
           "default": "",
-          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime)"
+          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime). Stored in plaintext in VS Code settings; prefer the env var or /login."
         },
         "pi-code-gui.openaiApiKey": {
           "type": "string",
           "default": "",
-          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime)"
+          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime). Stored in plaintext in VS Code settings; prefer the env var or /login."
         },
         "pi-code-gui.systemPromptAppend": {
           "type": "string",

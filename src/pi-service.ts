@@ -520,7 +520,7 @@ export class PiService {
     try {
       this.authStorage = SDK.AuthStorage.create();
 
-      // Runtime API key override from VS Code secrets or env
+      // Runtime API key override from VS Code configuration (plaintext) or env
       const config = vscode.workspace.getConfiguration("pi-code-gui");
       const anthropicKey = config.get<string>("anthropicApiKey");
       if (anthropicKey) {
