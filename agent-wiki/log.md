@@ -5,6 +5,8 @@ starts with `## [YYYY-MM-DD] <action> | <description>`. Actions:
 `ingest` (new page), `update` (existing page changed), `lint` (quality
 pass performed), `archive` (page moved to archive).
 
+## [2026-07-24] update | Bootstrap (AGENTS.md) — corrected API-key persistence claim: `anthropicApiKey`/`openaiApiKey` settings are plaintext in settings.json (was "never written to disk as plaintext")
+
 ## [2026-05-27] lint | Full wiki + README audit — bridge-tools (16 tools, not 17; dedup table row), syntax-highlighting (15 languages, +yaml/sql/diff), tree-views (progressive load, entry caching, state-change refresh), event-translation (turn-end, message_update error, user message_end), streaming-pipeline (progressive replay), README (16 tools)
 ## [2026-05-26] update | Bridge Tools, PiService — added `/tools` runtime picker with persistence, replaced static `pi-code-gui.tools` allowlist
 ## [2026-05-25] archive | Architecture — Multi-Backend Architecture → `archive/multi-backend.md` (rejected: incompatible extension/UI model)

@@ -1,5 +1,10 @@
 # Change Log
 
+## [Unreleased]
+
+### Changed
+- Corrected the README and `package.json` setting descriptions: the `anthropicApiKey`/`openaiApiKey` settings are stored in plaintext in VS Code settings (previously documented as "not persisted to disk"). Recommend the env vars or `/login` instead.
+
 ## [0.0.55]
 
 ### Fixed

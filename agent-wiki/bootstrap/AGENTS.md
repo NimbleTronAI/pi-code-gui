@@ -69,7 +69,9 @@ bypass VS Code's buffer tracking and cause dirty-state mismatches.
   The `.pi/` directory is gitignored.
 - API keys: Pi SDK's `AuthStorage` (system keychain via keytar) or runtime
   override from `pi-code-gui.anthropicApiKey` / `pi-code-gui.openaiApiKey`.
-  Never written to disk as plaintext.
+  `AuthStorage` keys are not written to disk as plaintext, but the two settings
+  above, if set, are stored in plaintext in VS Code's settings.json — prefer
+  the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars or `/login`.
 - Open session paths: `context.workspaceState` (VS Code workspace storage) —
   per-workspace, survives window reloads.
 
