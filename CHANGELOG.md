@@ -1,5 +1,10 @@
 # Change Log
 
+## [Unreleased]
+
+### Security
+- Restricted the `openUrl` webview handler to `http(s)`/`mailto` schemes so a crafted webview message can't ask the host to open an unexpected URI (e.g. `file:` or a custom-protocol handler).
+
 ## [0.0.55]
 
 ### Fixed
