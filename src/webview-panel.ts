@@ -163,9 +163,19 @@ export class PiWebviewPanel {
             void this.triggerEffortPicker();
             break;
 
-          case "openUrl":
-            vscode.env.openExternal(vscode.Uri.parse(message.url));
+          case "openUrl": {
+            // Only allow external navigation for http(s)/mailto URLs coming
+            // from the webview; reject other schemes (javascript:, file:,
+            // data:, …) that could be abused if a message were crafted to
+            // trigger openExternal with an unexpected URI.
+            const url = vscode.Uri.parse(message.url);
+            if (url.scheme === "http" || url.scheme === "https" || url.scheme === "mailto") {
+              vscode.env.openExternal(url);
+            } else {
+              console.warn(`[pi-gui] Refusing openExternal for disallowed URL scheme: ${url.scheme}`);
+            }
             break;
+          }
 
           case "openFile":
             vscode.window.showTextDocument(vscode.Uri.file(message.path));
