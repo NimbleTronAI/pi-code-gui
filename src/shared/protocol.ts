@@ -27,8 +27,10 @@ const TextContentItemSchema = z.object({
   text: z.string(),
 });
 
+// Pi tool results and custom messages use the same multimodal content model:
+// each item is either text or a base64 image.
 const ContentArraySchema = z.array(
-  z.union([TextContentItemSchema, z.object({ type: z.string(), text: z.string() })]),
+  z.union([TextContentItemSchema, ImageContentSchema]),
 );
 
 // ═══ Extension → Webview schemas ═══════════════════════════
