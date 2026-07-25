@@ -31,6 +31,8 @@ const sessions: SessionWindow[] = [];
 let sessionCounter = 0;
 /** Cached extension context — set once in activate(), used throughout. */
 let extContext: vscode.ExtensionContext | null = null;
+/** Prevent panel-dispose callbacks from overwriting saved state during shutdown. */
+let isDeactivating = false;
 
 /** Persist the set of open session file paths so they can be restored on reload. */
 async function saveOpenSessionPaths(): Promise<void> {
@@ -172,6 +174,10 @@ function getGenericSessionLabel(id: string): string {
 /** Build a dispose handler that saves and removes a session when its panel closes. */
 function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
   return () => {
+    // deactivate() saves the complete open-session set before disposing
+    // panels. Do not remove sessions or overwrite that state during shutdown.
+    if (isDeactivating) { return; }
+
     // The SessionManager auto-persists entries as they are written during
     // conversation, so the session file already exists on disk.  We just
     // need to clean up and remove it from the open-sessions list so it
@@ -191,6 +197,7 @@ function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extContext = context;
+  isDeactivating = false;
   console.log("[pi-on-code] Extension activating...");
 
   // Create output channel for diagnostics (View → Output → Pi on Code)
@@ -832,11 +839,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       restoreActiveSession(savedActivePath);
     } else {
-      // No saved sessions — create one fresh session.
+      // No explicit open-session state (for example, the first run of a new
+      // debug workspace). Continue the project's most recent session. The SDK
+      // creates a fresh session automatically when no history exists.
       const sw = createSessionWindow(context);
       setActiveSession(sw);
       if (autoOpen) { void sw.webviewPanel.show(); }
-      void initSessionInBackground(context, sw, { fresh: true });
+      void initSessionInBackground(context, sw);
     }
 
     // ── Step 5: Initialize packages view ──────────────
@@ -2001,7 +2010,10 @@ class SessionTreeItem extends vscode.TreeItem {
 }
 
 export async function deactivate(): Promise<void> {
-  // Persist open sessions before disposing so we can restore on next activate
+  // Persist open sessions before disposing so we can restore on next activate.
+  // Panel disposal is synchronous and normally removes sessions, so mark the
+  // shutdown first to keep those callbacks from overwriting this snapshot.
+  isDeactivating = true;
   await saveOpenSessionPaths();
   for (const sw of sessions) {
     sw.webviewPanel.dispose();

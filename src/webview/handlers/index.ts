@@ -329,14 +329,92 @@ export function handleTurnEnd(data: any) {
   // ═══ Message Lifecycle ═════════════════════════════════
   // ═══ Message Lifecycle ═════════════════════════════════
 
+function openMessageImage(src: string, alt: string): void {
+    document.querySelector(".message-image-lightbox")?.remove();
+
+    var overlay = document.createElement("div");
+    overlay.className = "message-image-lightbox";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", alt);
+
+    var fullImage = document.createElement("img");
+    fullImage.className = "message-image-full";
+    fullImage.src = src;
+    fullImage.alt = alt;
+
+    var closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "message-image-close";
+    closeButton.textContent = "×";
+    closeButton.setAttribute("aria-label", "Close image preview");
+
+    var close = function (): void {
+      document.removeEventListener("keydown", onKeydown);
+      overlay.remove();
+    };
+    var onKeydown = function (event: KeyboardEvent): void {
+      if (event.key === "Escape") { close(); }
+    };
+
+    closeButton.addEventListener("click", close);
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) { close(); }
+    });
+    document.addEventListener("keydown", onKeydown);
+    overlay.append(fullImage, closeButton);
+    document.body.appendChild(overlay);
+    closeButton.focus();
+  }
+
+function createMessageImages(images: unknown): HTMLElement | null {
+    if (!Array.isArray(images) || images.length === 0) { return null; }
+
+    var gallery = document.createElement("div");
+    gallery.className = "message-images";
+    for (var i = 0; i < images.length; i++) {
+      var image = images[i];
+      if (!image || image.type !== "image" || typeof image.data !== "string" ||
+          typeof image.mimeType !== "string" || !image.mimeType.startsWith("image/")) {
+        continue;
+      }
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "message-image-button";
+      button.title = "View full image";
+
+      var img = document.createElement("img");
+      img.className = "message-image";
+      img.src = "data:" + image.mimeType + ";base64," + image.data;
+      img.alt = "Attached image " + (i + 1);
+      img.loading = "lazy";
+      button.appendChild(img);
+      button.addEventListener("click", function (event) {
+        var target = event.currentTarget as HTMLElement;
+        var preview = target.querySelector(".message-image") as HTMLImageElement | null;
+        if (preview) { openMessageImage(preview.src, preview.alt); }
+      });
+      gallery.appendChild(button);
+    }
+    return gallery.childElementCount > 0 ? gallery : null;
+  }
+
 export function handleChatMessage(data: any) {
-    // Dedup: skip if same role+content as last user message
-    if (data.role === "user" && data.content === state.lastUserMessageContent) {return;}
+    var images = Array.isArray(data.images) ? data.images : [];
+    var imageKey = images.map(function (image: any) {
+      return String(image?.mimeType || "") + ":" + String(image?.data || "").slice(0, 64);
+    }).join("|");
+    var userMessageKey = String(data.content || "") + "\u0000" + imageKey;
+
+    // Dedup repeated SDK/replay events while keeping image-only messages distinct.
+    if (data.role === "user" && userMessageKey === state.lastUserMessageContent) {return;}
     if (data.role === "user") {
-      state.lastUserMessageContent = data.content;
-      // Populate state.userMessageHistory for up-arrow recall (#2)
-      state.userMessageHistory.unshift({ text: data.content });
-      if (state.userMessageHistory.length > 50) {state.userMessageHistory.pop();}
+      state.lastUserMessageContent = userMessageKey;
+      // Populate state.userMessageHistory for up-arrow recall (#2).
+      if (data.content) {
+        state.userMessageHistory.unshift({ text: data.content });
+        if (state.userMessageHistory.length > 50) {state.userMessageHistory.pop();}
+      }
     }
 
     hideWelcome();
@@ -351,14 +429,19 @@ export function handleChatMessage(data: any) {
     }
     var mc = el.querySelector(".message-content");
     if (mc) {
+      var imageGallery = createMessageImages(images);
+      if (imageGallery) { mc.appendChild(imageGallery); }
+
       // Use block rendering for user messages (one-shot, no streaming)
-      if (state._markedAvailable) {
+      if (data.content && state._markedAvailable) {
         var tokens = marked.lexer(data.content);
         for (var ti = 0; ti < tokens.length; ti++) {
           mc.appendChild(renderBlock(tokens[ti]));
         }
-      } else {
-        mc.innerHTML = renderMarkdown(data.content);
+      } else if (data.content) {
+        var textContainer = document.createElement("div");
+        textContainer.innerHTML = renderMarkdown(data.content);
+        while (textContainer.firstChild) { mc.appendChild(textContainer.firstChild); }
       }
     }
     state.chatContainer.appendChild(el);
@@ -752,10 +835,10 @@ export function handleQueueUpdate(data: any) {
         <span class="queue-text">${m}</span></div>`;
     });
 
-    // Follow-up messages — queued, with promote button
+    // Follow-up messages — processed after the current turn, with promote button
     followUp.forEach(function (m: any, i: number) {
       result += html`<div class="queue-row">
-        <span class="queue-label">Queue:</span>
+        <span class="queue-label">Follow-up:</span>
         <span class="queue-text">${m}</span>
         <button class="queue-promote-btn" data-idx="${i}" title="Promote to Steer (interrupt now)">Steer now</button>
         </div>`;
@@ -763,7 +846,7 @@ export function handleQueueUpdate(data: any) {
 
     // Clear all button — always show when there are items
     result += html`<div class="queue-actions">
-      <button class="queue-clear-btn">✕ Clear all queued</button>
+      <button class="queue-clear-btn">✕ Clear pending</button>
       </div>`;
 
     el.innerHTML = result;
@@ -1254,7 +1337,7 @@ export function renderAttachments(): void {
 
   // ── Send prompt ───────────────────────────────────────
 
-export function sendPrompt(): void {
+export function sendPrompt(modeOverride?: "steer" | "queue"): void {
     console.log("[pi-on-code] sendPrompt called");
     var text = state.promptInput.value.trim();
     if (!text && state.attachments.length === 0) {return;}
@@ -1304,7 +1387,7 @@ export function sendPrompt(): void {
       type: "prompt",
       text: text,
       images: images.length > 0 ? images : undefined,
-      mode: wasStreaming ? state.queueMode : undefined,
+      mode: wasStreaming ? (modeOverride ?? state.queueMode) : undefined,
     });
 
     // Give immediate feedback while the extension host prepares the request.
@@ -1320,24 +1403,16 @@ export function sendPrompt(): void {
     clearAttachments();
   }
 
-  state.sendButton.addEventListener("click", sendPrompt);
+  state.sendButton.addEventListener("click", function () { sendPrompt(); });
 
   state.abortButton.addEventListener("click", function () {
     window.__vscode.postMessage({ type: "abort" });
   });
 
-  // Steer dropdown — toggles between Steer and Queue mode
+  // Steer dropdown — toggles between Steer and Follow-up mode.
   state.steerDropdown.addEventListener("click", function () {
     state.queueMode = state.queueMode === "steer" ? "queue" : "steer";
-    if (state.queueMode === "queue") {
-      state.sendButton.textContent = "Queue";
-      state.sendButton.title = "Queue (process after current turn)";
-      state.steerDropdown.title = "Switch to Steer";
-    } else {
-      state.sendButton.textContent = "Steer";
-      state.sendButton.title = "Steer (interrupt current request)";
-      state.steerDropdown.title = "Switch to Queue";
-    }
+    updateStreamingState();
   });
 
   // ── In-webview status bar click handlers ─────────────
@@ -1468,7 +1543,9 @@ let sbSettings = document.getElementById("pi-sb-settings");
       }
       closeAllOverlays();
       e.preventDefault();
-      sendPrompt();
+      // Alt+Enter always queues a follow-up while streaming. Shift+Enter is
+      // intentionally left to the textarea for inserting a newline.
+      sendPrompt(e.altKey ? "queue" : undefined);
     }
   });
 
@@ -1613,6 +1690,7 @@ export function closeUserMsgSelector() {
 export function handleSettingsUpdate(data: any) {
     if (data) {
       state.settingsState = data;
+      document.body.classList.toggle("hide-message-images", data.showImages === false);
       renderSettingsPanel();
     }
   }
@@ -2214,7 +2292,7 @@ export function handleDebugCommand(): void {
       "Orphan bash: " + JSON.stringify(summary.orphanBash) + "\n" +
       "Orphan tool: " + JSON.stringify(summary.orphanTool) + "\n\n" +
       "Last 20 Events:\n" + JSON.stringify(summary.lastEvents, null, 2) + "\n\n" +
-      "Queue / Steer State:\n" +
+      "Follow-up / Steer State:\n" +
       "state.isStreaming: " + state.isStreaming + "\n" +
       "state.queueMode: " + state.queueMode + "\n" +
       "pending-queue-indicator exists: " + !!document.getElementById("pending-queue-indicator") + "\n" +
@@ -2256,7 +2334,7 @@ export function handleDebugCommand(): void {
       escapeHtml(JSON.stringify(summary.lastEvents, null, 2)) +
       '</pre>' +
 
-      '<h4>Queue / Steer State</h4>' +
+      '<h4>Follow-up / Steer State</h4>' +
       '<pre>' +
       'state.isStreaming: ' + state.isStreaming + '\n' +
       'state.queueMode: ' + state.queueMode + '\n' +

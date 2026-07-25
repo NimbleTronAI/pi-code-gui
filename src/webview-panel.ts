@@ -402,9 +402,6 @@ export class PiWebviewPanel {
 
   private getWebviewContent(webview: vscode.Webview): string {
     const nonce = this.getNonce();
-    const workspaceName = escapeHtml(
-      vscode.workspace.workspaceFolders?.[0]?.name ?? "no workspace",
-    );
     const bundleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, "media", "bundle.js"),
     );
@@ -428,10 +425,6 @@ export class PiWebviewPanel {
       <span class="pi-web-mark">π</span>
       <span>pi / code</span>
     </div>
-    <div class="pi-web-workspace">
-      <span class="pi-web-workspace-label">workspace</span>
-      <span>${workspaceName}</span>
-    </div>
   </header>
 
   <div id="chat-container">
@@ -447,10 +440,10 @@ export class PiWebviewPanel {
   <div id="attachment-bar"></div>
 
   <div id="input-area">
-    <textarea id="prompt-input" placeholder="Ask pi to do something..." rows="1" disabled></textarea>
+    <textarea id="prompt-input" placeholder="Ask pi to do something..." title="Enter: send · Shift+Enter: newline · Alt+Enter: follow-up while running" rows="1" disabled></textarea>
     <div id="steer-split">
       <button id="send-button" disabled title="Submit (Enter)">↵</button>
-      <button id="steer-dropdown" class="hidden" title="Switch to Queue">▾</button>
+      <button id="steer-dropdown" class="hidden" title="Switch to Follow-up">▾</button>
     </div>
     <button id="abort-button" class="hidden">■ Stop</button>
   </div>
@@ -462,7 +455,7 @@ export class PiWebviewPanel {
     <div class="pi-sb-item" id="pi-sb-effort" title="Click to change effort">effort: auto</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
     <div class="pi-sb-item spacer"></div>
-    <div class="pi-sb-hints"><kbd>Enter</kbd> steer&nbsp;&nbsp; <kbd>Alt+Enter</kbd> follow-up</div>
+    <div class="pi-sb-hints"><kbd>Enter</kbd> send&nbsp;&nbsp; <kbd>Shift+Enter</kbd> newline</div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>
     <div class="pi-sb-item" id="pi-sb-settings" title="Settings">⚙</div>
   </div>
@@ -587,17 +580,4 @@ function formatBudget(tokens: number): string {
   if (tokens < 1000) { return tokens.toString(); }
   if (tokens < 1000000) { return (tokens / 1000).toFixed(0) + "K"; }
   return (tokens / 1000000).toFixed(1) + "M";
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    };
-    return entities[character];
-  });
 }

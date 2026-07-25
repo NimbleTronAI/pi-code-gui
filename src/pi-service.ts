@@ -1022,10 +1022,13 @@ export class PiService {
         const msg = entry.message;
         if (msg.role === "user") {
           const text = this.extractTextFromContent(msg.content);
-          if (text) {
-            this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry.id } });
+          const images = this.extractImagesFromContent(msg.content);
+          if (text || images.length > 0) {
+            if (text) {
+              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
+              if (this._userMessages.length > 50) { this._userMessages.shift(); }
+            }
+            this.emit({ type: "chat-message", data: { role: "user", content: text, images, entryId: entry.id } });
           }
         } else if (msg.role === "assistant") {
           const text = this.extractTextFromContent(msg.content);
@@ -1117,6 +1120,27 @@ export class PiService {
     return "";
   }
 
+  /** Extract image blocks from a user message content array. */
+  private extractImagesFromContent(content: unknown): ImageContent[] {
+    if (!Array.isArray(content)) { return []; }
+
+    const images: ImageContent[] = [];
+    for (const item of content) {
+      if (!item || typeof item !== "object") { continue; }
+      const candidate = item as Record<string, unknown>;
+      if (
+        candidate.type === "image" &&
+        typeof candidate.data === "string" &&
+        candidate.data.length > 0 &&
+        typeof candidate.mimeType === "string" &&
+        candidate.mimeType.startsWith("image/")
+      ) {
+        images.push({ type: "image", data: candidate.data, mimeType: candidate.mimeType });
+      }
+    }
+    return images;
+  }
+
   /** Extract thinking content blocks from an assistant message content array */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private extractThinkingFromContent(content: any): string {
@@ -1204,11 +1228,14 @@ export class PiService {
         const { byMessageId } = this.getEntriesWithLookups();
         if (event.message?.role === "user") {
           const text = this.extractTextFromContent(event.message.content);
-          if (text) {
-            this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text, timestamp: event.message.timestamp ?? Date.now() });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
+          const images = this.extractImagesFromContent(event.message.content);
+          if (text || images.length > 0) {
+            if (text) {
+              this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text, timestamp: event.message.timestamp ?? Date.now() });
+              if (this._userMessages.length > 50) { this._userMessages.shift(); }
+            }
             const entry = byMessageId.get(event.message.id);
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry?.id ?? event.message.id } });
+            this.emit({ type: "chat-message", data: { role: "user", content: text, images, entryId: entry?.id ?? event.message.id } });
           }
         } else if (event.message?.role === "assistant") {
           this.currentAssistantToolCalls.clear();
@@ -1678,10 +1705,13 @@ export class PiService {
         const msg = entry.message;
         if (msg.role === "user") {
           const text = this.extractTextFromContent(msg.content);
-          if (text) {
-            this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry.id } });
+          const images = this.extractImagesFromContent(msg.content);
+          if (text || images.length > 0) {
+            if (text) {
+              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
+              if (this._userMessages.length > 50) { this._userMessages.shift(); }
+            }
+            this.emit({ type: "chat-message", data: { role: "user", content: text, images, entryId: entry.id } });
           }
         } else if (msg.role === "assistant") {
           const text = this.extractTextFromContent(msg.content);

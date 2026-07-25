@@ -216,17 +216,48 @@ export function scrollToBottom(): void {
   }
 }
 
+function updatePromptHints(items: Array<{ key: string; action: string }>): void {
+  const hints = document.querySelector(".pi-sb-hints");
+  if (!hints) { return; }
+
+  hints.replaceChildren();
+  items.forEach((item, index) => {
+    if (index > 0) { hints.appendChild(document.createTextNode("  ")); }
+    const key = document.createElement("kbd");
+    key.textContent = item.key;
+    hints.append(key, document.createTextNode(` ${item.action}`));
+  });
+}
+
 export function updateStreamingState(): void {
   if (state.isStreaming || state.isCompacting || state.isRetrying) {
-    state.sendButton.textContent = "Steer";
-    state.sendButton.title = "Steer (interrupt current request)";
+    const isFollowUp = state.queueMode === "queue";
+    state.sendButton.textContent = isFollowUp ? "Follow-up" : "Steer";
+    state.sendButton.title = isFollowUp
+      ? "Follow-up (process after current turn)"
+      : "Steer (interrupt current request)";
+    state.steerDropdown.title = isFollowUp ? "Switch to Steer" : "Switch to Follow-up";
     state.steerDropdown.classList.remove("hidden");
     state.abortButton.classList.remove("hidden");
+    updatePromptHints(isFollowUp
+      ? [
+          { key: "Enter", action: "follow-up" },
+          { key: "Shift+Enter", action: "newline" },
+        ]
+      : [
+          { key: "Enter", action: "steer" },
+          { key: "Alt+Enter", action: "follow-up" },
+          { key: "Shift+Enter", action: "newline" },
+        ]);
   } else {
     state.sendButton.textContent = "\u21B5";
     state.sendButton.title = "Submit (Enter)";
     state.steerDropdown.classList.add("hidden");
     state.abortButton.classList.add("hidden");
+    updatePromptHints([
+      { key: "Enter", action: "send" },
+      { key: "Shift+Enter", action: "newline" },
+    ]);
   }
 }
 

@@ -67,6 +67,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
     data: z.object({
       role: z.enum(["user", "assistant"]),
       content: z.string(),
+      images: z.array(ImageContentSchema).optional(),
       entryId: z.string().optional(),
     }),
   }),

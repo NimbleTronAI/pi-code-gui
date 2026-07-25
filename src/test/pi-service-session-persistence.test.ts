@@ -59,6 +59,20 @@ suite("PiService session persistence", () => {
     assert.ok(!events.some((event) => event.type === "custom-message" && event.data?.customType === "pi-on-code-diagnostic"));
   });
 
+  test("extracts image attachments from persisted user message content", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    const images = service.extractImagesFromContent([
+      { type: "text", text: "describe this" },
+      { type: "image", data: "cG5n", mimeType: "image/png" },
+      { type: "toolCall", id: "ignored" },
+    ]);
+
+    assert.deepStrictEqual(images, [
+      { type: "image", data: "cG5n", mimeType: "image/png" },
+    ]);
+  });
+
   test("active tool selection uses a SessionManager custom entry instead of raw file writes", () => {
     const sessionFile = path.join(tempDir, "new-session.jsonl");
     const appended: Array<{ customType: string; data: unknown }> = [];
