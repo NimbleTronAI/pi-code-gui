@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { PiService } from "./pi-service.js";
 import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
-import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
+import { PiPackagesProvider } from "./pi-packages-provider.js";
 import {
   PiSessionSidebarProvider,
   type PiSidebarSession,
@@ -60,9 +60,7 @@ let sessionTreeProvider: MultiSessionTreeProvider | null = null;
 let sessionTreeView: vscode.TreeView<SessionTreeItem> | null = null;
 let sessionSidebarProvider: PiSessionSidebarProvider | null = null;
 
-let packagesTreeProvider: PiPackagesTreeProvider | null = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let packagesTreeView: vscode.TreeView<any> | null = null;
+let packagesTreeProvider: PiPackagesProvider | null = null;
 let packageService: PiPackageService | null = null;
 
 /** The primary (first) session — used for status bar and tree provider */
@@ -110,7 +108,16 @@ function getSidebarState(): PiSidebarState {
     });
   }
 
-  return { sessions: items };
+  return {
+    sessions: items,
+    packages: packagesTreeProvider?.getWebState() ?? {
+      ready: false,
+      loading: false,
+      query: "",
+      installed: [],
+      marketplace: [],
+    },
+  };
 }
 
 function cleanSessionTitle(value: string): string {
@@ -206,18 +213,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   initLogger(outputChannel);
   piLog("Pi on Code starting...");
 
-  sessionSidebarProvider = new PiSessionSidebarProvider({
-    getState: getSidebarState,
-    createSession: () => {
-      void vscode.commands.executeCommand("pi-on-code.addSession");
+  sessionSidebarProvider = new PiSessionSidebarProvider(
+    {
+      getState: getSidebarState,
+      createSession: () => {
+        void vscode.commands.executeCommand("pi-on-code.addSession");
+      },
+      focusSession: (sessionId) => {
+        void vscode.commands.executeCommand("pi-on-code.focusSession", sessionId);
+      },
+      resumeSession: (sessionPath) => {
+        void vscode.commands.executeCommand("pi-on-code.resumePastSession", sessionPath);
+      },
+      searchPackages: async (query) => {
+        await packagesTreeProvider?.refreshAll(query);
+      },
+      refreshPackages: async () => {
+        await packagesTreeProvider?.refreshAll();
+      },
+      installPackage: async (source) => {
+        const scope = await pickScope();
+        if (scope) { await doInstallPackage(source, scope); }
+      },
+      uninstallPackage: async (source, scope) => {
+        const label = source.startsWith("npm:") ? source.slice(4) : source;
+        const confirm = await vscode.window.showWarningMessage(
+          `Uninstall "${label}"?`,
+          { modal: true },
+          "Uninstall",
+        );
+        if (confirm === "Uninstall") { await doUninstallPackage(source, scope); }
+      },
+      updatePackage: async (source) => {
+        await doUpdatePackage(source);
+      },
+      openUrl: (url) => {
+        openExternalUrl(url);
+      },
     },
-    focusSession: (sessionId) => {
-      void vscode.commands.executeCommand("pi-on-code.focusSession", sessionId);
-    },
-    resumeSession: (sessionPath) => {
-      void vscode.commands.executeCommand("pi-on-code.resumePastSession", sessionPath);
-    },
-  });
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       "pi-on-code.sessions",
@@ -891,78 +925,61 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   if (packagesTreeProvider) { return; } // already initialized
 
   packageService = new PiPackageService();
+  packagesTreeProvider = new PiPackagesProvider(packageService);
+  context.subscriptions.push(
+    packagesTreeProvider.onDidChange(() => sessionSidebarProvider?.refresh()),
+  );
+  sessionSidebarProvider?.refresh();
+
   const result = await packageService.initialize();
-
-  // Create the tree view even if init failed — it will show a helpful
-  // placeholder so the user knows the view exists.
-  packagesTreeProvider = new PiPackagesTreeProvider(packageService);
-  packagesTreeView = vscode.window.createTreeView("pi-on-code.packages", {
-    treeDataProvider: packagesTreeProvider,
-  });
-  context.subscriptions.push(packagesTreeView);
-
   if (!result.success) {
     piWarn(`Packages view: package service init failed: ${result.error}`);
-    // Show the error in the tree view itself
     packagesTreeProvider.showError(`Pi SDK not ready: ${result.error}`);
+    sessionSidebarProvider?.refresh();
     return;
   }
 
-  // Initial load
-  await packagesTreeProvider.refreshAll();
+  // Load installed packages during startup. Marketplace data is fetched lazily
+  // when the user expands or searches the Packages section.
+  await packagesTreeProvider.refreshInstalled();
 
   // ── Register package commands ────────────────
 
-  // Install a package from the marketplace
+  // Install a package from the marketplace or command palette.
   context.subscriptions.push(
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-on-code.installPackage", async (item?: any) => {
-      const treeItem = resolvePackageTreeItem(item);
-      let marketPkg = treeItem?.marketData;
-
-      if (!marketPkg) {
-        // May be called without args from command palette
+    vscode.commands.registerCommand("pi-on-code.installPackage", async (source?: string) => {
+      let packageSource = source;
+      if (!packageSource) {
         const name = await vscode.window.showInputBox({
           prompt: "Enter npm package name to install",
           placeHolder: "pi-subagents",
         });
         if (!name) { return; }
-        await doInstallPackage(name);
-        return;
+        packageSource = name.startsWith("npm:") ? name : `npm:${name}`;
       }
-
-      const source = `npm:${marketPkg.npmPackage}`;
-
-      // Ask user vs project scope
       const scope = await pickScope();
-      if (!scope) { return; }
-
-      await doInstallPackage(source, scope);
+      if (scope) { await doInstallPackage(packageSource, scope); }
     }),
   );
 
-  // Uninstall a package
+  // Uninstall a package selected through the webview or command palette.
   context.subscriptions.push(
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-on-code.uninstallPackage", async (item?: any) => {
-      const treeItem = resolvePackageTreeItem(item);
-      const pkg = treeItem?.installedData;
-      if (!pkg) {
-        vscode.window.showErrorMessage("Cannot uninstall: no package selected.");
-        return;
-      }
-
-      const label = pkg.source.startsWith("npm:") ? pkg.source.slice(4) : pkg.source;
-
-      const confirm = await vscode.window.showWarningMessage(
-        `Uninstall "${label}"?`,
-        { modal: true },
-        "Uninstall",
-      );
-      if (confirm !== "Uninstall") { return; }
-
-      await doUninstallPackage(pkg.source, pkg.scope);
-    }),
+    vscode.commands.registerCommand(
+      "pi-on-code.uninstallPackage",
+      async (source?: string, scope?: "user" | "project") => {
+        const pkg = source && scope
+          ? { source, scope }
+          : await pickInstalledPackage("Select a package to uninstall");
+        if (!pkg) { return; }
+        const label = pkg.source.startsWith("npm:") ? pkg.source.slice(4) : pkg.source;
+        const confirm = await vscode.window.showWarningMessage(
+          `Uninstall "${label}"?`,
+          { modal: true },
+          "Uninstall",
+        );
+        if (confirm === "Uninstall") { await doUninstallPackage(pkg.source, pkg.scope); }
+      },
+    ),
   );
 
   // Search packages
@@ -971,8 +988,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
       const query = await vscode.window.showInputBox({
         prompt: "Search Pi packages on the marketplace",
         placeHolder: "e.g. web, subagent, mcp — or leave empty for popular",
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        value: (packagesTreeProvider as any)?.searchQuery ?? "",
+        value: packagesTreeProvider?.searchQuery ?? "",
       });
       if (query === undefined) { return; } // cancelled
       await packagesTreeProvider?.refreshAll(query ?? "");
@@ -986,17 +1002,12 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
     }),
   );
 
-  // Update a single package
+  // Update a single package.
   context.subscriptions.push(
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-on-code.updatePackage", async (item?: any) => {
-      const treeItem = resolvePackageTreeItem(item);
-      const pkg = treeItem?.installedData;
-      if (!pkg) {
-        vscode.window.showErrorMessage("Cannot update: no package selected.");
-        return;
-      }
-      await doUpdatePackage(pkg.source);
+    vscode.commands.registerCommand("pi-on-code.updatePackage", async (source?: string) => {
+      const packageSource = source
+        ?? (await pickInstalledPackage("Select a package to update"))?.source;
+      if (packageSource) { await doUpdatePackage(packageSource); }
     }),
   );
 
@@ -1026,20 +1037,9 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
     }),
   );
 
-  // Open a URL in the default browser (used by link items in tree view)
+  // Open a URL in the default browser.
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-on-code.openUrl", (url: string) => {
-      if (url) {
-        // Normalize git URLs (git+https://, git://, git@...) to plain https://
-        let normalized = url;
-        if (normalized.startsWith("git+")) { normalized = normalized.slice(4); }
-        if (normalized.startsWith("git://")) { normalized = "https://" + normalized.slice(6); }
-        const scpMatch = normalized.match(/^git@([^:]+):(.+)$/);
-        if (scpMatch) { normalized = "https://" + scpMatch[1] + "/" + scpMatch[2]; }
-        normalized = normalized.replace(/\.git$/, "");
-        vscode.env.openExternal(vscode.Uri.parse(normalized));
-      }
-    }),
+    vscode.commands.registerCommand("pi-on-code.openUrl", (url: string) => openExternalUrl(url)),
   );
 
   // Open pi.dev marketplace in browser
@@ -1052,24 +1052,33 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   piLog("Packages view ready");
 }
 
-/** Resolve a tree item from either a direct argument or the tree view selection. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- VS Code tree item types are dynamic
-function resolvePackageTreeItem(item: any): any {
-  // Direct argument from TreeItem.command click
-  if (item && (item.marketData || item.installedData)) {
-    return item;
-  }
+async function pickInstalledPackage(
+  placeHolder: string,
+): Promise<{ source: string; scope: "user" | "project" } | undefined> {
+  const installed = packageService?.listInstalled() ?? [];
+  const pick = await vscode.window.showQuickPick(
+    installed.map((pkg) => ({
+      label: pkg.source.startsWith("npm:") ? pkg.source.slice(4) : pkg.source,
+      description: pkg.scope,
+      package: pkg,
+    })),
+    { placeHolder },
+  );
+  return pick?.package;
+}
 
-  // From tree selection — walk up to parent if we're on an action child
-  const selection = packagesTreeView?.selection;
-  if (selection && selection.length > 0) {
-    const sel = selection[0];
-    // If clicked on an action or overview child, walk up to the parent package item
-    if (sel.installedData || sel.marketData) {
-      return sel;
-    }
+function openExternalUrl(url: string): void {
+  if (!url) { return; }
+  let normalized = url;
+  if (normalized.startsWith("git+")) { normalized = normalized.slice(4); }
+  if (normalized.startsWith("git://")) { normalized = "https://" + normalized.slice(6); }
+  const scpMatch = normalized.match(/^git@([^:]+):(.+)$/);
+  if (scpMatch) { normalized = "https://" + scpMatch[1] + "/" + scpMatch[2]; }
+  normalized = normalized.replace(/\.git$/, "");
+  const uri = vscode.Uri.parse(normalized);
+  if (uri.scheme === "https" || uri.scheme === "http") {
+    void vscode.env.openExternal(uri);
   }
-  return null;
 }
 
 async function pickScope(): Promise<"user" | "project" | undefined> {

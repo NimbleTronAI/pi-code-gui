@@ -205,12 +205,6 @@
           "type": "webview",
           "id": "pi-on-code.sessions",
           "name": "Pi"
-        },
-        {
-          "type": "tree",
-          "id": "pi-on-code.packages",
-          "name": "Packages",
-          "icon": "package"
         }
       ]
     },
@@ -330,90 +324,6 @@
           "command": "pi-on-code.addSession",
           "group": "navigation",
           "when": "resourceScheme != pi"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "pi-on-code.revealEntry",
-          "when": "view == pi-on-code.sessions && viewItem =~ /^sessionEntry/",
-          "group": "navigation"
-        },
-        {
-          "command": "pi-on-code.copyEntryText",
-          "when": "view == pi-on-code.sessions && viewItem =~ /^sessionEntry/",
-          "group": "1_copy"
-        },
-        {
-          "command": "pi-on-code.forkSession",
-          "when": "view == pi-on-code.sessions && viewItem =~ /^sessionEntry-(user|assistant|custom)$/",
-          "group": "2_actions"
-        },
-        {
-          "command": "pi-on-code.forkSession",
-          "when": "view == pi-on-code.sessions && viewItem == pastSessionEntry",
-          "group": "2_actions"
-        },
-        {
-          "command": "pi-on-code.compact",
-          "when": "view == pi-on-code.sessions && viewItem == session",
-          "group": "3_sessionActions"
-        },
-        {
-          "command": "pi-on-code.cloneSession",
-          "when": "view == pi-on-code.sessions && viewItem == session",
-          "group": "3_sessionActions"
-        },
-        {
-          "command": "pi-on-code.exportSession",
-          "when": "view == pi-on-code.sessions && viewItem == session",
-          "group": "3_sessionActions"
-        },
-        {
-          "command": "pi-on-code.reloadContext",
-          "when": "view == pi-on-code.sessions && viewItem == session",
-          "group": "3_sessionActions"
-        },
-        {
-          "command": "pi-on-code.resumePastSession",
-          "when": "view == pi-on-code.sessions && viewItem == pastSessionEntry",
-          "group": "navigation"
-        },
-        {
-          "command": "pi-on-code.deletePastSession",
-          "when": "view == pi-on-code.sessions && viewItem == pastSessionEntry",
-          "group": "2_actions"
-        },
-        {
-          "command": "pi-on-code.installPackage",
-          "when": "view == pi-on-code.packages && viewItem == package-marketplace",
-          "group": "navigation"
-        },
-        {
-          "command": "pi-on-code.uninstallPackage",
-          "when": "view == pi-on-code.packages && viewItem == package-installed",
-          "group": "navigation"
-        },
-        {
-          "command": "pi-on-code.updatePackage",
-          "when": "view == pi-on-code.packages && viewItem == package-installed",
-          "group": "1_update"
-        }
-      ],
-      "view/title": [
-        {
-          "command": "pi-on-code.searchPackages",
-          "when": "view == pi-on-code.packages",
-          "group": "navigation"
-        },
-        {
-          "command": "pi-on-code.refreshPackages",
-          "when": "view == pi-on-code.packages",
-          "group": "navigation"
-        },
-        {
-          "command": "pi-on-code.updateAllPackages",
-          "when": "view == pi-on-code.packages",
-          "group": "navigation"
         }
       ]
     }

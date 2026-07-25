@@ -27,7 +27,10 @@ export interface MarketplacePackage {
   homepage?: string;
   repository?: string;
   license?: string;
-  /** URL of the first image found in the package's README (banner / graphic). */
+  /** Official Pi gallery preview metadata from package.json#pi. */
+  imageUrl?: string;
+  videoUrl?: string;
+  /** Fallback image discovered from the package README. */
   bannerUrl?: string;
 }
 
@@ -222,7 +225,7 @@ export class PiPackageService {
     try {
       const searchText = q
         ? q
-        : "keywords:pi-coding-agent";
+        : "keywords:pi-package";
 
       const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(searchText)}&size=100`;
       const response = await fetch(url, {
@@ -243,7 +246,7 @@ export class PiPackageService {
 
       const qLower = q.toLowerCase();
 
-      return objects
+      const packages: MarketplacePackage[] = objects
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .map((obj: any) => ({
           ...obj,
@@ -303,9 +306,53 @@ export class PiPackageService {
             license: p.license ?? "",
           };
         });
+
+      // The npm search API omits custom package.json fields. Fetch the full
+      // manifest for the visible results so official pi.image/pi.video gallery
+      // metadata can be rendered in the web sidebar.
+      await this.enrichGalleryMetadata(packages.slice(0, 30));
+      return packages;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       throw new Error(`Marketplace search failed: ${e.message ?? e}`);
+    }
+  }
+
+  private async enrichGalleryMetadata(packages: MarketplacePackage[]): Promise<void> {
+    await Promise.allSettled(packages.map(async (pkg) => {
+      try {
+        const name = encodeURIComponent(pkg.npmPackage);
+        const version = encodeURIComponent(pkg.version || "latest");
+        const response = await fetch(`https://registry.npmjs.org/${name}/${version}`, {
+          headers: { "Accept": "application/json" },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) { return; }
+
+        const manifest = await response.json() as Record<string, unknown>;
+        const pi = manifest.pi;
+        if (!pi || typeof pi !== "object") { return; }
+        const gallery = pi as Record<string, unknown>;
+        const image = this.safePreviewUrl(gallery.image, "image");
+        const video = this.safePreviewUrl(gallery.video, "video");
+        if (image) { pkg.imageUrl = image; }
+        if (video) { pkg.videoUrl = video; }
+      } catch {
+        // Preview metadata is optional and must not fail package listing.
+      }
+    }));
+  }
+
+  private safePreviewUrl(value: unknown, kind: "image" | "video"): string | undefined {
+    if (typeof value !== "string") { return undefined; }
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:") { return undefined; }
+      if (kind === "video" && !/\.mp4(?:$|[?#])/i.test(url.href)) { return undefined; }
+      if (kind === "image" && !/\.(?:png|jpe?g|gif|webp)(?:$|[?#])/i.test(url.href)) { return undefined; }
+      return url.href;
+    } catch {
+      return undefined;
     }
   }
 
@@ -398,6 +445,7 @@ export class PiPackageService {
           enriched.set(npmPackages[i].source, result.value);
         }
       }
+      await this.enrichGalleryMetadata([...enriched.values()]);
     } catch { /* ignore */ }
 
     return enriched;
