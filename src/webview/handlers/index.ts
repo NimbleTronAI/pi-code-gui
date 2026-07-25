@@ -805,6 +805,67 @@ export function handleBatchEnd(data: any) {
     });
   }
 
+function submitFollowUpQueue(messages: string[]): void {
+    window.__vscode.postMessage({ type: "replaceFollowUpQueue", messages: messages });
+  }
+
+function openFollowUpEditor(index: number, text: string, messages: string[]): void {
+    document.querySelector(".queue-edit-overlay")?.remove();
+
+    var overlay = document.createElement("div");
+    overlay.className = "queue-edit-overlay";
+    var dialog = document.createElement("div");
+    dialog.className = "queue-edit-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "Edit follow-up message");
+
+    var title = document.createElement("div");
+    title.className = "queue-edit-title";
+    title.textContent = "Edit follow-up";
+    var textarea = document.createElement("textarea");
+    textarea.className = "queue-edit-textarea";
+    textarea.value = text;
+    textarea.rows = 8;
+    var actions = document.createElement("div");
+    actions.className = "queue-edit-actions";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    var save = document.createElement("button");
+    save.type = "button";
+    save.className = "primary";
+    save.textContent = "Save";
+
+    var close = function (): void {
+      document.removeEventListener("keydown", onKeydown);
+      overlay.remove();
+    };
+    var onKeydown = function (event: KeyboardEvent): void {
+      if (event.key === "Escape") { close(); }
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { save.click(); }
+    };
+    cancel.addEventListener("click", close);
+    save.addEventListener("click", function () {
+      var replacement = textarea.value.trim();
+      if (!replacement) { return; }
+      var updated = messages.slice();
+      updated[index] = replacement;
+      submitFollowUpQueue(updated);
+      close();
+    });
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) { close(); }
+    });
+    document.addEventListener("keydown", onKeydown);
+    actions.append(cancel, save);
+    dialog.append(title, textarea, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
 export function handleQueueUpdate(data: any) {
     // Track for /debug inspection
     (window.__piDebug._queueEvents = window.__piDebug._queueEvents || []).push({
@@ -835,11 +896,13 @@ export function handleQueueUpdate(data: any) {
         <span class="queue-text">${m}</span></div>`;
     });
 
-    // Follow-up messages — processed after the current turn, with promote button
+    // Follow-up messages — one-line, editable, and reorderable.
     followUp.forEach(function (m: any, i: number) {
-      result += html`<div class="queue-row">
+      result += html`<div class="queue-row follow-up-row" data-idx="${i}" draggable="${followUp.length > 1 ? "true" : "false"}">
+        <span class="queue-drag" title="Drag to reorder">⋮⋮</span>
         <span class="queue-label">Follow-up:</span>
-        <span class="queue-text">${m}</span>
+        <span class="queue-text" title="${m}">${m}</span>
+        <button class="queue-edit-btn" data-idx="${i}" title="Edit follow-up">Edit</button>
         <button class="queue-promote-btn" data-idx="${i}" title="Promote to Steer (interrupt now)">Steer now</button>
         </div>`;
     });
@@ -850,6 +913,49 @@ export function handleQueueUpdate(data: any) {
       </div>`;
 
     el.innerHTML = result;
+
+    // Wire edit buttons. Visibility is decided after layout so narrow panes
+    // also expose Edit when the one-line text is actually truncated.
+    el.querySelectorAll(".queue-edit-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var idx = parseInt(btn.getAttribute("data-idx") || "0", 10);
+        var message = followUp[idx];
+        if (message !== undefined) { openFollowUpEditor(idx, message, followUp); }
+      });
+    });
+
+    // Wire drag-and-drop ordering for follow-up messages.
+    var draggedIndex = -1;
+    el.querySelectorAll(".follow-up-row").forEach(function (row) {
+      row.addEventListener("dragstart", function (event) {
+        draggedIndex = parseInt(row.getAttribute("data-idx") || "-1", 10);
+        row.classList.add("dragging");
+        if ((event as DragEvent).dataTransfer) {
+          (event as DragEvent).dataTransfer!.effectAllowed = "move";
+        }
+      });
+      row.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        row.classList.add("drag-over");
+      });
+      row.addEventListener("dragleave", function () { row.classList.remove("drag-over"); });
+      row.addEventListener("drop", function (event) {
+        event.preventDefault();
+        var targetIndex = parseInt(row.getAttribute("data-idx") || "-1", 10);
+        if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) { return; }
+        var reordered = followUp.slice();
+        var moved = reordered.splice(draggedIndex, 1)[0];
+        reordered.splice(targetIndex, 0, moved);
+        handleQueueUpdate({ steering: steering, followUp: reordered });
+        submitFollowUpQueue(reordered);
+      });
+      row.addEventListener("dragend", function () {
+        draggedIndex = -1;
+        el.querySelectorAll(".follow-up-row").forEach(function (item) {
+          item.classList.remove("dragging", "drag-over");
+        });
+      });
+    });
 
     // Wire promote buttons
     el.querySelectorAll(".queue-promote-btn").forEach(function (btn) {
@@ -875,6 +981,15 @@ export function handleQueueUpdate(data: any) {
     if (inputArea && inputArea.parentNode) {
       inputArea.parentNode.insertBefore(el, inputArea);
     }
+    requestAnimationFrame(function () {
+      el.querySelectorAll(".follow-up-row").forEach(function (row) {
+        var text = row.querySelector(".queue-text");
+        var edit = row.querySelector(".queue-edit-btn");
+        if (text && edit && (text.scrollWidth > text.clientWidth || text.textContent?.includes("\n"))) {
+          edit.classList.add("visible");
+        }
+      });
+    });
   }
 
 export function handleCompactionStart(data: any) {

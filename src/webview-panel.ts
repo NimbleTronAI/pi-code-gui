@@ -222,6 +222,17 @@ export class PiWebviewPanel {
             }
             break;
 
+          case "replaceFollowUpQueue":
+            try {
+              await this.piService.replaceFollowUpQueue(message.messages);
+            } catch (error: unknown) {
+              this.postMessage({
+                type: "error",
+                data: { message: `Could not update follow-ups: ${error instanceof Error ? error.message : String(error)}` },
+              });
+            }
+            break;
+
           case "extension_ui_response":
             this.piService.resolveDialog(message.id, message.value);
             break;
@@ -340,7 +351,7 @@ export class PiWebviewPanel {
         msgType !== "pickModel" && msgType !== "pickThinkingLevel" && msgType !== "pickEffort" &&
         msgType !== "pickContextBudget" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
         msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" && msgType !== "openUrl" &&
-        msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "clearQueue" &&
+        msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "replaceFollowUpQueue" && msgType !== "clearQueue" &&
         msgType !== "resendUserMessage") {
       const result = validateExtensionToWebview(message);
       if (!result.success) {

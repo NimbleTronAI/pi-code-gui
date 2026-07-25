@@ -385,6 +385,10 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("openUrl"), url: z.string() }),
   z.object({ type: z.literal("openFile"), path: z.string() }),
   z.object({ type: z.literal("promoteToSteer"), text: z.string() }),
+  z.object({
+    type: z.literal("replaceFollowUpQueue"),
+    messages: z.array(z.string().min(1)).max(100),
+  }),
   z.object({ type: z.literal("clearQueue") }),
   z.object({ type: z.literal("resendUserMessage"), text: z.string() }),
   z.object({ type: z.literal("extension_ui_response"), id: z.string(), value: z.unknown() }),

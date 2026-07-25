@@ -1,5 +1,5 @@
 import * as assert from "node:assert";
-import { validateExtensionToWebview } from "../shared/protocol.js";
+import { validateExtensionToWebview, validateWebviewToExtension } from "../shared/protocol.js";
 
 suite("Shared webview protocol", () => {
   test("accepts image content in tool results", () => {
@@ -16,6 +16,15 @@ suite("Shared webview protocol", () => {
         },
         isError: false,
       },
+    });
+
+    assert.strictEqual(result.success, true);
+  });
+
+  test("accepts follow-up queue replacements", () => {
+    const result = validateWebviewToExtension({
+      type: "replaceFollowUpQueue",
+      messages: ["second", "first"],
     });
 
     assert.strictEqual(result.success, true);

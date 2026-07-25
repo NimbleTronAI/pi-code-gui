@@ -73,6 +73,44 @@ suite("PiService session persistence", () => {
     ]);
   });
 
+  test("replaces follow-up order while preserving steering messages", async () => {
+    const queued: Array<{ mode: "steer" | "followUp"; text: string }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    service.session = {
+      clearQueue: () => ({ steering: ["interrupt first"], followUp: ["old one", "old two"] }),
+      steer: async (text: string) => { queued.push({ mode: "steer", text }); },
+      followUp: async (text: string) => { queued.push({ mode: "followUp", text }); },
+    };
+
+    await service.replaceFollowUpQueue(["second", "first"]);
+
+    assert.deepStrictEqual(queued, [
+      { mode: "steer", text: "interrupt first" },
+      { mode: "followUp", text: "second" },
+      { mode: "followUp", text: "first" },
+    ]);
+  });
+
+  test("promoting a follow-up preserves the other pending messages", async () => {
+    const queued: Array<{ mode: "steer" | "followUp"; text: string }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    service.session = {
+      clearQueue: () => ({ steering: ["existing steer"], followUp: ["promote me", "keep me"] }),
+      steer: async (text: string) => { queued.push({ mode: "steer", text }); },
+      followUp: async (text: string) => { queued.push({ mode: "followUp", text }); },
+    };
+
+    await service.promoteToSteer("promote me");
+
+    assert.deepStrictEqual(queued, [
+      { mode: "steer", text: "existing steer" },
+      { mode: "steer", text: "promote me" },
+      { mode: "followUp", text: "keep me" },
+    ]);
+  });
+
   test("active tool selection uses a SessionManager custom entry instead of raw file writes", () => {
     const sessionFile = path.join(tempDir, "new-session.jsonl");
     const appended: Array<{ customType: string; data: unknown }> = [];

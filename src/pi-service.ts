@@ -2154,15 +2154,42 @@ export class PiService {
   get model(): { id?: string; name?: string; provider?: string } | null { return this._model; }
   get thinkingLevel(): string { return this._thinkingLevel; }
 
-  /** Promote a follow-up message to a steering message. */
+  /** Replace pending follow-up messages while preserving steering messages. */
+  async replaceFollowUpQueue(messages: string[]): Promise<void> {
+    if (!this.session) { throw new Error("Pi session not initialized"); }
+    const normalized = messages.map((message) => message.trim()).filter(Boolean);
+    const previous = this.session.clearQueue() as { steering: string[]; followUp: string[] };
+
+    try {
+      for (const steering of previous.steering) {
+        await this.session.steer(steering);
+      }
+      for (const followUp of normalized) {
+        await this.session.followUp(followUp);
+      }
+    } catch (error) {
+      // A turn can settle while the queue is being edited. Restore the prior
+      // queue best-effort so editing never silently discards pending work.
+      this.session.clearQueue();
+      try {
+        for (const steering of previous.steering) { await this.session.steer(steering); }
+        for (const followUp of previous.followUp) { await this.session.followUp(followUp); }
+      } catch (restoreError: unknown) {
+        piWarn(`Failed to restore queue after edit: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+      }
+      throw error;
+    }
+  }
+
+  /** Promote a follow-up message to steering without discarding its siblings. */
   async promoteToSteer(text: string): Promise<void> {
     if (!this.session) { return; }
-    var existingSteer = this.session.getSteeringMessages ? [...this.session.getSteeringMessages()] : [];
-    this.session.clearQueue();
-    for (var i = 0; i < existingSteer.length; i++) {
-      this.session.steer(existingSteer[i]);
-    }
-    this.session.steer(text);
+    const previous = this.session.clearQueue() as { steering: string[]; followUp: string[] };
+    const followUpIndex = previous.followUp.indexOf(text);
+    if (followUpIndex !== -1) { previous.followUp.splice(followUpIndex, 1); }
+    for (const steering of previous.steering) { await this.session.steer(steering); }
+    await this.session.steer(text);
+    for (const followUp of previous.followUp) { await this.session.followUp(followUp); }
   }
 
   /** Clear all queued messages. */
