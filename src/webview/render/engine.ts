@@ -155,7 +155,7 @@ export function createToolBlock(toolName: string, toolCallId: string, status: st
     try {
       argsText = JSON.stringify(args, null, 2);
     } catch (e) {
-      console.warn("[pi-gui] JSON.stringify failed for tool args:", e);
+      console.warn("[pi-on-code] JSON.stringify failed for tool args:", e);
       argsText = String(args);
     }
   }
@@ -338,7 +338,7 @@ export function renderBlock(token: MarkedToken): Node {
       return el;
   }
   } catch (e) {
-    console.warn("[pi-gui] renderBlock failed for type=" + token.type + ":", e);
+    console.warn("[pi-on-code] renderBlock failed for type=" + token.type + ":", e);
     const fallback = document.createElement("div");
     fallback.textContent = (token.raw as string) || "";
     return fallback;

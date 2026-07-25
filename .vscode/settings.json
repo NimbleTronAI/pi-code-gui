@@ -10,6 +10,9 @@
     },
     // Turn off tsc task auto detection since we have the necessary tasks as npm scripts
     "typescript.tsc.autoDetect": "off",
+    // Node's inspector Network domain can throw "Missing dataLength in event"
+    // while debugging an extension host. It is unrelated to extension errors.
+    "debug.javascript.enableNetworkView": false,
     "workbench.editor.autoLockGroups": {
         "workbench.editor.processExplorer": false,
         "terminalEditor": false,

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
+import { getWorkspaceCwd } from "./workspace-context.js";
 
 /**
  * Creates the VS Code bridge tools that give the AI agent visibility into
@@ -48,7 +49,7 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
   const workspaceRelativePath = (filePath: string): string => {
     if (!filePath) { return ""; }
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const roots = [...folders.map((f) => f.uri.fsPath), process.cwd()].filter(Boolean);
+    const roots = [...folders.map((f) => f.uri.fsPath), getWorkspaceCwd()].filter(Boolean);
 
     let best = filePath;
     for (const root of roots) {
@@ -68,7 +69,7 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
     if (folders && folders.length > 0) {
       return path.resolve(folders[0].uri.fsPath, filePath);
     }
-    return path.resolve(filePath);
+    return path.resolve(getWorkspaceCwd(), filePath);
   };
 
   // ── Tools (all defined via defineTool + Type) ────────────
@@ -245,7 +246,7 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: async () => {
         return {
-          content: [{ type: "text", text: boundedJson({ folders: getWorkspaceFolders(), cwd: process.cwd() }) }],
+          content: [{ type: "text", text: boundedJson({ folders: getWorkspaceFolders(), cwd: getWorkspaceCwd() }) }],
           details: {},
         };
       },

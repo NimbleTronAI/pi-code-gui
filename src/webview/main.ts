@@ -1,4 +1,4 @@
-// ── Pi Code Gui Webview Entry Point ─────────────────────────
+// ── Pi on Code Webview Entry Point ─────────────────────────
 //
 // Initializes state, debug, rendering engine, tool renderers,
 // event handlers, and the VS Code message bridge.

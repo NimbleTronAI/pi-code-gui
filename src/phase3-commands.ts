@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { piError, piLog } from "./logger.js";
 import type { PiService } from "./pi-service.js";
 
 function safeRegister(context: vscode.ExtensionContext, command: string, callback: (...args: unknown[]) => unknown): void {
@@ -7,9 +8,9 @@ function safeRegister(context: vscode.ExtensionContext, command: string, callbac
   } catch (e: unknown) {
     const err = e instanceof Error ? e : new Error(String(e));
     if (err.message.includes("already registered") || err.message.includes("already exists")) {
-      console.log(`[pi-gui] Command "${command}" already registered, skipping phase-3 duplicate.`);
+      piLog(`Command "${command}" already registered, skipping phase-3 duplicate.`);
     } else {
-      console.error(`[pi-gui] Failed to register command "${command}":`, err);
+      piError(`Failed to register command "${command}": ${err.stack ?? err.message}`);
     }
   }
 }
@@ -18,15 +19,15 @@ export function registerPhase3Commands(
   context: vscode.ExtensionContext,
   piService: PiService,
 ): void {
-  safeRegister(context, "pi-code-gui.pickModel", async () => {
+  safeRegister(context, "pi-on-code.pickModel", async () => {
     if (!piService.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
     }
-    vscode.commands.executeCommand("pi-code-gui.sendSlashCommand", "/model");
+    vscode.commands.executeCommand("pi-on-code.sendSlashCommand", "/model");
   });
 
-  safeRegister(context, "pi-code-gui.cycleModel", async () => {
+  safeRegister(context, "pi-on-code.cycleModel", async () => {
     if (!piService.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
@@ -39,7 +40,7 @@ export function registerPhase3Commands(
     }
   });
 
-  safeRegister(context, "pi-code-gui.pickThinkingLevel", async () => {
+  safeRegister(context, "pi-on-code.pickThinkingLevel", async () => {
     if (!piService.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
@@ -47,7 +48,7 @@ export function registerPhase3Commands(
     await piService.pickThinkingLevel();
   });
 
-  safeRegister(context, "pi-code-gui.cycleThinkingLevel", async () => {
+  safeRegister(context, "pi-on-code.cycleThinkingLevel", async () => {
     if (!piService.initialized) {
       vscode.window.showWarningMessage("Pi is still initializing. Try again in a moment.");
       return;
@@ -62,11 +63,11 @@ export function registerPhase3Commands(
     }
   });
 
-  safeRegister(context, "pi-code-gui.pickFork", async () => {
+  safeRegister(context, "pi-on-code.pickFork", async () => {
     vscode.window.showInformationMessage("Fork via /fork command in chat.");
   });
 
-  safeRegister(context, "pi-code-gui.exportSession", async () => {
+  safeRegister(context, "pi-on-code.exportSession", async () => {
     vscode.window.showInformationMessage("Export via /export command in chat.");
   });
 }

@@ -4,8 +4,9 @@ import { pathToFileURL } from "node:url";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { buildScopedModels, completeWithModelRuntime, getRuntimeModel, selectInitialModel } from "./pi-model-runtime.js";
-import { type PiServiceEvent, validateExtensionToWebview } from "./types.js";
+import { type ImageContent, type PiServiceEvent, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
+import { getWorkspaceCwd, getWorkspaceUri } from "./workspace-context.js";
 
 /** Find the last element matching predicate (ES2023 findLast polyfill). */
 function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
@@ -138,7 +139,7 @@ export function resolvePiPackagePath(): string {
 
 /** Build the VS Code-aware system prompt */
 function buildSystemPrompt(): string {
-  return `You are a coding assistant running inside VS Code through the Pi Code Gui extension.
+  return `You are a coding assistant running inside VS Code through the Pi on Code extension.
 You have access to VS Code editor state through bridge tools (prefixed with vscode_)
 when they are enabled.
 
@@ -184,7 +185,7 @@ function buildContextFiles(cwd: string): Array<{ path: string; content: string }
     path: "/virtual/vscode-guidelines.md",
     content: `# VS Code Extension Guidelines
 
-## Running in Pi Code Gui
+## Running in Pi on Code
 - You are an AI coding assistant inside VS Code.
 - The user interacts with you through a chat webview.
 - You have access to VS Code editor state through bridge tools when they are enabled.
@@ -362,7 +363,7 @@ export class PiService {
       this.emitSafe({
         type: "custom-message",
         data: {
-          customType: "pi-gui-diagnostic",
+          customType: "pi-on-code-diagnostic",
           content: `Protocol validation error (type: ${(event as Record<string, unknown>).type}): ${result.error.substring(0, 200)}`,
           display: false,
         },
@@ -435,7 +436,7 @@ export class PiService {
       // Match initialize()'s retry parameters — fewer retries here
       // caused past-session lists to come up empty on slow first loads.
       const SDK = await importWithRetry(path.join(piRoot, "dist/index.js"), 5, 500);
-      const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+      const cfg = vscode.workspace.getConfiguration("pi-on-code");
       const sessionDir = cfg.get<string>("sessionDir")?.trim() || undefined;
       const sessions = await SDK.SessionManager.list(cwd, sessionDir);
       piLog(`listSessions: found ${sessions.length} past sessions in ${cwd}`);
@@ -493,7 +494,7 @@ export class PiService {
     }
 
     const SDK = this.SDK;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = getWorkspaceCwd();
 
     // ── Step 3: Runtime settings and SDK services ──────
     // Provider extensions must be loaded before resolving defaults. In SDK 0.80
@@ -505,7 +506,7 @@ export class PiService {
       this.modelRuntime = await SDK.ModelRuntime.create();
 
       // Runtime API key override from VS Code secrets or env
-      const config = vscode.workspace.getConfiguration("pi-code-gui");
+      const config = vscode.workspace.getConfiguration("pi-on-code");
       const anthropicKey = config.get<string>("anthropicApiKey");
       if (anthropicKey) {
         await this.modelRuntime.setRuntimeApiKey("anthropic", anthropicKey);
@@ -554,7 +555,7 @@ export class PiService {
     // ── Step 4: Pick a model after providers are registered ──
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let model: any = null;
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cfg = vscode.workspace.getConfiguration("pi-on-code");
     try {
       const available = await this.modelRuntime.getAvailable();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -604,7 +605,7 @@ export class PiService {
 
     // ── Step 7: Session manager ─────────────────────
     try {
-      const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+      const cfg = vscode.workspace.getConfiguration("pi-on-code");
       const sessionDir = cfg.get<string>("sessionDir")?.trim() || undefined;
       if (openPath) {
         this.sessionManager = SDK.SessionManager.open(openPath, sessionDir);
@@ -1368,7 +1369,7 @@ export class PiService {
         this.emit({
           type: "custom-message",
           data: {
-            customType: "pi-gui-diagnostic",
+            customType: "pi-on-code-diagnostic",
             display: false,
             content: `Unhandled agent event: ${event.type}`,
             timestamp: Date.now(),
@@ -1381,7 +1382,7 @@ export class PiService {
 
   private reportStatus(): void {
     const stats = this.getUsageStats();
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cfg = vscode.workspace.getConfiguration("pi-on-code");
     const budget = cfg.get<number>("contextBudget") ?? 0;
     this.emit({
       type: "status-update",
@@ -1399,9 +1400,14 @@ export class PiService {
 
   // ── User actions ───────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
+  async sendPrompt(text: string, images?: ImageContent[], mode?: string): Promise<void> {
     if (!this.session) { throw new Error("Pi session not initialized"); }
+
+    for (const image of images ?? []) {
+      if (image.type !== "image" || !image.mimeType?.startsWith("image/") || !image.data) {
+        throw new Error("Cannot send image: attachment data or MIME type is invalid");
+      }
+    }
 
     // Handle slash commands at the PiService level before forwarding to
     // session.prompt(). Builtin commands (from the SDK's BUILTIN_SLASH_COMMANDS
@@ -1447,8 +1453,7 @@ export class PiService {
         });
       }
     } else {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const opts: any = {};
+      const opts: { images?: ImageContent[] } = {};
       if (images && images.length > 0) {
         // Check if current model supports images; if not, try to auto-switch
         if (!this.activeModelSupportsImages()) {
@@ -1522,7 +1527,7 @@ export class PiService {
       }
 
       case "tree":
-        await vscode.commands.executeCommand("pi-code-gui.sessions.focus");
+        await vscode.commands.executeCommand("pi-on-code.sessions.focus");
         return true;
 
       case "compact": {
@@ -1535,7 +1540,7 @@ export class PiService {
         // Parse optional output path from text
         const exportArgs = text.startsWith("/export ") ? text.slice(8).trim() : undefined;
         const outputPath = exportArgs || vscode.Uri.joinPath(
-          vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
+          getWorkspaceUri(),
           `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`
         ).fsPath;
         const result = await this.session.exportToHtml(outputPath);
@@ -1553,7 +1558,7 @@ export class PiService {
 
       // Commands that delegate to VS Code commands:
       case "clone":
-        await vscode.commands.executeCommand("pi-code-gui.cloneSession");
+        await vscode.commands.executeCommand("pi-on-code.cloneSession");
         return true;
 
       case "tools": {
@@ -1795,20 +1800,20 @@ export class PiService {
       piWarn("saveDefaultModel() called but no model is active — ignoring");
       return;
     }
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cfg = vscode.workspace.getConfiguration("pi-on-code");
     cfg.update("defaultModelProvider", this._model.provider, vscode.ConfigurationTarget.Global);
     cfg.update("defaultModelId", this._model.id, vscode.ConfigurationTarget.Global);
   }
 
   /** Save the current thinking level as the default for future sessions. */
   saveDefaultThinking(): void {
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cfg = vscode.workspace.getConfiguration("pi-on-code");
     cfg.update("defaultThinkingLevel", this._thinkingLevel, vscode.ConfigurationTarget.Global);
   }
 
   /** Get the configured default model (if any). */
   getDefaultModel(): { provider: string; id: string } | null {
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cfg = vscode.workspace.getConfiguration("pi-on-code");
     const provider = cfg.get<string>("defaultModelProvider");
     const id = cfg.get<string>("defaultModelId");
     return (provider && id) ? { provider, id } : null;
@@ -1816,17 +1821,17 @@ export class PiService {
 
   /** Get the configured default thinking level. */
   getDefaultThinking(): string {
-    return vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultThinkingLevel") ?? "off";
+    return vscode.workspace.getConfiguration("pi-on-code").get<string>("defaultThinkingLevel") ?? "off";
   }
 
   /** Get the current context budget (0 = model default). */
   getContextBudget(): number {
-    return vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
+    return vscode.workspace.getConfiguration("pi-on-code").get<number>("contextBudget") ?? 0;
   }
 
   /** Save context budget setting (requires restart to take effect). */
   async setContextBudget(budget: number): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const cfg = vscode.workspace.getConfiguration("pi-on-code");
     await cfg.update("contextBudget", budget, vscode.ConfigurationTarget.Global);
     this.reportStatus();
   }
@@ -2194,7 +2199,7 @@ export class PiService {
     // bookkeeping stay under SDK control. Raw appends can create a headerless
     // file before the SDK's first flush, causing EEXIST on the first response.
     if (typeof this.sessionManager?.appendCustomEntry === "function") {
-      this.sessionManager.appendCustomEntry("pi-code-gui.active-tools", { toolNames });
+      this.sessionManager.appendCustomEntry("pi-on-code.active-tools", { toolNames });
     } else {
       piWarn("setActiveTools: SessionManager.appendCustomEntry unavailable; selection will not persist");
     }
@@ -2207,7 +2212,7 @@ export class PiService {
     if (!entries.length) { return; }
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
-      const toolNames = e.type === "custom" && e.customType === "pi-code-gui.active-tools"
+      const toolNames = e.type === "custom" && e.customType === "pi-on-code.active-tools"
         ? e.data?.toolNames
         : e.type === "tools_active_change"
           ? e.toolNames

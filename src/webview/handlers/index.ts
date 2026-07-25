@@ -121,10 +121,10 @@ export function createLiveCard(key: string, customType: string, label: string, c
     if (!skipValidation) {
       var vr = validateExtensionToWebview(msg);
       if (!vr.success) {
-        console.warn("[pi-gui] Webview message validation failed:", vr.error, "msg:", JSON.stringify(msg).substring(0, 300));
+        console.warn("[pi-on-code] Webview message validation failed:", vr.error, "msg:", JSON.stringify(msg).substring(0, 300));
         // Show a visible diagnostic notification
-        var diagKey = "pi-gui-diagnostic-" + Date.now();
-        var diag = createLiveCard(diagKey, "pi-gui-diagnostic", "Protocol Error",
+        var diagKey = "pi-on-code-diagnostic-" + Date.now();
+        var diag = createLiveCard(diagKey, "pi-on-code-diagnostic", "Protocol Error",
           "Message validation error for type `" + (msg.type || "unknown") + "`:\n```\n" +
           vr.error.substring(0, 500) + "\n```");
         // Don't block — fall through to existing handler for backward compat
@@ -199,7 +199,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
         // Skip high-frequency types that we intentionally don't render.
         if (msg.type !== "stream-delta" && msg.type !== "thinking-delta") {
           defaultMessageRenderer({
-            customType: "pi-gui-diagnostic",
+            customType: "pi-on-code-diagnostic",
             content: "Unhandled webview message: " + msg.type,
           });
         }
@@ -1010,7 +1010,7 @@ export function showQuickstartGuide() {
       '</ul>' +
 
       '<h3>2. Set the key</h3>' +
-      '<p><strong>Option A:</strong> Run <strong>PiGui: Set Up API Key / Login</strong> from the command palette (<code>Ctrl+Shift+P</code>)</p>' +
+      '<p><strong>Option A:</strong> Run <strong>Pi: Set Up API Key / Login</strong> from the command palette (<code>Ctrl+Shift+P</code>)</p>' +
       '<p><strong>Option B:</strong> Set an environment variable before opening VS Code:</p>' +
       '<pre><code>export ANTHROPIC_API_KEY=sk-ant-...\n# or\nexport OPENAI_API_KEY=sk-...</code></pre>' +
 
@@ -1038,7 +1038,7 @@ export function addErrorMessage(message: string) {
 
     if (/api.?key/i.test(msg)) {
       heading = "<strong>API key required</strong>";
-      help = '<small>Run <strong>PiGui: Set Up API Key / Login</strong> from the command palette ' +
+      help = '<small>Run <strong>Pi: Set Up API Key / Login</strong> from the command palette ' +
              '(<code>Ctrl+Shift+P</code>), or set <code>ANTHROPIC_API_KEY</code> / ' +
              '<code>OPENAI_API_KEY</code> in your environment.</small>';
       isApiKeyError = true;
@@ -1255,7 +1255,7 @@ export function renderAttachments(): void {
   // ── Send prompt ───────────────────────────────────────
 
 export function sendPrompt(): void {
-    console.log("[pi-gui] sendPrompt called");
+    console.log("[pi-on-code] sendPrompt called");
     var text = state.promptInput.value.trim();
     if (!text && state.attachments.length === 0) {return;}
 
@@ -1294,11 +1294,8 @@ export function sendPrompt(): void {
       .map(function (a) {
         return {
           type: "image",
-          source: {
-            type: "base64",
-            mediaType: a.mediaType,
-            data: a.data,
-          },
+          data: a.data,
+          mimeType: a.mediaType,
         };
       });
 
@@ -1833,7 +1830,7 @@ export function handleRegisterMessageRenderer(data: any) {
       // CSP blocks eval().  Inject a <script nonce> tag instead.
       var nonce = (document.querySelector("script[nonce]") as HTMLScriptElement | null)?.getAttribute("nonce");
       if (!nonce) {
-        console.warn("[pi-gui] Cannot register renderer: no CSP nonce found");
+        console.warn("[pi-on-code] Cannot register renderer: no CSP nonce found");
         return;
       }
       var fnName = "__piRenderer_" + data.customType.replace(/[^\w]/g, "_");
@@ -1850,7 +1847,7 @@ export function handleRegisterMessageRenderer(data: any) {
         registerMessageRenderer(data.customType, boundRenderer);
       }
     } catch (e) {
-      console.warn("[pi-gui] Failed to register message renderer for", data.customType, e);
+      console.warn("[pi-on-code] Failed to register message renderer for", data.customType, e);
     }
   }
 

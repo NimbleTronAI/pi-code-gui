@@ -25,7 +25,7 @@
   <rect width="720" height="380" fill="url(#bg)" rx="12"/>
 
   <!-- Title -->
-  <text x="360" y="32" text-anchor="middle" fill="#cdd6f4" font-family="DejaVu Sans" font-size="13" font-weight="600">Pi Code Gui — Architecture</text>
+  <text x="360" y="32" text-anchor="middle" fill="#cdd6f4" font-family="DejaVu Sans" font-size="13" font-weight="600">Pi on Code — Architecture</text>
 
   <!-- ====== Extension Process ====== -->
   <rect x="12" y="46" width="696" height="322" rx="8" fill="none" stroke="#45475a" stroke-width="1.5" stroke-dasharray="6,3"/>

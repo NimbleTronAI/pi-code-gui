@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { piError } from "./logger.js";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
 import { validateExtensionToWebview, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
@@ -46,7 +47,7 @@ export class PiWebviewPanel {
     var randomId = Math.random().toString(36).slice(2, 8);
     this.panel = vscode.window.createWebviewPanel(
       "pi-chat-" + randomId,
-      "Pi Code Gui",
+      "Pi on Code",
       vscode.ViewColumn.Two,
       {
         enableScripts: true,
@@ -86,7 +87,7 @@ export class PiWebviewPanel {
 
   private setupWebviewHandlers(): void {
     if (!this.panel) {
-      console.error("[pi-gui] setupWebviewHandlers called with no panel — webview messages will be lost");
+      piError("setupWebviewHandlers called with no panel — webview messages will be lost");
       return;
     }
 
@@ -310,7 +311,7 @@ export class PiWebviewPanel {
     };
 
     if (!this._tabInitialized) {
-      this.panel.title = "Pi Code Gui";
+      this.panel.title = "Pi on Code";
       return;
     }
 
@@ -343,7 +344,7 @@ export class PiWebviewPanel {
         msgType !== "resendUserMessage") {
       const result = validateExtensionToWebview(message);
       if (!result.success) {
-        console.error(`[pi-gui] postMessage validation failed for type "${msgType}": ${result.error}`);
+        piError(`postMessage validation failed for type "${msgType}": ${result.error}`);
       }
     }
     this.panel?.webview.postMessage(message);
@@ -370,7 +371,7 @@ export class PiWebviewPanel {
         await this.triggerThinkingPicker();
         break;
       case "sessions":
-        await vscode.commands.executeCommand("pi-code-gui.sessions.focus");
+        await vscode.commands.executeCommand("pi-on-code.sessions.focus");
         break;
       case "settings":
         await this.triggerSettingsPicker();
@@ -401,6 +402,9 @@ export class PiWebviewPanel {
 
   private getWebviewContent(webview: vscode.Webview): string {
     const nonce = this.getNonce();
+    const workspaceName = escapeHtml(
+      vscode.workspace.workspaceFolders?.[0]?.name ?? "no workspace",
+    );
     const bundleUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, "media", "bundle.js"),
     );
@@ -414,13 +418,27 @@ export class PiWebviewPanel {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} blob: data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pi Code Gui</title>
+  <title>Pi on Code</title>
   <link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
+  <div id="pi-web-app">
+  <header id="pi-web-header">
+    <div class="pi-web-brand">
+      <span class="pi-web-mark">π</span>
+      <span>pi / code</span>
+    </div>
+    <div class="pi-web-workspace">
+      <span class="pi-web-workspace-label">workspace</span>
+      <span>${workspaceName}</span>
+    </div>
+  </header>
+
   <div id="chat-container">
     <div id="welcome" class="welcome-message">
-      <h2>Pi coding agent</h2>
+      <div class="welcome-kicker">keyboard-first coding agent</div>
+      <h2>Pi on Code</h2>
+      <p>Use Pi inside the editor without losing the clarity of its terminal UI.</p>
     </div>
   </div>
 
@@ -444,6 +462,7 @@ export class PiWebviewPanel {
     <div class="pi-sb-item" id="pi-sb-effort" title="Click to change effort">effort: auto</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
     <div class="pi-sb-item spacer"></div>
+    <div class="pi-sb-hints"><kbd>Enter</kbd> steer&nbsp;&nbsp; <kbd>Alt+Enter</kbd> follow-up</div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>
     <div class="pi-sb-item" id="pi-sb-settings" title="Settings">⚙</div>
   </div>
@@ -568,4 +587,17 @@ function formatBudget(tokens: number): string {
   if (tokens < 1000) { return tokens.toString(); }
   if (tokens < 1000000) { return (tokens / 1000).toFixed(0) + "K"; }
   return (tokens / 1000000).toFixed(1) + "M";
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character];
+  });
 }

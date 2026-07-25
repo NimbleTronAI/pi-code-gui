@@ -18,11 +18,8 @@ import { z } from "zod";
 
 const ImageContentSchema = z.object({
   type: z.literal("image"),
-  source: z.object({
-    type: z.literal("base64"),
-    mediaType: z.string(),
-    data: z.string(),
-  }),
+  data: z.string().min(1),
+  mimeType: z.string().startsWith("image/"),
 });
 
 const TextContentItemSchema = z.object({

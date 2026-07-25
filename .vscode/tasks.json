@@ -22,7 +22,23 @@
             "type": "npm",
             "script": "watch:esbuild",
             "group": "build",
-            "problemMatcher": "$esbuild-watch",
+            "problemMatcher": {
+                "owner": "esbuild",
+                "source": "esbuild",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^\\[esbuild-error\\] (.*):(\\d+):(\\d+): (.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 4
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^\\[watch\\] build started$",
+                    "endsPattern": "^\\[watch\\] build finished$"
+                }
+            },
             "isBackground": true,
             "label": "npm: watch:esbuild",
             "presentation": {
@@ -34,7 +50,23 @@
             "type": "npm",
             "script": "watch:webview",
             "group": "build",
-            "problemMatcher": "$esbuild-watch",
+            "problemMatcher": {
+                "owner": "esbuild-webview",
+                "source": "esbuild",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^\\[webview-esbuild-error\\] (.*):(\\d+):(\\d+): (.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 4
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^\\[webview-watch\\] build started$",
+                    "endsPattern": "^\\[webview-watch\\] build finished$"
+                }
+            },
             "isBackground": true,
             "label": "npm: watch:webview",
             "presentation": {

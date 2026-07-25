@@ -1,11 +1,8 @@
-/** Image content for prompt attachments */
+/** Image content for prompt attachments (Pi SDK format). */
 export interface ImageContent {
   type: "image";
-  source: {
-    type: "base64";
-    mediaType: string;
-    data: string;
-  };
+  data: string;
+  mimeType: string;
 }
 
 /** Summary of a past session as returned by session listing. */

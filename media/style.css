@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   Pi Code Gui — Webview Styles
+   Pi on Code — Webview Styles
    ═══════════════════════════════════════════════════════════════
    Uses VS Code CSS custom properties for automatic theme
    integration.  Organized in @layer for predictable cascading:
@@ -1296,4 +1296,641 @@
 
 .pi-dialog-confirm:hover {
   background: var(--vscode-button-hoverBackground);
+}
+
+/* Pi Web visual system ---------------------------------------------------- */
+
+:root {
+  color-scheme: dark;
+  --pi-bg: #0b0c0e;
+  --pi-surface: #101215;
+  --pi-surface-raised: #14171a;
+  --pi-line: #2b2f35;
+  --pi-line-soft: #20242a;
+  --pi-text: #e7e1d5;
+  --pi-muted: #8f948f;
+  --pi-faint: #626863;
+  --pi-lavender: #b9a6ff;
+  --pi-green: #83c092;
+  --pi-amber: #e6b673;
+  --pi-red: #e67e80;
+  --bg-primary: var(--pi-bg);
+  --bg-secondary: var(--pi-surface);
+  --bg-input: var(--pi-surface);
+  --fg-primary: var(--pi-text);
+  --fg-secondary: var(--pi-muted);
+  --border-color: var(--pi-line);
+  --accent: var(--pi-lavender);
+  --error: var(--pi-red);
+  --warning: var(--pi-amber);
+  --success: var(--pi-green);
+  --thinking-bg: var(--pi-surface);
+  --tool-bg: var(--pi-surface);
+}
+
+* {
+  scrollbar-color: var(--pi-line) transparent;
+  scrollbar-width: thin;
+}
+
+body {
+  height: 100vh;
+  overflow: hidden;
+  background: var(--pi-bg);
+  color: var(--pi-text);
+  font-family:
+    "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas,
+    var(--vscode-editor-font-family), monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+button,
+textarea,
+input {
+  font-family: inherit;
+}
+
+button:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: 1px solid var(--pi-lavender);
+  outline-offset: -1px;
+}
+
+#pi-web-app {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+#pi-web-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--pi-line);
+  background: rgba(11, 12, 14, 0.96);
+  color: var(--pi-muted);
+  user-select: none;
+}
+
+.pi-web-brand,
+.pi-web-workspace {
+  display: flex;
+  align-items: center;
+}
+
+.pi-web-brand {
+  gap: 9px;
+  color: var(--pi-text);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.pi-web-mark {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--pi-lavender);
+  color: var(--pi-lavender);
+  line-height: 1;
+}
+
+.pi-web-workspace {
+  min-width: 0;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.pi-web-workspace > :last-child {
+  overflow: hidden;
+  max-width: 38vw;
+  color: var(--pi-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-web-workspace-label {
+  color: var(--pi-faint);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+#chat-container {
+  width: min(100%, 1040px);
+  min-height: 0;
+  margin: 0 auto;
+  padding: 36px clamp(20px, 5vw, 72px) 56px;
+  gap: 0;
+  background: transparent;
+}
+
+.welcome-message {
+  align-self: stretch;
+  padding: 26px 0 34px 58px;
+  border-bottom: 1px solid var(--pi-line-soft);
+  color: var(--pi-muted);
+  text-align: left;
+}
+
+.welcome-kicker {
+  margin-bottom: 9px;
+  color: var(--pi-faint);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.welcome-message h2 {
+  margin: 0 0 5px;
+  color: var(--pi-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.welcome-message p {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 12px;
+}
+
+.message {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  width: 100%;
+  max-width: none;
+  align-self: stretch;
+  padding: 14px 0;
+  border-top: 1px solid var(--pi-line-soft);
+  animation: pi-message-in 120ms ease-out;
+}
+
+.message::before {
+  padding-top: 2px;
+  color: var(--pi-muted);
+  content: "pi";
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.message.user {
+  align-self: stretch;
+  margin: 0;
+}
+
+.message.user::before {
+  color: var(--pi-lavender);
+  content: "you";
+}
+
+.message .message-content,
+.message.user .message-content,
+.message.assistant .message-content {
+  display: block;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--pi-text);
+  font-weight: 400;
+  line-height: 1.65;
+}
+
+.message .message-content p:first-child {
+  margin-top: 0;
+}
+
+.message .message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.streaming-cursor::after {
+  color: var(--pi-lavender);
+  content: "▋";
+  font-weight: 400;
+}
+
+.pi-waiting-indicator {
+  color: var(--pi-muted);
+}
+
+.pi-waiting-indicator .working-spinner {
+  color: var(--pi-lavender);
+}
+
+.thinking-block,
+.compaction-summary,
+.custom-message,
+.custom-message-inline {
+  margin: 8px 0 8px 58px;
+  padding: 9px 12px;
+  border: 0;
+  border-left: 1px solid var(--pi-line);
+  border-radius: 0;
+  background: var(--pi-surface);
+  color: var(--pi-muted);
+}
+
+/* Thinking is already placed in the message content grid column. */
+.message .thinking-block {
+  margin-left: 0;
+}
+
+.thinking-header,
+.custom-message-label,
+.custom-label,
+.cs-header {
+  color: var(--pi-lavender);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.thinking-expand-btn,
+.tool-expand-btn,
+.show-more-btn,
+.queue-promote-btn,
+.queue-clear-btn,
+.code-copy-btn {
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--pi-muted);
+}
+
+.thinking-expand-btn:hover,
+.tool-expand-btn:hover,
+.show-more-btn:hover,
+.queue-promote-btn:hover,
+.queue-clear-btn:hover,
+.code-copy-btn:hover {
+  border-color: var(--pi-lavender);
+  background: var(--pi-surface-raised);
+  color: var(--pi-text);
+}
+
+.tool-block,
+.bash-block {
+  flex-shrink: 0;
+  margin: 8px 0 8px 58px;
+  padding: 7px 8px;
+  border: 0;
+  border-top: 1px solid var(--pi-line);
+  border-bottom: 1px solid var(--pi-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Bash executions are top-level chat items, so offset them past the role column. */
+.bash-execution {
+  margin-left: 58px;
+}
+
+.tool-block .tool-header,
+.bash-block .bash-header {
+  min-height: 22px;
+  color: var(--pi-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.tool-block .tool-name {
+  color: var(--pi-lavender);
+  font-weight: 500;
+}
+
+.tool-block .tool-status {
+  padding: 0 5px;
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: transparent;
+}
+
+.tool-block .tool-status.success {
+  color: var(--pi-green);
+}
+
+.tool-block .tool-status.running {
+  border-color: var(--pi-lavender);
+  background: transparent;
+  color: var(--pi-lavender);
+}
+
+.tool-block .tool-status.error {
+  color: var(--pi-red);
+}
+
+.tool-block .tool-args,
+.tool-block .tool-content,
+.tool-block .tool-result {
+  color: var(--pi-muted);
+}
+
+.code-block-wrapper {
+  margin: 9px 0;
+  overflow: hidden;
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: var(--pi-surface);
+}
+
+.code-block-header {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--pi-line);
+  background: var(--pi-surface-raised);
+}
+
+.code-lang-label {
+  color: var(--pi-faint);
+  font-weight: 500;
+}
+
+.code-block {
+  background: var(--pi-surface);
+}
+
+.edit-change .edit-old {
+  border-radius: 0;
+  background: rgba(230, 126, 128, 0.12);
+}
+
+.edit-change .edit-new {
+  border-radius: 0;
+  background: rgba(131, 192, 146, 0.12);
+}
+
+#live-panel,
+#attachment-bar,
+.queue-indicator {
+  border-top: 1px solid var(--pi-line);
+  background: var(--pi-surface);
+}
+
+.live-card {
+  border-bottom: 1px solid var(--pi-line);
+}
+
+.live-card .live-card-label {
+  color: var(--pi-lavender);
+}
+
+.attachment-item {
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: var(--pi-bg);
+}
+
+#input-area {
+  position: relative;
+  gap: 0;
+  padding: 8px 12px 8px 38px;
+  border-top: 1px solid var(--pi-line);
+  background: var(--pi-surface);
+}
+
+#input-area::before {
+  position: absolute;
+  top: 15px;
+  left: 17px;
+  color: var(--pi-lavender);
+  content: "›";
+  font-size: 18px;
+  line-height: 1;
+}
+
+#prompt-input {
+  min-height: 40px;
+  max-height: 120px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--pi-text);
+  font-size: 13px;
+}
+
+#prompt-input::placeholder {
+  color: var(--pi-faint);
+}
+
+#prompt-input:focus {
+  border-color: transparent;
+  outline: 0;
+}
+
+#send-button,
+#steer-dropdown,
+#abort-button,
+#queue-button {
+  min-width: 34px;
+  min-height: 34px;
+  align-self: center;
+  padding: 6px 9px;
+  border: 1px solid var(--pi-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--pi-muted);
+}
+
+#send-button {
+  border-right: 0;
+}
+
+#send-button:hover,
+#steer-dropdown:hover,
+#abort-button:hover,
+#queue-button:hover {
+  border-color: var(--pi-lavender);
+  background: var(--pi-surface-raised);
+  color: var(--pi-lavender);
+}
+
+#send-button:disabled {
+  opacity: 0.3;
+}
+
+#pi-status-bar {
+  min-height: 28px;
+  gap: 9px;
+  padding: 0 12px;
+  border-top: 1px solid var(--pi-line);
+  background: var(--pi-bg);
+  color: var(--pi-faint);
+  font-size: 10px;
+}
+
+#pi-status-bar .pi-sb-item {
+  padding: 2px 4px;
+  border-radius: 0;
+}
+
+#pi-status-bar .pi-sb-item:hover {
+  background: var(--pi-surface-raised);
+  color: var(--pi-text);
+}
+
+#pi-sb-dot {
+  color: var(--pi-green);
+}
+
+.pi-sb-hints {
+  color: var(--pi-faint);
+  white-space: nowrap;
+}
+
+.pi-sb-hints kbd {
+  color: var(--pi-muted);
+  font-family: inherit;
+}
+
+#pi-extension-status {
+  scrollbar-width: none;
+}
+
+.pi-extension-status-item {
+  padding: 0 5px;
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--pi-muted);
+}
+
+.settings-overlay,
+.user-msg-selector-overlay,
+.slash-autocomplete,
+.pi-dialog {
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: var(--pi-surface-raised);
+  box-shadow: none;
+}
+
+.settings-row,
+.user-msg-item,
+.slash-item {
+  border-bottom-color: var(--pi-line);
+}
+
+.user-msg-item:hover,
+.user-msg-item.selected,
+.slash-item:hover,
+.slash-item.selected,
+.pi-dialog-option:hover,
+.pi-dialog-option.selected {
+  background: var(--pi-surface);
+  color: var(--pi-lavender);
+}
+
+.settings-toggle {
+  border-radius: 2px;
+  background: var(--pi-line);
+}
+
+.settings-toggle.on {
+  background: var(--pi-lavender);
+}
+
+.settings-toggle::after {
+  border-radius: 1px;
+  background: var(--pi-bg);
+}
+
+.pi-dialog-overlay,
+#dialog-overlay {
+  background: rgba(0, 0, 0, 0.66);
+}
+
+.pi-dialog-btn,
+.pi-dialog-input,
+.pi-dialog-option {
+  border-radius: 2px;
+}
+
+.pi-dialog-input {
+  border-color: var(--pi-line);
+  background: var(--pi-bg);
+  color: var(--pi-text);
+}
+
+.pi-dialog-cancel,
+.pi-dialog-confirm {
+  border: 1px solid var(--pi-line);
+  background: transparent;
+  color: var(--pi-muted);
+}
+
+.pi-dialog-confirm {
+  border-color: var(--pi-lavender);
+  color: var(--pi-lavender);
+}
+
+@keyframes pi-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message,
+  .pi-waiting-indicator,
+  .working-spinner {
+    animation: none !important;
+  }
+}
+
+@media (max-width: 720px) {
+  #pi-web-header {
+    padding-inline: 10px;
+  }
+
+  .pi-web-workspace-label,
+  .pi-sb-hints,
+  #pi-sb-effort {
+    display: none;
+  }
+
+  #chat-container {
+    padding: 24px 14px 40px;
+  }
+
+  .welcome-message {
+    padding-left: 44px;
+  }
+
+  .message {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .thinking-block,
+  .tool-block,
+  .bash-block,
+  .bash-execution,
+  .compaction-summary,
+  .custom-message,
+  .custom-message-inline {
+    margin-left: 44px;
+  }
+
+  .message .thinking-block {
+    margin-left: 0;
+  }
+
+  #pi-status-bar {
+    gap: 4px;
+    padding-inline: 8px;
+  }
 }

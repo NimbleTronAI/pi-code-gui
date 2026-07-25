@@ -306,7 +306,7 @@ export const editToolRenderer = {
       if (!text && result && typeof result.text === "string") {text = result.text;}
       if (!text && result && typeof result === "string") {text = result;}
       if (!text && result && result.content && result.content.length > 0) {
-        try { text = JSON.stringify(result.content, null, 2); } catch (e) { console.warn("[pi-gui] JSON.stringify failed for tool result content"); }
+        try { text = JSON.stringify(result.content, null, 2); } catch (e) { console.warn("[pi-on-code] JSON.stringify failed for tool result content"); }
       }
 
       var tr = el.querySelector(".tool-result");
@@ -804,7 +804,7 @@ export function handleToolStart(data: any) {
     // Fall back to defaultToolRenderer for unregistered tools (e.g. extension tools).
     var renderer = getToolRenderer(data.toolName) || defaultToolRenderer;
     var block = (renderer as any).create(data);
-    if (!block) { console.warn("[pi-gui] tool renderer returned null for", data.toolName); return; }
+    if (!block) { console.warn("[pi-on-code] tool renderer returned null for", data.toolName); return; }
 
     if (data.entryId && !block.id.startsWith("entry-")) {
       block.id = "entry-" + data.entryId;

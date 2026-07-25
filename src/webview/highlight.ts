@@ -120,7 +120,7 @@ export function highlightCode(code: string, lang: string): string {
     return result.value;
   } catch (e) {
     // If highlighting fails (e.g. illegal syntax), return escaped text
-    console.warn("[pi-gui] highlightCode failed for lang=" + lang + ":", e);
+    console.warn("[pi-on-code] highlightCode failed for lang=" + lang + ":", e);
     return escapeHtml(code);
   }
 }

@@ -4,7 +4,13 @@ import { PiService } from "./pi-service.js";
 import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
+import {
+  PiSessionSidebarProvider,
+  type PiSidebarSession,
+  type PiSidebarState,
+} from "./session-sidebar-provider.js";
 import { initLogger, piLog, piWarn } from "./logger.js";
+import { getWorkspaceCwd, getWorkspaceRoot, getWorkspaceUri } from "./workspace-context.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary } from "./types.js";
@@ -34,11 +40,11 @@ async function saveOpenSessionPaths(): Promise<void> {
     const fp = sw.piService.sessionFilePath;
     if (fp) { paths.push(fp); }
   }
-  await extContext.workspaceState.update("pi-code-gui.openSessionPaths", paths);
-  await extContext.workspaceState.update("pi-code-gui.sessionCounter", sessionCounter);
+  await extContext.workspaceState.update("pi-on-code.openSessionPaths", paths);
+  await extContext.workspaceState.update("pi-on-code.sessionCounter", sessionCounter);
   // Persist which session was active so we can restore focus after reload
   const activePath = activeSessionWindow?.piService.sessionFilePath ?? null;
-  await extContext.workspaceState.update("pi-code-gui.activeSessionPath", activePath);
+  await extContext.workspaceState.update("pi-on-code.activeSessionPath", activePath);
 }
 
 /** The most recently focused (active) session window. */
@@ -46,9 +52,11 @@ let activeSessionWindow: SessionWindow | null = null;
 
 function setActiveSession(sw: SessionWindow | null): void {
   activeSessionWindow = sw;
+  sessionSidebarProvider?.refresh();
 }
 let sessionTreeProvider: MultiSessionTreeProvider | null = null;
 let sessionTreeView: vscode.TreeView<SessionTreeItem> | null = null;
+let sessionSidebarProvider: PiSessionSidebarProvider | null = null;
 
 let packagesTreeProvider: PiPackagesTreeProvider | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,6 +66,77 @@ let packageService: PiPackageService | null = null;
 /** The primary (first) session — used for status bar and tree provider */
 function primarySession(): SessionWindow | undefined {
   return sessions[0];
+}
+
+function getSidebarState(): PiSidebarState {
+  const items: PiSidebarSession[] = [];
+  const openPaths = new Set<string>();
+
+  for (const sw of sessions) {
+    const sessionPath = sw.piService.sessionFilePath ?? undefined;
+    if (sessionPath) { openPaths.add(sessionPath); }
+    const title = sw.piService.sessionName
+      ?? sw.webviewPanel.summary
+      ?? getGenericSessionLabel(sw.id);
+    items.push({
+      id: sw.id,
+      title: cleanSessionTitle(title),
+      meta: sw.isStreaming ? "now" : formatRelativeAge(getFileModifiedTime(sessionPath)),
+      active: activeSessionWindow === sw,
+      streaming: sw.isStreaming,
+      kind: "open",
+      path: sessionPath,
+    });
+  }
+
+  const pastSessions = [...(sessionTreeProvider?.pastSessions ?? [])]
+    .filter((session) => !openPaths.has(session.path))
+    .sort((a, b) => (b.modified ?? b.created ?? 0) - (a.modified ?? a.created ?? 0));
+
+  for (const session of pastSessions) {
+    const title = session.name
+      ?? session.firstMessage
+      ?? "Untitled session";
+    items.push({
+      id: `past:${session.path}`,
+      title: cleanSessionTitle(title),
+      meta: formatRelativeAge(session.modified ?? session.created),
+      active: false,
+      streaming: false,
+      kind: "past",
+      path: session.path,
+    });
+  }
+
+  return { sessions: items };
+}
+
+function cleanSessionTitle(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact || "Untitled session";
+}
+
+function getFileModifiedTime(filePath: string | undefined): number | undefined {
+  if (!filePath) { return undefined; }
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatRelativeAge(timestamp: number | undefined): string {
+  if (!timestamp) { return "now"; }
+  const timeMs = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+  const elapsed = Math.max(0, Date.now() - timeMs);
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) { return "now"; }
+  if (minutes < 60) { return `${minutes}m`; }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) { return `${hours}h`; }
+  const days = Math.floor(hours / 24);
+  if (days < 30) { return `${days}d`; }
+  return `${Math.floor(days / 30)}mo`;
 }
 
 /** Create a new session window pair */
@@ -112,28 +191,39 @@ function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extContext = context;
-  console.log("Pi Code Gui extension activating...");
+  console.log("[pi-on-code] Extension activating...");
 
-  // Create output channel for diagnostics (View → Output → Pi Code Gui)
-  const outputChannel = vscode.window.createOutputChannel("Pi Code Gui", { log: true });
+  // Create output channel for diagnostics (View → Output → Pi on Code)
+  const outputChannel = vscode.window.createOutputChannel("Pi on Code", { log: true });
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
-  piLog("Pi Code Gui starting...");
+  piLog("Pi on Code starting...");
 
-  // After extension host restart, workspace folders may not be available yet.
-  // Without this guard, we fall back to process.cwd() which on remote servers
-  // is the server root, loading sessions from the wrong project.
-  if (!vscode.workspace.workspaceFolders?.length) {
-    piLog("Waiting for workspace folders...");
-    await new Promise<void>((resolve) => {
-      const sub = vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        if (vscode.workspace.workspaceFolders?.length) {
-          sub.dispose();
-          resolve();
-        }
-      });
-    });
-    piLog(`Workspace ready: ${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ""}`);
+  sessionSidebarProvider = new PiSessionSidebarProvider({
+    getState: getSidebarState,
+    createSession: () => {
+      void vscode.commands.executeCommand("pi-on-code.addSession");
+    },
+    focusSession: (sessionId) => {
+      void vscode.commands.executeCommand("pi-on-code.focusSession", sessionId);
+    },
+    resumeSession: (sessionPath) => {
+      void vscode.commands.executeCommand("pi-on-code.resumePastSession", sessionPath);
+    },
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      "pi-on-code.sessions",
+      sessionSidebarProvider,
+      { webviewOptions: { retainContextWhenHidden: true } },
+    ),
+  );
+
+  // Never block activate() waiting for a workspace. Extension development
+  // hosts and empty VS Code windows may have no folder, so that event might
+  // never fire. Workspace-dependent session startup is deferred below.
+  if (!getWorkspaceRoot()) {
+    piLog("No workspace folder yet; deferring Pi session startup.");
   }
 
   // Catch unhandled rejections/exceptions so we can see what crashes the
@@ -149,7 +239,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── Step 1: Register ALL commands immediately ──────────
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.codeAgent", () => {
+    vscode.commands.registerCommand("pi-on-code.codeAgent", () => {
       const primary = primarySession();
       if (primary) {
         setActiveSession(primary);
@@ -161,13 +251,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.addSession", () => {
+    vscode.commands.registerCommand("pi-on-code.addSession", () => {
       addSession(context);
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.focusSession", (sessionId: string) => {
+    vscode.commands.registerCommand("pi-on-code.focusSession", (sessionId: string) => {
       const sw = sessions.find((s) => s.id === sessionId);
       if (sw) {
         setActiveSession(sw);
@@ -177,19 +267,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.abort", async () => {
+    vscode.commands.registerCommand("pi-on-code.abort", async () => {
       const primary = primarySession();
       if (primary) { await primary.piService.abort(); }
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.sendSlashCommand", (cmd: string) => {
+    vscode.commands.registerCommand("pi-on-code.sendSlashCommand", (cmd: string) => {
       const primary = primarySession();
       if (primary) { primary.webviewPanel.postCommand(cmd); }
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.referenceFile", (fp: string) => {
+    vscode.commands.registerCommand("pi-on-code.referenceFile", (fp: string) => {
       const primary = primarySession();
       if (primary) { primary.webviewPanel.postCommand(`@${fp}`); }
     }),
@@ -201,7 +291,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // or falls back to reading the selected tree item from the session tree view
   // (for right-click context menu usage where args are not auto-populated).
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.revealEntry", (sessionId?: string | SessionTreeItem, entryId?: string, toolCallId?: string) => {
+    vscode.commands.registerCommand("pi-on-code.revealEntry", (sessionId?: string | SessionTreeItem, entryId?: string, toolCallId?: string) => {
       let sw: SessionWindow | undefined;
       let id = entryId;
       let tcId = toolCallId;
@@ -243,7 +333,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Copy the text content of a selected entry from the Sessions tree
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.copyEntryText", async (treeItem?: SessionTreeItem) => {
+    vscode.commands.registerCommand("pi-on-code.copyEntryText", async (treeItem?: SessionTreeItem) => {
       var item: SessionTreeItem | undefined = treeItem;
       // Fallback: read from tree view selection
       if (!item || (item.contextValue !== "sessionEntry" && !item.contextValue?.startsWith("sessionEntry"))) {
@@ -377,7 +467,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   //   2. pastSessionEntry → resume the session, pick a message, fork there
   context.subscriptions.push(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-code-gui.forkSession", async (...rawArgs: any[]) => {
+    vscode.commands.registerCommand("pi-on-code.forkSession", async (...rawArgs: any[]) => {
       // VS Code passes the TreeItem as the first argument when invoked from
       // a context menu. The tree item's command.arguments contain the actual
       // payload: [sessionId, entryId] for sessionEntry, [path] for pastSessionEntry.
@@ -406,7 +496,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Clone session (fork at current leaf) ────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.cloneSession", async () => {
+    vscode.commands.registerCommand("pi-on-code.cloneSession", async () => {
       const sw = activeSessionWindow ?? primarySession();
       if (!sw || !sw.initialized) {
         vscode.window.showErrorMessage("Cannot clone: no active Pi session.");
@@ -433,7 +523,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Compact session context ────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.compact", async () => {
+    vscode.commands.registerCommand("pi-on-code.compact", async () => {
       const sw = activeSessionWindow ?? primarySession();
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -454,7 +544,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Export session to HTML ─────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.exportSession", async () => {
+    vscode.commands.registerCommand("pi-on-code.exportSession", async () => {
       const sw = activeSessionWindow ?? primarySession();
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -462,7 +552,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       try {
         const defaultPath = vscode.Uri.joinPath(
-          vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
+          getWorkspaceUri(),
           `pi-session-${sw.id}.html`
         );
         const uri = await vscode.window.showSaveDialog({
@@ -481,7 +571,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Reload context (extensions, keybindings, skills) ─
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.reloadContext", async () => {
+    vscode.commands.registerCommand("pi-on-code.reloadContext", async () => {
       const sw = activeSessionWindow ?? primarySession();
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -502,7 +592,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Resume a past session from the tree view ─────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.resumePastSession", async (filePath?: SessionTreeItem | string) => {
+    vscode.commands.registerCommand("pi-on-code.resumePastSession", async (filePath?: SessionTreeItem | string) => {
       let resolved: string | undefined;
       // When triggered from a context menu, VS Code passes the tree item as the first arg.
       if (filePath instanceof SessionTreeItem) {
@@ -540,7 +630,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Delete a past session from the tree view ──────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.deletePastSession", async (filePath?: SessionTreeItem | string) => {
+    vscode.commands.registerCommand("pi-on-code.deletePastSession", async (filePath?: SessionTreeItem | string) => {
       let resolved: string | undefined;
       // When triggered from a context menu, VS Code passes the tree item as the first arg.
       if (filePath instanceof SessionTreeItem) {
@@ -581,7 +671,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Delete all past sessions ────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.deleteAllPastSessions", async () => {
+    vscode.commands.registerCommand("pi-on-code.deleteAllPastSessions", async () => {
       const past = sessionTreeProvider?.pastSessions ?? [];
       if (past.length === 0) {
         vscode.window.showInformationMessage("No past sessions to delete.");
@@ -608,7 +698,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ── Filter past sessions ────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.filterPastSessions", async () => {
+    vscode.commands.registerCommand("pi-on-code.filterPastSessions", async () => {
       const currentFilter = sessionTreeProvider?.pastFilter ?? "";
       const filter = await vscode.window.showInputBox({
         prompt: "Filter past sessions by title or content",
@@ -625,7 +715,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Per-session model picker
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickSessionModel", async (sessionId?: string) => {
+    vscode.commands.registerCommand("pi-on-code.pickSessionModel", async (sessionId?: string) => {
       const sw = sessionId ? sessions.find((s) => s.id === sessionId) : primarySession();
       if (!sw || !sw.initialized) {
         piWarn(`pickSessionModel: session not initialized (sessionId=${sessionId})`);
@@ -639,7 +729,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Per-session thinking level picker
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickSessionThinking", async (sessionId?: string) => {
+    vscode.commands.registerCommand("pi-on-code.pickSessionThinking", async (sessionId?: string) => {
       const sw = sessionId ? sessions.find((s) => s.id === sessionId) : primarySession();
       if (!sw || !sw.initialized) {
         piWarn(`pickSessionThinking: session not initialized (sessionId=${sessionId})`);
@@ -653,7 +743,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Active-session model picker
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickModel", async () => {
+    vscode.commands.registerCommand("pi-on-code.pickModel", async () => {
       const sw = activeSessionWindow;
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -668,7 +758,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Active-session thinking picker
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickThinking", async () => {
+    vscode.commands.registerCommand("pi-on-code.pickThinking", async () => {
       const sw = activeSessionWindow;
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -683,7 +773,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Active-session effort picker
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickEffort", async () => {
+    vscode.commands.registerCommand("pi-on-code.pickEffort", async () => {
       const sw = activeSessionWindow;
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -696,7 +786,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Active-session context budget picker
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickContextBudget", async () => {
+    vscode.commands.registerCommand("pi-on-code.pickContextBudget", async () => {
       const sw = activeSessionWindow;
       if (!sw || !sw.initialized) {
         vscode.window.showWarningMessage("No active Pi session.");
@@ -713,37 +803,59 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // init chain in initSessionInBackground can take seconds.
   registerEarlyCommands(context);
 
-  // ── Step 4: Restore previously open sessions, or create a fresh one ──
-  const savedPaths: string[] = ((context.workspaceState.get("pi-code-gui.openSessionPaths") as string[]) ?? [])
-    .filter((p: string) => fs.existsSync(p));
-  const savedActivePath: string | undefined = context.workspaceState.get("pi-code-gui.activeSessionPath") ?? undefined;
-  const autoOpen = vscode.workspace.getConfiguration("pi-code-gui").get<boolean>("autoOpenOnStart", true);
+  // ── Step 4: Start workspace-dependent services ─────
+  // Keep this out of the activation critical path. In an empty window we wait
+  // in the background rather than leaving activate() pending forever.
+  let workspaceServicesStarted = false;
+  const startWorkspaceServices = (): void => {
+    if (workspaceServicesStarted || !getWorkspaceRoot()) { return; }
+    workspaceServicesStarted = true;
 
-  if (savedPaths.length > 0) {
-    // Restore session counter to avoid ID collisions.
-    const savedCounter: number | undefined = context.workspaceState.get("pi-code-gui.sessionCounter");
-    if (savedCounter !== undefined && savedCounter > sessionCounter) {
-      sessionCounter = savedCounter;
-    }
-    // Restore every session that was open, in order.
-    piLog(`Restoring ${savedPaths.length} open sessions...`);
-    for (let i = 0; i < savedPaths.length; i++) {
+    const savedPaths: string[] = ((context.workspaceState.get("pi-on-code.openSessionPaths") as string[]) ?? [])
+      .filter((p: string) => fs.existsSync(p));
+    const savedActivePath: string | undefined = context.workspaceState.get("pi-on-code.activeSessionPath") ?? undefined;
+    const autoOpen = vscode.workspace.getConfiguration("pi-on-code").get<boolean>("autoOpenOnStart", true);
+
+    if (savedPaths.length > 0) {
+      // Restore session counter to avoid ID collisions.
+      const savedCounter: number | undefined = context.workspaceState.get("pi-on-code.sessionCounter");
+      if (savedCounter !== undefined && savedCounter > sessionCounter) {
+        sessionCounter = savedCounter;
+      }
+      // Restore every session that was open, in order.
+      piLog(`Restoring ${savedPaths.length} open sessions...`);
+      for (let i = 0; i < savedPaths.length; i++) {
+        const sw = createSessionWindow(context);
+        if (i === 0) { setActiveSession(sw); }
+        if (autoOpen) { void sw.webviewPanel.show(); }
+        void initSessionInBackground(context, sw, { openPath: savedPaths[i] });
+      }
+      restoreActiveSession(savedActivePath);
+    } else {
+      // No saved sessions — create one fresh session.
       const sw = createSessionWindow(context);
-      if (i === 0) { setActiveSession(sw); }
+      setActiveSession(sw);
       if (autoOpen) { void sw.webviewPanel.show(); }
-      void initSessionInBackground(context, sw, { openPath: savedPaths[i] });
+      void initSessionInBackground(context, sw, { fresh: true });
     }
-    restoreActiveSession(savedActivePath);
-  } else {
-    // No saved sessions — create one fresh session
-    const sw = createSessionWindow(context);
-    setActiveSession(sw);
-    if (autoOpen) { void sw.webviewPanel.show(); }
-    void initSessionInBackground(context, sw, { fresh: true });
-  }
 
-  // ── Step 5: Initialize packages view ────────────────
-  initPackagesViewDelayed(context);
+    // ── Step 5: Initialize packages view ──────────────
+    initPackagesViewDelayed(context);
+  };
+
+  if (getWorkspaceRoot()) {
+    startWorkspaceServices();
+  } else {
+    const workspaceListener = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const workspaceRoot = getWorkspaceRoot();
+      if (workspaceRoot) {
+        workspaceListener.dispose();
+        piLog(`Workspace ready: ${workspaceRoot}`);
+        startWorkspaceServices();
+      }
+    });
+    context.subscriptions.push(workspaceListener);
+  }
 }
 
 // ── Packages view ───────────────────────────────────
@@ -775,13 +887,13 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // Create the tree view even if init failed — it will show a helpful
   // placeholder so the user knows the view exists.
   packagesTreeProvider = new PiPackagesTreeProvider(packageService);
-  packagesTreeView = vscode.window.createTreeView("pi-code-gui.packages", {
+  packagesTreeView = vscode.window.createTreeView("pi-on-code.packages", {
     treeDataProvider: packagesTreeProvider,
   });
   context.subscriptions.push(packagesTreeView);
 
   if (!result.success) {
-    console.log(`[pi-gui] Packages view: package service init failed: ${result.error}`);
+    piWarn(`Packages view: package service init failed: ${result.error}`);
     // Show the error in the tree view itself
     packagesTreeProvider.showError(`Pi SDK not ready: ${result.error}`);
     return;
@@ -795,7 +907,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // Install a package from the marketplace
   context.subscriptions.push(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-code-gui.installPackage", async (item?: any) => {
+    vscode.commands.registerCommand("pi-on-code.installPackage", async (item?: any) => {
       const treeItem = resolvePackageTreeItem(item);
       let marketPkg = treeItem?.marketData;
 
@@ -823,7 +935,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // Uninstall a package
   context.subscriptions.push(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-code-gui.uninstallPackage", async (item?: any) => {
+    vscode.commands.registerCommand("pi-on-code.uninstallPackage", async (item?: any) => {
       const treeItem = resolvePackageTreeItem(item);
       const pkg = treeItem?.installedData;
       if (!pkg) {
@@ -846,7 +958,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
 
   // Search packages
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.searchPackages", async () => {
+    vscode.commands.registerCommand("pi-on-code.searchPackages", async () => {
       const query = await vscode.window.showInputBox({
         prompt: "Search Pi packages on the marketplace",
         placeHolder: "e.g. web, subagent, mcp — or leave empty for popular",
@@ -860,7 +972,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
 
   // Refresh packages view
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.refreshPackages", async () => {
+    vscode.commands.registerCommand("pi-on-code.refreshPackages", async () => {
       await packagesTreeProvider?.refreshAll();
     }),
   );
@@ -868,7 +980,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // Update a single package
   context.subscriptions.push(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vscode.commands.registerCommand("pi-code-gui.updatePackage", async (item?: any) => {
+    vscode.commands.registerCommand("pi-on-code.updatePackage", async (item?: any) => {
       const treeItem = resolvePackageTreeItem(item);
       const pkg = treeItem?.installedData;
       if (!pkg) {
@@ -881,7 +993,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
 
   // Update all packages
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.updateAllPackages", async () => {
+    vscode.commands.registerCommand("pi-on-code.updateAllPackages", async () => {
       const updates = await packageService?.checkForUpdates();
       if (!updates || updates.length === 0) {
         vscode.window.showInformationMessage("All packages are up to date.");
@@ -907,7 +1019,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
 
   // Open a URL in the default browser (used by link items in tree view)
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.openUrl", (url: string) => {
+    vscode.commands.registerCommand("pi-on-code.openUrl", (url: string) => {
       if (url) {
         // Normalize git URLs (git+https://, git://, git@...) to plain https://
         let normalized = url;
@@ -923,12 +1035,12 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
 
   // Open pi.dev marketplace in browser
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.openPiDevMarketplace", () => {
+    vscode.commands.registerCommand("pi-on-code.openPiDevMarketplace", () => {
       vscode.env.openExternal(vscode.Uri.parse("https://pi.dev/packages"));
     }),
   );
 
-  console.log("[pi-gui] Packages view ready");
+  piLog("Packages view ready");
 }
 
 /** Resolve a tree item from either a direct argument or the tree view selection. */
@@ -1038,7 +1150,7 @@ function addSession(context: vscode.ExtensionContext): void {
 function registerEarlyCommands(context: vscode.ExtensionContext): void {
   // ── pickCommand (Cmd+/) ─────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickCommand", async () => {
+    vscode.commands.registerCommand("pi-on-code.pickCommand", async () => {
       // Resolve the current piService at invocation time so
       // the command works regardless of which session is active.
       const active = activeSessionWindow ?? primarySession();
@@ -1085,14 +1197,14 @@ function registerEarlyCommands(context: vscode.ExtensionContext): void {
         matchOnDescription: true,
       });
       if (picked && typeof picked !== "string" && (picked).kind !== vscode.QuickPickItemKind.Separator) {
-        vscode.commands.executeCommand("pi-code-gui.sendSlashCommand", picked.label);
+        vscode.commands.executeCommand("pi-on-code.sendSlashCommand", picked.label);
       }
     }),
   );
 
   // ── pickFile (Cmd+Shift+@) ──────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickFile", async () => {
+    vscode.commands.registerCommand("pi-on-code.pickFile", async () => {
       const files = await vscode.workspace.findFiles("**/*", "**/node_modules/**", 200);
       const items = files.map((u) => ({
         label: vscode.workspace.asRelativePath(u),
@@ -1103,7 +1215,7 @@ function registerEarlyCommands(context: vscode.ExtensionContext): void {
       });
       if (picked && typeof picked !== "string") {
         vscode.commands.executeCommand(
-          "pi-code-gui.referenceFile",
+          "pi-on-code.referenceFile",
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
           vscode.workspace.asRelativePath((picked as any).uri),
         );
@@ -1117,32 +1229,7 @@ function registerEarlyCommands(context: vscode.ExtensionContext): void {
 function ensureTreeProvider(context: vscode.ExtensionContext): void {
   if (!sessionTreeProvider) {
     sessionTreeProvider = new MultiSessionTreeProvider(sessions, context);
-    sessionTreeView = vscode.window.createTreeView("pi-code-gui.sessions", {
-      treeDataProvider: sessionTreeProvider,
-    });
-    context.subscriptions.push(sessionTreeView);
-
-    // Track expand/collapse of entries headers to preserve state across refreshes
-    sessionTreeView.onDidExpandElement((e) => {
-      if (e.element.contextValue === "entries-header") {
-        sessionTreeProvider!.setEntryHeaderExpanded(e.element.sessionId!, true);
-      }
-      if (e.element.contextValue === "past-sessions-header") {
-        sessionTreeProvider!.pastSessionsExpanded = true;
-      }
-    });
-    sessionTreeView.onDidCollapseElement((e) => {
-      if (e.element.contextValue === "entries-header") {
-        sessionTreeProvider!.setEntryHeaderExpanded(e.element.sessionId!, false);
-      }
-      if (e.element.contextValue === "past-sessions-header") {
-        sessionTreeProvider!.pastSessionsExpanded = false;
-      }
-    });
-
-    // We rely on TreeItem.command for single-click navigation (standard VS Code
-    // pattern).  Context menus also work because VS Code passes the TreeItem's
-    // command arguments to the action handler automatically.
+    sessionSidebarProvider?.refresh();
   }
 }
 
@@ -1151,7 +1238,7 @@ function ensureTreeProvider(context: vscode.ExtensionContext): void {
  * delete / resume operations that change the pool of saved sessions.
  */
 async function refreshPastSessionsList(): Promise<void> {
-  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const cwd = getWorkspaceCwd();
   if (!sessionTreeProvider) {
     piWarn("refreshPastSessionsList: sessionTreeProvider is null, skipping");
     return;
@@ -1311,7 +1398,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   // Persist open session list so this session is restored on reload.
   void saveOpenSessionPaths();
 
-  console.log(`Pi Code Gui session ${sw.id} ready`);
+  piLog(`Session ${sw.id} ready`);
 }
 
 function removeSession(sw: SessionWindow): void {
@@ -1351,7 +1438,7 @@ async function installPi(): Promise<void> {
     term.show();
     term.sendText("npm install -g @earendil-works/pi-coding-agent");
     term.sendText(
-      'echo "✅ Pi SDK installed! Reload VS Code to use Pi Code Gui."',
+      'echo "✅ Pi SDK installed! Reload VS Code to use Pi on Code."',
     );
     vscode.window
       .showInformationMessage(
@@ -1439,7 +1526,10 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
   }
 
   /** Lightweight refresh (does not re-fetch past sessions). */
-  refresh(): void { this._onDidChangeTreeData.fire(); }
+  refresh(): void {
+    this._onDidChangeTreeData.fire();
+    sessionSidebarProvider?.refresh();
+  }
 
   /** Refresh a single session's tree item in-place.  More reliable than
    *  fire() with no argument, which VS Code can drop during async setup. */
@@ -1451,6 +1541,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     } else {
       this._onDidChangeTreeData.fire();
     }
+    sessionSidebarProvider?.refresh();
   }
 
   /** Refresh only past sessions children — preserves expand state. */
@@ -1463,6 +1554,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     } else {
       this._onDidChangeTreeData.fire();
     }
+    sessionSidebarProvider?.refresh();
   }
 
   getTreeItem(element: SessionTreeItem): vscode.TreeItem { return element; }
@@ -1581,7 +1673,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
         label,
         "session",
         {
-          command: "pi-code-gui.focusSession",
+          command: "pi-on-code.focusSession",
           title: "Focus Session",
           arguments: [sw.id],
         },
@@ -1619,7 +1711,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     const modelItem = new SessionTreeItem(
       `Model: ${ps.model?.id ?? "..."}`,
       "model",
-      { command: "pi-code-gui.pickSessionModel", title: "Change Model", arguments: [sw.id] },
+      { command: "pi-on-code.pickSessionModel", title: "Change Model", arguments: [sw.id] },
     );
     modelItem.contextValue = "session-model";
     children.push(modelItem);
@@ -1628,7 +1720,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     const thinkingItem = new SessionTreeItem(
       `Thinking: ${ps.thinkingLevel}`,
       "thinking",
-      { command: "pi-code-gui.pickSessionThinking", title: "Change Thinking Level", arguments: [sw.id] },
+      { command: "pi-on-code.pickSessionThinking", title: "Change Thinking Level", arguments: [sw.id] },
     );
     thinkingItem.contextValue = "session-thinking";
     children.push(thinkingItem);
@@ -1684,7 +1776,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     return entries.map((entry: any) => {
       const { label, tooltip, type, fullText } = formatEntryLabel(entry);
       const item = new SessionTreeItem(label, type, {
-        command: "pi-code-gui.revealEntry",
+        command: "pi-on-code.revealEntry",
         title: "Show in Chat",
         arguments: [sw.id, entry.id, entry.message?.toolCallId ?? ""],
       });
@@ -1735,7 +1827,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       label,
       "pastSessionEntry",
       {
-        command: "pi-code-gui.resumePastSession",
+        command: "pi-on-code.resumePastSession",
         title: "Resume Session",
         arguments: [s.path],
       },

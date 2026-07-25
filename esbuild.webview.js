@@ -19,10 +19,10 @@ const esbuildProblemMatcherPlugin = {
     });
     build.onEnd((result) => {
       result.errors.forEach(({ text, location }) => {
-        console.error(`✘ [webview-ERROR] ${text}`);
-        console.error(
-          `    ${location.file}:${location.line}:${location.column}:`,
-        );
+        const file = location?.file ?? "esbuild.webview.js";
+        const line = location?.line ?? 1;
+        const column = location?.column ?? 1;
+        console.error(`[webview-esbuild-error] ${file}:${line}:${column}: ${text}`);
       });
       console.log("[webview-watch] build finished");
     });
@@ -31,7 +31,7 @@ const esbuildProblemMatcherPlugin = {
 
 async function main() {
   const ctx = await esbuild.context({
-    entryPoints: ["media/entry.js"],
+    entryPoints: ["./media/entry.js"],
     bundle: true,
     format: "iife",
     target: "es2020",

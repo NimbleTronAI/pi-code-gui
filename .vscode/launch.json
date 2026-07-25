@@ -7,7 +7,8 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "--disable-extensions"
+        "--disable-extensions",
+        "${workspaceFolder}"
       ],
       "outFiles": [
         "${workspaceFolder}/dist/extension.js"
@@ -19,7 +20,8 @@
       ],
       "preLaunchTask": "watch",
       "env": {
-        "NODE_OPTIONS": "--enable-source-maps"
+        "NODE_OPTIONS": "--enable-source-maps",
+        "PI_ON_CODE_DEV_WORKSPACE": "${workspaceFolder}"
       }
     }
   ]

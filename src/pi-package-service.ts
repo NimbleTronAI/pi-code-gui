@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import * as vscode from "vscode";
 import { resolvePiPackagePath } from "./pi-service.js";
+import { getWorkspaceCwd } from "./workspace-context.js";
 
 /**
  * Wraps the Pi SDK's DefaultPackageManager for use in the VS Code extension.
@@ -97,7 +97,7 @@ export class PiPackageService {
         ? pathToFileURL(sdkPath).href
         : sdkPath;
       const SDK = (await import(sdkTarget));
-      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const cwd = getWorkspaceCwd();
       const SettingsManager = SDK.SettingsManager;
       const DefaultPackageManagerClass = SDK.DefaultPackageManager;
       const settingsManager = SettingsManager.create(cwd);

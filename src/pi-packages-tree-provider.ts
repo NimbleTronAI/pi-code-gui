@@ -214,7 +214,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     );
     searchBox.iconPath = new vscode.ThemeIcon("search");
     searchBox.description = this.searchQuery ? "click to change" : "click to search";
-    searchBox.command = { command: "pi-code-gui.searchPackages", title: "Search Pi Packages" };
+    searchBox.command = { command: "pi-on-code.searchPackages", title: "Search Pi Packages" };
     children.push(searchBox);
 
     if (this.marketLoading) {
@@ -263,7 +263,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
       item.tooltip = this.buildTooltip(mp);
 
       if (!isInstalled) {
-        item.command = { command: "pi-code-gui.installPackage", title: "Install Package", arguments: [item] };
+        item.command = { command: "pi-on-code.installPackage", title: "Install Package", arguments: [item] };
         item.tooltip = new vscode.MarkdownString(
           (mp.bannerUrl ? `![banner](${mp.bannerUrl}|height=80)\n\n` : "") +
           `**${mp.npmPackage}** v${mp.version}\n\n` +
@@ -281,7 +281,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     if (this.market.length > 0) {
       const browse = new PkgTreeItem("Browse all packages on pi.dev →", "packages-marketplace-browse");
       browse.iconPath = new vscode.ThemeIcon("globe");
-      browse.command = { command: "pi-code-gui.openPiDevMarketplace", title: "Open pi.dev/packages" };
+      browse.command = { command: "pi-on-code.openPiDevMarketplace", title: "Open pi.dev/packages" };
       children.push(browse);
     }
 
@@ -346,21 +346,21 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
       const npmUrl = `https://www.npmjs.com/package/${mp.npmPackage}`;
       const npmItem = new PkgTreeItem(`npm: ${mp.npmPackage}`, "pkg-overview-link");
       npmItem.iconPath = new vscode.ThemeIcon("package");
-      npmItem.command = { command: "pi-code-gui.openUrl", title: "Open npm", arguments: [npmUrl] };
+      npmItem.command = { command: "pi-on-code.openUrl", title: "Open npm", arguments: [npmUrl] };
       npmItem.tooltip = npmUrl;
       children.push(npmItem);
     }
     if (mp?.repository) {
       const repoItem = new PkgTreeItem(`repo: ${mp.repository}`, "pkg-overview-link");
       repoItem.iconPath = new vscode.ThemeIcon("github");
-      repoItem.command = { command: "pi-code-gui.openUrl", title: "Open Repo", arguments: [mp.repository] };
+      repoItem.command = { command: "pi-on-code.openUrl", title: "Open Repo", arguments: [mp.repository] };
       repoItem.tooltip = mp.repository;
       children.push(repoItem);
     }
     if (mp?.homepage && mp.homepage !== mp.repository) {
       const hpItem = new PkgTreeItem(`homepage: ${mp.homepage}`, "pkg-overview-link");
       hpItem.iconPath = new vscode.ThemeIcon("globe");
-      hpItem.command = { command: "pi-code-gui.openUrl", title: "Open Homepage", arguments: [mp.homepage] };
+      hpItem.command = { command: "pi-on-code.openUrl", title: "Open Homepage", arguments: [mp.homepage] };
       hpItem.tooltip = mp.homepage;
       children.push(hpItem);
     }
@@ -369,14 +369,14 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     if (installed) {
       // Uninstall
       const uninstallItem = new PkgTreeItem("🗑 Uninstall", "pkg-action-uninstall");
-      uninstallItem.command = { command: "pi-code-gui.uninstallPackage", title: "Uninstall", arguments: [element] };
+      uninstallItem.command = { command: "pi-on-code.uninstallPackage", title: "Uninstall", arguments: [element] };
       uninstallItem.iconPath = new vscode.ThemeIcon("trash");
       children.push(uninstallItem);
 
       // Update (if available)
       if (this.updatesAvail.has(installed.source)) {
         const updateItem = new PkgTreeItem("⬆ Update to latest", "pkg-action-update");
-        updateItem.command = { command: "pi-code-gui.updatePackage", title: "Update", arguments: [element] };
+        updateItem.command = { command: "pi-on-code.updatePackage", title: "Update", arguments: [element] };
         updateItem.iconPath = new vscode.ThemeIcon("sync");
         children.push(updateItem);
       }
@@ -385,7 +385,7 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
       const isInstalled = this.installed.some((ip) => ip.source === src);
       if (!isInstalled) {
         const installItem = new PkgTreeItem("💾 Install", "pkg-action-install");
-        installItem.command = { command: "pi-code-gui.installPackage", title: "Install", arguments: [element] };
+        installItem.command = { command: "pi-on-code.installPackage", title: "Install", arguments: [element] };
         installItem.iconPath = new vscode.ThemeIcon("cloud-download");
         installItem.description = "Installs with scope picker";
         children.push(installItem);

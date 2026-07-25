@@ -8,7 +8,7 @@ suite("PiService session persistence", () => {
   let tempDir: string;
 
   setup(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-code-gui-session-"));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-on-code-session-"));
   });
 
   teardown(() => {
@@ -56,7 +56,7 @@ suite("PiService session persistence", () => {
 
     assert.strictEqual(service._isStreaming, false);
     assert.ok(events.some((event) => event.type === "status-update" && event.data?.isStreaming === false));
-    assert.ok(!events.some((event) => event.type === "custom-message" && event.data?.customType === "pi-gui-diagnostic"));
+    assert.ok(!events.some((event) => event.type === "custom-message" && event.data?.customType === "pi-on-code-diagnostic"));
   });
 
   test("active tool selection uses a SessionManager custom entry instead of raw file writes", () => {
@@ -78,7 +78,7 @@ suite("PiService session persistence", () => {
 
     assert.strictEqual(fs.existsSync(sessionFile), false);
     assert.deepStrictEqual(appended, [{
-      customType: "pi-code-gui.active-tools",
+      customType: "pi-on-code.active-tools",
       data: { toolNames: ["read", "vscode_get_selection"] },
     }]);
   });
@@ -92,7 +92,7 @@ suite("PiService session persistence", () => {
     service.sessionManager = {
       getEntries: () => [{
         type: "custom",
-        customType: "pi-code-gui.active-tools",
+        customType: "pi-on-code.active-tools",
         data: { toolNames: [] },
       }],
     };
