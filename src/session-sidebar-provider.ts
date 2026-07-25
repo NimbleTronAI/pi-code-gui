@@ -57,7 +57,10 @@ interface PiSidebarActions {
 export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
 
-  constructor(private readonly actions: PiSidebarActions) {}
+  constructor(
+    private readonly actions: PiSidebarActions,
+    private readonly brandIcon: vscode.Uri,
+  ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -117,13 +120,14 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 
   private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    const brandIconUri = webview.asWebviewUri(this.brandIcon);
     return /* html */ `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src https: data:; media-src https:;">
+        content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data:; media-src https:;">
   <style nonce="${nonce}">
     :root {
       color-scheme: dark;
@@ -181,16 +185,11 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     .pi-mark {
-      width: 19px;
-      height: 19px;
-      display: grid;
-      place-items: center;
-      flex: 0 0 19px;
-      border: 1px solid var(--pi-lavender);
-      color: var(--pi-lavender);
-      font-weight: 700;
-      font-size: 11px;
-      line-height: 1;
+      width: 22px;
+      height: 22px;
+      display: block;
+      flex: 0 0 22px;
+      object-fit: contain;
     }
 
     .wordmark {
@@ -428,7 +427,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 <body>
   <main class="sidebar">
     <header class="brand">
-      <span class="pi-mark">π</span>
+      <img class="pi-mark" src="${brandIconUri}" alt="">
       <span class="wordmark">pi / code</span>
       <button class="new-session" id="new-session" type="button" aria-label="New Pi session">+ new</button>
     </header>

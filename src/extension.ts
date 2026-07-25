@@ -251,6 +251,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openExternalUrl(url);
       },
     },
+    vscode.Uri.joinPath(context.extensionUri, "media", "pi-icon-dark.svg"),
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
