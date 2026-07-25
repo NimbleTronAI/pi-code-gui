@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="24" height="24" aria-hidden="true">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-labelledby="title desc">
+  <title id="title">Pi on Code</title>
+  <desc id="desc">A compact Pi mark framed by larger pixel-style code angle brackets.</desc>
   <g transform="translate(.8 .8) scale(.9)" fill="currentColor">
     <path d="M3 3H10V5H5V13H3Z"/>
     <path d="M8 3H10V8H8Z"/>

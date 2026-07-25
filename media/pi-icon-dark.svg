@@ -1,12 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <defs>
-    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#5f87ff"/>
-      <stop offset="100%" stop-color="#a855f7"/>
-    </linearGradient>
-  </defs>
-  <rect width="128" height="128" rx="20" fill="#0d1117"/>
-  <g transform="translate(22.7778 96.0000) scale(0.111111 -0.111111)">
-    <path d="M707 427V540H285C108 540 35 490 35 320H148C148 386 157 427 215 427V0H355V427H467V0H607V427Z" fill="url(#g)"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="128" height="128" role="img" aria-label="Pi on Code">
+  <rect width="16" height="16" rx="2.5" fill="#0d1117"/>
+  <g transform="translate(.8 .8) scale(.9)" fill="#b9a6ff">
+    <path d="M3 3H10V5H5V13H3Z"/>
+    <path d="M8 3H10V8H8Z"/>
+    <path d="M3 8H8V10H3Z"/>
+    <path d="M11 8H13V13H11Z"/>
+  </g>
+  <g fill="#b9a6ff" shape-rendering="crispEdges">
+    <path d="M1 5H2V7H1V9H2V11H1V9H0V7H1Z"/>
+    <path d="M15 5H14V7H15V9H14V11H15V9H16V7H15Z"/>
   </g>
 </svg>

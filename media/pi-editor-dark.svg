@@ -1,5 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
-  <g transform="translate(2.85 12.00) scale(0.01389 -0.01389)">
-    <path d="M707 427V540H285C108 540 35 490 35 320H148C148 386 157 427 215 427V0H355V427H467V0H607V427Z" fill="#a78bfa"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+  <g transform="translate(.8 .8) scale(.9)" fill="#b9a6ff">
+    <path d="M3 3H10V5H5V13H3Z"/>
+    <path d="M8 3H10V8H8Z"/>
+    <path d="M3 8H8V10H3Z"/>
+    <path d="M11 8H13V13H11Z"/>
+  </g>
+  <g fill="#b9a6ff" shape-rendering="crispEdges">
+    <path d="M1 5H2V7H1V9H2V11H1V9H0V7H1Z"/>
+    <path d="M15 5H14V7H15V9H14V11H15V9H16V7H15Z"/>
   </g>
 </svg>
