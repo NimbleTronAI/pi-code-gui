@@ -1428,38 +1428,6 @@ input:focus-visible {
   min-height: 0;
 }
 
-#pi-web-header {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-start;
-  min-height: 46px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--pi-line);
-  background: rgba(11, 12, 14, 0.96);
-  color: var(--pi-muted);
-  user-select: none;
-}
-
-.pi-web-brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--pi-text);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.pi-web-mark {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border: 1px solid var(--pi-lavender);
-  color: var(--pi-lavender);
-  line-height: 1;
-}
-
 #chat-container {
   width: min(100%, 1040px);
   min-height: 0;
@@ -2036,10 +2004,6 @@ input:focus-visible {
 }
 
 @media (max-width: 720px) {
-  #pi-web-header {
-    padding-inline: 10px;
-  }
-
   .pi-sb-hints,
   #pi-sb-effort {
     display: none;

@@ -431,13 +431,6 @@ export class PiWebviewPanel {
 </head>
 <body>
   <div id="pi-web-app">
-  <header id="pi-web-header">
-    <div class="pi-web-brand">
-      <span class="pi-web-mark">π</span>
-      <span>pi / code</span>
-    </div>
-  </header>
-
   <div id="chat-container">
     <div id="welcome" class="welcome-message">
       <div class="welcome-kicker">keyboard-first coding agent</div>
