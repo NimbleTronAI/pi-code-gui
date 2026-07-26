@@ -4,7 +4,6 @@ node_modules
 .vscode-test/
 *.vsix
 env/
-.pnpm-store/
 .pi/
 media/bundle.js
 media/bundle.js.map

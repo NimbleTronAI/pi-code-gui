@@ -1,109 +1,121 @@
 // See https://go.microsoft.com/fwlink/?LinkId=733558
 // for the documentation about the tasks.json format
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-            "label": "watch",
-            "dependsOn": [
-                "npm: watch:tsc",
-                "npm: watch:esbuild",
-                "npm: watch:webview"
-            ],
-            "presentation": {
-                "reveal": "never"
-            },
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "process",
+      "command": "bun",
+      "args": ["run", "build"],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "watch",
+      "dependsOn": [
+        "bun: watch:tsc",
+        "bun: watch:esbuild",
+        "bun: watch:webview"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "bun: watch:esbuild",
+      "type": "process",
+      "command": "bun",
+      "args": ["run", "watch:esbuild"],
+      "group": "build",
+      "problemMatcher": {
+        "owner": "esbuild",
+        "source": "esbuild",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^\\[esbuild-error\\] (.*):(\\d+):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
         },
-        {
-            "type": "npm",
-            "script": "watch:esbuild",
-            "group": "build",
-            "problemMatcher": {
-                "owner": "esbuild",
-                "source": "esbuild",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^\\[esbuild-error\\] (.*):(\\d+):(\\d+): (.*)$",
-                    "file": 1,
-                    "line": 2,
-                    "column": 3,
-                    "message": 4
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "^\\[watch\\] build started$",
-                    "endsPattern": "^\\[watch\\] build finished$"
-                }
-            },
-            "isBackground": true,
-            "label": "npm: watch:esbuild",
-            "presentation": {
-                "group": "watch",
-                "reveal": "never"
-            }
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[watch\\] build started$",
+          "endsPattern": "^\\[watch\\] build finished$"
+        }
+      },
+      "isBackground": true,
+      "presentation": {
+        "group": "watch",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "bun: watch:webview",
+      "type": "process",
+      "command": "bun",
+      "args": ["run", "watch:webview"],
+      "group": "build",
+      "problemMatcher": {
+        "owner": "esbuild-webview",
+        "source": "esbuild",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^\\[webview-esbuild-error\\] (.*):(\\d+):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
         },
-        {
-            "type": "npm",
-            "script": "watch:webview",
-            "group": "build",
-            "problemMatcher": {
-                "owner": "esbuild-webview",
-                "source": "esbuild",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^\\[webview-esbuild-error\\] (.*):(\\d+):(\\d+): (.*)$",
-                    "file": 1,
-                    "line": 2,
-                    "column": 3,
-                    "message": 4
-                },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "^\\[webview-watch\\] build started$",
-                    "endsPattern": "^\\[webview-watch\\] build finished$"
-                }
-            },
-            "isBackground": true,
-            "label": "npm: watch:webview",
-            "presentation": {
-                "group": "watch",
-                "reveal": "never"
-            }
-        },
-		{
-            "type": "npm",
-            "script": "watch:tsc",
-            "group": "build",
-            "problemMatcher": "$tsc-watch",
-            "isBackground": true,
-            "label": "npm: watch:tsc",
-            "presentation": {
-                "group": "watch",
-                "reveal": "never"
-            }
-        },
-		{
-			"type": "npm",
-			"script": "watch-tests",
-			"problemMatcher": "$tsc-watch",
-			"isBackground": true,
-			"presentation": {
-				"reveal": "never",
-				"group": "watchers"
-			},
-			"group": "build"
-		},
-		{
-			"label": "tasks: watch-tests",
-			"dependsOn": [
-				"npm: watch",
-				"npm: watch-tests"
-			],
-			"problemMatcher": []
-		}
-	]
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[webview-watch\\] build started$",
+          "endsPattern": "^\\[webview-watch\\] build finished$"
+        }
+      },
+      "isBackground": true,
+      "presentation": {
+        "group": "watch",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "bun: watch:tsc",
+      "type": "process",
+      "command": "bun",
+      "args": ["run", "watch:tsc"],
+      "group": "build",
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true,
+      "presentation": {
+        "group": "watch",
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "bun: watch-tests",
+      "type": "process",
+      "command": "bun",
+      "args": ["run", "watch-tests"],
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "never",
+        "group": "watchers"
+      },
+      "group": "build"
+    },
+    {
+      "label": "tasks: watch-tests",
+      "dependsOn": ["watch", "bun: watch-tests"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
 }

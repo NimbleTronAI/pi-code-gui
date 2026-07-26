@@ -34,7 +34,7 @@ the Command Palette.
 
 ## Use
 
-1. Install `pi-on-code-0.1.0.vsix`.
+1. Install `pi-on-code-0.1.1.vsix`.
 2. Open a folder in VS Code.
 3. Run `Pi: Code Agent` or press `Ctrl+Alt+I`.
 4. Type a request and press Enter.
@@ -50,12 +50,14 @@ Useful shortcuts:
 ## Development
 
 ```powershell
-pnpm install
-pnpm run compile
-pnpm run vsix
+bun install
+bun run compile
+bun run build
 ```
 
-Press F5 in VS Code to launch the Extension Development Host.
+`bun run build` checks types and lint, creates production bundles, and writes
+`pi-on-code-<version>.vsix` in the project root. Press F5 in VS Code to launch
+the Extension Development Host.
 
 ## Architecture and attribution
 
