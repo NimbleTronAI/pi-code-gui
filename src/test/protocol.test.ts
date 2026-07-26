@@ -127,6 +127,12 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(toggleResult.success, true);
   });
 
+  test("accepts viewport refresh requests for restored panels", () => {
+    const result = validateExtensionToWebview({ type: "viewport-refresh" });
+
+    assert.strictEqual(result.success, true);
+  });
+
   test("accepts active extension updates", () => {
     const result = validateExtensionToWebview({
       type: "extensions-update",

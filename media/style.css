@@ -30,12 +30,17 @@
 @layer base {
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+  }
+
   body {
     font-family: var(--vscode-editor-font-family);
     font-size:   var(--vscode-editor-font-size);
     color:       var(--fg-primary);
     background:  var(--bg-primary);
-    height:      100vh;
     display:     flex;
     flex-direction: column;
     overflow:    hidden;
@@ -1675,7 +1680,7 @@ body.vscode-high-contrast-light {
 }
 
 body {
-  height: 100vh;
+  height: 100%;
   overflow: hidden;
   background: var(--pi-bg);
   color: var(--pi-text);
@@ -1701,10 +1706,18 @@ input:focus-visible {
 
 #pi-web-app {
   display: flex;
+  width: 100%;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+/* Recreate Chromium's retained compositor surface when a hidden session tab
+   is revealed after its editor group changed size. The class exists for one
+   animation frame, so it does not alter the steady-state layout. */
+html.pi-viewport-recovering #pi-web-app {
+  transform: translateZ(0);
 }
 
 #chat-container {

@@ -67,6 +67,10 @@ export class PiWebviewPanel {
   async show(): Promise<void> {
     if (this.panel) {
       this.panel.reveal();
+      // Retained webviews can keep the compositor surface from the size they
+      // had before being hidden. Ask the page to rebuild that surface as soon
+      // as it is revealed instead of waiting for Chromium's delayed repaint.
+      this.postMessage({ type: "viewport-refresh" });
       return;
     }
 
@@ -99,7 +103,9 @@ export class PiWebviewPanel {
     this.piService.emitLoadedExtensions();
 
     this.panel.onDidChangeViewState((e) => {
-      if (e.webviewPanel.active && this._onActivateCb) {
+      if (!e.webviewPanel.active) { return; }
+      this.postMessage({ type: "viewport-refresh" });
+      if (this._onActivateCb) {
         this._onActivateCb();
       }
     });
