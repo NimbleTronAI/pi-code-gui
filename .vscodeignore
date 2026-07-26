@@ -24,4 +24,5 @@ env/**
 .eslintcache
 media/entry.js
 agent-wiki/**
+.agents/**
 WEBVIEW_REWRITE_TODO.md
