@@ -17,6 +17,7 @@ import {
   updateStreamingState,
   scrollToBottom,
 } from "./render/engine.js";
+import { shouldLoadOlderHistory } from "./render/history-pagination.js";
 
 // Side-effect imports (self-register on load)
 import "./tools/index.js";
@@ -92,6 +93,17 @@ state.chatContainer.addEventListener("scroll", () => {
       state.chatContainer.clientHeight <
     threshold;
   state.hasScrolledUp = !atBottom;
+
+  if (shouldLoadOlderHistory({
+    scrollTop: state.chatContainer.scrollTop,
+    hasMore: state.historyHasMore,
+    loading: state.historyLoading,
+    streaming: state.isStreaming,
+    inBatch: state._inBatch,
+  })) {
+    state.historyLoading = true;
+    vscode.postMessage({ type: "loadOlderHistory" });
+  }
 });
 
 document.addEventListener("visibilitychange", () => {

@@ -124,6 +124,8 @@ export interface AppState {
 
   // ── Scroll tracking
   hasScrolledUp: boolean;
+  historyHasMore: boolean;
+  historyLoading: boolean;
 
   // ── Queue/steer mode
   queueMode: "steer" | "queue";
@@ -226,6 +228,8 @@ export const state: AppState = {
   _thinkingEl: null,
 
   hasScrolledUp: false,
+  historyHasMore: false,
+  historyLoading: false,
 
   queueMode: "steer",
 

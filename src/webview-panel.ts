@@ -535,6 +535,10 @@ export class PiWebviewPanel {
             await this.browseContextAttachments(message.kind);
             break;
 
+          case "loadOlderHistory":
+            await this.piService.loadOlderHistory();
+            break;
+
           case "abort":
             await this.piService.abort();
             break;
@@ -779,7 +783,7 @@ export class PiWebviewPanel {
     const msgType = (message as any).type;
     if (msgType && msgType !== "prompt" && msgType !== "abort" && msgType !== "slashCommand" &&
         msgType !== "pickModel" && msgType !== "pickThinkingLevel" && msgType !== "pickEffort" &&
-        msgType !== "pickContextBudget" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
+        msgType !== "pickContextBudget" && msgType !== "loadOlderHistory" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
         msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" &&
         msgType !== "toggleAutoAttachActiveEditor" && msgType !== "openUrl" &&
         msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "replaceFollowUpQueue" && msgType !== "clearQueue" &&

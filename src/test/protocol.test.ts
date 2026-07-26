@@ -30,6 +30,22 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, true);
   });
 
+  test("accepts lazy history pagination messages", () => {
+    const request = validateWebviewToExtension({ type: "loadOlderHistory" });
+    const start = validateExtensionToWebview({
+      type: "history-page-start",
+      data: { hasMoreHistory: true },
+    });
+    const end = validateExtensionToWebview({
+      type: "history-page-end",
+      data: { hasMoreHistory: false },
+    });
+
+    assert.strictEqual(request.success, true);
+    assert.strictEqual(start.success, true);
+    assert.strictEqual(end.success, true);
+  });
+
   test("accepts visible editor context updates and prompt selections", () => {
     const item = {
       id: "file:///workspace/src/index.ts",

@@ -10,6 +10,7 @@ import {
   updateFollowUpHintVisibility, renderToolResultTruncated, renderBlockToHTML,
   shortenPath, renderCodeBlockHTML,
 } from "../render/engine.js";
+import { restoreScrollAfterPrepend } from "../render/history-pagination.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
 import { scrollSelectedSlashItemIntoView } from "../render/slash-navigation.js";
 import {
@@ -171,6 +172,8 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "thinking-level-changed": handleThinkingLevelChanged(msg.data); break;
       case "batch-start":         handleBatchStart(msg.data); break;
       case "batch-end":           handleBatchEnd(msg.data); break;
+      case "history-page-start":  handleHistoryPageStart(msg.data); break;
+      case "history-page-end":    handleHistoryPageEnd(msg.data); break;
 
       // New features (#1, #2, #7, #9)
       case "compaction-summary-message": handleCompactionSummaryMessage(msg.data); break;
@@ -845,19 +848,20 @@ export function handleStatus(data: any) {
   }
 
 export function handleBatchStart(data: any) {
+    // Hide the welcome screen before enabling batch mode because hideWelcome
+    // intentionally ignores ordinary replay events while a batch is active.
+    if (data?.hasEntries) { hideWelcome(); }
     state._inBatch = true;
-    // If restoring history, hide state.welcome immediately — no flash
-    if (data.hasEntries) { hideWelcome(); }
+    state.historyLoading = true;
     document.body.classList.add("no-animate");
   }
 
 export function handleBatchEnd(data: any) {
     state._inBatch = false;
+    state.historyHasMore = data?.hasMoreHistory === true;
     document.body.classList.remove("no-animate");
-    // Force-scroll to bottom after batch replay.  Triple-rAF ensures
-    // layout has settled (highlight.js code blocks, syntax spans, etc.)
-    // before we read scrollHeight.  Falls back to scrollIntoView which
-    // triggers a layout pass if needed.
+    // Force-scroll to bottom after the newest page is restored. Triple-rAF
+    // lets markdown, code blocks, and syntax highlighting finish layout.
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         requestAnimationFrame(function () {
@@ -867,7 +871,116 @@ export function handleBatchEnd(data: any) {
           } else {
             container.scrollTop = container.scrollHeight;
           }
+          state.historyLoading = false;
         });
+      });
+    });
+  }
+
+interface HistoryPrependContext {
+  root: HTMLElement;
+  staging: HTMLElement;
+  previousScrollHeight: number;
+  previousScrollTop: number;
+  hasScrolledUp: boolean;
+  currentAssistantEl: HTMLElement | null;
+  currentThinkingEl: HTMLElement | null;
+  currentToolBlocks: typeof state.currentToolBlocks;
+  assistantToolCallIds: typeof state.assistantToolCallIds;
+  lastToolInsertionEl: HTMLElement | null;
+  bashBlocks: typeof state.bashBlocks;
+  bashOutputs: typeof state.bashOutputs;
+  lastUserMessageContent: string | null;
+  userMessageHistory: typeof state.userMessageHistory;
+  streamPrevTokens: unknown[];
+}
+
+let historyPrependContext: HistoryPrependContext | null = null;
+
+export function handleHistoryPageStart(data: any) {
+    if (historyPrependContext) { return; }
+
+    var root = state.chatContainer;
+    var staging = document.createElement("div");
+    staging.className = "history-page-staging";
+    staging.style.display = "contents";
+    root.insertBefore(staging, root.firstChild);
+
+    historyPrependContext = {
+      root: root,
+      staging: staging,
+      previousScrollHeight: root.scrollHeight,
+      previousScrollTop: root.scrollTop,
+      hasScrolledUp: state.hasScrolledUp,
+      currentAssistantEl: state.currentAssistantEl,
+      currentThinkingEl: state.currentThinkingEl,
+      currentToolBlocks: state.currentToolBlocks,
+      assistantToolCallIds: state.assistantToolCallIds,
+      lastToolInsertionEl: state.lastToolInsertionEl,
+      bashBlocks: state.bashBlocks,
+      bashOutputs: state.bashOutputs,
+      lastUserMessageContent: state.lastUserMessageContent,
+      userMessageHistory: state.userMessageHistory,
+      streamPrevTokens: state._streamPrevTokens,
+    };
+
+    state.chatContainer = staging;
+    state.currentAssistantEl = null;
+    state.currentThinkingEl = null;
+    state.currentToolBlocks = {};
+    state.assistantToolCallIds = {};
+    state.lastToolInsertionEl = null;
+    state.bashBlocks = {};
+    state.bashOutputs = {};
+    state.lastUserMessageContent = null;
+    state.userMessageHistory = [];
+    state._streamPrevTokens = [];
+    state._inBatch = true;
+    state.historyLoading = true;
+    state.historyHasMore = data?.hasMoreHistory === true;
+    document.body.classList.add("no-animate");
+  }
+
+export function handleHistoryPageEnd(data: any) {
+    var context = historyPrependContext;
+    if (!context) {
+      state._inBatch = false;
+      state.historyLoading = false;
+      state.historyHasMore = data?.hasMoreHistory === true;
+      return;
+    }
+
+    state.chatContainer = context.root;
+    while (context.staging.firstChild) {
+      context.root.insertBefore(context.staging.firstChild, context.staging);
+    }
+    context.staging.remove();
+
+    state.hasScrolledUp = context.hasScrolledUp;
+    state.currentAssistantEl = context.currentAssistantEl;
+    state.currentThinkingEl = context.currentThinkingEl;
+    state.currentToolBlocks = context.currentToolBlocks;
+    state.assistantToolCallIds = context.assistantToolCallIds;
+    state.lastToolInsertionEl = context.lastToolInsertionEl;
+    state.bashBlocks = context.bashBlocks;
+    state.bashOutputs = context.bashOutputs;
+    state.lastUserMessageContent = context.lastUserMessageContent;
+    state.userMessageHistory = context.userMessageHistory;
+    state._streamPrevTokens = context.streamPrevTokens;
+    state._inBatch = false;
+    state.historyHasMore = data?.hasMoreHistory === true;
+    document.body.classList.remove("no-animate");
+    historyPrependContext = null;
+    const completedContext = context;
+
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        restoreScrollAfterPrepend(
+          completedContext.root,
+          completedContext.previousScrollHeight,
+          completedContext.previousScrollTop,
+        );
+        state.historyLoading = false;
       });
     });
   }

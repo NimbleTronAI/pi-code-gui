@@ -300,7 +300,18 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("batch-end"),
-    data: z.object({ hasEntries: z.boolean().optional() }).optional(),
+    data: z.object({
+      hasEntries: z.boolean().optional(),
+      hasMoreHistory: z.boolean().optional(),
+    }).optional(),
+  }),
+  z.object({
+    type: z.literal("history-page-start"),
+    data: z.object({ hasMoreHistory: z.boolean() }),
+  }),
+  z.object({
+    type: z.literal("history-page-end"),
+    data: z.object({ hasMoreHistory: z.boolean() }),
   }),
 
   // Thinking
@@ -450,6 +461,7 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
     kind: z.enum(["file", "folder"]),
   }),
   z.object({ type: z.literal("abort") }),
+  z.object({ type: z.literal("loadOlderHistory") }),
   z.object({ type: z.literal("slashCommand"), command: z.string() }),
   z.object({ type: z.literal("pickModel") }),
   z.object({ type: z.literal("pickThinkingLevel") }),
