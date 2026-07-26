@@ -14,6 +14,13 @@ export interface EditorContextItem {
   active: boolean;
   dirty: boolean;
   selectionLines?: number;
+  attached?: boolean;
+}
+
+export interface WorkspaceFileItem {
+  id: string;
+  path: string;
+  name: string;
 }
 
 export interface AppState {
@@ -50,6 +57,8 @@ export interface AppState {
   }>;
   editorContextItems: EditorContextItem[];
   dismissedEditorContextIds: Record<string, boolean>;
+  workspaceFileAttachments: WorkspaceFileItem[];
+  workspaceFileResults: WorkspaceFileItem[];
 
   // ── Bash execution blocks
   bashBlocks: Record<string, HTMLElement>;
@@ -85,6 +94,10 @@ export interface AppState {
   slashAutocompleteOpen: boolean;
   slashFilter: string;
   slashSelectedIdx: number;
+  fileAutocompleteOpen: boolean;
+  fileFilter: string;
+  fileSelectedIdx: number;
+  fileMentionStart: number;
 
   // ── Tool renderer registry
   toolRenderers: Record<string, {
@@ -133,6 +146,7 @@ export interface AppState {
   settingsOverlay: HTMLElement;
   extensionsOverlay: HTMLElement;
   slashAutocomplete: HTMLElement;
+  fileAutocomplete: HTMLElement;
   livePanel: HTMLElement;
   sbDot: HTMLElement;
   sbModel: HTMLElement;
@@ -163,6 +177,8 @@ export const state: AppState = {
   attachments: [],
   editorContextItems: [],
   dismissedEditorContextIds: {},
+  workspaceFileAttachments: [],
+  workspaceFileResults: [],
 
   bashBlocks: {},
   bashOutputs: {},
@@ -182,6 +198,10 @@ export const state: AppState = {
   slashAutocompleteOpen: false,
   slashFilter: "",
   slashSelectedIdx: 0,
+  fileAutocompleteOpen: false,
+  fileFilter: "",
+  fileSelectedIdx: 0,
+  fileMentionStart: -1,
 
   toolRenderers: {},
 
@@ -233,6 +253,7 @@ export const state: AppState = {
   settingsOverlay: null!,
   extensionsOverlay: null!,
   slashAutocomplete: null!,
+  fileAutocomplete: null!,
   livePanel: null!,
   sbDot: null!,
   sbModel: null!,
@@ -256,6 +277,7 @@ export function initState(doc: Document): void {
   state.settingsOverlay = doc.getElementById("settings-overlay")!;
   state.extensionsOverlay = doc.getElementById("extensions-overlay")!;
   state.slashAutocomplete = doc.getElementById("slash-autocomplete")!;
+  state.fileAutocomplete = doc.getElementById("file-autocomplete")!;
   state.livePanel = doc.getElementById("live-panel")!;
   state.sbDot = doc.getElementById("pi-sb-dot")!;
   state.sbModel = doc.getElementById("pi-sb-model")!;

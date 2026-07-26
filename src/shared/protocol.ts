@@ -35,6 +35,13 @@ const EditorContextItemSchema = z.object({
   active: z.boolean(),
   dirty: z.boolean(),
   selectionLines: z.number().int().positive().optional(),
+  attached: z.boolean().optional(),
+});
+
+const WorkspaceFileItemSchema = z.object({
+  id: z.string().min(1),
+  path: z.string().min(1),
+  name: z.string().min(1),
 });
 
 // Pi tool results and custom messages use the same multimodal content model:
@@ -226,6 +233,17 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       items: z.array(EditorContextItemSchema),
     }),
   }),
+  z.object({
+    type: z.literal("workspace-files-update"),
+    data: z.object({
+      query: z.string(),
+      items: z.array(WorkspaceFileItemSchema).max(50),
+    }),
+  }),
+  z.object({
+    type: z.literal("attach-workspace-file"),
+    data: WorkspaceFileItemSchema,
+  }),
 
   // Compaction & Retry
   z.object({
@@ -413,9 +431,14 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
     mode: z.enum(["steer", "queue"]).optional(),
     editorContext: z.object({
       includedEditorIds: z.array(z.string().min(1)).max(100),
+      attachedFileIds: z.array(z.string().min(1)).max(20).optional(),
     }).optional(),
   }),
   z.object({ type: z.literal("requestEditorContext") }),
+  z.object({
+    type: z.literal("requestWorkspaceFiles"),
+    query: z.string().max(200),
+  }),
   z.object({ type: z.literal("abort") }),
   z.object({ type: z.literal("slashCommand"), command: z.string() }),
   z.object({ type: z.literal("pickModel") }),
@@ -449,6 +472,9 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
 
 /** Metadata shown for one visible VS Code editor attached to a prompt. */
 export type EditorContextItem = z.output<typeof EditorContextItemSchema>;
+
+/** Workspace file offered by @ autocomplete. */
+export type WorkspaceFileItem = z.output<typeof WorkspaceFileItemSchema>;
 
 /** All message types sent from extension host to webview. */
 export type ExtensionToWebview = z.output<typeof ExtensionToWebviewSchema>;

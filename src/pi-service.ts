@@ -1080,7 +1080,7 @@ export class PiService {
         if (msg.role === "user") {
           const prompt = splitEditorContext(this.extractTextFromContent(msg.content));
           const images = this.extractImagesFromContent(msg.content);
-          if (prompt.text || images.length > 0) {
+          if (prompt.text || images.length > 0 || prompt.context?.items.length) {
             if (prompt.text) {
               this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: msg.timestamp });
               if (this._userMessages.length > 50) { this._userMessages.shift(); }
@@ -1295,7 +1295,7 @@ export class PiService {
         if (event.message?.role === "user") {
           const prompt = splitEditorContext(this.extractTextFromContent(event.message.content));
           const images = this.extractImagesFromContent(event.message.content);
-          if (prompt.text || images.length > 0) {
+          if (prompt.text || images.length > 0 || prompt.context?.items.length) {
             if (prompt.text) {
               this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: event.message.timestamp ?? Date.now() });
               if (this._userMessages.length > 50) { this._userMessages.shift(); }
@@ -1796,7 +1796,7 @@ export class PiService {
         if (msg.role === "user") {
           const prompt = splitEditorContext(this.extractTextFromContent(msg.content));
           const images = this.extractImagesFromContent(msg.content);
-          if (prompt.text || images.length > 0) {
+          if (prompt.text || images.length > 0 || prompt.context?.items.length) {
             if (prompt.text) {
               this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: msg.timestamp });
               if (this._userMessages.length > 50) { this._userMessages.shift(); }

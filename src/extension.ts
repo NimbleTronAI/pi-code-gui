@@ -424,9 +424,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("pi-on-code.referenceFile", (fp: string) => {
+    vscode.commands.registerCommand("pi-on-code.referenceFile", (uri: vscode.Uri) => {
       const primary = primarySession();
-      if (primary) { primary.webviewPanel.postCommand(`@${fp}`); }
+      if (primary) { void primary.webviewPanel.attachWorkspaceFile(uri); }
     }),
   );
 
@@ -1337,11 +1337,7 @@ function registerEarlyCommands(context: vscode.ExtensionContext): void {
         placeHolder: "Pick a file (@)",
       });
       if (picked && typeof picked !== "string") {
-        vscode.commands.executeCommand(
-          "pi-on-code.referenceFile",
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          vscode.workspace.asRelativePath((picked as any).uri),
-        );
+        vscode.commands.executeCommand("pi-on-code.referenceFile", picked.uri);
       }
     }),
   );

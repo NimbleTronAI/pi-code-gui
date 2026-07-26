@@ -25,6 +25,14 @@ suite("Editor context", () => {
       content: "const answer = 42;",
       truncated: false,
     },
+    attachedDocuments: [{
+      id: "file:///workspace/package.json",
+      path: "package.json",
+      languageId: "json",
+      source: "document",
+      content: "{\"name\":\"demo\"}",
+      truncated: false,
+    }],
   };
 
   test("appends model context and restores the visible prompt", () => {

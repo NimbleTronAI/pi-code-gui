@@ -1212,6 +1212,59 @@
     .slash-desc { color: var(--vscode-descriptionForeground); font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   }
 
+  .file-autocomplete {
+    position: fixed;
+    right: 16px;
+    bottom: 110px;
+    left: 16px;
+    z-index: 100;
+    display: none;
+    max-width: calc(100% - 32px);
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--vscode-sideBar-background);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+
+    &.visible { display: block; }
+
+    .file-item {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+
+      &:last-child { border-bottom: none; }
+      &:hover, &.selected { background: var(--vscode-list-hoverBackground); }
+    }
+
+    .file-searching {
+      padding: 8px 12px;
+      color: var(--vscode-descriptionForeground);
+      font-size: .8em;
+    }
+
+    .file-name {
+      flex: 0 0 auto;
+      color: var(--accent);
+      font-family: var(--vscode-editor-font-family);
+      font-size: .85em;
+      font-weight: 600;
+    }
+
+    .file-path {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--vscode-descriptionForeground);
+      font-size: .8em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
   /* ═══ Message content variants ═══════════════════════ */
 
   .message-content {
@@ -2023,12 +2076,14 @@ input:focus-visible {
   background: var(--pi-bg);
 }
 
-.editor-context-attachment {
+.editor-context-attachment,
+.workspace-file-attachment {
   max-width: 260px;
   padding-right: 4px;
 }
 
-.editor-context-attachment .att-context-icon {
+.editor-context-attachment .att-context-icon,
+.workspace-file-attachment .att-workspace-icon {
   width: 30px;
   height: 28px;
   color: var(--pi-lavender);
@@ -2036,14 +2091,16 @@ input:focus-visible {
   font-size: 10px;
 }
 
-.editor-context-attachment .att-context-copy {
+.editor-context-attachment .att-context-copy,
+.workspace-file-attachment .att-context-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
   line-height: 1.25;
 }
 
-.editor-context-attachment .att-meta {
+.editor-context-attachment .att-meta,
+.workspace-file-attachment .att-meta {
   overflow: hidden;
   color: var(--pi-faint);
   font-size: 9px;
@@ -2229,6 +2286,7 @@ input:focus-visible {
 .extensions-overlay,
 .user-msg-selector-overlay,
 .slash-autocomplete,
+.file-autocomplete,
 .pi-dialog {
   border: 1px solid var(--pi-line);
   border-radius: 2px;
@@ -2239,7 +2297,8 @@ input:focus-visible {
 .settings-row,
 .extensions-row,
 .user-msg-item,
-.slash-item {
+.slash-item,
+.file-item {
   border-bottom-color: var(--pi-line);
 }
 
@@ -2247,6 +2306,8 @@ input:focus-visible {
 .user-msg-item.selected,
 .slash-item:hover,
 .slash-item.selected,
+.file-item:hover,
+.file-item.selected,
 .pi-dialog-option:hover,
 .pi-dialog-option.selected {
   background: var(--pi-surface);

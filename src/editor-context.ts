@@ -15,6 +15,7 @@ export interface ActiveEditorContext {
 export interface PromptEditorContext {
   items: EditorContextItem[];
   activeDocument?: ActiveEditorContext;
+  attachedDocuments?: ActiveEditorContext[];
 }
 
 export interface SplitPromptContext {
@@ -48,7 +49,7 @@ export function appendEditorContext(text: string, context: PromptEditorContext):
 
   const payload = JSON.stringify({
     instruction:
-      "Use the attached active editor content as primary context. Other visible editors are references; read them only when relevant.",
+      "Use active editor and explicitly @-attached document contents as primary context. Other visible editors are path references; read them only when relevant.",
     ...context,
   });
   const separator = text ? "\n\n" : "";

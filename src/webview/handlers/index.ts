@@ -23,6 +23,7 @@ import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
 import { Dialog, dialogQuestionStem } from "../components/dialog.js";
+import { findWorkspaceFileMention, removeWorkspaceFileMention } from "../file-mention.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
   writeToolRenderer, editToolRenderer, readToolRenderer,
@@ -161,6 +162,8 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "status":              handleStatus(msg.data); break;
       case "queue-update":        logEvent("queue-update", { s: msg.data?.steering?.length, f: msg.data?.followUp?.length }); handleQueueUpdate(msg.data); break;
       case "editor-context-update": handleEditorContextUpdate(msg.data); break;
+      case "workspace-files-update": handleWorkspaceFilesUpdate(msg.data); break;
+      case "attach-workspace-file": addWorkspaceFileAttachment(msg.data); break;
       case "compaction-start":    handleCompactionStart(msg.data); break;
       case "compaction-end":      handleCompactionEnd(msg.data); break;
       case "auto-retry-start":    handleAutoRetryStart(msg.data); break;
@@ -392,6 +395,7 @@ function createMessageEditorContext(items: unknown): HTMLElement | null {
       var meta = document.createElement("span");
       meta.className = "message-editor-context-meta";
       var labels = [];
+      if (item.attached) { labels.push("@ attached"); }
       if (item.active) {
         labels.push(item.selectionLines ? item.selectionLines + " selected lines" : "active");
       }
@@ -1369,13 +1373,22 @@ export function handleEditorContextUpdate(data: any): void {
     renderAttachments();
   }
 
+export function removeWorkspaceFileAttachment(id: string): void {
+    state.workspaceFileAttachments = state.workspaceFileAttachments.filter(function (item) {
+      return item.id !== id;
+    });
+    renderAttachments();
+  }
+
 export function renderAttachments(): void {
     if (!state.attachmentBar) {return;}
 
     var visibleEditorContext = state.editorContextItems.filter(function (item) {
-      return !state.dismissedEditorContextIds[item.id];
+      return !state.dismissedEditorContextIds[item.id] &&
+        !state.workspaceFileAttachments.some(function (attached) { return attached.id === item.id; });
     });
-    if (state.attachments.length === 0 && visibleEditorContext.length === 0) {
+    if (state.attachments.length === 0 && visibleEditorContext.length === 0 &&
+        state.workspaceFileAttachments.length === 0) {
       state.attachmentBar.classList.remove("visible");
       state.attachmentBar.innerHTML = "";
       return;
@@ -1403,6 +1416,19 @@ export function renderAttachments(): void {
             <span class="att-remove" data-att-id="${a.id}">&times;</span>
           </div>`;
       }
+    }
+
+    for (var wi = 0; wi < state.workspaceFileAttachments.length; wi++) {
+      var workspaceFile = state.workspaceFileAttachments[wi];
+      result += html`
+        <div class="attachment-item workspace-file-attachment" title="${workspaceFile.path}">
+          <span class="att-icon att-workspace-icon">@</span>
+          <span class="att-context-copy">
+            <span class="att-name">${workspaceFile.name}</span>
+            <span class="att-meta">workspace file</span>
+          </span>
+          <button class="att-remove" type="button" data-workspace-file-id="${workspaceFile.id}" aria-label="Remove ${workspaceFile.name} from context">&times;</button>
+        </div>`;
     }
 
     for (var ci = 0; ci < visibleEditorContext.length; ci++) {
@@ -1435,6 +1461,12 @@ export function renderAttachments(): void {
       btn.addEventListener("click", function (e) {
         var id = (e.currentTarget as HTMLElement).getAttribute("data-editor-context-id");
         if (id) {removeEditorContext(id);}
+      });
+    });
+    state.attachmentBar.querySelectorAll(".att-remove[data-workspace-file-id]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        var id = (e.currentTarget as HTMLElement).getAttribute("data-workspace-file-id");
+        if (id) {removeWorkspaceFileAttachment(id);}
       });
     });
   }
@@ -1551,7 +1583,7 @@ export function renderAttachments(): void {
 export function sendPrompt(modeOverride?: "steer" | "queue"): void {
     console.log("[pi-on-code] sendPrompt called");
     var text = state.promptInput.value.trim();
-    if (!text && state.attachments.length === 0) {return;}
+    if (!text && state.attachments.length === 0 && state.workspaceFileAttachments.length === 0) {return;}
 
     // Reset scroll tracking — user clearly wants to follow the new response
     state.hasScrolledUp = false;
@@ -1604,7 +1636,10 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
       text: text,
       images: images.length > 0 ? images : undefined,
       mode: wasStreaming ? (modeOverride ?? state.queueMode) : undefined,
-      editorContext: wasStreaming ? undefined : { includedEditorIds: includedEditorIds },
+      editorContext: wasStreaming ? undefined : {
+        includedEditorIds: includedEditorIds,
+        attachedFileIds: state.workspaceFileAttachments.map(function (item) { return item.id; }),
+      },
     });
 
     // Give immediate feedback while the extension host prepares the request.
@@ -1621,6 +1656,7 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
     clearAttachments();
     if (!wasStreaming) {
       state.dismissedEditorContextIds = {};
+      state.workspaceFileAttachments = [];
       renderAttachments();
     }
   }
@@ -1696,9 +1732,25 @@ let sbSettings = document.getElementById("pi-sb-settings");
     if (state.slashAutocompleteOpen && !state.slashAutocomplete.contains(target) && target !== state.promptInput) {
       closeAllOverlays();
     }
+    if (state.fileAutocompleteOpen && !state.fileAutocomplete.contains(target) && target !== state.promptInput) {
+      closeAllOverlays();
+    }
   });
 
   state.promptInput.addEventListener("keydown", function (e) {
+    if (state.fileAutocompleteOpen && e.key === "Tab") {
+      e.preventDefault();
+      var fileItem = state.workspaceFileResults[state.fileSelectedIdx];
+      if (fileItem) { acceptWorkspaceFile(fileItem); }
+      return;
+    }
+    if (state.fileAutocompleteOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      if (e.key === "ArrowDown") { state.fileSelectedIdx++; }
+      else { state.fileSelectedIdx = Math.max(0, state.fileSelectedIdx - 1); }
+      updateFileAutocomplete();
+      return;
+    }
     // #8: Tab to accept slash autocomplete
     if (state.slashAutocompleteOpen && e.key === "Tab") {
       e.preventDefault();
@@ -1741,7 +1793,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
     // Esc to close all overlays
     if (e.key === "Escape") {
-      if (state.slashAutocompleteOpen || state.settingsOpen || state.extensionsOpen || state.userMsgSelectorOpen) {
+      if (state.slashAutocompleteOpen || state.fileAutocompleteOpen || state.settingsOpen || state.extensionsOpen || state.userMsgSelectorOpen) {
         closeAllOverlays();
         e.preventDefault();
         return;
@@ -1749,6 +1801,12 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
     // Enter: accept user msg or slash autocomplete if open, otherwise send
     if (e.key === "Enter" && !e.shiftKey) {
+      if (state.fileAutocompleteOpen) {
+        e.preventDefault();
+        var fileItem = state.workspaceFileResults[state.fileSelectedIdx];
+        if (fileItem) { acceptWorkspaceFile(fileItem); }
+        return;
+      }
       if (state.userMsgSelectorOpen) {
         e.preventDefault();
         var idx = state.userMsgSelectedIdx;
@@ -1805,16 +1863,33 @@ let sbSettings = document.getElementById("pi-sb-settings");
       state.promptInput.style.overflowY = "hidden";
     }
 
-    // #8: Detect slash commands for autocomplete
+    // Detect an @workspace-file mention immediately before the cursor.
     var val = state.promptInput.value;
-    var slashMatch = val.match(/^\/(\w*)$/);
-    if (slashMatch) {
-      state.slashFilter = val;
-      state.slashSelectedIdx = 0;
-      updateSlashAutocomplete(val);
-    } else {
+    var fileMatch = findWorkspaceFileMention(val, state.promptInput.selectionStart);
+    if (fileMatch) {
+      state.fileMentionStart = fileMatch.start;
+      state.fileFilter = fileMatch.query;
+      state.fileSelectedIdx = 0;
+      state.workspaceFileResults = [];
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
+      state.fileAutocomplete.innerHTML = '<div class="file-searching">Searching workspace files…</div>';
+      state.fileAutocomplete.classList.add("visible");
+      state.fileAutocompleteOpen = true;
+      window.__vscode.postMessage({ type: "requestWorkspaceFiles", query: state.fileFilter });
+    } else {
+      state.fileMentionStart = -1;
+      state.fileAutocomplete.classList.remove("visible");
+      state.fileAutocompleteOpen = false;
+      var slashMatch = val.match(/^\/(\w*)$/);
+      if (slashMatch) {
+        state.slashFilter = val;
+        state.slashSelectedIdx = 0;
+        updateSlashAutocomplete(val);
+      } else {
+        state.slashAutocomplete.classList.remove("visible");
+        state.slashAutocompleteOpen = false;
+      }
     }
     updateFollowUpHintVisibility();
   });
@@ -2063,10 +2138,13 @@ export function closeAllOverlays() {
     state.extensionsOpen = false;
     state.userMsgSelectorOpen = false;
     state.slashAutocompleteOpen = false;
+    state.fileAutocompleteOpen = false;
+    state.fileMentionStart = -1;
     state.settingsOverlay.classList.remove("visible");
     state.extensionsOverlay.classList.remove("visible");
     state.userMsgOverlay.classList.remove("visible");
     state.slashAutocomplete.classList.remove("visible");
+    state.fileAutocomplete.classList.remove("visible");
   }
 
   // ═══ #5: Diff Rendering for edit tool results ════════════
@@ -2398,6 +2476,81 @@ export function handleShowDialog(data: any) {
   // Built-in slash commands (always available)
 
   // Dynamic slash commands populated from installed extensions (e.g. /tldr)
+
+export function addWorkspaceFileAttachment(item: { id: string; path: string; name: string }): void {
+    if (!state.workspaceFileAttachments.some(function (attached) { return attached.id === item.id; }) &&
+        state.workspaceFileAttachments.length < 20) {
+      state.workspaceFileAttachments.push(item);
+      renderAttachments();
+    }
+  }
+
+export function acceptWorkspaceFile(item: { id: string; path: string; name: string }): void {
+    addWorkspaceFileAttachment(item);
+
+    var cursor = state.promptInput.selectionStart;
+    if (state.fileMentionStart >= 0 && state.fileMentionStart <= cursor) {
+      var updated = removeWorkspaceFileMention(
+        state.promptInput.value,
+        state.fileMentionStart,
+        cursor,
+      );
+      state.promptInput.value = updated.text;
+      state.promptInput.selectionStart = state.promptInput.selectionEnd = updated.cursor;
+      state.promptInput.dispatchEvent(new Event("input"));
+    }
+    state.fileAutocomplete.classList.remove("visible");
+    state.fileAutocompleteOpen = false;
+    state.workspaceFileResults = [];
+    state.promptInput.focus();
+  }
+
+export function handleWorkspaceFilesUpdate(data: any): void {
+    if (state.fileMentionStart < 0 || !data || data.query !== state.fileFilter || !Array.isArray(data.items)) { return; }
+    state.workspaceFileResults = data.items.filter(function (item: any) {
+      return !state.workspaceFileAttachments.some(function (attached) {
+        return attached.id === item.id;
+      });
+    });
+    state.fileSelectedIdx = Math.min(
+      state.fileSelectedIdx,
+      Math.max(0, state.workspaceFileResults.length - 1),
+    );
+    updateFileAutocomplete();
+  }
+
+export function updateFileAutocomplete(): void {
+    if (state.workspaceFileResults.length === 0) {
+      state.fileAutocomplete.classList.remove("visible");
+      state.fileAutocompleteOpen = false;
+      return;
+    }
+
+    state.fileSelectedIdx = Math.min(
+      state.fileSelectedIdx,
+      state.workspaceFileResults.length - 1,
+    );
+    var result = "";
+    for (var i = 0; i < state.workspaceFileResults.length; i++) {
+      var item = state.workspaceFileResults[i];
+      result += html`
+        <div class="file-item${i === state.fileSelectedIdx ? " selected" : ""}" data-file-id="${item.id}">
+          <span class="file-name">${item.name}</span>
+          <span class="file-path">${item.path}</span>
+        </div>`;
+    }
+    state.fileAutocomplete.innerHTML = result;
+    state.fileAutocomplete.classList.add("visible");
+    state.fileAutocompleteOpen = true;
+
+    state.fileAutocomplete.querySelectorAll(".file-item").forEach(function (element) {
+      element.addEventListener("click", function () {
+        var id = element.getAttribute("data-file-id");
+        var item = state.workspaceFileResults.find(function (candidate) { return candidate.id === id; });
+        if (item) { acceptWorkspaceFile(item); }
+      });
+    });
+  }
 
   // Full slash command list (builtins + extensions, with extensions first for dedup)
 export function getSlashCommands() {

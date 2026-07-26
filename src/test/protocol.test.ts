@@ -47,11 +47,37 @@ suite("Shared webview protocol", () => {
     const promptResult = validateWebviewToExtension({
       type: "prompt",
       text: "Refactor this",
-      editorContext: { includedEditorIds: [item.id] },
+      editorContext: {
+        includedEditorIds: [item.id],
+        attachedFileIds: ["file:///workspace/package.json"],
+      },
+    });
+    const searchRequest = validateWebviewToExtension({
+      type: "requestWorkspaceFiles",
+      query: "package",
+    });
+    const workspaceFile = {
+      id: "file:///workspace/package.json",
+      path: "package.json",
+      name: "package.json",
+    };
+    const searchResult = validateExtensionToWebview({
+      type: "workspace-files-update",
+      data: {
+        query: "package",
+        items: [workspaceFile],
+      },
+    });
+    const attachResult = validateExtensionToWebview({
+      type: "attach-workspace-file",
+      data: workspaceFile,
     });
 
     assert.strictEqual(updateResult.success, true);
     assert.strictEqual(promptResult.success, true);
+    assert.strictEqual(searchRequest.success, true);
+    assert.strictEqual(searchResult.success, true);
+    assert.strictEqual(attachResult.success, true);
   });
 
   test("rejects malformed image content in tool results", () => {

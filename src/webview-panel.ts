@@ -7,6 +7,7 @@ import type { PiServiceEvent } from "./types.js";
 import {
   validateExtensionToWebview,
   type EditorContextItem,
+  type WorkspaceFileItem,
   type WebviewToExtension,
   type ExtensionToWebview,
 } from "./shared/protocol.js";
@@ -35,6 +36,7 @@ export class PiWebviewPanel {
   private piCleanup: (() => void) | null = null;
   private lastActiveTextEditorId = vscode.window.activeTextEditor?.document.uri.toString();
   private editorContextUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private workspaceFileCache: { loadedAt: number; items: WorkspaceFileItem[] } | null = null;
 
   // Tab indicator state
   private _tabInitialized = false;
@@ -150,36 +152,139 @@ export class PiWebviewPanel {
     return items;
   }
 
-  private capturePromptEditorContext(includedEditorIds: string[]): PromptEditorContext | undefined {
+  private async capturePromptEditorContext(
+    includedEditorIds: string[],
+    attachedFileIds: string[],
+  ): Promise<PromptEditorContext | undefined> {
     const included = new Set(includedEditorIds);
     const items = this.getVisibleEditorContextItems().filter((item) => included.has(item.id));
-    if (items.length === 0) { return undefined; }
-
     const activeItem = items.find((item) => item.active);
     const activeEditor = activeItem
       ? vscode.window.visibleTextEditors.find(
           (editor) => editor.document.uri.toString() === activeItem.id,
         )
       : undefined;
-    if (!activeItem || !activeEditor) { return { items }; }
 
-    const selection = activeEditor.selection;
-    const source = selection.isEmpty ? "document" : "selection";
-    const rawContent = selection.isEmpty
-      ? activeEditor.document.getText()
-      : activeEditor.document.getText(selection);
-    const content = truncateUtf8(rawContent, 32 * 1024);
-    return {
-      items,
-      activeDocument: {
+    let activeDocument: PromptEditorContext["activeDocument"];
+    if (activeItem && activeEditor) {
+      const selection = activeEditor.selection;
+      const source = selection.isEmpty ? "document" : "selection";
+      const rawContent = selection.isEmpty
+        ? activeEditor.document.getText()
+        : activeEditor.document.getText(selection);
+      const content = truncateUtf8(rawContent, 32 * 1024);
+      activeDocument = {
         id: activeItem.id,
         path: activeItem.path,
         languageId: activeItem.languageId,
         source,
         content: content.text,
         truncated: content.truncated,
-      },
+      };
+    }
+
+    const attachedDocuments: NonNullable<PromptEditorContext["attachedDocuments"]> = [];
+    for (const id of new Set(attachedFileIds)) {
+      let uri: vscode.Uri;
+      try {
+        uri = vscode.Uri.parse(id);
+      } catch {
+        continue;
+      }
+      if (!vscode.workspace.getWorkspaceFolder(uri)) { continue; }
+
+      let document = vscode.workspace.textDocuments.find(
+        (candidate) => candidate.uri.toString() === id,
+      );
+      try {
+        document ??= await vscode.workspace.openTextDocument(uri);
+      } catch {
+        continue;
+      }
+
+      const displayPath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+      let rawContent = document.getText();
+      let binary = false;
+      if (rawContent.includes("\0")) {
+        rawContent = "[Binary file content omitted]";
+        binary = true;
+      }
+      const content = truncateUtf8(rawContent, 32 * 1024);
+      const existing = items.find((item) => item.id === id);
+      if (existing) {
+        existing.attached = true;
+      } else {
+        items.push({
+          id,
+          path: displayPath,
+          name: path.basename(document.fileName || displayPath),
+          languageId: document.languageId,
+          active: false,
+          dirty: document.isDirty,
+          attached: true,
+        });
+      }
+
+      const documentContext = {
+        id,
+        path: displayPath,
+        languageId: document.languageId,
+        source: "document" as const,
+        content: content.text,
+        truncated: content.truncated || binary,
+      };
+      if (activeItem?.id === id) {
+        activeDocument = documentContext;
+      } else {
+        attachedDocuments.push(documentContext);
+      }
+    }
+
+    if (items.length === 0) { return undefined; }
+    return {
+      items,
+      activeDocument,
+      attachedDocuments: attachedDocuments.length > 0 ? attachedDocuments : undefined,
     };
+  }
+
+  private async postWorkspaceFiles(query: string): Promise<void> {
+    const now = Date.now();
+    if (!this.workspaceFileCache || now - this.workspaceFileCache.loadedAt > 5000) {
+      const uris = await vscode.workspace.findFiles(
+        "**/*",
+        "**/{node_modules,.git,dist,out,artifacts,.vscode-test}/**",
+        2000,
+      );
+      this.workspaceFileCache = {
+        loadedAt: now,
+        items: uris.map((uri) => {
+          const displayPath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+          return {
+            id: uri.toString(),
+            path: displayPath,
+            name: path.basename(displayPath),
+          };
+        }),
+      };
+    }
+
+    const normalized = query.trim().toLowerCase();
+    const items = this.workspaceFileCache.items
+      .filter((item) => !normalized || item.path.toLowerCase().includes(normalized))
+      .sort((left, right) => {
+        const leftName = left.name.toLowerCase();
+        const rightName = right.name.toLowerCase();
+        const leftStarts = leftName.startsWith(normalized) ? 0 : 1;
+        const rightStarts = rightName.startsWith(normalized) ? 0 : 1;
+        return leftStarts - rightStarts || left.path.localeCompare(right.path);
+      })
+      .slice(0, 50);
+
+    this.postMessage({
+      type: "workspace-files-update",
+      data: { query, items },
+    });
   }
 
   private postEditorContext(): void {
@@ -267,7 +372,10 @@ export class PiWebviewPanel {
           case "prompt": {
               const msg = message;
               const editorContext = !msg.mode && !msg.text.startsWith("/")
-                ? this.capturePromptEditorContext(msg.editorContext?.includedEditorIds ?? [])
+                ? await this.capturePromptEditorContext(
+                    msg.editorContext?.includedEditorIds ?? [],
+                    msg.editorContext?.attachedFileIds ?? [],
+                  )
                 : undefined;
               const promptText = editorContext
                 ? appendEditorContext(msg.text, editorContext)
@@ -285,6 +393,10 @@ export class PiWebviewPanel {
 
           case "requestEditorContext":
             this.postEditorContext();
+            break;
+
+          case "requestWorkspaceFiles":
+            await this.postWorkspaceFiles(message.query);
             break;
 
           case "abort":
@@ -529,6 +641,20 @@ export class PiWebviewPanel {
     this.panel?.webview.postMessage({ type: "insertCommand", command });
   }
 
+  async attachWorkspaceFile(uri: vscode.Uri): Promise<void> {
+    if (!vscode.workspace.getWorkspaceFolder(uri)) { return; }
+    await this.show();
+    const displayPath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+    this.postMessage({
+      type: "attach-workspace-file",
+      data: {
+        id: uri.toString(),
+        path: displayPath,
+        name: path.basename(displayPath),
+      },
+    });
+  }
+
   /** Handle a locally-intercepted slash command (not sent to LLM) */
   private async handleSlashCommand(command: string): Promise<void> {
     switch (command) {
@@ -633,6 +759,7 @@ export class PiWebviewPanel {
   <div class="settings-overlay" id="settings-overlay"></div>
   <div class="extensions-overlay" id="extensions-overlay"></div>
   <div class="slash-autocomplete" id="slash-autocomplete"></div>
+  <div class="file-autocomplete" id="file-autocomplete"></div>
 
     <script nonce="${nonce}" src="${bundleUri}"></script>
 </body>
