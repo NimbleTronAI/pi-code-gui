@@ -111,9 +111,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
   // ═══ Event Router ═══════════════════════════════════════
   // ═══ Event Router ═══════════════════════════════════════
 
-  window.addEventListener("message", function (event) {
-    var msg = event.data;
-
+function handleExtensionMessage(msg: any): void {
     // ── Layer 1: Runtime protocol validation ───────────────
     // Validate every incoming message against the Zod schema.
     // Skip validation for high-frequency streaming types to avoid
@@ -134,7 +132,12 @@ export function createLiveCard(key: string, customType: string, label: string, c
     }
 
     // Debug: log every incoming extension message (skip high-frequency stream deltas)
-    if (msg.type !== "stream-delta" && msg.type !== "thinking-delta" && msg.type !== "tool-update" && msg.type !== "bash-output") {
+    if (msg.type === "history-page") {
+      logEvent("recv:history-page", {
+        eventCount: Array.isArray(msg.data?.events) ? msg.data.events.length : 0,
+        hasMoreHistory: msg.data?.hasMoreHistory === true,
+      });
+    } else if (msg.type !== "stream-delta" && msg.type !== "thinking-delta" && msg.type !== "tool-update" && msg.type !== "bash-output") {
       logEvent("recv:" + msg.type, msg.data || msg);
     }
     switch (msg.type) {
@@ -172,8 +175,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "thinking-level-changed": handleThinkingLevelChanged(msg.data); break;
       case "batch-start":         handleBatchStart(msg.data); break;
       case "batch-end":           handleBatchEnd(msg.data); break;
-      case "history-page-start":  handleHistoryPageStart(msg.data); break;
-      case "history-page-end":    handleHistoryPageEnd(msg.data); break;
+      case "history-page":        handleHistoryPage(msg.data); break;
 
       // New features (#1, #2, #7, #9)
       case "compaction-summary-message": handleCompactionSummaryMessage(msg.data); break;
@@ -215,6 +217,10 @@ export function createLiveCard(key: string, customType: string, label: string, c
         }
         break;
     }
+  }
+
+  window.addEventListener("message", function (event) {
+    handleExtensionMessage(event.data);
   });
 
   // ═══ Agent Lifecycle ═══════════════════════════════════
@@ -883,6 +889,7 @@ interface HistoryPrependContext {
   previousScrollHeight: number;
   previousScrollTop: number;
   hasScrolledUp: boolean;
+  workingIndicator: HTMLElement | null;
   currentAssistantEl: HTMLElement | null;
   currentThinkingEl: HTMLElement | null;
   currentToolBlocks: typeof state.currentToolBlocks;
@@ -900,7 +907,15 @@ let historyPrependContext: HistoryPrependContext | null = null;
 export function handleHistoryPageStart(data: any) {
     if (historyPrependContext) { return; }
 
+    // Finish any queued live render before temporarily switching the shared
+    // render context. The atomic history-page message prevents new live
+    // deltas from running until the context has been restored.
+    _flushStreamRender();
+    _flushThinkingRender();
+
     var root = state.chatContainer;
+    var workingIndicator = document.getElementById("working-indicator");
+    if (workingIndicator?.parentNode === root) { workingIndicator.remove(); }
     var staging = document.createElement("div");
     staging.className = "history-page-staging";
     staging.style.display = "contents";
@@ -912,6 +927,7 @@ export function handleHistoryPageStart(data: any) {
       previousScrollHeight: root.scrollHeight,
       previousScrollTop: root.scrollTop,
       hasScrolledUp: state.hasScrolledUp,
+      workingIndicator: workingIndicator,
       currentAssistantEl: state.currentAssistantEl,
       currentThinkingEl: state.currentThinkingEl,
       currentToolBlocks: state.currentToolBlocks,
@@ -941,6 +957,23 @@ export function handleHistoryPageStart(data: any) {
     document.body.classList.add("no-animate");
   }
 
+export function handleHistoryPage(data: any) {
+    handleHistoryPageStart(data);
+    try {
+      var events = Array.isArray(data?.events) ? data.events : [];
+      for (var index = 0; index < events.length; index++) {
+        var event = events[index];
+        if (!event || typeof event !== "object") {
+          console.warn("[pi-on-code] Ignoring malformed history event", event);
+          continue;
+        }
+        handleExtensionMessage(event);
+      }
+    } finally {
+      handleHistoryPageEnd(data);
+    }
+  }
+
 export function handleHistoryPageEnd(data: any) {
     var context = historyPrependContext;
     if (!context) {
@@ -955,6 +988,9 @@ export function handleHistoryPageEnd(data: any) {
       context.root.insertBefore(context.staging.firstChild, context.staging);
     }
     context.staging.remove();
+    if (context.workingIndicator) {
+      context.root.appendChild(context.workingIndicator);
+    }
 
     state.hasScrolledUp = context.hasScrolledUp;
     state.currentAssistantEl = context.currentAssistantEl;

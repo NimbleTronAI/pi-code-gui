@@ -306,12 +306,11 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
     }).optional(),
   }),
   z.object({
-    type: z.literal("history-page-start"),
-    data: z.object({ hasMoreHistory: z.boolean() }),
-  }),
-  z.object({
-    type: z.literal("history-page-end"),
-    data: z.object({ hasMoreHistory: z.boolean() }),
+    type: z.literal("history-page"),
+    data: z.object({
+      hasMoreHistory: z.boolean(),
+      events: z.array(z.unknown()),
+    }),
   }),
 
   // Thinking

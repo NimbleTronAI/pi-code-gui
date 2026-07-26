@@ -7,6 +7,7 @@ export interface OlderHistoryLoadState {
   scrollTop: number;
   hasMore: boolean;
   loading: boolean;
+  /** Informational only: atomic history pages are safe during streaming. */
   streaming: boolean;
   inBatch: boolean;
 }
@@ -15,8 +16,7 @@ export function shouldLoadOlderHistory(
   state: OlderHistoryLoadState,
   threshold = 120,
 ): boolean {
-  return state.hasMore && !state.loading && !state.streaming && !state.inBatch &&
-    state.scrollTop <= threshold;
+  return state.hasMore && !state.loading && !state.inBatch && state.scrollTop <= threshold;
 }
 
 /** Keep the same visible content anchored after older nodes are prepended. */
