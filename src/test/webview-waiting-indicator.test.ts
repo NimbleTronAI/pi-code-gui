@@ -10,8 +10,13 @@ import {
 
 suite("Webview prompt waiting indicator", () => {
   test("shows immediately for a new idle prompt but not for queued or steering prompts", () => {
-    assert.strictEqual(shouldShowPromptWaitingIndicator(false), true);
-    assert.strictEqual(shouldShowPromptWaitingIndicator(true), false);
+    assert.strictEqual(shouldShowPromptWaitingIndicator(false, "Fix this"), true);
+    assert.strictEqual(shouldShowPromptWaitingIndicator(true, "Next task"), false);
+  });
+
+  test("waits for agent lifecycle events before showing for slash commands", () => {
+    assert.strictEqual(shouldShowPromptWaitingIndicator(false, "/name New title"), false);
+    assert.strictEqual(shouldShowPromptWaitingIndicator(false, "  /compact"), false);
   });
 
   test("places a pending indicator after the echoed user message", () => {

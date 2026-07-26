@@ -1,7 +1,10 @@
 export const PI_TUI_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-export function shouldShowPromptWaitingIndicator(isStreaming: boolean): boolean {
-  return !isStreaming;
+export function shouldShowPromptWaitingIndicator(isStreaming: boolean, prompt: string): boolean {
+  // Slash commands may be handled entirely by PiService (for example /name)
+  // and therefore never emit agent-start/agent-end. Let commands that do
+  // start the agent show the indicator through the normal agent-start event.
+  return !isStreaming && !prompt.trimStart().startsWith("/");
 }
 
 export function shouldShowFollowUpHint(isWorking: boolean, input: string): boolean {

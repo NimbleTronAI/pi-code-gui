@@ -1763,7 +1763,7 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
 
     // Give immediate feedback while the extension host prepares the request.
     // Queued/steering prompts already have an active response indicator.
-    if (shouldShowPromptWaitingIndicator(wasStreaming)) {
+    if (shouldShowPromptWaitingIndicator(wasStreaming, text)) {
       hideWelcome();
       addWorkingIndicator();
     }
