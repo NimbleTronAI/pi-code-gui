@@ -1,7 +1,9 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { appendEditorContext, truncateUtf8, type PromptEditorContext } from "./editor-context.js";
+import { resolveFileLinkPath } from "./file-link.js";
 import { piError } from "./logger.js";
+import { getWorkspaceCwd } from "./workspace-context.js";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
 import {
@@ -451,7 +453,7 @@ export class PiWebviewPanel {
             break;
 
           case "openFile":
-            vscode.window.showTextDocument(vscode.Uri.file(message.path));
+            void this.openFileLink(message.path);
             break;
 
           // Slash commands intercepted locally (not sent to LLM)
@@ -531,6 +533,21 @@ export class PiWebviewPanel {
       undefined,
       this.disposables
     );
+  }
+
+  private async openFileLink(filePath: string): Promise<void> {
+    try {
+      const value = filePath.trim();
+      const uri = value.toLowerCase().startsWith("file:")
+        ? vscode.Uri.parse(value)
+        : vscode.Uri.file(resolveFileLinkPath(value, getWorkspaceCwd()));
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, { preview: true });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      piError(`Could not open file link "${filePath}": ${message}`);
+      void vscode.window.showErrorMessage(`Could not open "${filePath}": ${message}`);
+    }
   }
 
   private setupServiceHandlers(): void {
