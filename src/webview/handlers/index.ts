@@ -12,6 +12,7 @@ import {
   setupCodeBlockHandlers,
 } from "../render/engine.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
+import { scrollSelectedSlashItemIntoView } from "../render/slash-navigation.js";
 import {
   nextWaitingFrame,
   PI_TUI_SPINNER_FRAMES,
@@ -1769,6 +1770,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
       if (e.key === "ArrowDown") {state.slashSelectedIdx++;}
       else {state.slashSelectedIdx = Math.max(0, state.slashSelectedIdx - 1);}
       updateSlashAutocomplete(state.slashFilter);
+      scrollSelectedSlashItemIntoView(state.slashAutocomplete);
       return;
     }
     // #2: Up arrow in empty input → show user message history
