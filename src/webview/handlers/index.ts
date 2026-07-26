@@ -9,7 +9,6 @@ import {
   hideWelcome, resetChat, scrollToBottom, updateStreamingState,
   updateFollowUpHintVisibility, renderToolResultTruncated, renderBlockToHTML,
   shortenPath, renderCodeBlockHTML,
-  setupCodeBlockHandlers,
 } from "../render/engine.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
 import { scrollSelectedSlashItemIntoView } from "../render/slash-navigation.js";
@@ -1706,9 +1705,6 @@ let sbSettings = document.getElementById("pi-sb-settings");
       toggleSettingsPanel();
     });
   }
-
-  // Setup code block copy buttons (event delegation, CSP-safe)
-  setupCodeBlockHandlers();
 
   // Handle external links and close overlays on outside clicks
   document.addEventListener("click", function (e) {
