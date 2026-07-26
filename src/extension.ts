@@ -15,6 +15,11 @@ import { getWorkspaceCwd, getWorkspaceRoot, getWorkspaceUri } from "./workspace-
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary } from "./types.js";
+import {
+  clearProviderApiKeys,
+  storeProviderApiKey,
+  type ApiKeyProvider,
+} from "./provider-credentials.js";
 
 // ── Session window management ──────────────────────────
 
@@ -232,7 +237,7 @@ function createSessionWindow(
   restore?: { path: string; title?: string },
 ): SessionWindow {
   const id = `session-${++sessionCounter}`;
-  const piService = new PiService();
+  const piService = new PiService(context.secrets);
   const webviewPanel = new PiWebviewPanel(context, piService, {
     list: async () => {
       if (packageService?.isReady) { return packageService.listExtensions(); }
@@ -384,6 +389,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ── Step 1: Register ALL commands immediately ──────────
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("pi-on-code.installPi", installPi),
+    vscode.commands.registerCommand("pi-on-code.setAnthropicApiKey", () =>
+      promptAndStoreProviderApiKey(context, "anthropic", "Anthropic"),
+    ),
+    vscode.commands.registerCommand("pi-on-code.setOpenAIApiKey", () =>
+      promptAndStoreProviderApiKey(context, "openai", "OpenAI"),
+    ),
+    vscode.commands.registerCommand("pi-on-code.clearApiKeys", () =>
+      confirmAndClearProviderApiKeys(context),
+    ),
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("pi-on-code.codeAgent", () => {
       const primary = primarySession();
       if (primary) {
@@ -520,7 +538,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     // Open a temporary PiService to get an isolated SessionManager for branching
-    const tempPi = new PiService();
+    const tempPi = new PiService(context.secrets);
     let forkedPath: string;
     try {
       const result = await tempPi.initialize({ openPath: sourcePath });
@@ -557,7 +575,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /** Fork a past session at its current leaf (opens the session, then forks). */
   async function doForkFromPastSession(sessionPath: string): Promise<void> {
     // Initialize a new PiService to load the session and get leaf ID
-    const tempPi = new PiService();
+    const tempPi = new PiService(context.secrets);
     const result = await tempPi.initialize({ openPath: sessionPath });
     if (!result.success) {
       throw new Error(`Cannot open past session: ${result.error}`);
@@ -960,7 +978,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const savedPaths: string[] = ((context.workspaceState.get("pi-on-code.openSessionPaths") as string[]) ?? [])
       .filter((p: string) => fs.existsSync(p));
     const savedActivePath: string | undefined = context.workspaceState.get("pi-on-code.activeSessionPath") ?? undefined;
-    const autoOpen = vscode.workspace.getConfiguration("pi-on-code").get<boolean>("autoOpenOnStart", true);
+    const autoOpen = vscode.workspace.getConfiguration("pi-on-code").get<boolean>("autoOpenOnStart", false);
 
     if (savedPaths.length > 0) {
       // Restore session counter to avoid ID collisions.
@@ -1396,11 +1414,14 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       data: {
         message:
           "Pi coding agent SDK is not installed. " +
-          'Click "Install Pi" below or run: npm install -g @earendil-works/pi-coding-agent',
+          'Run "Pi: Install Pi Coding Agent" or: npm install -g @earendil-works/pi-coding-agent',
       },
     });
 
-    if (!primarySession() || primarySession() === sw) {
+    const promptToInstall = vscode.workspace
+      .getConfiguration("pi-on-code")
+      .get<boolean>("promptToInstall", true);
+    if (promptToInstall && (!primarySession() || primarySession() === sw)) {
       const action = await vscode.window.showErrorMessage(
         "Pi coding agent SDK is not installed.",
         "Install Pi",
@@ -1565,13 +1586,54 @@ function restoreActiveSession(activePath: string | undefined): void {
   }
 }
 
-// ── Install helper ──────────────────────────────────────
+// ── Credential and install helpers ─────────────────────
+
+async function promptAndStoreProviderApiKey(
+  context: vscode.ExtensionContext,
+  provider: ApiKeyProvider,
+  providerLabel: string,
+): Promise<void> {
+  const value = await vscode.window.showInputBox({
+    title: `Set ${providerLabel} API Key`,
+    prompt: `Stored securely in VS Code SecretStorage and used by new Pi sessions.`,
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (input) => input.trim() ? undefined : "API key cannot be empty.",
+  });
+  if (value === undefined) { return; }
+
+  await storeProviderApiKey(context.secrets, provider, value);
+  const action = await vscode.window.showInformationMessage(
+    `${providerLabel} API key stored securely. Reopen existing sessions to apply it.`,
+    "Reload Window",
+  );
+  if (action === "Reload Window") {
+    await vscode.commands.executeCommand("workbench.action.reloadWindow");
+  }
+}
+
+async function confirmAndClearProviderApiKeys(context: vscode.ExtensionContext): Promise<void> {
+  const action = await vscode.window.showWarningMessage(
+    "Clear Anthropic and OpenAI API keys stored by Pi on Code?",
+    { modal: true },
+    "Clear Keys",
+  );
+  if (action !== "Clear Keys") { return; }
+
+  await clearProviderApiKeys(
+    context.secrets,
+    vscode.workspace.getConfiguration("pi-on-code"),
+  );
+  vscode.window.showInformationMessage(
+    "Stored API keys cleared. Reopen existing sessions to remove runtime overrides.",
+  );
+}
 
 async function installPi(): Promise<void> {
   return new Promise((resolve) => {
     const term = vscode.window.createTerminal("Pi Install");
     term.show();
-    term.sendText("npm install -g @earendil-works/pi-coding-agent");
+    term.sendText("npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.82.1");
     term.sendText(
       'echo "✅ Pi SDK installed! Reload VS Code to use Pi on Code."',
     );

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- Added persistent multi-session navigation, lazy history loading, and reliable conversation scroll following.
+- Added active-editor context, workspace file and folder attachments, file mentions, and streaming image follow-ups.
+- Added Pi Package and Session extension management inside the sidebar and conversation.
+- Added inline extension questions, autocomplete keyboard navigation, and conversation jump controls.
+- Added compact-by-default long tool output with explicit expansion controls.
+- Added secure Anthropic and OpenAI API key storage through VS Code SecretStorage.
+- Honored skills, context-file, prompt-template, installation-prompt, and system-prompt settings.
+- Restricted the extension to trusted, non-virtual workspaces and removed conflicting global shortcuts.
+- Changed automatic chat-tab opening to opt-in and prepared Marketplace publisher metadata.
+
 ## 0.1.1
 
 - Replaced the native sessions tree with a Pi Web-styled session sidebar.
