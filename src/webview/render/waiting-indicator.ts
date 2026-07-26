@@ -11,6 +11,14 @@ export function shouldShowFollowUpHint(isWorking: boolean, input: string): boole
   return isWorking && input.trim().length > 0;
 }
 
+export function shouldPreserveWorkingIndicator(
+  isStreaming: boolean,
+  isCompacting: boolean,
+  isRetrying: boolean,
+): boolean {
+  return isStreaming || isCompacting || isRetrying;
+}
+
 export function nextWaitingFrame(frame: number): number {
   return (frame + 1) % PI_TUI_SPINNER_FRAMES.length;
 }
