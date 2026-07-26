@@ -1729,6 +1729,98 @@ html.pi-viewport-recovering #pi-web-app {
   background: transparent;
 }
 
+/* Compact conversation navigator beside the webview scrollbar. The single
+   handle expands into four jump targets only while hovered or keyboard-focused. */
+.scroll-jump-controls {
+  position: fixed;
+  z-index: 90;
+  top: 50%;
+  right: 6px;
+  display: flex;
+  width: 30px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--pi-surface);
+  background: color-mix(in srgb, var(--pi-surface) 88%, transparent);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 18%);
+  opacity: 0.58;
+  transform: translateY(-50%);
+  transition: border-color 120ms ease, opacity 120ms ease;
+}
+
+.scroll-jump-controls[hidden] {
+  display: none;
+}
+
+.scroll-jump-controls:hover,
+.scroll-jump-controls:focus-within {
+  border-color: var(--pi-line);
+  opacity: 1;
+}
+
+.scroll-jump-trigger,
+.scroll-jump-button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--pi-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 24px;
+  text-align: center;
+}
+
+.scroll-jump-trigger {
+  color: var(--pi-faint);
+}
+
+.scroll-jump-actions {
+  position: absolute;
+  top: 27px;
+  right: -1px;
+  display: grid;
+  width: 30px;
+  max-height: 0;
+  grid-template-rows: repeat(4, 24px);
+  padding: 0 2px;
+  border: 1px solid transparent;
+  border-radius: 0 0 4px 4px;
+  background: var(--pi-surface);
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  visibility: hidden;
+  transition: max-height 140ms ease, opacity 100ms ease, transform 140ms ease;
+}
+
+.scroll-jump-controls:hover .scroll-jump-actions,
+.scroll-jump-controls:focus-within .scroll-jump-actions {
+  max-height: 102px;
+  border-color: var(--pi-line);
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.scroll-jump-button:hover:not(:disabled),
+.scroll-jump-button:focus-visible {
+  background: var(--pi-line-soft);
+  color: var(--pi-text);
+}
+
+.scroll-jump-button:disabled {
+  color: var(--pi-line);
+  cursor: default;
+}
+
 .welcome-message {
   align-self: stretch;
   padding: 26px 0 34px;
