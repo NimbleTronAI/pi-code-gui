@@ -17,6 +17,7 @@ import {
   nextWaitingFrame,
   PI_TUI_SPINNER_FRAMES,
   shouldPlaceWaitingIndicatorAfterMessage,
+  shouldPreserveWorkingIndicator,
   shouldShowPromptWaitingIndicator,
 } from "../render/waiting-indicator.js";
 import { validateExtensionToWebview } from "../../shared/protocol.js";
@@ -1254,18 +1255,27 @@ export function handleThinkingLevelChanged(data: any) {
 
 export function handleError(data: any) {
     hideWelcome();
-    removeWorkingIndicator();
-    removeCompactionIndicator();
-    removeRetryIndicator();
+    var preserveWorking = shouldPreserveWorkingIndicator(
+      state.isStreaming,
+      state.isCompacting,
+      state.isRetrying,
+    );
+
+    if (!preserveWorking) {
+      removeWorkingIndicator();
+      removeCompactionIndicator();
+      removeRetryIndicator();
+      state.isStreaming = false;
+      if (state.currentAssistantEl) {
+        var mc = state.currentAssistantEl.querySelector(".message-content");
+        if (mc) {mc.classList.remove("streaming-cursor");}
+        state.currentAssistantEl = null;
+        state.currentThinkingEl = null;
+      }
+    }
 
     addErrorMessage(data.message || "Unknown error");
-    state.isStreaming = false;
-    if (state.currentAssistantEl) {
-      var mc = state.currentAssistantEl.querySelector(".message-content");
-      if (mc) {mc.classList.remove("streaming-cursor");}
-      state.currentAssistantEl = null;
-      state.currentThinkingEl = null;
-    }
+    if (preserveWorking) {moveWorkingIndicatorToBottom();}
     updateStreamingState();
     scrollToBottom();
   }

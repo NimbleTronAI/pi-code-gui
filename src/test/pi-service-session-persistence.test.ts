@@ -73,6 +73,33 @@ suite("PiService session persistence", () => {
     ]);
   });
 
+  test("queues image attachments while the agent is streaming", async () => {
+    const queued: Array<{
+      mode: "steer" | "followUp";
+      text: string;
+      images: Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+    }> = [];
+    const image = { type: "image" as const, data: "cG5n", mimeType: "image/png" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    service.session = {
+      steer: async (text: string, images: typeof queued[number]["images"]) => {
+        queued.push({ mode: "steer", text, images });
+      },
+      followUp: async (text: string, images: typeof queued[number]["images"]) => {
+        queued.push({ mode: "followUp", text, images });
+      },
+    };
+
+    await service.sendPrompt("inspect now", [image], "steer");
+    await service.sendPrompt("inspect later", [image], "queue");
+
+    assert.deepStrictEqual(queued, [
+      { mode: "steer", text: "inspect now", images: [image] },
+      { mode: "followUp", text: "inspect later", images: [image] },
+    ]);
+  });
+
   test("replaces follow-up order while preserving steering messages", async () => {
     const queued: Array<{ mode: "steer" | "followUp"; text: string }> = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test

@@ -1621,15 +1621,32 @@ export class PiService {
       return;
     }
 
-    if (mode === "steer" || mode === "queue") {
-      if (images && images.length > 0) {
-        throw new Error("Cannot attach images while agent is streaming");
+    if (images && images.length > 0 && !this.activeModelSupportsImages()) {
+      const visionModel = this.findVisionModel();
+      if (visionModel) {
+        await this.setModel(visionModel.provider, visionModel.id);
+        this.emit({
+          type: "custom-message",
+          data: {
+            customType: "info",
+            content: `Auto-switched to ${visionModel.id} (vision-capable) for image support.`,
+            timestamp: Date.now(),
+          },
+        });
+      } else {
+        throw new Error(
+          `Cannot send images: no vision-capable model available. ` +
+          "Add an API key for Claude, GPT-4o, or Gemini to use images."
+        );
       }
+    }
+
+    if (mode === "steer" || mode === "queue") {
       try {
         if (mode === "queue") {
-          await this.session.followUp(text);
+          await this.session.followUp(text, images);
         } else {
-          await this.session.steer(text);
+          await this.session.steer(text, images);
         }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
@@ -1648,30 +1665,7 @@ export class PiService {
       }
     } else {
       const opts: { images?: ImageContent[] } = {};
-      if (images && images.length > 0) {
-        // Check if current model supports images; if not, try to auto-switch
-        if (!this.activeModelSupportsImages()) {
-          const visionModel = this.findVisionModel();
-          if (visionModel) {
-            // Auto-switch to a vision-capable model
-            await this.setModel(visionModel.provider, visionModel.id);
-            this.emit({
-              type: "custom-message",
-              data: {
-                customType: "info",
-                content: `Auto-switched to ${visionModel.id} (vision-capable) for image support.`,
-                timestamp: Date.now(),
-              },
-            });
-          } else {
-            throw new Error(
-              `Cannot send images: no vision-capable model available. ` +
-              "Add an API key for Claude, GPT-4o, or Gemini to use images."
-            );
-          }
-        }
-        opts.images = images;
-      }
+      if (images && images.length > 0) { opts.images = images; }
       await this.session.prompt(text, opts);
     }
   }

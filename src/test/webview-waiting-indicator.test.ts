@@ -4,6 +4,7 @@ import {
   PI_TUI_SPINNER_FRAMES,
   shouldKeepWaitingIndicator,
   shouldPlaceWaitingIndicatorAfterMessage,
+  shouldPreserveWorkingIndicator,
   shouldShowFollowUpHint,
   shouldShowPromptWaitingIndicator,
 } from "../webview/render/waiting-indicator.js";
@@ -28,6 +29,13 @@ suite("Webview prompt waiting indicator", () => {
     assert.strictEqual(shouldShowFollowUpHint(true, "next task"), true);
     assert.strictEqual(shouldShowFollowUpHint(true, "  \n "), false);
     assert.strictEqual(shouldShowFollowUpHint(false, "next task"), false);
+  });
+
+  test("preserves the indicator when a concurrent prompt fails", () => {
+    assert.strictEqual(shouldPreserveWorkingIndicator(true, false, false), true);
+    assert.strictEqual(shouldPreserveWorkingIndicator(false, true, false), true);
+    assert.strictEqual(shouldPreserveWorkingIndicator(false, false, true), true);
+    assert.strictEqual(shouldPreserveWorkingIndicator(false, false, false), false);
   });
 
   test("uses Pi TUI spinner frames while the agent is active", () => {
