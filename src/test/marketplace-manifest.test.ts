@@ -28,7 +28,7 @@ suite("Marketplace manifest", () => {
   test("uses release identity and version metadata", () => {
     assert.strictEqual(manifest.publisher, "auchan");
     assert.strictEqual(manifest.name, "pion-code");
-    assert.strictEqual(manifest.displayName, "Pion Code");
+    assert.strictEqual(manifest.displayName, "Pi / Code");
     assert.strictEqual(manifest.version, "0.2.0");
   });
 
