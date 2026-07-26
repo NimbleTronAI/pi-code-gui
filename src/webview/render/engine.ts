@@ -197,6 +197,7 @@ export function resetChat() {
   for (const k of Object.keys(state.currentToolBlocks)) {delete state.currentToolBlocks[k];}
   for (const k of Object.keys(state.assistantToolCallIds)) {delete state.assistantToolCallIds[k];}
   state.lastUserMessageContent = null;
+  state.hasScrolledUp = false;
   state.historyHasMore = false;
   state.historyLoading = false;
   state.isStreaming = false;

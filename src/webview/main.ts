@@ -18,6 +18,7 @@ import {
   scrollToBottom,
 } from "./render/engine.js";
 import { shouldLoadOlderHistory } from "./render/history-pagination.js";
+import { nextFollowScrollLock } from "./render/scroll-lock.js";
 import { ScrollJumpControls } from "./components/scroll-jump-controls.js";
 
 // Side-effect imports (self-register on load)
@@ -93,6 +94,92 @@ function recoverViewportLayout(): void {
 window.addEventListener("pi-viewport-refresh", recoverViewportLayout);
 
 // ── Scroll tracking ─────────────────────────────────────────
+// A scroll event alone does not prove user intent: DOM growth can make a
+// delayed programmatic scroll event appear to be away from the new bottom.
+let hasUserScrollIntent = false;
+let userScrollIntentTimer: number | null = null;
+let scrollbarPointerActive = false;
+let previousTouchY: number | null = null;
+
+function clearUserScrollIntent(): void {
+  hasUserScrollIntent = false;
+  if (userScrollIntentTimer !== null) {
+    window.clearTimeout(userScrollIntentTimer);
+    userScrollIntentTimer = null;
+  }
+}
+
+function markUserScrollIntent(): void {
+  hasUserScrollIntent = true;
+  if (userScrollIntentTimer !== null) {
+    window.clearTimeout(userScrollIntentTimer);
+  }
+  userScrollIntentTimer = window.setTimeout(clearUserScrollIntent, 300);
+}
+
+state.chatContainer.addEventListener("wheel", (event) => {
+  if (event.deltaY < 0) { markUserScrollIntent(); }
+}, { passive: true });
+
+state.chatContainer.addEventListener("pointerdown", (event) => {
+  const bounds = state.chatContainer.getBoundingClientRect();
+  const scrollbarWidth = Math.max(
+    12,
+    state.chatContainer.offsetWidth - state.chatContainer.clientWidth,
+  );
+  if (event.button === 1 || event.clientX >= bounds.right - scrollbarWidth) {
+    scrollbarPointerActive = true;
+    markUserScrollIntent();
+  }
+});
+
+state.chatContainer.addEventListener("pointermove", () => {
+  if (scrollbarPointerActive) { markUserScrollIntent(); }
+});
+document.addEventListener("pointerup", () => {
+  scrollbarPointerActive = false;
+});
+document.addEventListener("pointercancel", () => {
+  scrollbarPointerActive = false;
+});
+window.addEventListener("blur", () => {
+  scrollbarPointerActive = false;
+  clearUserScrollIntent();
+});
+
+state.chatContainer.addEventListener("touchstart", (event) => {
+  previousTouchY = event.touches[0]?.clientY ?? null;
+}, { passive: true });
+state.chatContainer.addEventListener("touchmove", (event) => {
+  const currentTouchY = event.touches[0]?.clientY;
+  if (currentTouchY !== undefined && previousTouchY !== null && currentTouchY > previousTouchY) {
+    markUserScrollIntent();
+  }
+  previousTouchY = currentTouchY ?? null;
+}, { passive: true });
+state.chatContainer.addEventListener("touchend", () => {
+  previousTouchY = null;
+}, { passive: true });
+state.chatContainer.addEventListener("touchcancel", () => {
+  previousTouchY = null;
+}, { passive: true });
+
+// Keyboard events scroll the conversation only when focus is outside an editor.
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLElement && (
+    target.isContentEditable || target.matches("input, textarea, select")
+  )) {
+    return;
+  }
+  if (
+    event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" ||
+    (event.key === " " && event.shiftKey)
+  ) {
+    markUserScrollIntent();
+  }
+});
+
 state.chatContainer.addEventListener("scroll", () => {
   const threshold = 50;
   const atBottom =
@@ -100,7 +187,12 @@ state.chatContainer.addEventListener("scroll", () => {
       state.chatContainer.scrollTop -
       state.chatContainer.clientHeight <
     threshold;
-  state.hasScrolledUp = !atBottom;
+  state.hasScrolledUp = nextFollowScrollLock({
+    wasLocked: state.hasScrolledUp,
+    isAtBottom: atBottom,
+    hasUserIntent: hasUserScrollIntent || scrollbarPointerActive,
+  });
+  if (atBottom) { clearUserScrollIntent(); }
 
   if (shouldLoadOlderHistory({
     scrollTop: state.chatContainer.scrollTop,
