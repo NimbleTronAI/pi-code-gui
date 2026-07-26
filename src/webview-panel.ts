@@ -596,7 +596,7 @@ export class PiWebviewPanel {
   <div id="pi-web-app">
   <div id="chat-container">
     <div id="welcome" class="welcome-message">
-      <div class="welcome-kicker">keyboard-first coding agent</div>
+      <div class="welcome-kicker">Pi-native agent workspace</div>
       <h2>Pi on Code</h2>
       <p>Use Pi inside the editor without losing the clarity of its terminal UI.</p>
     </div>

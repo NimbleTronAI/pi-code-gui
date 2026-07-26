@@ -34,7 +34,7 @@
   <!-- Pi Service -->
   <rect x="30" y="80" width="240" height="68" rx="6" fill="#313244" stroke="#cba6f7" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="150" y="100" text-anchor="middle" fill="#cba6f7" font-family="DejaVu Sans Mono" font-size="11" font-weight="700">PiService</text>
-  <text x="150" y="116" text-anchor="middle" fill="#a6adc8" font-family="DejaVu Sans Mono" font-size="9">createAgentSession()</text>
+  <text x="150" y="116" text-anchor="middle" fill="#a6adc8" font-family="DejaVu Sans Mono" font-size="9">createAgentSessionFromServices()</text>
   <text x="150" y="132" text-anchor="middle" fill="#a6adc8" font-family="DejaVu Sans Mono" font-size="9">session.subscribe(events)</text>
 
   <!-- Webview Panel -->
@@ -45,7 +45,7 @@
 
   <!-- Bridge Tools -->
   <rect x="30" y="260" width="240" height="52" rx="6" fill="#313244" stroke="#a6e3a1" stroke-width="1.5" filter="url(#shadow)"/>
-  <text x="150" y="280" text-anchor="middle" fill="#a6e3a1" font-family="DejaVu Sans Mono" font-size="11" font-weight="700">Bridge Tools (17)</text>
+  <text x="150" y="280" text-anchor="middle" fill="#a6e3a1" font-family="DejaVu Sans Mono" font-size="11" font-weight="700">Bridge Tools (16)</text>
   <text x="150" y="298" text-anchor="middle" fill="#a6adc8" font-family="DejaVu Sans Mono" font-size="9">vscode_get_editor_state · vscode_get_diagnostics · …</text>
 
   <!-- pi SDK -->

@@ -1,32 +1,59 @@
 # Pi on Code
 
-A keyboard-first Pi coding agent workspace inside VS Code.
+Pi on Code is a Pi-native coding-agent extension for VS Code. It brings Pi's
+sessions, package ecosystem, extension runtime, and agent workflow into a
+first-class editor workspace instead of wrapping them in a generic chat UI.
 
-Pi on Code preserves the compact information hierarchy of Pi's terminal UI:
-the conversation is the primary surface, tool runs appear as terse command
-rows, and model, thinking, context, and queue state stay visible in a quiet
-status line.
+It combines persistent multi-session conversations, rich streaming tool
+output, Package and Extension management, and direct access to VS Code code
+intelligence. The interface follows Pi's compact terminal-inspired visual
+language while supporting both dark and light editor themes.
+
+## Screenshots
+
+### Dark theme
+
+![Pi on Code dark workspace with sessions, Packages, extension prompts, and streaming tool output](media/pi-on-code-dark-readme.png)
+
+### Light theme
+
+![Pi on Code light workspace with sessions, Packages, extension prompts, and streaming tool output](media/pi-on-code-light-readme.png)
 
 ## Features
 
-- Run real Pi agent sessions from a VS Code editor tab.
-- Stream assistant text, thinking, tool calls, shell output, and file changes.
-- Use multiple sessions with independent model and thinking settings.
-- Resume Pi's standard JSONL sessions.
-- Reference files, run slash commands, steer an active turn, or queue a
-  follow-up.
+- Run real Pi agent sessions in VS Code while keeping compatibility with Pi's
+  standard settings, Packages, and JSONL session files.
+- Work across multiple persistent sessions with independent models and
+  thinking levels; resume, switch, or delete sessions from the Activity Bar.
+- Stream assistant text, thinking, tool calls, shell output, file previews,
+  and diffs in a compact conversation view.
+- Steer an active turn or queue, edit, reorder, and promote follow-up messages.
+- Install and update Pi Packages, preview marketplace media, and enable or
+  disable Session extensions without leaving the sidebar.
+- Render extension questions and UI interactions directly inside the
+  conversation.
 - Give Pi access to editor diagnostics, symbols, definitions, references,
-  workspace edits, and other VS Code-native tools.
-- Install and manage Pi packages from the Activity Bar.
+  workspace edits, open tabs, and other VS Code-native context.
+- Track model, thinking, effort, context usage, active extensions, and agent
+  activity without adding a separate conversation header.
 
 ## Requirements
 
 - VS Code 1.118 or newer.
 - Node.js 22 or newer.
-- The Pi coding agent:
+- Pi coding agent 0.80.8 through 0.82.1 (current verified compatibility
+  range).
+
+Pi 0.80.8 is the minimum supported release because Pi on Code uses the
+`ModelRuntime`-based SDK introduced in [Pi 0.80.8](https://pi.dev/news/releases/0.80.8).
+The required Session, Extension Runner, Package Manager, and Settings APIs have
+been verified through Pi 0.82.1. See the [Pi release notes](https://pi.dev/news)
+for upstream changes.
+
+Install the latest compatible Pi release globally:
 
 ```powershell
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.82.1
 ```
 
 Authenticate Pi from a terminal first, or run `Pi: Set Up API Key / Login` from
@@ -34,7 +61,7 @@ the Command Palette.
 
 ## Use
 
-1. Install `pi-on-code-0.1.1.vsix`.
+1. Install Pi on Code from its VSIX package.
 2. Open a folder in VS Code.
 3. Run `Pi: Code Agent` or press `Ctrl+Alt+I`.
 4. Type a request and press Enter.
@@ -59,12 +86,18 @@ bun run build
 `artifacts/pi-on-code-<version>.vsix`. Press F5 in VS Code to launch the
 Extension Development Host.
 
-## Architecture and attribution
+## Architecture
+
+[![Pi on Code architecture](media/architecture.png)](media/architecture.svg)
+
+## Attribution
 
 The SDK lifecycle, session persistence, VS Code bridge tools, event
 translation, webview protocol, and packaging pipeline are adapted from
-Pi Code Gui. Pi on Code introduces its own product identity and the Pi Web
-terminal-style visual system.
+[Pi Code Gui](https://github.com/NimbleTronAI/pi-code-gui). Pi on Code
+introduces its own product identity, multi-session workspace, integrated
+Package and Extension experience, and a Pi-inspired visual system for light
+and dark themes.
 
-The inherited implementation is licensed under the MIT License. See
-详见项目根目录的 `LICENSE` 文件。
+The inherited implementation is licensed under the MIT License. See the
+`LICENSE` file in the project root.

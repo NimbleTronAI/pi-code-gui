@@ -3,9 +3,13 @@
   "publisher": "local",
   "author": "Pi on Code contributors",
   "displayName": "Pi on Code",
-  "description": "A keyboard-first Pi coding agent workspace for VS Code",
+  "description": "A Pi-native multi-session coding agent workspace for VS Code",
   "version": "0.1.1",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/auchan/pi-on-code.git"
+  },
   "icon": "pi-icon-light.png",
   "galleryBanner": {
     "color": "#0b0c0e",
