@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
 import { splitEditorContext } from "./editor-context.js";
+import { findHistoryPageStart, isVisibleHistoryEntry } from "./history-pagination.js";
 import { buildScopedModels, completeWithModelRuntime, getRuntimeModel, selectInitialModel } from "./pi-model-runtime.js";
 import { type ImageContent, type PiServiceEvent, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
@@ -359,6 +360,15 @@ export class PiService {
 
   // User message history for the resend/reuse feature (#2)
   private _userMessages: Array<{ id: string; text: string; timestamp?: number }> = [];
+
+  // Lazily replayed session history. The cursor points to the oldest entry
+  // currently rendered in the Webview.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private historyEntries: any[] = [];
+  private historyCursor = 0;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private historyToolResultsById = new Map<string, any>();
+  private historyPageLoading = false;
 
   // Settings state (#3)
   private _autoCompactionEnabled = true;
@@ -753,8 +763,8 @@ export class PiService {
     // ── Step 12: Send initial message history (like TUI renderInitialMessages) ──
     const hasEntries = (this.sessionManager?.getEntries?.()?.length ?? 0) > 0;
     this.emit({ type: "batch-start", data: { hasEntries } });
-    await this.sendInitialMessages();
-    this.emit({ type: "batch-end", data: { hasEntries } });
+    const hasMoreHistory = await this.sendInitialMessages();
+    this.emit({ type: "batch-end", data: { hasEntries, hasMoreHistory } });
 
     this.reportStatus();
     try {
@@ -1043,9 +1053,8 @@ export class PiService {
     });
   }
 
-  /** Send existing session messages to the webview on initial load (or after reload). */
-  async sendInitialMessages(): Promise<void> {
-    // Build session context from the session manager
+  /** Send only the newest history page to the Webview on initial load. */
+  async sendInitialMessages(): Promise<boolean> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let entries: any[];
     try {
@@ -1054,24 +1063,57 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       piWarn(`sendInitialMessages: getEntries failed: ${e.message}`);
-      return;
+      return false;
     }
-    if (!entries || entries.length === 0) { return; }
 
-    // Pre-index tool results by call ID (O(n) instead of O(n²) .find() per entry)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toolResultsById = new Map<string, any>();
-    for (const e of entries) {
-      if (e.type === "message" && e.message?.role === "toolResult") {
-        toolResultsById.set(e.message.toolCallId, e);
+    this.historyEntries = entries ?? [];
+    this.historyToolResultsById = new Map();
+    for (const entry of this.historyEntries) {
+      if (entry.type === "message" && entry.message?.role === "toolResult") {
+        this.historyToolResultsById.set(entry.message.toolCallId, entry);
       }
     }
+    this.cacheUserMessageHistory(this.historyEntries);
 
-    // Replay entries top-down (oldest first), yielding to the event loop
-    // between each entry.  This guarantees correct visual order (oldest at
-    // top, newest at bottom) and prevents the synchronous DOM flood that
-    // would crash the extension host on large sessions.
-    const yieldTick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+    if (this.historyEntries.length === 0) {
+      this.historyCursor = 0;
+      return false;
+    }
+
+    this.historyCursor = findHistoryPageStart(this.historyEntries, this.historyEntries.length);
+    await this.replayHistoryEntries(
+      this.historyEntries.slice(this.historyCursor),
+      this.historyToolResultsById,
+      true,
+    );
+    return this.historyCursor > 0;
+  }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private cacheUserMessageHistory(entries: any[]): void {
+    this._userMessages = [];
+    for (const entry of entries) {
+      const message = entry.type === "message" ? entry.message : undefined;
+      if (message?.role !== "user") { continue; }
+      const prompt = splitEditorContext(this.extractTextFromContent(message.content));
+      if (!prompt.text) { continue; }
+      this._userMessages.push({
+        id: message.id ?? `user-${this._userMessages.length}`,
+        text: prompt.text,
+        timestamp: message.timestamp,
+      });
+      if (this._userMessages.length > 50) { this._userMessages.shift(); }
+    }
+  }
+
+  private async replayHistoryEntries(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entries: any[],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    toolResultsById: Map<string, any>,
+    yieldBetweenEntries: boolean,
+  ): Promise<void> {
+    const yieldTick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
@@ -1081,10 +1123,6 @@ export class PiService {
           const prompt = splitEditorContext(this.extractTextFromContent(msg.content));
           const images = this.extractImagesFromContent(msg.content);
           if (prompt.text || images.length > 0 || prompt.context?.items.length) {
-            if (prompt.text) {
-              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: msg.timestamp });
-              if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            }
             this.emit({
               type: "chat-message",
               data: {
@@ -1156,8 +1194,41 @@ export class PiService {
         });
       }
 
-      // Yield after every entry so the webview paints incrementally.
-      await yieldTick();
+      if (yieldBetweenEntries && isVisibleHistoryEntry(entry)) { await yieldTick(); }
+    }
+  }
+
+  /** Replay the next older history page above the current Webview content. */
+  async loadOlderHistory(): Promise<void> {
+    if (this.historyPageLoading) { return; }
+    if (this._isStreaming || this.historyCursor <= 0) {
+      this.emit({
+        type: "history-page-end",
+        data: { hasMoreHistory: this.historyCursor > 0 },
+      });
+      return;
+    }
+    this.historyPageLoading = true;
+
+    const end = this.historyCursor;
+    const start = findHistoryPageStart(this.historyEntries, end);
+    this.emit({
+      type: "history-page-start",
+      data: { hasMoreHistory: start > 0 },
+    });
+    try {
+      await this.replayHistoryEntries(
+        this.historyEntries.slice(start, end),
+        this.historyToolResultsById,
+        false,
+      );
+      this.historyCursor = start;
+    } finally {
+      this.historyPageLoading = false;
+      this.emit({
+        type: "history-page-end",
+        data: { hasMoreHistory: this.historyCursor > 0 },
+      });
     }
   }
 
@@ -1620,7 +1691,10 @@ export class PiService {
   /** Reload all resources and replay the current session into the Webview. */
   async reloadContext(): Promise<void> {
     await this.reloadExtensions();
-    await this.sendInitialMessages();
+    const hasEntries = (this.sessionManager?.getEntries?.()?.length ?? 0) > 0;
+    this.emit({ type: "batch-start", data: { hasEntries } });
+    const hasMoreHistory = await this.sendInitialMessages();
+    this.emit({ type: "batch-end", data: { hasEntries, hasMoreHistory } });
   }
 
   /** Try to handle a slash command locally. Returns true if handled,
@@ -1780,6 +1854,10 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   replayBranchEntries(path: any[]): void {
     this._userMessages = [];
+    this.historyEntries = [];
+    this.historyCursor = 0;
+    this.historyToolResultsById.clear();
+    this.historyPageLoading = false;
 
     // Pre-index tool results by call ID
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
