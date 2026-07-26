@@ -27,8 +27,8 @@ const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as ExtensionMani
 suite("Marketplace manifest", () => {
   test("uses release identity and version metadata", () => {
     assert.strictEqual(manifest.publisher, "auchan");
-    assert.strictEqual(manifest.name, "pi-on-vsc");
-    assert.strictEqual(manifest.displayName, "Pi on VS Code");
+    assert.strictEqual(manifest.name, "pion-code");
+    assert.strictEqual(manifest.displayName, "Pion Code");
     assert.strictEqual(manifest.version, "0.2.0");
   });
 

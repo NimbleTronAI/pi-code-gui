@@ -42,7 +42,7 @@ language while supporting both dark and light editor themes.
 Install **Pi on Code** from the Visual Studio Marketplace, or run:
 
 ```powershell
-code --install-extension auchan.pi-on-vsc
+code --install-extension auchan.pion-code
 ```
 
 The extension restores Pi session tabs that were open when VS Code last closed.
@@ -117,7 +117,7 @@ bun run install:vsix
 ```
 
 `bun run build` checks types and lint, creates production bundles, and writes
-`artifacts/pi-on-vsc-<version>.vsix`. `bun run install:vsix` force-installs
+`artifacts/pion-code-<version>.vsix`. `bun run install:vsix` force-installs
 that generated package into VS Code. Press F5 in VS Code to launch the
 Extension Development Host.
 

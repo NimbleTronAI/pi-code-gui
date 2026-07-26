@@ -1,8 +1,8 @@
 {
-  "name": "pi-on-vsc",
+  "name": "pion-code",
   "publisher": "auchan",
   "author": "Pi on Code contributors",
-  "displayName": "Pi on VS Code",
+  "displayName": "Pion Code",
   "description": "A Pi-native multi-session coding agent workspace for VS Code",
   "version": "0.2.0",
   "license": "MIT",
