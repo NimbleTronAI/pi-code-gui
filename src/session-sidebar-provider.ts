@@ -1,4 +1,5 @@
-import type * as vscode from "vscode";
+import { createHash } from "node:crypto";
+import * as vscode from "vscode";
 
 export interface PiSidebarSession {
   id: string;
@@ -25,6 +26,7 @@ export interface PiSidebarPackage {
   homepage?: string;
   imageUrl?: string;
   videoUrl?: string;
+  videoPending?: boolean;
 }
 
 export interface PiSidebarPackages {
@@ -62,16 +64,27 @@ interface PiSidebarActions {
 }
 
 export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
+  private static readonly maxCachedVideoBytes = 25 * 1024 * 1024;
   private view: vscode.WebviewView | undefined;
+  private readonly cachedVideos = new Map<string, vscode.Uri>();
+  private readonly pendingVideos = new Set<string>();
+  private readonly failedVideos = new Map<string, number>();
 
   constructor(
     private readonly actions: PiSidebarActions,
     private readonly brandIcon: vscode.Uri,
+    private readonly previewCacheRoot: vscode.Uri,
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
-    view.webview.options = { enableScripts: true };
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.brandIcon, ".."),
+        this.previewCacheRoot,
+      ],
+    };
     view.webview.html = this.getHtml(view.webview);
 
     view.webview.onDidReceiveMessage((message: unknown) => {
@@ -126,10 +139,84 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   refresh(): void {
-    void this.view?.webview.postMessage({
+    if (!this.view) { return; }
+    const state = this.actions.getState();
+    void this.view.webview.postMessage({
       type: "state",
-      state: this.actions.getState(),
+      state: this.toWebviewState(state, this.view.webview),
     });
+    this.preparePreviewVideos(state);
+  }
+
+  private toWebviewState(state: PiSidebarState, webview: vscode.Webview): PiSidebarState {
+    const mapPackage = (pkg: PiSidebarPackage): PiSidebarPackage => {
+      if (!pkg.videoUrl) { return pkg; }
+      const cached = this.cachedVideos.get(pkg.videoUrl);
+      return {
+        ...pkg,
+        videoUrl: cached ? webview.asWebviewUri(cached).toString() : undefined,
+        videoPending: !cached && !this.failedVideos.has(pkg.videoUrl),
+      };
+    };
+    return {
+      ...state,
+      packages: {
+        ...state.packages,
+        installed: state.packages.installed.map(mapPackage),
+        marketplace: state.packages.marketplace.map(mapPackage),
+      },
+    };
+  }
+
+  private preparePreviewVideos(state: PiSidebarState): void {
+    const packages = [...state.packages.installed, ...state.packages.marketplace];
+    for (const pkg of packages) {
+      const videoUrl = pkg.videoUrl;
+      if (!videoUrl || this.cachedVideos.has(videoUrl) || this.pendingVideos.has(videoUrl)) { continue; }
+      const failedAt = this.failedVideos.get(videoUrl);
+      if (failedAt && Date.now() - failedAt < 5 * 60_000) { continue; }
+      this.failedVideos.delete(videoUrl);
+      void this.cachePreviewVideo(videoUrl);
+    }
+  }
+
+  private async cachePreviewVideo(videoUrl: string): Promise<void> {
+    this.pendingVideos.add(videoUrl);
+    try {
+      await vscode.workspace.fs.createDirectory(this.previewCacheRoot);
+      const hash = createHash("sha256").update(videoUrl).digest("hex");
+      const target = vscode.Uri.joinPath(this.previewCacheRoot, `${hash}.mp4`);
+      try {
+        const stat = await vscode.workspace.fs.stat(target);
+        if (stat.type === vscode.FileType.File && stat.size > 0) {
+          this.cachedVideos.set(videoUrl, target);
+          return;
+        }
+      } catch {
+        // Cache miss; download below.
+      }
+
+      const response = await fetch(videoUrl, {
+        headers: { Accept: "video/mp4,application/octet-stream;q=0.9,*/*;q=0.1" },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) { throw new Error(`Video download returned ${response.status}`); }
+      const contentLength = Number(response.headers.get("content-length") ?? 0);
+      if (contentLength > PiSessionSidebarProvider.maxCachedVideoBytes) {
+        throw new Error("Video preview exceeds cache size limit");
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0 || bytes.byteLength > PiSessionSidebarProvider.maxCachedVideoBytes) {
+        throw new Error("Video preview is empty or too large");
+      }
+      await vscode.workspace.fs.writeFile(target, bytes);
+      this.cachedVideos.set(videoUrl, target);
+    } catch {
+      this.failedVideos.set(videoUrl, Date.now());
+    } finally {
+      this.pendingVideos.delete(videoUrl);
+      this.refresh();
+    }
   }
 
   private getHtml(webview: vscode.Webview): string {
@@ -141,7 +228,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data:; media-src https:;">
+        content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data:; media-src ${webview.cspSource} https:;">
   <style nonce="${nonce}">
     :root {
       color-scheme: dark;
@@ -449,6 +536,19 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     }
     .package-preview img,
     .package-preview video { width: 100%; height: 100%; display: block; object-fit: cover; }
+    .package-preview.pending {
+      display: grid;
+      place-items: center;
+      color: var(--pi-muted);
+      cursor: progress;
+      font-size: 10px;
+      letter-spacing: .04em;
+    }
+    .package-preview.pending span::before {
+      content: "▶";
+      margin-right: 6px;
+      color: var(--pi-lavender);
+    }
     .package-info { margin-top: 7px; color: var(--pi-faint); font-size: 10px; }
     .package-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
     .package-action.primary { border-color: var(--pi-lavender); color: var(--pi-lavender); }
@@ -635,6 +735,9 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       if (video) {
         media.controls = true;
         media.autoplay = true;
+        media.playsInline = true;
+        media.preload = "auto";
+        if (pkg.imageUrl) { media.poster = pkg.imageUrl; }
       }
       const close = document.createElement("button");
       close.className = "preview-close";
@@ -690,13 +793,28 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
           media.muted = true;
           media.loop = true;
           media.playsInline = true;
-          media.preload = "metadata";
+          media.preload = "auto";
+          if (pkg.imageUrl) { media.poster = pkg.imageUrl; }
+          const previewTime = 0.08;
+          media.addEventListener("loadedmetadata", () => {
+            if (!pkg.imageUrl && media.duration > previewTime) { media.currentTime = previewTime; }
+          }, { once: true });
           preview.addEventListener("mouseenter", () => { media.play().catch(() => {}); });
-          preview.addEventListener("mouseleave", () => { media.pause(); media.currentTime = 0; });
+          preview.addEventListener("mouseleave", () => {
+            media.pause();
+            if (media.duration > previewTime) { media.currentTime = previewTime; }
+          });
         }
         preview.appendChild(media);
         preview.addEventListener("click", () => openPreview(pkg, isVideo));
         card.appendChild(preview);
+      } else if (pkg.videoPending) {
+        const pending = document.createElement("div");
+        pending.className = "package-preview pending";
+        const label = document.createElement("span");
+        label.textContent = "preparing video";
+        pending.appendChild(label);
+        card.appendChild(pending);
       }
 
       const infoParts = [];

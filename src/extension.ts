@@ -338,6 +338,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       },
     },
     vscode.Uri.joinPath(context.extensionUri, "media", "pi-icon-dark.svg"),
+    vscode.Uri.joinPath(context.globalStorageUri, "package-preview-media"),
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
