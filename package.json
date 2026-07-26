@@ -335,6 +335,7 @@
   "scripts": {
     "vscode:prepublish": "bun run package",
     "build": "bun run package && bun run vsix:pack",
+    "install:vsix": "bun scripts/install-vsix.mjs",
     "compile": "bun run verify && bun run bundle",
     "bundle": "bun run --parallel bundle:extension bundle:webview",
     "bundle:extension": "bun esbuild.js",

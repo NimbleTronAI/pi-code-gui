@@ -80,10 +80,12 @@ Useful shortcuts:
 bun install
 bun run compile
 bun run build
+bun run install:vsix
 ```
 
 `bun run build` checks types and lint, creates production bundles, and writes
-`artifacts/pi-on-code-<version>.vsix`. Press F5 in VS Code to launch the
+`artifacts/pi-on-code-<version>.vsix`. `bun run install:vsix` force-installs
+that generated package into VS Code. Press F5 in VS Code to launch the
 Extension Development Host.
 
 ## Architecture
