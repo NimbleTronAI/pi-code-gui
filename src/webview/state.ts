@@ -50,6 +50,19 @@ export interface AppState {
   // ── Settings
   settingsState: { autoCompaction: boolean; autoRetry: boolean; showImages: boolean };
   settingsOpen: boolean;
+  extensionsOpen: boolean;
+  extensionsState: {
+    loading: boolean;
+    error?: string;
+    extensions: Array<{
+      name: string;
+      path: string;
+      enabled: boolean;
+      source: string;
+      scope: "user" | "project" | "temporary";
+      origin: "package" | "top-level";
+    }>;
+  };
 
   // ── Scoped models
   scopedModels: unknown[];
@@ -106,12 +119,14 @@ export interface AppState {
   attachmentBar: HTMLElement;
   userMsgOverlay: HTMLElement;
   settingsOverlay: HTMLElement;
+  extensionsOverlay: HTMLElement;
   slashAutocomplete: HTMLElement;
   livePanel: HTMLElement;
   sbDot: HTMLElement;
   sbModel: HTMLElement;
   sbThinking: HTMLElement;
   sbEffort: HTMLElement;
+  sbExtensions: HTMLElement;
   sbUsage: HTMLElement;
 }
 
@@ -142,6 +157,8 @@ export const state: AppState = {
 
   settingsState: { autoCompaction: true, autoRetry: true, showImages: true },
   settingsOpen: false,
+  extensionsOpen: false,
+  extensionsState: { loading: false, extensions: [] },
 
   scopedModels: [],
 
@@ -183,6 +200,7 @@ export const state: AppState = {
     { cmd: "/login", desc: "Configure provider authentication" },
     { cmd: "/logout", desc: "Remove provider authentication" },
     { cmd: "/debug", desc: "Dump webview state for troubleshooting" },
+    { cmd: "/reload", desc: "Reload extensions, skills, and context" },
   ],
   extensionSlashCommands: [],
   localSlashCommands: [
@@ -198,12 +216,14 @@ export const state: AppState = {
   attachmentBar: null!,
   userMsgOverlay: null!,
   settingsOverlay: null!,
+  extensionsOverlay: null!,
   slashAutocomplete: null!,
   livePanel: null!,
   sbDot: null!,
   sbModel: null!,
   sbThinking: null!,
   sbEffort: null!,
+  sbExtensions: null!,
   sbUsage: null!,
 };
 
@@ -218,12 +238,14 @@ export function initState(doc: Document): void {
   state.attachmentBar = doc.getElementById("attachment-bar")!;
   state.userMsgOverlay = doc.getElementById("user-msg-overlay")!;
   state.settingsOverlay = doc.getElementById("settings-overlay")!;
+  state.extensionsOverlay = doc.getElementById("extensions-overlay")!;
   state.slashAutocomplete = doc.getElementById("slash-autocomplete")!;
   state.livePanel = doc.getElementById("live-panel")!;
   state.sbDot = doc.getElementById("pi-sb-dot")!;
   state.sbModel = doc.getElementById("pi-sb-model")!;
   state.sbThinking = doc.getElementById("pi-sb-thinking")!;
   state.sbEffort = doc.getElementById("pi-sb-effort")!;
+  state.sbExtensions = doc.getElementById("pi-sb-extensions")!;
   state.sbUsage = doc.getElementById("pi-sb-usage")!;
 
   if (typeof marked !== "undefined") {

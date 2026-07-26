@@ -15,6 +15,69 @@ export interface InstalledPackage {
   installedPath?: string;
 }
 
+export interface ManagedExtension {
+  name: string;
+  path: string;
+  enabled: boolean;
+  source: string;
+  scope: "user" | "project" | "temporary";
+  origin: "package" | "top-level";
+}
+
+interface PackageSourceConfig {
+  source: string;
+  autoload?: boolean;
+  extensions?: string[];
+  skills?: string[];
+  prompts?: string[];
+  themes?: string[];
+}
+
+interface PackageSettings {
+  packages?: Array<string | PackageSourceConfig>;
+  extensions?: string[];
+}
+
+interface ResolvedExtensionResource {
+  path: string;
+  enabled: boolean;
+  metadata: {
+    source: string;
+    scope: "user" | "project" | "temporary";
+    origin: "package" | "top-level";
+    baseDir?: string;
+  };
+}
+
+interface DynamicSettingsManager {
+  reload(): Promise<void>;
+  getGlobalSettings(): PackageSettings;
+  getProjectSettings(): PackageSettings;
+  setPackages(packages: Array<string | PackageSourceConfig>): void;
+  setProjectPackages(packages: Array<string | PackageSourceConfig>): void;
+  setExtensionPaths(paths: string[]): void;
+  setProjectExtensionPaths(paths: string[]): void;
+}
+
+interface DynamicPackageManager {
+  resolve(): Promise<{ extensions: ResolvedExtensionResource[] }>;
+  listConfiguredPackages(): InstalledPackage[];
+  installAndPersist(source: string, options: { local: boolean }): Promise<void>;
+  removeAndPersist(source: string, options: { local: boolean }): Promise<void>;
+  update(source?: string): Promise<void>;
+  checkForAvailableUpdates(): Promise<Array<{ source: string; displayName: string; type: string; scope: string }>>;
+}
+
+function packageSource(config: string | PackageSourceConfig): string {
+  return typeof config === "string" ? config : config.source;
+}
+
+function extensionName(extensionPath: string, source: string): string {
+  if (source && source !== "auto") { return source.replace(/^(npm|git):/, ""); }
+  const fileName = path.basename(extensionPath);
+  return fileName.replace(/\.[^.]+$/, "") || fileName;
+}
+
 export interface MarketplacePackage {
   name: string;
   version: string;
@@ -72,8 +135,8 @@ function normalizeRepoUrl(url: string): string {
 }
 
 export class PiPackageService {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private packageManager: any | null = null;
+  private packageManager: DynamicPackageManager | null = null;
+  private settingsManager: DynamicSettingsManager | null = null;
   private sdkRoot: string | null = null;
   private initialized = false;
 
@@ -103,12 +166,12 @@ export class PiPackageService {
       const cwd = getWorkspaceCwd();
       const SettingsManager = SDK.SettingsManager;
       const DefaultPackageManagerClass = SDK.DefaultPackageManager;
-      const settingsManager = SettingsManager.create(cwd);
+      this.settingsManager = SettingsManager.create(cwd);
 
       this.packageManager = new DefaultPackageManagerClass({
         cwd,
         agentDir: SDK.getAgentDir?.(),
-        settingsManager,
+        settingsManager: this.settingsManager,
       });
       this.initialized = true;
       return { success: true };
@@ -123,8 +186,7 @@ export class PiPackageService {
     if (!this.packageManager) { return []; }
     try {
       const packages = this.packageManager.listConfiguredPackages();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return packages.map((pkg: any) => ({
+      return packages.map((pkg) => ({
         source: pkg.source,
         scope: pkg.scope,
         filtered: pkg.filtered ?? false,
@@ -132,6 +194,94 @@ export class PiPackageService {
       }));
     } catch {
       return [];
+    }
+  }
+
+  /** List extension resources resolved from current user/project settings. */
+  async listExtensions(): Promise<ManagedExtension[]> {
+    if (!this.packageManager || !this.settingsManager) { return []; }
+    await this.settingsManager.reload();
+    const resolved = await this.packageManager.resolve();
+    return resolved.extensions.map((extension) => ({
+        name: extensionName(extension.path, extension.metadata.source),
+        path: extension.path,
+        enabled: extension.enabled,
+        source: extension.metadata.source,
+        scope: extension.metadata.scope,
+        origin: extension.metadata.origin,
+      }));
+  }
+
+  /** Persist an extension resource override. Session reload is handled by the caller. */
+  async setExtensionEnabled(extensionPath: string, enabled: boolean): Promise<void> {
+    if (!this.packageManager || !this.settingsManager) {
+      throw new Error("Package manager not initialized");
+    }
+
+    await this.settingsManager.reload();
+    const resolved = await this.packageManager.resolve();
+    const resource = resolved.extensions.find(
+      (extension) => path.resolve(extension.path) === path.resolve(extensionPath),
+    );
+    if (!resource?.metadata) { throw new Error("Extension resource was not found"); }
+
+    const metadata = resource.metadata;
+    if (metadata.scope === "temporary") {
+      throw new Error("Temporary extensions cannot be persisted");
+    }
+
+    const baseDir = metadata.baseDir ?? path.dirname(extensionPath);
+    const relativePath = path.relative(baseDir, extensionPath).replace(/\\/g, "/");
+    const matchesPath = (pattern: string): boolean =>
+      pattern.replace(/^[!+-]/, "").replace(/\\/g, "/") === relativePath;
+
+    if (metadata.origin === "package") {
+      const settings = metadata.scope === "project"
+        ? this.settingsManager.getProjectSettings()
+        : this.settingsManager.getGlobalSettings();
+      const packages = [...(settings.packages ?? [])] as Array<string | PackageSourceConfig>;
+      const packageIndex = packages.findIndex((config) => packageSource(config) === metadata.source);
+      if (packageIndex < 0) {
+        throw new Error(`Package configuration not found: ${metadata.source}`);
+      }
+
+      const current = packages[packageIndex];
+      const next: PackageSourceConfig = typeof current === "string" ? { source: current } : { ...current };
+      const originalPatterns = next.extensions;
+      let patterns = [...(originalPatterns ?? [])].filter((pattern) => !matchesPath(pattern));
+      if (enabled) {
+        if (originalPatterns?.length === 0) {
+          patterns = [relativePath];
+        } else if (originalPatterns?.some((pattern) => !/^[!+-]/.test(pattern))) {
+          patterns.push(`+${relativePath}`);
+        }
+      } else if (originalPatterns?.length !== 0) {
+        patterns.push(`-${relativePath}`);
+      }
+
+      if (patterns.length > 0 || originalPatterns?.length === 0) {
+        next.extensions = [...new Set(patterns)];
+      } else {
+        delete next.extensions;
+      }
+      packages[packageIndex] = next;
+      if (metadata.scope === "project") {
+        this.settingsManager.setProjectPackages(packages);
+      } else {
+        this.settingsManager.setPackages(packages);
+      }
+      return;
+    }
+
+    const settings = metadata.scope === "project"
+      ? this.settingsManager.getProjectSettings()
+      : this.settingsManager.getGlobalSettings();
+    const patterns = [...(settings.extensions ?? [])].filter((pattern: string) => !matchesPath(pattern));
+    if (!enabled) { patterns.push(`-${relativePath}`); }
+    if (metadata.scope === "project") {
+      this.settingsManager.setProjectExtensionPaths(patterns);
+    } else {
+      this.settingsManager.setExtensionPaths(patterns);
     }
   }
 

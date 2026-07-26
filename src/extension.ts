@@ -233,7 +233,22 @@ function createSessionWindow(
 ): SessionWindow {
   const id = `session-${++sessionCounter}`;
   const piService = new PiService();
-  const webviewPanel = new PiWebviewPanel(context, piService);
+  const webviewPanel = new PiWebviewPanel(context, piService, {
+    list: async () => {
+      if (packageService?.isReady) { return packageService.listExtensions(); }
+      return piService.getLoadedExtensions().map((extension) => ({
+        ...extension,
+        enabled: true,
+        source: extension.name,
+        scope: "temporary" as const,
+        origin: "top-level" as const,
+      }));
+    },
+    setEnabled: async (extensionPath, enabled) => {
+      if (!packageService?.isReady) { throw new Error("Package service is not ready"); }
+      await packageService.setExtensionEnabled(extensionPath, enabled);
+    },
+  });
   const sw: SessionWindow = {
     id, piService, webviewPanel,
     initialized: false, isStreaming: false,
@@ -707,10 +722,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        await sw.piService.rawSession.reload();
-        await sw.piService.sendInitialMessages();
-        // Push updated slash commands after extension reload
-        sw.piService.emitSlashCommands();
+        await sw.piService.reloadContext();
         vscode.window.showInformationMessage("Extensions, skills, and keybindings reloaded.");
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {

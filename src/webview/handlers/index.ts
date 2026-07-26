@@ -186,7 +186,9 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "sessionReset":        resetChat(); break;
       case "insertCommand":       handleInsertCommand(msg.command); break;
 
-      // Slash commands from installed extensions
+      // Extensions and slash commands active in this session
+      case "extensions-update": handleExtensionsUpdate(msg.data); break;
+      case "extensions-panel-update": handleExtensionsPanelUpdate(msg.data); break;
       case "slash-commands-update": handleSlashCommandsUpdate(msg.data); break;
 
       // Widget bridge from extensions (setWidget calls)
@@ -714,6 +716,7 @@ let sbDot = document.getElementById("pi-sb-dot");
 let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
 let sbEffort = document.getElementById("pi-sb-effort");
+let sbExtensions = document.getElementById("pi-sb-extensions");
 let sbUsage = document.getElementById("pi-sb-usage");
 
 export function setSbDot(state: string) {
@@ -729,6 +732,22 @@ export function sbModelText(modelId: string) {
     else if (short.startsWith("google/")) {short = short.slice(7);}
     if (short.length > 24) {short = short.slice(0, 22) + "\u2026";}
     return "\u03C0 " + short;
+  }
+
+export function handleExtensionsUpdate(data: unknown) {
+    if (!sbExtensions) { return; }
+    const rawExtensions = data && typeof data === "object" && "extensions" in data
+      ? (data as { extensions?: unknown }).extensions
+      : undefined;
+    const extensions = Array.isArray(rawExtensions)
+      ? rawExtensions.filter((extension: unknown): extension is { name: string } =>
+          !!extension && typeof extension === "object" && "name" in extension &&
+          typeof (extension as { name?: unknown }).name === "string")
+      : [];
+    sbExtensions.textContent = `extensions: ${extensions.length}`;
+    sbExtensions.title = extensions.length > 0
+      ? `Active in this session:\n${extensions.map((extension) => extension.name).join("\n")}`
+      : "No Pi extensions are active in this session";
   }
 
 export function handleStatusUpdate(data: any) {
@@ -1546,6 +1565,11 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
       window.__vscode.postMessage({ type: "pickEffort" });
     });
   }
+  if (sbExtensions) {
+    sbExtensions.addEventListener("click", function () {
+      toggleExtensionsPanel();
+    });
+  }
   if (sbUsage) {
     sbUsage.addEventListener("click", function () {
       window.__vscode.postMessage({ type: "pickContextBudget" });
@@ -1573,6 +1597,9 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
     // Close overlays when clicking outside (except the status bar gear)
     if (state.settingsOpen && !state.settingsOverlay.contains(target) && target !== sbSettings && !sbSettings?.contains(target)) {
+      closeAllOverlays();
+    }
+    if (state.extensionsOpen && !state.extensionsOverlay.contains(target) && target !== sbExtensions && !sbExtensions?.contains(target)) {
       closeAllOverlays();
     }
     if (state.userMsgSelectorOpen && !state.userMsgOverlay.contains(target) && target !== state.promptInput) {
@@ -1626,7 +1653,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
     // Esc to close all overlays
     if (e.key === "Escape") {
-      if (state.slashAutocompleteOpen || state.settingsOpen || state.userMsgSelectorOpen) {
+      if (state.slashAutocompleteOpen || state.settingsOpen || state.extensionsOpen || state.userMsgSelectorOpen) {
         closeAllOverlays();
         e.preventDefault();
         return;
@@ -1800,6 +1827,78 @@ export function closeUserMsgSelector() {
     state.userMsgOverlay.classList.remove("visible");
   }
 
+  // ═══ Extensions Panel ═══════════════════════════════════
+
+export function handleExtensionsPanelUpdate(data: any) {
+    state.extensionsState = {
+      loading: data?.loading === true,
+      error: typeof data?.error === "string" ? data.error : undefined,
+      extensions: Array.isArray(data?.extensions) ? data.extensions : [],
+    };
+    renderExtensionsPanel();
+  }
+
+export function renderExtensionsPanel() {
+    if (!state.extensionsOverlay || !state.extensionsOpen) { return; }
+    const panelState = state.extensionsState;
+    let result = html`<div class="extensions-title-row">
+      <div class="extensions-title">Extensions</div>
+      <button class="extensions-refresh" type="button" title="Reload extensions, skills, and context">↻</button>
+    </div>`;
+
+    if (panelState.loading) {
+      result += '<div class="extensions-empty">Reloading extensions...</div>';
+    } else if (panelState.error) {
+      result += html`<div class="extensions-error">${panelState.error}</div>`;
+    } else if (panelState.extensions.length === 0) {
+      result += '<div class="extensions-empty">No extensions are available in this session.</div>';
+    } else {
+      for (const extension of panelState.extensions) {
+        result += html`<div class="extensions-row">
+          <div class="extensions-info" title="${extension.path}">
+            <div class="extensions-name">${extension.name}</div>
+            <div class="extensions-meta">${extension.scope} · ${extension.origin}</div>
+          </div>
+          <button class="extensions-toggle${extension.enabled ? " on" : ""}"
+            type="button" data-path="${extension.path}" data-enabled="${extension.enabled ? "true" : "false"}"
+            aria-label="${extension.enabled ? "Disable" : "Enable"} ${extension.name}"
+            aria-pressed="${extension.enabled ? "true" : "false"}"></button>
+        </div>`;
+      }
+    }
+
+    state.extensionsOverlay.innerHTML = result;
+    state.extensionsOverlay.querySelector(".extensions-refresh")?.addEventListener("click", function (event) {
+      event.stopPropagation();
+      window.__vscode.postMessage({ type: "reloadExtensions" });
+    });
+    state.extensionsOverlay.querySelectorAll(".extensions-toggle").forEach(function (toggle) {
+      toggle.addEventListener("click", function (event) {
+        event.stopPropagation();
+        const extensionPath = toggle.getAttribute("data-path");
+        const currentlyEnabled = toggle.getAttribute("data-enabled") === "true";
+        if (!extensionPath) { return; }
+        window.__vscode.postMessage({
+          type: "setExtensionEnabled",
+          path: extensionPath,
+          enabled: !currentlyEnabled,
+        });
+      });
+    });
+  }
+
+export function toggleExtensionsPanel() {
+    if (state.extensionsOpen) {
+      closeAllOverlays();
+      return;
+    }
+    closeAllOverlays();
+    state.extensionsOpen = true;
+    state.extensionsOverlay.classList.add("visible");
+    renderExtensionsPanel();
+    window.__vscode.postMessage({ type: "getExtensions" });
+  }
+
   // ═══ #3: Settings Panel ═══════════════════════════════════
 
 export function handleSettingsUpdate(data: any) {
@@ -1870,9 +1969,11 @@ export function toggleSettingsPanel() {
 
 export function closeAllOverlays() {
     state.settingsOpen = false;
+    state.extensionsOpen = false;
     state.userMsgSelectorOpen = false;
     state.slashAutocompleteOpen = false;
     state.settingsOverlay.classList.remove("visible");
+    state.extensionsOverlay.classList.remove("visible");
     state.userMsgOverlay.classList.remove("visible");
     state.slashAutocomplete.classList.remove("visible");
   }

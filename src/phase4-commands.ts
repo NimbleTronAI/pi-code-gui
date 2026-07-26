@@ -42,8 +42,8 @@ export function registerPhase4Commands(
 
   safeRegister(context, "pi-on-code.reloadContext", async () => {
     try {
-      await piService.newSession();
-      vscode.window.showInformationMessage("Context reloaded.");
+      await piService.reloadContext();
+      vscode.window.showInformationMessage("Extensions, skills, and keybindings reloaded.");
     } catch (e: unknown) {
       vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));
     }

@@ -324,6 +324,29 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sessionReset") }),
   z.object({ type: z.literal("insertCommand"), command: z.string() }),
 
+  // Extensions active in the current Pi session
+  z.object({
+    type: z.literal("extensions-update"),
+    data: z.object({
+      extensions: z.array(z.object({ name: z.string(), path: z.string() })),
+    }),
+  }),
+  z.object({
+    type: z.literal("extensions-panel-update"),
+    data: z.object({
+      extensions: z.array(z.object({
+        name: z.string(),
+        path: z.string(),
+        enabled: z.boolean(),
+        source: z.string(),
+        scope: z.enum(["user", "project", "temporary"]),
+        origin: z.enum(["package", "top-level"]),
+      })),
+      loading: z.boolean().optional(),
+      error: z.string().optional(),
+    }),
+  }),
+
   // Slash commands from extensions
   z.object({
     type: z.literal("slash-commands-update"),
@@ -378,6 +401,13 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("pickThinkingLevel") }),
   z.object({ type: z.literal("pickEffort") }),
   z.object({ type: z.literal("pickContextBudget") }),
+  z.object({ type: z.literal("getExtensions") }),
+  z.object({ type: z.literal("reloadExtensions") }),
+  z.object({
+    type: z.literal("setExtensionEnabled"),
+    path: z.string().min(1),
+    enabled: z.boolean(),
+  }),
   z.object({ type: z.literal("getSettings") }),
   z.object({ type: z.literal("toggleAutoCompaction") }),
   z.object({ type: z.literal("toggleAutoRetry") }),

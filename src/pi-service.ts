@@ -16,6 +16,30 @@ function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
   return undefined;
 }
 
+export interface LoadedExtension {
+  name: string;
+  path: string;
+}
+
+function extensionDisplayName(extensionPath: string): string {
+  const parts = extensionPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  const nodeModulesIndex = parts.lastIndexOf("node_modules");
+  if (nodeModulesIndex >= 0) {
+    const packageName = parts[nodeModulesIndex + 1];
+    if (packageName?.startsWith("@") && parts[nodeModulesIndex + 2]) {
+      return `${packageName}/${parts[nodeModulesIndex + 2]}`;
+    }
+    if (packageName) { return packageName; }
+  }
+
+  const fileName = parts.at(-1) ?? extensionPath;
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  if (stem === "index" && parts.length > 1) {
+    return parts[parts.length - 2];
+  }
+  return stem || fileName;
+}
+
 /**
  * Dynamic import with retry — handles the race where npm is still populating
  * node_modules when the extension host first activates.
@@ -909,18 +933,45 @@ export class PiService {
         },
       });
       piLog("Extension UI context bound");
-      // Log which extensions have handlers registered
-      if (this.session?._extensionRunner) {
-        const paths = this.session._extensionRunner.getExtensionPaths?.() ?? [];
-        piLog(`Loaded extensions: ${paths.length > 0 ? paths.join(", ") : "none"}`);
-      }
+      const extensions = this.getLoadedExtensions();
+      piLog(`Loaded extensions: ${extensions.length > 0 ? extensions.map((extension) => extension.path).join(", ") : "none"}`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       piWarn(`bindExtensions failed: ${e.message ?? e}`);
     }
 
-    // Push updated slash-command list after extensions register commands
+    // Push updated extension and slash-command lists after registration.
+    this.emitLoadedExtensions();
     this.emitSlashCommands();
+  }
+
+  /** Return extensions loaded in this session, not merely installed packages. */
+  getLoadedExtensions(): LoadedExtension[] {
+    try {
+      const runner = this.session?.extensionRunner ?? this.session?._extensionRunner;
+      const paths: unknown = runner?.getExtensionPaths?.();
+      if (!Array.isArray(paths)) { return []; }
+
+      const seen = new Set<string>();
+      const extensions: LoadedExtension[] = [];
+      for (const value of paths) {
+        if (typeof value !== "string" || seen.has(value)) { continue; }
+        seen.add(value);
+        extensions.push({ name: extensionDisplayName(value), path: value });
+      }
+      return extensions;
+    } catch (error: unknown) {
+      piWarn(`Could not inspect loaded extensions: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /** Notify the webview about extensions active in this session. */
+  emitLoadedExtensions(): void {
+    this.emit({
+      type: "extensions-update",
+      data: { extensions: this.getLoadedExtensions() },
+    });
   }
 
   /** Get all slash commands available to the user.
@@ -934,7 +985,7 @@ export class PiService {
     try {
  
       const rawSession = (this.session);
-      const runner = rawSession?._extensionRunner;
+      const runner = rawSession?.extensionRunner ?? rawSession?._extensionRunner;
       if (runner && typeof runner.getRegisteredCommands === "function") {
         const commands = runner.getRegisteredCommands();
         if (commands && commands.length > 0) {
@@ -971,6 +1022,7 @@ export class PiService {
       { cmd: "/login", desc: "Configure provider authentication", source: "builtin" },
       { cmd: "/logout", desc: "Remove provider authentication", source: "builtin" },
       { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
+      { cmd: "/reload", desc: "Reload extensions, skills, and context", source: "builtin" },
       { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
     );
 
@@ -1530,6 +1582,24 @@ export class PiService {
     return null;
   }
 
+  /**
+   * Reload extension runtime resources without replaying conversation history.
+   * The SDK rebuilds its runtime in place, so the current Session and Webview
+   * message DOM remain intact even for very long conversations.
+   */
+  async reloadExtensions(): Promise<void> {
+    if (!this.session) { throw new Error("Pi session is not initialized"); }
+    await this.session.reload();
+    this.emitLoadedExtensions();
+    this.emitSlashCommands();
+  }
+
+  /** Reload all resources and replay the current session into the Webview. */
+  async reloadContext(): Promise<void> {
+    await this.reloadExtensions();
+    await this.sendInitialMessages();
+  }
+
   /** Try to handle a slash command locally. Returns true if handled,
    *  false if the caller should forward to session.prompt(). */
   private async tryHandleCommand(text: string): Promise<boolean> {
@@ -1576,10 +1646,7 @@ export class PiService {
       }
 
       case "reload": {
-        await this.session.reload();
-        // Re-send initial messages so the webview reflects updated extensions/skills
-        await this.sendInitialMessages();
-        this.emitSlashCommands();
+        await this.reloadContext();
         return true;
       }
 

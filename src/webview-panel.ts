@@ -6,6 +6,20 @@ import { validateExtensionToWebview, type WebviewToExtension, type ExtensionToWe
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
+export interface ExtensionPanelItem {
+  name: string;
+  path: string;
+  enabled: boolean;
+  source: string;
+  scope: "user" | "project" | "temporary";
+  origin: "package" | "top-level";
+}
+
+export interface ExtensionPanelActions {
+  list: () => Promise<ExtensionPanelItem[]>;
+  setEnabled: (extensionPath: string, enabled: boolean) => Promise<void>;
+}
+
 export class PiWebviewPanel {
   private panel: vscode.WebviewPanel | null = null;
   private piService: PiService;
@@ -23,7 +37,8 @@ export class PiWebviewPanel {
 
   constructor(
     private context: vscode.ExtensionContext,
-    piService: PiService
+    piService: PiService,
+    private readonly extensionPanelActions: ExtensionPanelActions,
   ) {
     this.piService = piService;
   }
@@ -66,6 +81,7 @@ export class PiWebviewPanel {
     this.panel.webview.html = this.getWebviewContent(this.panel.webview);
     this.setupWebviewHandlers();
     this.setupServiceHandlers();
+    this.piService.emitLoadedExtensions();
 
     this.panel.onDidChangeViewState((e) => {
       if (e.webviewPanel.active && this._onActivateCb) {
@@ -112,6 +128,7 @@ export class PiWebviewPanel {
           clearInterval(statusInterval);
           statusInterval = null;
           this._tabInitialized = true;
+          this.piService.emitLoadedExtensions();
           this.updateTabIndicator();
         }
       }, 500);
@@ -162,6 +179,18 @@ export class PiWebviewPanel {
 
           case "pickEffort":
             void this.triggerEffortPicker();
+            break;
+
+          case "getExtensions":
+            void this.postExtensionsPanelState();
+            break;
+
+          case "reloadExtensions":
+            void this.triggerExtensionsReload();
+            break;
+
+          case "setExtensionEnabled":
+            void this.triggerExtensionToggle(message.path, message.enabled);
             break;
 
           case "openUrl":
@@ -458,8 +487,9 @@ export class PiWebviewPanel {
     <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking level">thinking: off</div>
     <div class="pi-sb-item" id="pi-sb-effort" title="Click to change effort">effort: auto</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
+    <span class="pi-sb-hint" title="Queue a follow-up while Pi is working">Alt+Enter follow-up</span>
     <div class="pi-sb-item spacer"></div>
-    <div class="pi-sb-hints"><kbd>Enter</kbd> send&nbsp;&nbsp; <kbd>Shift+Enter</kbd> newline</div>
+    <div class="pi-sb-item" id="pi-sb-extensions" title="Manage extensions for this session">extensions: 0</div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>
     <div class="pi-sb-item" id="pi-sb-settings" title="Settings">⚙</div>
   </div>
@@ -467,11 +497,64 @@ export class PiWebviewPanel {
 
   <div class="user-msg-selector-overlay" id="user-msg-overlay"></div>
   <div class="settings-overlay" id="settings-overlay"></div>
+  <div class="extensions-overlay" id="extensions-overlay"></div>
   <div class="slash-autocomplete" id="slash-autocomplete"></div>
 
     <script nonce="${nonce}" src="${bundleUri}"></script>
 </body>
 </html>`;
+  }
+
+  /** Push extension resources and their enabled state into the custom panel. */
+  private async postExtensionsPanelState(): Promise<void> {
+    this.postMessage({ type: "extensions-panel-update", data: { extensions: [], loading: true } });
+    try {
+      const extensions = await this.extensionPanelActions.list();
+      this.postMessage({ type: "extensions-panel-update", data: { extensions } });
+    } catch (error: unknown) {
+      this.postMessage({
+        type: "extensions-panel-update",
+        data: {
+          extensions: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  /** Reload extension runtime state without replaying conversation history. */
+  private async triggerExtensionsReload(): Promise<void> {
+    this.postMessage({ type: "extensions-panel-update", data: { extensions: [], loading: true } });
+    try {
+      await this.piService.reloadExtensions();
+      await this.postExtensionsPanelState();
+    } catch (error: unknown) {
+      this.postMessage({
+        type: "extensions-panel-update",
+        data: {
+          extensions: [],
+          error: `Reload failed: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      });
+    }
+  }
+
+  /** Persist one extension toggle, then reload the session to apply it. */
+  private async triggerExtensionToggle(extensionPath: string, enabled: boolean): Promise<void> {
+    this.postMessage({ type: "extensions-panel-update", data: { extensions: [], loading: true } });
+    try {
+      await this.extensionPanelActions.setEnabled(extensionPath, enabled);
+      await this.piService.reloadExtensions();
+      await this.postExtensionsPanelState();
+    } catch (error: unknown) {
+      this.postMessage({
+        type: "extensions-panel-update",
+        data: {
+          extensions: [],
+          error: `Could not ${enabled ? "enable" : "disable"} extension: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      });
+    }
   }
 
   /** Open VS Code quick pick to pick a model for the current session */

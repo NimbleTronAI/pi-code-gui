@@ -44,4 +44,49 @@ suite("Shared webview protocol", () => {
 
     assert.strictEqual(result.success, false);
   });
+
+  test("accepts active extension updates", () => {
+    const result = validateExtensionToWebview({
+      type: "extensions-update",
+      data: {
+        extensions: [
+          { name: "@example/pi-tools", path: "/tmp/node_modules/@example/pi-tools/index.js" },
+        ],
+      },
+    });
+
+    assert.strictEqual(result.success, true);
+  });
+
+  test("accepts extension panel updates", () => {
+    const result = validateExtensionToWebview({
+      type: "extensions-panel-update",
+      data: {
+        extensions: [{
+          name: "demo",
+          path: "/tmp/demo-extension.js",
+          enabled: true,
+          source: "auto",
+          scope: "project",
+          origin: "top-level",
+        }],
+      },
+    });
+
+    assert.strictEqual(result.success, true);
+  });
+
+  test("accepts extension panel controls", () => {
+    const listResult = validateWebviewToExtension({ type: "getExtensions" });
+    const reloadResult = validateWebviewToExtension({ type: "reloadExtensions" });
+    const toggleResult = validateWebviewToExtension({
+      type: "setExtensionEnabled",
+      path: "/tmp/demo-extension.js",
+      enabled: false,
+    });
+
+    assert.strictEqual(listResult.success, true);
+    assert.strictEqual(reloadResult.success, true);
+    assert.strictEqual(toggleResult.success, true);
+  });
 });
