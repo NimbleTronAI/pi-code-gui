@@ -14,6 +14,7 @@ import { renderInlineTokens, type MarkdownTokens } from "./markdown-inline.js";
 import { CodeBlock } from "../components/code-block.js";
 import { ThinkingBlock } from "../components/thinking-block.js";
 import { shouldShowFollowUpHint } from "./waiting-indicator.js";
+import { scheduleFollowScroll } from "./scroll-lock.js";
 
 // ═══ Utilities ══════════════════════════════════════════════
 
@@ -210,11 +211,10 @@ export function resetChat() {
 }
 
 export function scrollToBottom(): void {
-  if (!state.hasScrolledUp) {
-    requestAnimationFrame(function () {
-      state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
-    });
-  }
+  scheduleFollowScroll(
+    state.chatContainer,
+    () => !state.hasScrolledUp,
+  );
 }
 
 export function updateFollowUpHintVisibility(): void {

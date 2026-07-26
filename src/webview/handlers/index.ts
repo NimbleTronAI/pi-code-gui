@@ -2719,7 +2719,6 @@ export function handleBashStart(data: Record<string, unknown>) {
     insertToolBlock(block as HTMLElement);
     state.bashBlocks[callId as string] = block;
     state.bashOutputs[callId as string] = "";
-    state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
     scrollToBottom();
   }
 
