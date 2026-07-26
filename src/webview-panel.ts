@@ -2,6 +2,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { appendEditorContext, truncateUtf8, type PromptEditorContext } from "./editor-context.js";
 import { resolveFileLinkPath } from "./file-link.js";
+import { mergeInitialHistoryEvents } from "./history-event-sync.js";
 import { piError } from "./logger.js";
 import { getWorkspaceCwd } from "./workspace-context.js";
 import type { PiService } from "./pi-service.js";
@@ -36,6 +37,8 @@ export class PiWebviewPanel {
   private disposables: vscode.Disposable[] = [];
   /** Cleanup function returned by piService.onEvent() */
   private piCleanup: (() => void) | null = null;
+  private webviewReady = false;
+  private pendingServiceEvents: PiServiceEvent[] = [];
   private lastActiveTextEditorId = vscode.window.activeTextEditor?.document.uri.toString();
   private editorContextUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private workspaceFileCache: { loadedAt: number; items: WorkspaceFileItem[] } | null = null;
@@ -96,6 +99,8 @@ export class PiWebviewPanel {
       dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "pi-icon-dark.svg"),
     };
 
+    this.webviewReady = false;
+    this.pendingServiceEvents = [];
     this.panel.webview.html = this.getWebviewContent(this.panel.webview);
     this.setupWebviewHandlers();
     this.setupEditorContextTracking();
@@ -116,6 +121,8 @@ export class PiWebviewPanel {
         this._onDispose(this.piService);
       }
       this.panel = null;
+      this.webviewReady = false;
+      this.pendingServiceEvents = [];
       this.disposables.forEach((d) => d.dispose());
       this.disposables = [];
       this.cleanupPiListener();
@@ -501,6 +508,10 @@ export class PiWebviewPanel {
     this.panel.webview.onDidReceiveMessage(
       async (message) => {
         switch (message.type) {
+          case "webviewReady":
+            this.flushReadyWebviewEvents();
+            break;
+
           case "prompt": {
               const msg = message;
               const editorContext = !msg.mode && !msg.text.startsWith("/")
@@ -680,11 +691,28 @@ export class PiWebviewPanel {
     }
   }
 
+  private flushReadyWebviewEvents(): void {
+    if (this.webviewReady) { return; }
+    this.webviewReady = true;
+    const events = mergeInitialHistoryEvents(
+      this.piService.getInitialHistoryReplayEvents(),
+      this.pendingServiceEvents,
+    );
+    this.pendingServiceEvents = [];
+    for (const event of events) {
+      this.postMessage(event);
+    }
+  }
+
   private setupServiceHandlers(): void {
     // Remove any stale listener before adding a new one (prevents duplicates on panel reopen)
     this.cleanupPiListener();
     this.piCleanup = this.piService.onEvent((event: PiServiceEvent) => {
-      this.postMessage(event);
+      if (this.webviewReady) {
+        this.postMessage(event);
+      } else {
+        this.pendingServiceEvents.push(event);
+      }
 
       // Capture first user input for tab title summary.
       // Only generate if the session does NOT already have a stored name

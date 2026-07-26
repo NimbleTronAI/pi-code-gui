@@ -373,6 +373,8 @@ export class PiService {
   private historyToolResultsById = new Map<string, any>();
   private historyPageLoading = false;
   private historyReplayCollector: PiServiceEvent[] | null = null;
+  private initialHistoryReplayEvents: PiServiceEvent[] = [];
+  private capturingInitialHistoryReplay = false;
 
   // Settings state (#3)
   private _autoCompactionEnabled = true;
@@ -407,6 +409,9 @@ export class PiService {
           display: false,
         },
       });
+    }
+    if (this.capturingInitialHistoryReplay) {
+      this.initialHistoryReplayEvents.push(event);
     }
     if (this.historyReplayCollector) {
       this.historyReplayCollector.push(event);
@@ -788,10 +793,7 @@ export class PiService {
     await this.bindExtensionUI();
 
     // ── Step 12: Send initial message history (like TUI renderInitialMessages) ──
-    const hasEntries = (this.sessionManager?.getEntries?.()?.length ?? 0) > 0;
-    this.emit({ type: "batch-start", data: { hasEntries } });
-    const hasMoreHistory = await this.sendInitialMessages();
-    this.emit({ type: "batch-end", data: { hasEntries, hasMoreHistory } });
+    await this.emitInitialHistoryReplay();
 
     this.reportStatus();
     try {
@@ -1086,6 +1088,25 @@ export class PiService {
       type: "slash-commands-update",
       data: { commands: all },
     });
+  }
+
+  /** Return a snapshot that a newly-ready Webview can replay without races. */
+  getInitialHistoryReplayEvents(): PiServiceEvent[] {
+    return this.initialHistoryReplayEvents.slice();
+  }
+
+  private async emitInitialHistoryReplay(): Promise<void> {
+    const hasEntries = (this.sessionManager?.getEntries?.()?.length ?? 0) > 0;
+    this.initialHistoryReplayEvents = [];
+    this.capturingInitialHistoryReplay = true;
+    let hasMoreHistory = false;
+    try {
+      this.emit({ type: "batch-start", data: { hasEntries } });
+      hasMoreHistory = await this.sendInitialMessages();
+    } finally {
+      this.emit({ type: "batch-end", data: { hasEntries, hasMoreHistory } });
+      this.capturingInitialHistoryReplay = false;
+    }
   }
 
   /** Send only the newest history page to the Webview on initial load. */
@@ -1766,10 +1787,7 @@ export class PiService {
   /** Reload all resources and replay the current session into the Webview. */
   async reloadContext(): Promise<void> {
     await this.reloadExtensions();
-    const hasEntries = (this.sessionManager?.getEntries?.()?.length ?? 0) > 0;
-    this.emit({ type: "batch-start", data: { hasEntries } });
-    const hasMoreHistory = await this.sendInitialMessages();
-    this.emit({ type: "batch-end", data: { hasEntries, hasMoreHistory } });
+    await this.emitInitialHistoryReplay();
   }
 
   /** Try to handle a slash command locally. Returns true if handled,
@@ -2947,6 +2965,8 @@ export class PiService {
     // Without this, processes orphaned by session close survive as zombies.
     try { this.session?.abortBash?.(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
     if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
+    this.initialHistoryReplayEvents = [];
+    this.capturingInitialHistoryReplay = false;
     this.unsubscribe?.();
     this.session?.dispose();
     this.session = null;

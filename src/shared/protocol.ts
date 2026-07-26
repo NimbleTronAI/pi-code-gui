@@ -440,6 +440,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
 // ═══ Webview → Extension schemas ═══════════════════════════
 
 const WebviewToExtensionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("webviewReady") }),
   z.object({
     type: z.literal("prompt"),
     text: z.string(),

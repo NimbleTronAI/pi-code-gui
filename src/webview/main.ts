@@ -51,6 +51,10 @@ setupCodeBlockHandlers();
 // Set initial streaming state (show/hide buttons)
 updateStreamingState();
 
+// Tell the extension host that the message listener is active before it
+// replays any cached Session history into this Webview.
+vscode.postMessage({ type: "webviewReady" });
+
 // Populate the composer with the current visible-editor context.
 vscode.postMessage({ type: "requestEditorContext" });
 

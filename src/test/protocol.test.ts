@@ -2,6 +2,12 @@ import * as assert from "node:assert";
 import { validateExtensionToWebview, validateWebviewToExtension } from "../shared/protocol.js";
 
 suite("Shared webview protocol", () => {
+  test("accepts the Webview readiness handshake", () => {
+    const result = validateWebviewToExtension({ type: "webviewReady" });
+
+    assert.strictEqual(result.success, true);
+  });
+
   test("accepts image content in tool results", () => {
     const result = validateExtensionToWebview({
       type: "tool-end",
