@@ -30,6 +30,30 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, true);
   });
 
+  test("accepts visible editor context updates and prompt selections", () => {
+    const item = {
+      id: "file:///workspace/src/index.ts",
+      path: "src/index.ts",
+      name: "index.ts",
+      languageId: "typescript",
+      active: true,
+      dirty: true,
+      selectionLines: 4,
+    };
+    const updateResult = validateExtensionToWebview({
+      type: "editor-context-update",
+      data: { items: [item] },
+    });
+    const promptResult = validateWebviewToExtension({
+      type: "prompt",
+      text: "Refactor this",
+      editorContext: { includedEditorIds: [item.id] },
+    });
+
+    assert.strictEqual(updateResult.success, true);
+    assert.strictEqual(promptResult.success, true);
+  });
+
   test("rejects malformed image content in tool results", () => {
     const result = validateExtensionToWebview({
       type: "tool-end",

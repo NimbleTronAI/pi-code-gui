@@ -1,8 +1,15 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
+import { appendEditorContext, truncateUtf8, type PromptEditorContext } from "./editor-context.js";
 import { piError } from "./logger.js";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
-import { validateExtensionToWebview, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
+import {
+  validateExtensionToWebview,
+  type EditorContextItem,
+  type WebviewToExtension,
+  type ExtensionToWebview,
+} from "./shared/protocol.js";
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
@@ -26,6 +33,8 @@ export class PiWebviewPanel {
   private disposables: vscode.Disposable[] = [];
   /** Cleanup function returned by piService.onEvent() */
   private piCleanup: (() => void) | null = null;
+  private lastActiveTextEditorId = vscode.window.activeTextEditor?.document.uri.toString();
+  private editorContextUpdateTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Tab indicator state
   private _tabInitialized = false;
@@ -80,6 +89,7 @@ export class PiWebviewPanel {
 
     this.panel.webview.html = this.getWebviewContent(this.panel.webview);
     this.setupWebviewHandlers();
+    this.setupEditorContextTracking();
     this.setupServiceHandlers();
     this.piService.emitLoadedExtensions();
 
@@ -99,6 +109,121 @@ export class PiWebviewPanel {
       this.disposables = [];
       this.cleanupPiListener();
     });
+  }
+
+  private getVisibleEditorContextItems(): EditorContextItem[] {
+    const visibleEditors = vscode.window.visibleTextEditors;
+    const visibleIds = new Set(visibleEditors.map((editor) => editor.document.uri.toString()));
+    const currentActiveId = vscode.window.activeTextEditor?.document.uri.toString();
+    if (currentActiveId && visibleIds.has(currentActiveId)) {
+      this.lastActiveTextEditorId = currentActiveId;
+    }
+    if (!this.lastActiveTextEditorId || !visibleIds.has(this.lastActiveTextEditorId)) {
+      this.lastActiveTextEditorId = visibleEditors[0]?.document.uri.toString();
+    }
+
+    const seen = new Set<string>();
+    const items: EditorContextItem[] = [];
+    for (const editor of visibleEditors) {
+      const document = editor.document;
+      const id = document.uri.toString();
+      if (seen.has(id)) { continue; }
+      seen.add(id);
+
+      const displayPath = document.isUntitled
+        ? document.fileName
+        : vscode.workspace.asRelativePath(document.uri, false);
+      const active = id === this.lastActiveTextEditorId;
+      const selection = active ? editor.selection : undefined;
+      items.push({
+        id,
+        path: displayPath,
+        name: path.basename(document.fileName || displayPath),
+        languageId: document.languageId,
+        active,
+        dirty: document.isDirty,
+        selectionLines: selection && !selection.isEmpty
+          ? selection.end.line - selection.start.line + 1
+          : undefined,
+      });
+    }
+    return items;
+  }
+
+  private capturePromptEditorContext(includedEditorIds: string[]): PromptEditorContext | undefined {
+    const included = new Set(includedEditorIds);
+    const items = this.getVisibleEditorContextItems().filter((item) => included.has(item.id));
+    if (items.length === 0) { return undefined; }
+
+    const activeItem = items.find((item) => item.active);
+    const activeEditor = activeItem
+      ? vscode.window.visibleTextEditors.find(
+          (editor) => editor.document.uri.toString() === activeItem.id,
+        )
+      : undefined;
+    if (!activeItem || !activeEditor) { return { items }; }
+
+    const selection = activeEditor.selection;
+    const source = selection.isEmpty ? "document" : "selection";
+    const rawContent = selection.isEmpty
+      ? activeEditor.document.getText()
+      : activeEditor.document.getText(selection);
+    const content = truncateUtf8(rawContent, 32 * 1024);
+    return {
+      items,
+      activeDocument: {
+        id: activeItem.id,
+        path: activeItem.path,
+        languageId: activeItem.languageId,
+        source,
+        content: content.text,
+        truncated: content.truncated,
+      },
+    };
+  }
+
+  private postEditorContext(): void {
+    this.postMessage({
+      type: "editor-context-update",
+      data: { items: this.getVisibleEditorContextItems() },
+    });
+  }
+
+  private setupEditorContextTracking(): void {
+    const scheduleUpdate = (): void => {
+      if (this.editorContextUpdateTimer) { clearTimeout(this.editorContextUpdateTimer); }
+      this.editorContextUpdateTimer = setTimeout(() => {
+        this.editorContextUpdateTimer = null;
+        this.postEditorContext();
+      }, 75);
+    };
+
+    this.disposables.push(
+      vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (editor) { this.lastActiveTextEditorId = editor.document.uri.toString(); }
+        scheduleUpdate();
+      }),
+      vscode.window.onDidChangeVisibleTextEditors(scheduleUpdate),
+      vscode.window.onDidChangeTextEditorSelection((event) => {
+        if (event.textEditor.document.uri.toString() === this.lastActiveTextEditorId) {
+          scheduleUpdate();
+        }
+      }),
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        const changedId = event.document.uri.toString();
+        if (vscode.window.visibleTextEditors.some(
+          (editor) => editor.document.uri.toString() === changedId,
+        )) {
+          scheduleUpdate();
+        }
+      }),
+      { dispose: () => {
+        if (this.editorContextUpdateTimer) {
+          clearTimeout(this.editorContextUpdateTimer);
+          this.editorContextUpdateTimer = null;
+        }
+      } },
+    );
   }
 
   private setupWebviewHandlers(): void {
@@ -140,10 +265,15 @@ export class PiWebviewPanel {
       async (message) => {
         switch (message.type) {
           case "prompt": {
- 
               const msg = message;
+              const editorContext = !msg.mode && !msg.text.startsWith("/")
+                ? this.capturePromptEditorContext(msg.editorContext?.includedEditorIds ?? [])
+                : undefined;
+              const promptText = editorContext
+                ? appendEditorContext(msg.text, editorContext)
+                : msg.text;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              this.piService.sendPrompt(msg.text, msg.images, msg.mode).catch((error: any) => {
+              this.piService.sendPrompt(promptText, msg.images, msg.mode).catch((error: any) => {
                 let errMsg = error.message ?? String(error);
                 if (/api.?key|login|authenticate|provider/i.test(errMsg)) {
                   errMsg += "\n\n[Set up an API key →](https://pi.dev/docs/latest/quickstart)";
@@ -151,6 +281,10 @@ export class PiWebviewPanel {
                 this.postMessage({ type: "error", data: { message: errMsg } });
               });
             }
+            break;
+
+          case "requestEditorContext":
+            this.postEditorContext();
             break;
 
           case "abort":

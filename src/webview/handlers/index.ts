@@ -160,6 +160,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "status-update":       handleStatusUpdate(msg.data); break;
       case "status":              handleStatus(msg.data); break;
       case "queue-update":        logEvent("queue-update", { s: msg.data?.steering?.length, f: msg.data?.followUp?.length }); handleQueueUpdate(msg.data); break;
+      case "editor-context-update": handleEditorContextUpdate(msg.data); break;
       case "compaction-start":    handleCompactionStart(msg.data); break;
       case "compaction-end":      handleCompactionEnd(msg.data); break;
       case "auto-retry-start":    handleAutoRetryStart(msg.data); break;
@@ -369,6 +370,40 @@ function openMessageImage(src: string, alt: string): void {
     closeButton.focus();
   }
 
+function createMessageEditorContext(items: unknown): HTMLElement | null {
+    if (!Array.isArray(items) || items.length === 0) { return null; }
+
+    var details = document.createElement("details");
+    details.className = "message-editor-context";
+    var summary = document.createElement("summary");
+    summary.textContent = "Editor context · " + items.length + (items.length === 1 ? " file" : " files");
+    details.appendChild(summary);
+
+    var list = document.createElement("div");
+    list.className = "message-editor-context-list";
+    items.forEach(function (item: any) {
+      if (!item || typeof item.path !== "string") { return; }
+      var row = document.createElement("div");
+      row.className = "message-editor-context-item";
+      var name = document.createElement("span");
+      name.className = "message-editor-context-path";
+      name.textContent = item.path;
+      name.title = item.path;
+      var meta = document.createElement("span");
+      meta.className = "message-editor-context-meta";
+      var labels = [];
+      if (item.active) {
+        labels.push(item.selectionLines ? item.selectionLines + " selected lines" : "active");
+      }
+      if (item.dirty) { labels.push("unsaved"); }
+      meta.textContent = labels.join(" · ");
+      row.append(name, meta);
+      list.appendChild(row);
+    });
+    details.appendChild(list);
+    return details;
+  }
+
 function createMessageImages(images: unknown): HTMLElement | null {
     if (!Array.isArray(images) || images.length === 0) { return null; }
 
@@ -406,7 +441,10 @@ export function handleChatMessage(data: any) {
     var imageKey = images.map(function (image: any) {
       return String(image?.mimeType || "") + ":" + String(image?.data || "").slice(0, 64);
     }).join("|");
-    var userMessageKey = String(data.content || "") + "\u0000" + imageKey;
+    var contextKey = Array.isArray(data.editorContext)
+      ? data.editorContext.map(function (item: any) { return String(item?.id || ""); }).join("|")
+      : "";
+    var userMessageKey = String(data.content || "") + "\u0000" + imageKey + "\u0000" + contextKey;
 
     // Dedup repeated SDK/replay events while keeping image-only messages distinct.
     if (data.role === "user" && userMessageKey === state.lastUserMessageContent) {return;}
@@ -445,6 +483,9 @@ export function handleChatMessage(data: any) {
         textContainer.innerHTML = renderMarkdown(data.content);
         while (textContainer.firstChild) { mc.appendChild(textContainer.firstChild); }
       }
+
+      var editorContext = createMessageEditorContext(data.editorContext);
+      if (editorContext) { mc.appendChild(editorContext); }
     }
     state.chatContainer.appendChild(el);
     if (shouldPlaceWaitingIndicatorAfterMessage(data.role)) {
@@ -1318,10 +1359,23 @@ export function removeAttachment(id: string) {
     renderAttachments();
   }
 
+export function removeEditorContext(id: string): void {
+    state.dismissedEditorContextIds[id] = true;
+    renderAttachments();
+  }
+
+export function handleEditorContextUpdate(data: any): void {
+    state.editorContextItems = Array.isArray(data?.items) ? data.items : [];
+    renderAttachments();
+  }
+
 export function renderAttachments(): void {
     if (!state.attachmentBar) {return;}
 
-    if (state.attachments.length === 0) {
+    var visibleEditorContext = state.editorContextItems.filter(function (item) {
+      return !state.dismissedEditorContextIds[item.id];
+    });
+    if (state.attachments.length === 0 && visibleEditorContext.length === 0) {
       state.attachmentBar.classList.remove("visible");
       state.attachmentBar.innerHTML = "";
       return;
@@ -1351,13 +1405,36 @@ export function renderAttachments(): void {
       }
     }
 
+    for (var ci = 0; ci < visibleEditorContext.length; ci++) {
+      var context = visibleEditorContext[ci];
+      var contextMeta = context.active
+        ? (context.selectionLines ? context.selectionLines + " selected lines" : "active file")
+        : "visible file";
+      if (context.dirty) { contextMeta += " · unsaved"; }
+      result += html`
+        <div class="attachment-item editor-context-attachment" title="${context.path}">
+          <span class="att-icon att-context-icon">&lt;/&gt;</span>
+          <span class="att-context-copy">
+            <span class="att-name">${context.name}</span>
+            <span class="att-meta">${contextMeta}</span>
+          </span>
+          <button class="att-remove" type="button" data-editor-context-id="${context.id}" aria-label="Remove ${context.name} from editor context">&times;</button>
+        </div>`;
+    }
+
     state.attachmentBar.innerHTML = result;
 
     // Delegate click events for remove buttons
-    state.attachmentBar.querySelectorAll(".att-remove").forEach(function (btn) {
+    state.attachmentBar.querySelectorAll(".att-remove[data-att-id]").forEach(function (btn) {
       btn.addEventListener("click", function (e) {
-        var id = (e.target as HTMLElement).getAttribute("data-att-id");
+        var id = (e.currentTarget as HTMLElement).getAttribute("data-att-id");
         if (id) {removeAttachment(id);}
+      });
+    });
+    state.attachmentBar.querySelectorAll(".att-remove[data-editor-context-id]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        var id = (e.currentTarget as HTMLElement).getAttribute("data-editor-context-id");
+        if (id) {removeEditorContext(id);}
       });
     });
   }
@@ -1519,11 +1596,15 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
       });
 
     var wasStreaming = state.isStreaming;
+    var includedEditorIds = state.editorContextItems
+      .filter(function (item) { return !state.dismissedEditorContextIds[item.id]; })
+      .map(function (item) { return item.id; });
     window.__vscode.postMessage({
       type: "prompt",
       text: text,
       images: images.length > 0 ? images : undefined,
       mode: wasStreaming ? (modeOverride ?? state.queueMode) : undefined,
+      editorContext: wasStreaming ? undefined : { includedEditorIds: includedEditorIds },
     });
 
     // Give immediate feedback while the extension host prepares the request.
@@ -1538,6 +1619,10 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
     state.promptInput.style.overflowY = "hidden";
     updateFollowUpHintVisibility();
     clearAttachments();
+    if (!wasStreaming) {
+      state.dismissedEditorContextIds = {};
+      renderAttachments();
+    }
   }
 
   state.sendButton.addEventListener("click", function () { sendPrompt(); });

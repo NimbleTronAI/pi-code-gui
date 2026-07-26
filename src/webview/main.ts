@@ -41,6 +41,9 @@ setupCodeBlockHandlers();
 // Set initial streaming state (show/hide buttons)
 updateStreamingState();
 
+// Populate the composer with the current visible-editor context.
+vscode.postMessage({ type: "requestEditorContext" });
+
 // ── Scroll tracking ─────────────────────────────────────────
 state.chatContainer.addEventListener("scroll", () => {
   const threshold = 50;

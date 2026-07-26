@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import * as vscode from "vscode";
 import { createBridgeTools } from "./bridge-tools.js";
+import { splitEditorContext } from "./editor-context.js";
 import { buildScopedModels, completeWithModelRuntime, getRuntimeModel, selectInitialModel } from "./pi-model-runtime.js";
 import { type ImageContent, type PiServiceEvent, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
@@ -1077,14 +1078,23 @@ export class PiService {
       if (entry.type === "message" && entry.message) {
         const msg = entry.message;
         if (msg.role === "user") {
-          const text = this.extractTextFromContent(msg.content);
+          const prompt = splitEditorContext(this.extractTextFromContent(msg.content));
           const images = this.extractImagesFromContent(msg.content);
-          if (text || images.length > 0) {
-            if (text) {
-              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
+          if (prompt.text || images.length > 0) {
+            if (prompt.text) {
+              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: msg.timestamp });
               if (this._userMessages.length > 50) { this._userMessages.shift(); }
             }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, images, entryId: entry.id } });
+            this.emit({
+              type: "chat-message",
+              data: {
+                role: "user",
+                content: prompt.text,
+                images,
+                editorContext: prompt.context?.items,
+                entryId: entry.id,
+              },
+            });
           }
         } else if (msg.role === "assistant") {
           const text = this.extractTextFromContent(msg.content);
@@ -1283,15 +1293,24 @@ export class PiService {
       case "message_start": {
         const { byMessageId } = this.getEntriesWithLookups();
         if (event.message?.role === "user") {
-          const text = this.extractTextFromContent(event.message.content);
+          const prompt = splitEditorContext(this.extractTextFromContent(event.message.content));
           const images = this.extractImagesFromContent(event.message.content);
-          if (text || images.length > 0) {
-            if (text) {
-              this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text, timestamp: event.message.timestamp ?? Date.now() });
+          if (prompt.text || images.length > 0) {
+            if (prompt.text) {
+              this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: event.message.timestamp ?? Date.now() });
               if (this._userMessages.length > 50) { this._userMessages.shift(); }
             }
             const entry = byMessageId.get(event.message.id);
-            this.emit({ type: "chat-message", data: { role: "user", content: text, images, entryId: entry?.id ?? event.message.id } });
+            this.emit({
+              type: "chat-message",
+              data: {
+                role: "user",
+                content: prompt.text,
+                images,
+                editorContext: prompt.context?.items,
+                entryId: entry?.id ?? event.message.id,
+              },
+            });
           }
         } else if (event.message?.role === "assistant") {
           this.currentAssistantToolCalls.clear();
@@ -1775,14 +1794,23 @@ export class PiService {
       if (entry.type === "message" && entry.message) {
         const msg = entry.message;
         if (msg.role === "user") {
-          const text = this.extractTextFromContent(msg.content);
+          const prompt = splitEditorContext(this.extractTextFromContent(msg.content));
           const images = this.extractImagesFromContent(msg.content);
-          if (text || images.length > 0) {
-            if (text) {
-              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
+          if (prompt.text || images.length > 0) {
+            if (prompt.text) {
+              this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text: prompt.text, timestamp: msg.timestamp });
               if (this._userMessages.length > 50) { this._userMessages.shift(); }
             }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, images, entryId: entry.id } });
+            this.emit({
+              type: "chat-message",
+              data: {
+                role: "user",
+                content: prompt.text,
+                images,
+                editorContext: prompt.context?.items,
+                entryId: entry.id,
+              },
+            });
           }
         } else if (msg.role === "assistant") {
           const text = this.extractTextFromContent(msg.content);

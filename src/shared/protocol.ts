@@ -27,6 +27,16 @@ const TextContentItemSchema = z.object({
   text: z.string(),
 });
 
+const EditorContextItemSchema = z.object({
+  id: z.string().min(1),
+  path: z.string().min(1),
+  name: z.string().min(1),
+  languageId: z.string(),
+  active: z.boolean(),
+  dirty: z.boolean(),
+  selectionLines: z.number().int().positive().optional(),
+});
+
 // Pi tool results and custom messages use the same multimodal content model:
 // each item is either text or a base64 image.
 const ContentArraySchema = z.array(
@@ -70,6 +80,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       role: z.enum(["user", "assistant"]),
       content: z.string(),
       images: z.array(ImageContentSchema).optional(),
+      editorContext: z.array(EditorContextItemSchema).optional(),
       entryId: z.string().optional(),
     }),
   }),
@@ -207,6 +218,12 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
     data: z.object({
       steering: z.array(z.string()),
       followUp: z.array(z.string()),
+    }),
+  }),
+  z.object({
+    type: z.literal("editor-context-update"),
+    data: z.object({
+      items: z.array(EditorContextItemSchema),
     }),
   }),
 
@@ -394,7 +411,11 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
     text: z.string(),
     images: z.array(ImageContentSchema).optional(),
     mode: z.enum(["steer", "queue"]).optional(),
+    editorContext: z.object({
+      includedEditorIds: z.array(z.string().min(1)).max(100),
+    }).optional(),
   }),
+  z.object({ type: z.literal("requestEditorContext") }),
   z.object({ type: z.literal("abort") }),
   z.object({ type: z.literal("slashCommand"), command: z.string() }),
   z.object({ type: z.literal("pickModel") }),
@@ -425,6 +446,9 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
 ]);
 
 // ═══ Derived TypeScript types ═════════════════════════════
+
+/** Metadata shown for one visible VS Code editor attached to a prompt. */
+export type EditorContextItem = z.output<typeof EditorContextItemSchema>;
 
 /** All message types sent from extension host to webview. */
 export type ExtensionToWebview = z.output<typeof ExtensionToWebviewSchema>;

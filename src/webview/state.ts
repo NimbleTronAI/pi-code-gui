@@ -6,6 +6,16 @@
 //
 // DOM refs are populated by initState(document) on startup.
 
+export interface EditorContextItem {
+  id: string;
+  path: string;
+  name: string;
+  languageId: string;
+  active: boolean;
+  dirty: boolean;
+  selectionLines?: number;
+}
+
 export interface AppState {
   // ── Boolean flags
   isStreaming: boolean;
@@ -38,6 +48,8 @@ export interface AppState {
     data: string | null;
     blobUrl: string | null;
   }>;
+  editorContextItems: EditorContextItem[];
+  dismissedEditorContextIds: Record<string, boolean>;
 
   // ── Bash execution blocks
   bashBlocks: Record<string, HTMLElement>;
@@ -149,6 +161,8 @@ export const state: AppState = {
   userMessageHistory: [],
 
   attachments: [],
+  editorContextItems: [],
+  dismissedEditorContextIds: {},
 
   bashBlocks: {},
   bashOutputs: {},

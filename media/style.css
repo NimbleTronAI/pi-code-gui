@@ -2023,6 +2023,83 @@ input:focus-visible {
   background: var(--pi-bg);
 }
 
+.editor-context-attachment {
+  max-width: 260px;
+  padding-right: 4px;
+}
+
+.editor-context-attachment .att-context-icon {
+  width: 30px;
+  height: 28px;
+  color: var(--pi-lavender);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+}
+
+.editor-context-attachment .att-context-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.editor-context-attachment .att-meta {
+  overflow: hidden;
+  color: var(--pi-faint);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-item .att-remove {
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--pi-muted);
+  font: inherit;
+}
+
+.message-editor-context {
+  margin-top: 8px;
+  border: 1px solid var(--pi-line-soft);
+  background: var(--pi-surface);
+  color: var(--pi-muted);
+  font-size: 11px;
+}
+
+.message-editor-context > summary {
+  padding: 5px 8px;
+  color: var(--pi-lavender);
+  cursor: pointer;
+  user-select: none;
+}
+
+.message-editor-context-list {
+  display: grid;
+  gap: 4px;
+  padding: 0 8px 7px 22px;
+}
+
+.message-editor-context-item {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-editor-context-path {
+  overflow: hidden;
+  color: var(--pi-text);
+  font-family: var(--vscode-editor-font-family);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-editor-context-meta {
+  flex: 0 0 auto;
+  color: var(--pi-faint);
+}
+
 #input-area {
   position: relative;
   align-items: flex-end;
