@@ -36,12 +36,16 @@ const EditorContextItemSchema = z.object({
   dirty: z.boolean(),
   selectionLines: z.number().int().positive().optional(),
   attached: z.boolean().optional(),
+  kind: z.enum(["file", "folder"]).optional(),
+  external: z.boolean().optional(),
 });
 
 const WorkspaceFileItemSchema = z.object({
   id: z.string().min(1),
   path: z.string().min(1),
   name: z.string().min(1),
+  kind: z.enum(["file", "folder"]).optional(),
+  external: z.boolean().optional(),
 });
 
 // Pi tool results and custom messages use the same multimodal content model:
@@ -439,6 +443,10 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("requestWorkspaceFiles"),
     query: z.string().max(200),
+  }),
+  z.object({
+    type: z.literal("browseContextAttachments"),
+    kind: z.enum(["file", "folder"]),
   }),
   z.object({ type: z.literal("abort") }),
   z.object({ type: z.literal("slashCommand"), command: z.string() }),

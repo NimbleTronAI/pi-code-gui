@@ -7,12 +7,14 @@ export function findWorkspaceFileMention(
   text: string,
   cursor: number,
 ): WorkspaceFileMention | undefined {
-  if (cursor !== text.length) { return undefined; }
-  const match = text.match(/^@([^\s@]*)$/);
+  if (cursor < 0 || cursor > text.length) { return undefined; }
+  const lineStart = cursor === 0 ? 0 : text.lastIndexOf("\n", cursor - 1) + 1;
+  const linePrefix = text.slice(lineStart, cursor);
+  const match = linePrefix.match(/^\s*@([^\s@]*)$/);
   if (!match) { return undefined; }
 
   return {
-    start: 0,
+    start: lineStart + linePrefix.lastIndexOf("@"),
     query: match[1] ?? "",
   };
 }

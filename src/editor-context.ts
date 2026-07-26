@@ -12,10 +12,18 @@ export interface ActiveEditorContext {
   truncated: boolean;
 }
 
+export interface AttachedDirectoryContext {
+  id: string;
+  path: string;
+  entries: string[];
+  truncated: boolean;
+}
+
 export interface PromptEditorContext {
   items: EditorContextItem[];
   activeDocument?: ActiveEditorContext;
   attachedDocuments?: ActiveEditorContext[];
+  attachedDirectories?: AttachedDirectoryContext[];
 }
 
 export interface SplitPromptContext {
@@ -49,7 +57,7 @@ export function appendEditorContext(text: string, context: PromptEditorContext):
 
   const payload = JSON.stringify({
     instruction:
-      "Use active editor and explicitly @-attached document contents as primary context. Other visible editors are path references; read them only when relevant.",
+      "Use active editor and explicitly @-attached document contents as primary context. Attached directories contain paths and file listings only, not file contents. Other visible editors are path references; read them only when relevant.",
     ...context,
   });
   const separator = text ? "\n\n" : "";

@@ -379,7 +379,7 @@ function createMessageEditorContext(items: unknown): HTMLElement | null {
     var details = document.createElement("details");
     details.className = "message-editor-context";
     var summary = document.createElement("summary");
-    summary.textContent = "Editor context · " + items.length + (items.length === 1 ? " file" : " files");
+    summary.textContent = "Editor context · " + items.length + (items.length === 1 ? " item" : " items");
     details.appendChild(summary);
 
     var list = document.createElement("div");
@@ -396,6 +396,8 @@ function createMessageEditorContext(items: unknown): HTMLElement | null {
       meta.className = "message-editor-context-meta";
       var labels = [];
       if (item.attached) { labels.push("@ attached"); }
+      if (item.kind === "folder") { labels.push("folder listing"); }
+      if (item.external) { labels.push("external"); }
       if (item.active) {
         labels.push(item.selectionLines ? item.selectionLines + " selected lines" : "active");
       }
@@ -1420,12 +1422,15 @@ export function renderAttachments(): void {
 
     for (var wi = 0; wi < state.workspaceFileAttachments.length; wi++) {
       var workspaceFile = state.workspaceFileAttachments[wi];
+      var attachmentMeta = workspaceFile.kind === "folder"
+        ? (workspaceFile.external ? "external folder · listing only" : "folder · listing only")
+        : (workspaceFile.external ? "external file" : "workspace file");
       result += html`
         <div class="attachment-item workspace-file-attachment" title="${workspaceFile.path}">
-          <span class="att-icon att-workspace-icon">@</span>
+          <span class="att-icon att-workspace-icon">${workspaceFile.kind === "folder" ? "▣" : "@"}</span>
           <span class="att-context-copy">
             <span class="att-name">${workspaceFile.name}</span>
-            <span class="att-meta">workspace file</span>
+            <span class="att-meta">${attachmentMeta}</span>
           </span>
           <button class="att-remove" type="button" data-workspace-file-id="${workspaceFile.id}" aria-label="Remove ${workspaceFile.name} from context">&times;</button>
         </div>`;
@@ -1737,8 +1742,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
   state.promptInput.addEventListener("keydown", function (e) {
     if (state.fileAutocompleteOpen && e.key === "Tab") {
       e.preventDefault();
-      var fileItem = state.workspaceFileResults[state.fileSelectedIdx];
-      if (fileItem) { acceptWorkspaceFile(fileItem); }
+      acceptSelectedWorkspaceFile();
       return;
     }
     if (state.fileAutocompleteOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
@@ -1806,8 +1810,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     if (e.key === "Enter" && !e.shiftKey) {
       if (state.fileAutocompleteOpen) {
         e.preventDefault();
-        var fileItem = state.workspaceFileResults[state.fileSelectedIdx];
-        if (fileItem) { acceptWorkspaceFile(fileItem); }
+        acceptSelectedWorkspaceFile();
         return;
       }
       if (state.userMsgSelectorOpen) {
@@ -2489,7 +2492,13 @@ export function handleShowDialog(data: any) {
 
   // Dynamic slash commands populated from installed extensions (e.g. /tldr)
 
-export function addWorkspaceFileAttachment(item: { id: string; path: string; name: string }): void {
+export function addWorkspaceFileAttachment(item: {
+    id: string;
+    path: string;
+    name: string;
+    kind?: "file" | "folder";
+    external?: boolean;
+  }): void {
     if (!state.workspaceFileAttachments.some(function (attached) { return attached.id === item.id; }) &&
         state.workspaceFileAttachments.length < 20) {
       state.workspaceFileAttachments.push(item);
@@ -2514,7 +2523,13 @@ export function cancelWorkspaceFileAutocomplete(): void {
     state.promptInput.focus();
   }
 
-export function acceptWorkspaceFile(item: { id: string; path: string; name: string }): void {
+export function acceptWorkspaceFile(item: {
+    id: string;
+    path: string;
+    name: string;
+    kind?: "file" | "folder";
+    external?: boolean;
+  }): void {
     addWorkspaceFileAttachment(item);
 
     var cursor = state.promptInput.selectionStart;
@@ -2534,6 +2549,17 @@ export function acceptWorkspaceFile(item: { id: string; path: string; name: stri
     state.promptInput.focus();
   }
 
+export function acceptSelectedWorkspaceFile(): void {
+    if (state.fileSelectedIdx === 0 || state.fileSelectedIdx === 1) {
+      const kind = state.fileSelectedIdx === 0 ? "file" : "folder";
+      cancelWorkspaceFileAutocomplete();
+      window.__vscode.postMessage({ type: "browseContextAttachments", kind });
+      return;
+    }
+    const item = state.workspaceFileResults[state.fileSelectedIdx - 2];
+    if (item) { acceptWorkspaceFile(item); }
+  }
+
 export function handleWorkspaceFilesUpdate(data: any): void {
     if (state.fileMentionStart < 0 || !data || data.query !== state.fileFilter || !Array.isArray(data.items)) { return; }
     state.workspaceFileResults = data.items.filter(function (item: any) {
@@ -2543,27 +2569,29 @@ export function handleWorkspaceFilesUpdate(data: any): void {
     });
     state.fileSelectedIdx = Math.min(
       state.fileSelectedIdx,
-      Math.max(0, state.workspaceFileResults.length - 1),
+      state.workspaceFileResults.length + 1,
     );
     updateFileAutocomplete();
   }
 
 export function updateFileAutocomplete(): void {
-    if (state.workspaceFileResults.length === 0) {
-      state.fileAutocomplete.classList.remove("visible");
-      state.fileAutocompleteOpen = false;
-      return;
-    }
-
     state.fileSelectedIdx = Math.min(
       state.fileSelectedIdx,
-      state.workspaceFileResults.length - 1,
+      state.workspaceFileResults.length + 1,
     );
-    var result = "";
+    var result = html`
+      <div class="file-item file-browse-item${state.fileSelectedIdx === 0 ? " selected" : ""}" data-browse-kind="file">
+        <span class="file-name">Browse files…</span>
+        <span class="file-path">Select files inside or outside the workspace</span>
+      </div>
+      <div class="file-item file-browse-item${state.fileSelectedIdx === 1 ? " selected" : ""}" data-browse-kind="folder">
+        <span class="file-name">Browse folder…</span>
+        <span class="file-path">Attach its path and file listing only</span>
+      </div>`;
     for (var i = 0; i < state.workspaceFileResults.length; i++) {
       var item = state.workspaceFileResults[i];
       result += html`
-        <div class="file-item${i === state.fileSelectedIdx ? " selected" : ""}" data-file-id="${item.id}">
+        <div class="file-item${i + 2 === state.fileSelectedIdx ? " selected" : ""}" data-file-id="${item.id}">
           <span class="file-name">${item.name}</span>
           <span class="file-path">${item.path}</span>
         </div>`;
@@ -2572,7 +2600,15 @@ export function updateFileAutocomplete(): void {
     state.fileAutocomplete.classList.add("visible");
     state.fileAutocompleteOpen = true;
 
-    state.fileAutocomplete.querySelectorAll(".file-item").forEach(function (element) {
+    state.fileAutocomplete.querySelectorAll("[data-browse-kind]").forEach(function (element) {
+      element.addEventListener("click", function () {
+        const kind = element.getAttribute("data-browse-kind");
+        if (kind !== "file" && kind !== "folder") { return; }
+        cancelWorkspaceFileAutocomplete();
+        window.__vscode.postMessage({ type: "browseContextAttachments", kind });
+      });
+    });
+    state.fileAutocomplete.querySelectorAll(".file-item[data-file-id]").forEach(function (element) {
       element.addEventListener("click", function () {
         var id = element.getAttribute("data-file-id");
         var item = state.workspaceFileResults.find(function (candidate) { return candidate.id === id; });

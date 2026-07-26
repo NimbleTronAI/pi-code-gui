@@ -16,6 +16,16 @@ suite("Editor context", () => {
       active: true,
       dirty: true,
       selectionLines: 3,
+    }, {
+      id: "file:///outside/reference",
+      path: "/outside/reference",
+      name: "reference",
+      languageId: "",
+      active: false,
+      dirty: false,
+      attached: true,
+      kind: "folder",
+      external: true,
     }],
     activeDocument: {
       id: "file:///workspace/src/index.ts",
@@ -31,6 +41,12 @@ suite("Editor context", () => {
       languageId: "json",
       source: "document",
       content: "{\"name\":\"demo\"}",
+      truncated: false,
+    }],
+    attachedDirectories: [{
+      id: "file:///outside/reference",
+      path: "/outside/reference",
+      entries: ["README.md", "src/", "src/index.ts"],
       truncated: false,
     }],
   };

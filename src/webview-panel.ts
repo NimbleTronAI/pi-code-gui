@@ -39,6 +39,7 @@ export class PiWebviewPanel {
   private lastActiveTextEditorId = vscode.window.activeTextEditor?.document.uri.toString();
   private editorContextUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private workspaceFileCache: { loadedAt: number; items: WorkspaceFileItem[] } | null = null;
+  private pickedContextAttachments = new Map<string, WorkspaceFileItem>();
 
   // Tab indicator state
   private _tabInitialized = false;
@@ -155,6 +156,48 @@ export class PiWebviewPanel {
     return items;
   }
 
+  private async listDirectoryEntries(
+    root: vscode.Uri,
+    maxEntries = 500,
+  ): Promise<{ entries: string[]; truncated: boolean }> {
+    const entries: string[] = [];
+    let totalBytes = 0;
+    const pending: Array<{ uri: vscode.Uri; relativePath: string }> = [
+      { uri: root, relativePath: "" },
+    ];
+
+    while (pending.length > 0 && entries.length < maxEntries) {
+      const current = pending.shift();
+      if (!current) { break; }
+      let children: [string, vscode.FileType][];
+      try {
+        children = await vscode.workspace.fs.readDirectory(current.uri);
+      } catch {
+        continue;
+      }
+      children.sort(([left], [right]) => left.localeCompare(right));
+      for (const [name, type] of children) {
+        if (entries.length >= maxEntries) { break; }
+        const relativePath = current.relativePath
+          ? `${current.relativePath}/${name}`
+          : name;
+        const directory = (type & vscode.FileType.Directory) !== 0;
+        const entry = directory ? `${relativePath}/` : relativePath;
+        const entryBytes = Buffer.byteLength(`${entry}\n`, "utf8");
+        if (totalBytes + entryBytes > 32 * 1024) {
+          return { entries, truncated: true };
+        }
+        entries.push(entry);
+        totalBytes += entryBytes;
+        if (directory && (type & vscode.FileType.SymbolicLink) === 0) {
+          pending.push({ uri: vscode.Uri.joinPath(current.uri, name), relativePath });
+        }
+      }
+    }
+
+    return { entries, truncated: pending.length > 0 || entries.length >= maxEntries };
+  }
+
   private async capturePromptEditorContext(
     includedEditorIds: string[],
     attachedFileIds: string[],
@@ -187,6 +230,7 @@ export class PiWebviewPanel {
     }
 
     const attachedDocuments: NonNullable<PromptEditorContext["attachedDocuments"]> = [];
+    const attachedDirectories: NonNullable<PromptEditorContext["attachedDirectories"]> = [];
     for (const id of new Set(attachedFileIds)) {
       let uri: vscode.Uri;
       try {
@@ -194,7 +238,34 @@ export class PiWebviewPanel {
       } catch {
         continue;
       }
-      if (!vscode.workspace.getWorkspaceFolder(uri)) { continue; }
+      const picked = this.pickedContextAttachments.get(id);
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+      if (!workspaceFolder && !picked) { continue; }
+
+      const displayPath = picked?.path ??
+        vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+      const external = picked?.external === true;
+      if (picked?.kind === "folder") {
+        const listing = await this.listDirectoryEntries(uri);
+        items.push({
+          id,
+          path: displayPath,
+          name: picked.name,
+          languageId: "",
+          active: false,
+          dirty: false,
+          attached: true,
+          kind: "folder",
+          external,
+        });
+        attachedDirectories.push({
+          id,
+          path: displayPath,
+          entries: listing.entries,
+          truncated: listing.truncated,
+        });
+        continue;
+      }
 
       let document = vscode.workspace.textDocuments.find(
         (candidate) => candidate.uri.toString() === id,
@@ -205,7 +276,6 @@ export class PiWebviewPanel {
         continue;
       }
 
-      const displayPath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
       let rawContent = document.getText();
       let binary = false;
       if (rawContent.includes("\0")) {
@@ -216,6 +286,8 @@ export class PiWebviewPanel {
       const existing = items.find((item) => item.id === id);
       if (existing) {
         existing.attached = true;
+        existing.kind = "file";
+        existing.external = external;
       } else {
         items.push({
           id,
@@ -225,6 +297,8 @@ export class PiWebviewPanel {
           active: false,
           dirty: document.isDirty,
           attached: true,
+          kind: "file",
+          external,
         });
       }
 
@@ -248,6 +322,7 @@ export class PiWebviewPanel {
       items,
       activeDocument,
       attachedDocuments: attachedDocuments.length > 0 ? attachedDocuments : undefined,
+      attachedDirectories: attachedDirectories.length > 0 ? attachedDirectories : undefined,
     };
   }
 
@@ -267,6 +342,8 @@ export class PiWebviewPanel {
             id: uri.toString(),
             path: displayPath,
             name: path.basename(displayPath),
+            kind: "file" as const,
+            external: false,
           };
         }),
       };
@@ -288,6 +365,46 @@ export class PiWebviewPanel {
       type: "workspace-files-update",
       data: { query, items },
     });
+  }
+
+  private async browseContextAttachments(kind: "file" | "folder"): Promise<void> {
+    const selected = await vscode.window.showOpenDialog({
+      canSelectFiles: kind === "file",
+      canSelectFolders: kind === "folder",
+      canSelectMany: true,
+      openLabel: kind === "folder" ? "Attach folder" : "Attach files",
+      title: kind === "folder"
+        ? "Attach folder metadata to Pi"
+        : "Attach files to Pi",
+    });
+    if (!selected) { return; }
+
+    for (const uri of selected.slice(0, 20)) {
+      let stat: vscode.FileStat;
+      try {
+        stat = await vscode.workspace.fs.stat(uri);
+      } catch {
+        continue;
+      }
+      const selectedKind = (stat.type & vscode.FileType.Directory) !== 0
+        ? "folder"
+        : "file";
+      if (selectedKind !== kind) { continue; }
+
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+      const displayPath = workspaceFolder
+        ? vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/")
+        : uri.fsPath.replace(/\\/g, "/");
+      const item: WorkspaceFileItem = {
+        id: uri.toString(),
+        path: displayPath,
+        name: path.basename(uri.fsPath || displayPath) || displayPath,
+        kind: selectedKind,
+        external: !workspaceFolder,
+      };
+      this.pickedContextAttachments.set(item.id, item);
+      this.postMessage({ type: "attach-workspace-file", data: item });
+    }
   }
 
   private postEditorContext(): void {
@@ -406,6 +523,10 @@ export class PiWebviewPanel {
 
           case "requestWorkspaceFiles":
             await this.postWorkspaceFiles(message.query);
+            break;
+
+          case "browseContextAttachments":
+            await this.browseContextAttachments(message.kind);
             break;
 
           case "abort":
@@ -680,6 +801,8 @@ export class PiWebviewPanel {
         id: uri.toString(),
         path: displayPath,
         name: path.basename(displayPath),
+        kind: "file",
+        external: false,
       },
     });
   }

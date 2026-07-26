@@ -5,13 +5,21 @@ import {
 } from "../webview/file-mention.js";
 
 suite("Webview workspace file mentions", () => {
-  test("finds @ queries only when they are the entire input", () => {
+  test("finds @ queries at the first non-whitespace position on any line", () => {
     assert.deepStrictEqual(findWorkspaceFileMention("@src/ext", 8), {
       start: 0,
       query: "src/ext",
     });
+    assert.deepStrictEqual(findWorkspaceFileMention("explain this\n  @src/ext later", 23), {
+      start: 15,
+      query: "src/ext",
+    });
+    assert.deepStrictEqual(findWorkspaceFileMention("@src/ext later", 8), {
+      start: 0,
+      query: "src/ext",
+    });
     assert.strictEqual(findWorkspaceFileMention("explain @package", 16), undefined);
-    assert.strictEqual(findWorkspaceFileMention("@src/ext later", 8), undefined);
+    assert.strictEqual(findWorkspaceFileMention("  text @package", 15), undefined);
   });
 
   test("does not treat email addresses as file mentions", () => {

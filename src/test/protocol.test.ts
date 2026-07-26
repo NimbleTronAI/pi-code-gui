@@ -95,6 +95,20 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, false);
   });
 
+  test("accepts native file and folder attachment requests", () => {
+    const fileResult = validateWebviewToExtension({
+      type: "browseContextAttachments",
+      kind: "file",
+    });
+    const folderResult = validateWebviewToExtension({
+      type: "browseContextAttachments",
+      kind: "folder",
+    });
+
+    assert.strictEqual(fileResult.success, true);
+    assert.strictEqual(folderResult.success, true);
+  });
+
   test("accepts active editor attachment settings", () => {
     const updateResult = validateExtensionToWebview({
       type: "settings-update",

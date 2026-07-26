@@ -15,12 +15,16 @@ export interface EditorContextItem {
   dirty: boolean;
   selectionLines?: number;
   attached?: boolean;
+  kind?: "file" | "folder";
+  external?: boolean;
 }
 
 export interface WorkspaceFileItem {
   id: string;
   path: string;
   name: string;
+  kind?: "file" | "folder";
+  external?: boolean;
 }
 
 export interface AppState {
