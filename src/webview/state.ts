@@ -69,7 +69,12 @@ export interface AppState {
   truncationIdx: number;
 
   // ── Settings
-  settingsState: { autoCompaction: boolean; autoRetry: boolean; showImages: boolean };
+  settingsState: {
+    autoCompaction: boolean;
+    autoRetry: boolean;
+    showImages: boolean;
+    autoAttachActiveEditor: boolean;
+  };
   settingsOpen: boolean;
   extensionsOpen: boolean;
   extensionsState: {
@@ -186,7 +191,12 @@ export const state: AppState = {
   truncationTexts: {},
   truncationIdx: 0,
 
-  settingsState: { autoCompaction: true, autoRetry: true, showImages: true },
+  settingsState: {
+    autoCompaction: true,
+    autoRetry: true,
+    showImages: true,
+    autoAttachActiveEditor: true,
+  },
   settingsOpen: false,
   extensionsOpen: false,
   extensionsState: { loading: false, extensions: [] },

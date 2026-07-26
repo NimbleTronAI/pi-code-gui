@@ -2076,9 +2076,14 @@ export function toggleExtensionsPanel() {
 
 export function handleSettingsUpdate(data: any) {
     if (data) {
+      const wasAutoAttachEnabled = state.settingsState.autoAttachActiveEditor;
       state.settingsState = data;
+      if (!wasAutoAttachEnabled && data.autoAttachActiveEditor === true) {
+        state.dismissedEditorContextIds = {};
+      }
       document.body.classList.toggle("hide-message-images", data.showImages === false);
       renderSettingsPanel();
+      renderAttachments();
     }
   }
 
@@ -2102,6 +2107,7 @@ export function renderSettingsPanel() {
       { key: "autoCompaction", label: "Auto-compaction" },
       { key: "autoRetry", label: "Auto-retry" },
       { key: "showImages", label: "Show images" },
+      { key: "autoAttachActiveEditor", label: "Auto-attach active file" },
     ];
 
     for (var i = 0; i < toggles.length; i++) {
@@ -2125,6 +2131,9 @@ export function renderSettingsPanel() {
         if (key === "autoCompaction") { window.__vscode.postMessage({ type: "toggleAutoCompaction" }); }
         else if (key === "autoRetry") { window.__vscode.postMessage({ type: "toggleAutoRetry" }); }
         else if (key === "showImages") { window.__vscode.postMessage({ type: "toggleShowImages" }); }
+        else if (key === "autoAttachActiveEditor") {
+          window.__vscode.postMessage({ type: "toggleAutoAttachActiveEditor" });
+        }
       });
     });
   }

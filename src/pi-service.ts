@@ -1970,6 +1970,12 @@ export class PiService {
   get autoCompactionEnabled(): boolean { return this._autoCompactionEnabled; }
   get autoRetryEnabled(): boolean { return this._autoRetryEnabled; }
   get showImages(): boolean { return this._showImages; }
+  get autoAttachActiveEditor(): boolean {
+    return vscode.workspace.getConfiguration("pi-on-code").get<boolean>(
+      "autoAttachActiveEditor",
+      true,
+    );
+  }
   get userMessages(): Array<{ id: string; text: string; timestamp?: number }> { return this._userMessages; }
 
   /** Get available models from the model registry (for dynamic model pickers). */
@@ -2124,7 +2130,12 @@ export class PiService {
   emitSettings(): void {
     this.emit({
       type: "settings-update",
-      data: { autoCompaction: this._autoCompactionEnabled, autoRetry: this._autoRetryEnabled, showImages: this._showImages },
+      data: {
+        autoCompaction: this._autoCompactionEnabled,
+        autoRetry: this._autoRetryEnabled,
+        showImages: this._showImages,
+        autoAttachActiveEditor: this.autoAttachActiveEditor,
+      },
     });
   }
 
@@ -2149,6 +2160,19 @@ export class PiService {
     this._showImages = !this._showImages;
     this.emitSettings();
     return this._showImages;
+  }
+
+  async toggleAutoAttachActiveEditor(): Promise<boolean> {
+    const config = vscode.workspace.getConfiguration("pi-on-code");
+    const inspected = config.inspect<boolean>("autoAttachActiveEditor");
+    const target = inspected?.workspaceFolderValue !== undefined
+      ? vscode.ConfigurationTarget.WorkspaceFolder
+      : inspected?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    await config.update("autoAttachActiveEditor", !this.autoAttachActiveEditor, target);
+    this.emitSettings();
+    return this.autoAttachActiveEditor;
   }
 
   async setEffort(effort: string): Promise<void> {

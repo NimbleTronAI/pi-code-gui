@@ -95,6 +95,24 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, false);
   });
 
+  test("accepts active editor attachment settings", () => {
+    const updateResult = validateExtensionToWebview({
+      type: "settings-update",
+      data: {
+        autoCompaction: true,
+        autoRetry: true,
+        showImages: true,
+        autoAttachActiveEditor: false,
+      },
+    });
+    const toggleResult = validateWebviewToExtension({
+      type: "toggleAutoAttachActiveEditor",
+    });
+
+    assert.strictEqual(updateResult.success, true);
+    assert.strictEqual(toggleResult.success, true);
+  });
+
   test("accepts active extension updates", () => {
     const result = validateExtensionToWebview({
       type: "extensions-update",

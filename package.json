@@ -277,6 +277,11 @@
           "default": true,
           "description": "Inject project context files (AGENTS.md, inferred project guidelines)"
         },
+        "pi-on-code.autoAttachActiveEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically attach the active editor or selection to new Pi prompts"
+        },
         "pi-on-code.enablePromptTemplates": {
           "type": "boolean",
           "default": true,

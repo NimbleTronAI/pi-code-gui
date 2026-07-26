@@ -114,6 +114,7 @@ export class PiWebviewPanel {
   }
 
   private getVisibleEditorContextItems(): EditorContextItem[] {
+    if (!this.piService.autoAttachActiveEditor) { return []; }
     const visibleEditors = vscode.window.visibleTextEditors;
     const visibleIds = new Set(visibleEditors.map((editor) => editor.document.uri.toString()));
     const currentActiveId = vscode.window.activeTextEditor?.document.uri.toString();
@@ -322,6 +323,12 @@ export class PiWebviewPanel {
           scheduleUpdate();
         }
       }),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("pi-on-code.autoAttachActiveEditor")) {
+          scheduleUpdate();
+          this.piService.emitSettings();
+        }
+      }),
       { dispose: () => {
         if (this.editorContextUpdateTimer) {
           clearTimeout(this.editorContextUpdateTimer);
@@ -463,6 +470,10 @@ export class PiWebviewPanel {
 
           case "toggleShowImages":
             await this.piService.toggleShowImages();
+            break;
+
+          case "toggleAutoAttachActiveEditor":
+            await this.piService.toggleAutoAttachActiveEditor();
             break;
 
           // Request user messages list (#2)
@@ -625,7 +636,8 @@ export class PiWebviewPanel {
     if (msgType && msgType !== "prompt" && msgType !== "abort" && msgType !== "slashCommand" &&
         msgType !== "pickModel" && msgType !== "pickThinkingLevel" && msgType !== "pickEffort" &&
         msgType !== "pickContextBudget" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
-        msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" && msgType !== "openUrl" &&
+        msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" &&
+        msgType !== "toggleAutoAttachActiveEditor" && msgType !== "openUrl" &&
         msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "replaceFollowUpQueue" && msgType !== "clearQueue" &&
         msgType !== "resendUserMessage") {
       const result = validateExtensionToWebview(message);
@@ -896,6 +908,10 @@ export class PiWebviewPanel {
         description: "Display image attachments in chat",
       },
       {
+        label: makeToggleLabel("Auto-attach active file", ps.autoAttachActiveEditor),
+        description: "Attach the active editor or selection to new prompts",
+      },
+      {
         label: "$(graph) Context budget",
         description: `Current: ${ps.getContextBudget() === 0 ? "model default" : formatBudget(ps.getContextBudget())}`,
       },
@@ -912,6 +928,8 @@ export class PiWebviewPanel {
       await ps.toggleAutoRetry();
     } else if (picked.label.includes("Show images")) {
       await ps.toggleShowImages();
+    } else if (picked.label.includes("Auto-attach active file")) {
+      await ps.toggleAutoAttachActiveEditor();
     } else if (picked.label.includes("Context budget")) {
       await this.triggerContextBudgetPicker();
     }
