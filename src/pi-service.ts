@@ -928,6 +928,10 @@ export class PiService {
     try {
       await this.session.bindExtensions({
         uiContext,
+        // Pi on Code provides RPC-style dialogs in a Webview, not a terminal
+        // component host. Extensions such as rpiv-ask-user-question use this
+        // mode to select their select()/input() fallback instead of ui.custom().
+        mode: "rpc",
         onError: (error: Error, extensionPath: string) => {
           piWarn(`Extension error [${extensionPath}]: ${error?.message ?? error}`);
         },

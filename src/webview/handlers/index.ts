@@ -22,7 +22,7 @@ import { validateExtensionToWebview } from "../../shared/protocol.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
-import { Dialog } from "../components/dialog.js";
+import { Dialog, dialogQuestionStem } from "../components/dialog.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
   writeToolRenderer, editToolRenderer, readToolRenderer,
@@ -2247,23 +2247,58 @@ export function clearWidgetCards() {
 
   // ═══ Interactive Dialog Bridge ═══════════════════════════
 
+let pendingCustomAnswer: {
+  dialog: Dialog;
+  questionStem: string;
+  answer: string;
+} | null = null;
+
+function postExtensionUIResponse(id: string, value: unknown): void {
+  window.__vscode.postMessage({ type: "extension_ui_response", id, value });
+}
+
 export function handleShowDialog(data: any) {
     if (!data || !data.id) {return;}
+
+    // rpiv-ask-user-question's RPC fallback follows its custom sentinel with
+    // a separate input() request. Resolve that request invisibly because the
+    // original inline card already collected the text and should be the only
+    // question card shown in the transcript.
+    if (
+      pendingCustomAnswer &&
+      data.dialogType === "input" &&
+      dialogQuestionStem(data.prompt || "") === pendingCustomAnswer.questionStem
+    ) {
+      const pending = pendingCustomAnswer;
+      pendingCustomAnswer = null;
+      pending.dialog.completeCustomAnswer(pending.answer);
+      postExtensionUIResponse(data.id, pending.answer);
+      scrollToBottom();
+      return;
+    }
+
+    hideWelcome();
     var dlg = new Dialog({
       dialogType: data.dialogType || "confirm",
       id: data.id,
       prompt: data.prompt || "",
       options: data.options || [],
       defaultValue: data.defaultValue || "",
+      onCustomSubmit: (selection, answer) => {
+        pendingCustomAnswer = {
+          dialog: dlg,
+          questionStem: dialogQuestionStem(data.prompt || ""),
+          answer,
+        };
+        // First satisfy select(); the package will immediately issue input(),
+        // which the branch above resolves using the text from this same card.
+        postExtensionUIResponse(data.id, selection);
+      },
     });
-    // Mount in a dedicated overlay container below the status bar
-    var container = document.getElementById("dialog-overlay");
-    if (!container) {
-      container = document.createElement("div");
-      container.id = "dialog-overlay";
-      document.body.appendChild(container);
-    }
-    dlg.mount(container);
+    // Extension questions belong to the transcript. Keep completed cards in
+    // place so both the prompt and the chosen answer retain conversation order.
+    dlg.mount(state.chatContainer);
+    scrollToBottom();
   }
 
   // ═══ #8: Slash Command Autocomplete ═══════════════════════

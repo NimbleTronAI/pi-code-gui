@@ -1379,115 +1379,187 @@
   border-radius: 3px;
 }
 
-/* ═══ Interactive Dialog ═══════════════════════════════ */
+/* ═══ Inline Extension Questions ═══════════════════════ */
 
-#dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+.pi-dialog-message {
+  animation: pi-message-in 120ms ease-out;
 }
 
-.pi-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.pi-dialog {
-  background: var(--vscode-editor-background);
+.pi-dialog-message .pi-dialog {
+  width: min(100%, 720px);
+  box-sizing: border-box;
+  padding: 14px;
   border: 1px solid var(--vscode-panel-border);
-  border-radius: 8px;
-  padding: 16px;
-  min-width: 320px;
-  max-width: 480px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  border-left: 2px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+}
+
+.pi-dialog-kicker {
+  margin-bottom: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pi-dialog-header {
+  margin-bottom: 3px;
+  color: var(--vscode-textLink-foreground);
+  font-size: 0.85em;
+  font-weight: 600;
 }
 
 .pi-dialog-prompt {
-  font-size: 0.9em;
-  color: var(--vscode-foreground);
   margin-bottom: 12px;
-  line-height: 1.4;
+  color: var(--vscode-foreground);
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .pi-dialog-options {
-  margin-bottom: 12px;
-  max-height: 240px;
+  display: grid;
+  gap: 6px;
+  max-height: 360px;
+  margin-bottom: 10px;
   overflow-y: auto;
 }
 
 .pi-dialog-option {
-  padding: 6px 10px;
-  cursor: pointer;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-panel-border);
   border-radius: 4px;
-  font-size: 0.9em;
+  background: transparent;
   color: var(--vscode-foreground);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
 }
 
-.pi-dialog-option:hover {
+.pi-dialog-option:hover:not(:disabled) {
   background: var(--vscode-list-hoverBackground);
 }
 
 .pi-dialog-option.selected {
+  border-color: var(--vscode-focusBorder);
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
 }
 
+.pi-dialog-option:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.pi-dialog-message[data-state="answered"] .pi-dialog-option.selected {
+  opacity: 1;
+}
+
+.pi-dialog-option-index {
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.85em;
+  text-align: center;
+}
+
+.pi-dialog-option-body,
+.pi-dialog-option-label,
+.pi-dialog-option-description {
+  display: block;
+  min-width: 0;
+}
+
+.pi-dialog-option-label {
+  font-weight: 500;
+}
+
+.pi-dialog-option-description {
+  margin-top: 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.pi-dialog-custom-input {
+  margin-top: 10px;
+}
+
+.pi-dialog-custom-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--vscode-foreground);
+  font-size: 0.85em;
+  font-weight: 500;
+}
+
 .pi-dialog-input {
   width: 100%;
-  padding: 6px 10px;
-  background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  padding: 7px 9px;
   border: 1px solid var(--vscode-input-border);
   border-radius: 4px;
-  font-size: 0.9em;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
   font-family: var(--vscode-editor-font-family);
-  margin-bottom: 12px;
-  box-sizing: border-box;
+  font-size: var(--vscode-editor-font-size);
 }
 
 .pi-dialog-input:focus {
   outline: 1px solid var(--vscode-focusBorder);
 }
 
+.pi-dialog-input:disabled {
+  opacity: 0.75;
+}
+
 .pi-dialog-actions {
   display: flex;
+  min-height: 24px;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }
 
 .pi-dialog-btn {
   padding: 4px 12px;
-  border: none;
+  border: 1px solid var(--vscode-panel-border);
   border-radius: 4px;
-  font-size: 0.85em;
+  background: transparent;
+  color: var(--vscode-foreground);
   cursor: pointer;
+  font: inherit;
+  font-size: 0.85em;
 }
 
 .pi-dialog-cancel {
-  background: var(--vscode-button-secondaryBackground);
-  color: var(--vscode-button-secondaryForeground);
-}
-
-.pi-dialog-cancel:hover {
-  background: var(--vscode-button-secondaryHoverBackground);
+  color: var(--vscode-descriptionForeground);
 }
 
 .pi-dialog-confirm {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+  border-color: var(--vscode-focusBorder);
+  color: var(--vscode-textLink-foreground);
 }
 
-.pi-dialog-confirm:hover {
-  background: var(--vscode-button-hoverBackground);
+.pi-dialog-btn:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.pi-dialog-status {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+}
+
+.pi-dialog-status.answered {
+  color: var(--vscode-testing-iconPassed, var(--vscode-descriptionForeground));
+}
+
+.pi-dialog-message[data-state="submitting"] .pi-dialog {
+  opacity: 0.85;
 }
 
 /* Pi Web visual system ---------------------------------------------------- */
@@ -2087,11 +2159,6 @@ input:focus-visible {
 .extensions-toggle::after {
   border-radius: 1px;
   background: var(--pi-bg);
-}
-
-.pi-dialog-overlay,
-#dialog-overlay {
-  background: rgba(0, 0, 0, 0.66);
 }
 
 .pi-dialog-btn,
