@@ -1,14 +1,18 @@
 {
   "name": "pi-on-code",
-  "publisher": "local",
+  "publisher": "auchan",
   "author": "Pi on Code contributors",
   "displayName": "Pi on Code",
   "description": "A Pi-native multi-session coding agent workspace for VS Code",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/auchan/pi-on-code.git"
+  },
+  "homepage": "https://github.com/auchan/pi-on-code#readme",
+  "bugs": {
+    "url": "https://github.com/auchan/pi-on-code/issues"
   },
   "icon": "pi-icon-light.png",
   "galleryBanner": {
@@ -29,12 +33,22 @@
   "engines": {
     "vscode": "^1.118.0"
   },
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Pi on Code can execute commands and modify workspace files, so it requires a trusted workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Pi on Code requires a local or remote filesystem and a workspace-installed Pi runtime."
+    }
+  },
   "categories": [
     "AI",
     "Chat"
-  ],
-  "activationEvents": [
-    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -51,6 +65,18 @@
       {
         "command": "pi-on-code.installPi",
         "title": "Pi: Install Pi Coding Agent"
+      },
+      {
+        "command": "pi-on-code.setAnthropicApiKey",
+        "title": "Pi: Set Anthropic API Key"
+      },
+      {
+        "command": "pi-on-code.setOpenAIApiKey",
+        "title": "Pi: Set OpenAI API Key"
+      },
+      {
+        "command": "pi-on-code.clearApiKeys",
+        "title": "Pi: Clear Stored API Keys"
       },
       {
         "command": "pi-on-code.pickModel",
@@ -217,31 +243,6 @@
         "command": "pi-on-code.codeAgent",
         "key": "ctrl+alt+i",
         "mac": "cmd+alt+i"
-      },
-      {
-        "command": "pi-on-code.pickModel",
-        "key": "ctrl+l",
-        "mac": "cmd+l"
-      },
-      {
-        "command": "pi-on-code.cycleModel",
-        "key": "ctrl+p",
-        "mac": "cmd+p"
-      },
-      {
-        "command": "pi-on-code.pickThinkingLevel",
-        "key": "ctrl+shift+tab",
-        "mac": "cmd+shift+tab"
-      },
-      {
-        "command": "pi-on-code.pickFile",
-        "key": "ctrl+shift+@",
-        "mac": "cmd+shift+@"
-      },
-      {
-        "command": "pi-on-code.pickCommand",
-        "key": "ctrl+/",
-        "mac": "cmd+/"
       }
     ],
     "configuration": {
@@ -250,32 +251,25 @@
         "pi-on-code.promptToInstall": {
           "type": "boolean",
           "default": true,
-          "description": "Prompt to install Pi if not found"
-        },
-        "pi-on-code.anthropicApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime)"
-        },
-        "pi-on-code.openaiApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime)"
+          "description": "Prompt to install Pi if it is not found. You can always run Pi: Install Pi Coding Agent manually."
         },
         "pi-on-code.systemPromptAppend": {
           "type": "string",
           "default": "",
-          "description": "Additional instructions appended to the pi system prompt"
+          "scope": "resource",
+          "description": "Additional instructions appended to the Pi system prompt for new sessions."
         },
         "pi-on-code.enableSkills": {
           "type": "boolean",
           "default": true,
-          "description": "Load project and global pi skills"
+          "scope": "resource",
+          "description": "Load project and global Pi skills for new sessions."
         },
         "pi-on-code.enableContextFiles": {
           "type": "boolean",
           "default": true,
-          "description": "Inject project context files (AGENTS.md, inferred project guidelines)"
+          "scope": "resource",
+          "description": "Load AGENTS.md and inferred project guidelines for new sessions."
         },
         "pi-on-code.autoAttachActiveEditor": {
           "type": "boolean",
@@ -285,7 +279,8 @@
         "pi-on-code.enablePromptTemplates": {
           "type": "boolean",
           "default": true,
-          "description": "Register custom slash commands (e.g. /fix-diagnostics, /explain-code)"
+          "scope": "resource",
+          "description": "Register Pi and Pi on Code prompt templates for new sessions (for example /fix-diagnostics and /explain-code)."
         },
         "pi-on-code.defaultModelProvider": {
           "type": "string",
@@ -322,8 +317,8 @@
         },
         "pi-on-code.autoOpenOnStart": {
           "type": "boolean",
-          "default": true,
-          "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
+          "default": false,
+          "description": "Automatically reveal the Pi chat tab when the extension activates. Disabled by default to avoid opening a tab without an explicit user action."
         }
       }
     },
@@ -366,7 +361,7 @@
     "vsix:pack": "bun scripts/build-vsix.mjs",
     "wiki:lint": "bunx tsx agent-wiki/scripts/wiki-lint.ts",
     "wiki:lint:full": "bunx tsx agent-wiki/scripts/wiki-lint.ts --full",
-    "publish": "bunx vsce publish --no-yarn --skip-duplicate",
+    "publish": "bun run build && bun scripts/publish-vsix.mjs",
     "un-publish": "bunx vsce unpublish",
     "vsix:openvsx": "bun run package && bunx ovsx publish"
   },

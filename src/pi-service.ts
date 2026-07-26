@@ -9,6 +9,7 @@ import { buildScopedModels, completeWithModelRuntime, getRuntimeModel, selectIni
 import { type ImageContent, type PiServiceEvent, validateExtensionToWebview } from "./types.js";
 import { piLog, piWarn } from "./logger.js";
 import { getWorkspaceCwd, getWorkspaceUri } from "./workspace-context.js";
+import { readProviderApiKey } from "./provider-credentials.js";
 
 /** Find the last element matching predicate (ES2023 findLast polyfill). */
 function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
@@ -164,8 +165,8 @@ export function resolvePiPackagePath(): string {
 // ── System Prompt ────────────────────────────────────────
 
 /** Build the VS Code-aware system prompt */
-function buildSystemPrompt(): string {
-  return `You are a coding assistant running inside VS Code through the Pi on Code extension.
+function buildSystemPrompt(additionalInstructions = ""): string {
+  const basePrompt = `You are a coding assistant running inside VS Code through the Pi on Code extension.
 You have access to VS Code editor state through bridge tools (prefixed with vscode_)
 when they are enabled.
 
@@ -182,6 +183,8 @@ When the user asks you to fix something:
 3. Make edits.
 
 Be concise and helpful. Prefer editing existing files over creating new ones.`;
+  const appended = additionalInstructions.trim();
+  return appended ? `${basePrompt}\n\nAdditional user instructions:\n${appended}` : basePrompt;
 }
 
 // ── Context Files ────────────────────────────────────────
@@ -376,7 +379,7 @@ export class PiService {
   private _autoRetryEnabled = true;
   private _showImages = true;
 
-  constructor() {}
+  constructor(private readonly secrets?: vscode.SecretStorage) {}
 
   // ── Public API ─────────────────────────────────────────
 
@@ -546,26 +549,44 @@ export class PiService {
     try {
       this.modelRuntime = await SDK.ModelRuntime.create();
 
-      // Runtime API key override from VS Code secrets or env
+      // Runtime API key overrides are stored in VS Code SecretStorage. Values
+      // from pre-0.2.0 settings are migrated on first use.
       const config = vscode.workspace.getConfiguration("pi-on-code");
-      const anthropicKey = config.get<string>("anthropicApiKey");
+      const reportCredentialMigrationError = (error: unknown): void => {
+        piWarn(`Could not migrate legacy API key setting: ${error instanceof Error ? error.message : String(error)}`);
+      };
+      const anthropicKey = await readProviderApiKey(
+        this.secrets, config, "anthropic", reportCredentialMigrationError,
+      );
       if (anthropicKey) {
         await this.modelRuntime.setRuntimeApiKey("anthropic", anthropicKey);
       }
-      const openaiKey = config.get<string>("openaiApiKey");
+      const openaiKey = await readProviderApiKey(
+        this.secrets, config, "openai", reportCredentialMigrationError,
+      );
       if (openaiKey) {
         await this.modelRuntime.setRuntimeApiKey("openai", openaiKey);
       }
 
+      const enableSkills = config.get<boolean>("enableSkills", true);
+      const enableContextFiles = config.get<boolean>("enableContextFiles", true);
+      const enablePromptTemplates = config.get<boolean>("enablePromptTemplates", true);
+      const systemPromptAppend = config.get<string>("systemPromptAppend", "");
+
       this.settingsManager = SDK.SettingsManager.create(cwd);
-      const contextFiles = buildContextFiles(cwd);
-      const templates = buildPromptTemplates(SDK.createSyntheticSourceInfo);
+      const contextFiles = enableContextFiles ? buildContextFiles(cwd) : [];
+      const templates = enablePromptTemplates
+        ? buildPromptTemplates(SDK.createSyntheticSourceInfo)
+        : [];
       services = await SDK.createAgentSessionServices({
         cwd,
         modelRuntime: this.modelRuntime,
         settingsManager: this.settingsManager,
         resourceLoaderOptions: {
-          systemPromptOverride: () => buildSystemPrompt(),
+          noSkills: !enableSkills,
+          noContextFiles: !enableContextFiles,
+          noPromptTemplates: !enablePromptTemplates,
+          systemPromptOverride: () => buildSystemPrompt(systemPromptAppend),
           appendSystemPromptOverride: () => [],
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
           agentsFilesOverride: (current: any) => ({

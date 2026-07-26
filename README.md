@@ -37,6 +37,17 @@ language while supporting both dark and light editor themes.
 - Track model, thinking, effort, context usage, active extensions, and agent
   activity without adding a separate conversation header.
 
+## Install
+
+Install **Pi on Code** from the Visual Studio Marketplace, or run:
+
+```powershell
+code --install-extension auchan.pi-on-code
+```
+
+The extension activates when you open its Activity Bar view or run a contributed
+Pi command; it does not open a chat tab automatically by default.
+
 ## Requirements
 
 - VS Code 1.118 or newer.
@@ -56,23 +67,45 @@ Install the latest compatible Pi release globally:
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.82.1
 ```
 
-Authenticate Pi from a terminal first, or run `Pi: Set Up API Key / Login` from
-the Command Palette.
+Authenticate Pi from a terminal first, run `Pi: Set Up API Key / Login`, or use
+`Pi: Set Anthropic API Key` / `Pi: Set OpenAI API Key` from the Command Palette.
+API keys entered through these commands are stored in VS Code SecretStorage.
 
 ## Use
 
-1. Install Pi on Code from its VSIX package.
-2. Open a folder in VS Code.
-3. Run `Pi: Code Agent` or press `Ctrl+Alt+I`.
-4. Type a request and press Enter.
+1. Open a trusted folder in VS Code.
+2. Open the Pi on Code Activity Bar view or run `Pi: Code Agent` (`Ctrl+Alt+I`).
+3. Type a request and press Enter.
 
-Useful shortcuts:
+Shortcuts inside the Pi chat input:
 
 - `Enter`: steer or send
 - `Alt+Enter`: queue a follow-up
 - `Ctrl+L`: choose model
 - `Ctrl+P`: cycle favorite models
 - `Ctrl+/`: command picker
+
+Only `Ctrl+Alt+I` is registered as a global VS Code shortcut, so Pi on Code does
+not replace standard editor bindings such as Quick Open or Toggle Line Comment.
+
+## Security and privacy
+
+Pi on Code is an agent extension: when you approve or request work, Pi can read
+and modify workspace files and execute shell commands. For this reason the
+extension is disabled in Restricted Mode and requires a trusted, non-virtual
+workspace. Review project context files such as `AGENTS.md` before use because
+Pi loads them as instructions.
+
+Prompts, attached editor content, and tool results are sent by Pi to the model
+provider you configure. Their handling is governed by that provider's terms and
+privacy policy. Pi on Code does not add telemetry or send usage analytics of its
+own. Provider API keys entered through Pi on Code are stored with VS Code
+SecretStorage rather than in `settings.json`; use `Pi: Clear Stored API Keys` to
+remove them.
+
+Report security or functional issues through the
+[GitHub issue tracker](https://github.com/auchan/pi-on-code/issues). Do not include
+API keys, session transcripts, or proprietary source code in reports.
 
 ## Development
 
@@ -101,5 +134,6 @@ introduces its own product identity, multi-session workspace, integrated
 Package and Extension experience, and a Pi-inspired visual system for light
 and dark themes.
 
-The inherited implementation is licensed under the MIT License. See the
-`LICENSE` file in the project root.
+The inherited implementation is licensed under the MIT License. Original
+copyright notices are retained, and Pi on Code contributions are distributed
+under the same license. See the `LICENSE` file in the project root.

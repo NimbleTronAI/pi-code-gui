@@ -23,6 +23,13 @@ env/**
 .devcontainer/**
 .eslintcache
 media/entry.js
+media/marked.min.js
+media/lib/**
+media/pi-code-gui-readme.png
+media/pi-on-code.svg
+media/pi-icon-dark.png
+media/pi-icon-light.png
 agent-wiki/**
 .agents/**
+AGENTS.md
 WEBVIEW_REWRITE_TODO.md
