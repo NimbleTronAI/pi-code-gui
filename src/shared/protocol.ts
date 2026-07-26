@@ -363,6 +363,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
   // Extension host commands
   z.object({ type: z.literal("sessionReset") }),
   z.object({ type: z.literal("insertCommand"), command: z.string() }),
+  z.object({ type: z.literal("viewport-refresh") }),
 
   // Extensions active in the current Pi session
   z.object({

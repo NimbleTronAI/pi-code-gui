@@ -44,6 +44,45 @@ updateStreamingState();
 // Populate the composer with the current visible-editor context.
 vscode.postMessage({ type: "requestEditorContext" });
 
+// ── Viewport recovery ────────────────────────────────────────
+// VS Code retains this webview while its tab is hidden. Chromium can preserve
+// the old, small compositor surface when the editor group is resized in the
+// background, then repaint it only after a noticeable delay. Briefly promoting
+// the app to a fresh layer forces an immediate full-viewport paint. A second
+// pass covers the delayed viewport update seen after long background sleeps.
+let viewportRecoveryGeneration = 0;
+
+function recoverViewportLayout(): void {
+  if (document.visibilityState === "hidden") { return; }
+
+  const generation = ++viewportRecoveryGeneration;
+  const root = document.documentElement;
+  const restoreScroll = (): void => {
+    if (state.hasScrolledUp) { return; }
+    state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
+  };
+  const repaint = (): void => {
+    if (generation !== viewportRecoveryGeneration || document.visibilityState === "hidden") {
+      return;
+    }
+    root.classList.remove("pi-viewport-recovering");
+    void root.offsetWidth;
+    root.classList.add("pi-viewport-recovering");
+    void root.offsetWidth;
+    requestAnimationFrame(() => {
+      if (generation !== viewportRecoveryGeneration) { return; }
+      root.classList.remove("pi-viewport-recovering");
+      void root.offsetWidth;
+      restoreScroll();
+    });
+  };
+
+  repaint();
+  window.setTimeout(repaint, 100);
+}
+
+window.addEventListener("pi-viewport-refresh", recoverViewportLayout);
+
 // ── Scroll tracking ─────────────────────────────────────────
 state.chatContainer.addEventListener("scroll", () => {
   const threshold = 50;
@@ -57,8 +96,11 @@ state.chatContainer.addEventListener("scroll", () => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    recoverViewportLayout();
     if (!state.hasScrolledUp) {
       scrollToBottom();
     }
   }
 });
+
+window.addEventListener("pageshow", recoverViewportLayout);

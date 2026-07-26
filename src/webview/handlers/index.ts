@@ -189,6 +189,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
       // UI commands from extension host
       case "sessionReset":        resetChat(); break;
       case "insertCommand":       handleInsertCommand(msg.command); break;
+      case "viewport-refresh":    window.dispatchEvent(new Event("pi-viewport-refresh")); break;
 
       // Extensions and slash commands active in this session
       case "extensions-update": handleExtensionsUpdate(msg.data); break;
