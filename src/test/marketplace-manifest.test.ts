@@ -36,7 +36,7 @@ suite("Marketplace manifest", () => {
     assert.deepStrictEqual(manifest.extensionKind, ["workspace"]);
     assert.strictEqual(manifest.capabilities?.untrustedWorkspaces?.supported, false);
     assert.strictEqual(manifest.capabilities?.virtualWorkspaces?.supported, false);
-    assert.ok(!manifest.activationEvents?.includes("onStartupFinished"));
+    assert.ok(manifest.activationEvents?.includes("onStartupFinished"));
   });
 
   test("does not publish plaintext API key settings or conflicting shortcuts", () => {

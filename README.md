@@ -45,8 +45,8 @@ Install **Pi on Code** from the Visual Studio Marketplace, or run:
 code --install-extension auchan.pi-on-vsc
 ```
 
-The extension activates when you open its Activity Bar view or run a contributed
-Pi command; it does not open a chat tab automatically by default.
+The extension restores Pi session tabs that were open when VS Code last closed.
+It does not reveal a new chat tab automatically when there are no tabs to restore.
 
 ## Requirements
 

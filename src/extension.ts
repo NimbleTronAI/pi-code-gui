@@ -15,6 +15,7 @@ import { getWorkspaceCwd, getWorkspaceRoot, getWorkspaceUri } from "./workspace-
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary } from "./types.js";
+import { shouldRevealSessionPanel } from "./session-startup.js";
 import {
   clearProviderApiKeys,
   storeProviderApiKey,
@@ -991,7 +992,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       for (let i = 0; i < savedPaths.length; i++) {
         const sw = createSessionWindow(context, { path: savedPaths[i] });
         if (i === 0) { setActiveSession(sw); }
-        if (autoOpen) { void sw.webviewPanel.show(); }
+        if (shouldRevealSessionPanel({
+          restoringPreviouslyOpenSession: true,
+          autoOpenNewSession: autoOpen,
+        })) {
+          void sw.webviewPanel.show();
+        }
         void initSessionInBackground(context, sw, { openPath: savedPaths[i] });
       }
       restoreActiveSession(savedActivePath);
@@ -1001,7 +1007,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // creates a fresh session automatically when no history exists.
       const sw = createSessionWindow(context);
       setActiveSession(sw);
-      if (autoOpen) { void sw.webviewPanel.show(); }
+      if (shouldRevealSessionPanel({
+        restoringPreviouslyOpenSession: false,
+        autoOpenNewSession: autoOpen,
+      })) {
+        void sw.webviewPanel.show();
+      }
       void initSessionInBackground(context, sw);
     }
 

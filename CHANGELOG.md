@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-- Added persistent multi-session navigation, lazy history loading, and reliable conversation scroll following.
+- Added persistent multi-session navigation, startup restoration of previously open session tabs, lazy history loading, and reliable conversation scroll following.
 - Added active-editor context, workspace file and folder attachments, file mentions, and streaming image follow-ups.
 - Added Pi Package and Session extension management inside the sidebar and conversation.
 - Added inline extension questions, autocomplete keyboard navigation, and conversation jump controls.

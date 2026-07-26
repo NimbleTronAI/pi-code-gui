@@ -50,6 +50,9 @@
     "AI",
     "Chat"
   ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -318,7 +321,7 @@
         "pi-on-code.autoOpenOnStart": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically reveal the Pi chat tab when the extension activates. Disabled by default to avoid opening a tab without an explicit user action."
+          "description": "Automatically reveal a new Pi chat tab when the extension activates. Previously open Pi session tabs are always restored."
         }
       }
     },
