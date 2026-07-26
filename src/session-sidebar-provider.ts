@@ -41,11 +41,18 @@ export interface PiSidebarState {
   packages: PiSidebarPackages;
 }
 
+export interface PiSidebarDeleteTarget {
+  kind: "open" | "past";
+  id?: string;
+  path?: string;
+}
+
 interface PiSidebarActions {
   getState: () => PiSidebarState;
   createSession: () => void;
   focusSession: (sessionId: string) => void;
   resumeSession: (path: string) => void;
+  deleteSession: (target: PiSidebarDeleteTarget) => void | Promise<void>;
   searchPackages: (query: string) => void | Promise<void>;
   refreshPackages: () => void | Promise<void>;
   installPackage: (source: string) => void | Promise<void>;
@@ -82,6 +89,13 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
             this.actions.focusSession(payload.id);
           } else if (payload.kind === "past" && typeof payload.path === "string") {
             this.actions.resumeSession(payload.path);
+          }
+          break;
+        case "session-delete":
+          if (payload.kind === "open" && typeof payload.id === "string") {
+            void this.actions.deleteSession({ kind: "open", id: payload.id });
+          } else if (payload.kind === "past" && typeof payload.path === "string") {
+            void this.actions.deleteSession({ kind: "past", path: payload.path });
           }
           break;
         case "package-search":
@@ -235,15 +249,12 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       width: 100%;
       height: 35px;
       display: grid;
-      grid-template-columns: 13px minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) 24px;
       align-items: center;
-      padding: 0 7px 0 10px;
-      border: 0;
+      padding-right: 5px;
       border-left: 1px solid transparent;
       background: transparent;
       color: #d8d2c7;
-      text-align: left;
-      cursor: pointer;
     }
 
     .session-row:hover { background: #111416; color: #fff9ea; }
@@ -253,6 +264,41 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       color: #fff9ea;
       font-weight: 700;
     }
+
+    .session-open {
+      min-width: 0;
+      height: 100%;
+      display: grid;
+      grid-template-columns: 13px minmax(0, 1fr) auto;
+      align-items: center;
+      padding: 0 2px 0 9px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .session-delete {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 0;
+      border-radius: 2px;
+      background: transparent;
+      color: var(--pi-muted);
+      font-size: 15px;
+      line-height: 1;
+      opacity: 0;
+      pointer-events: none;
+      cursor: pointer;
+    }
+    .session-row:hover .session-delete,
+    .session-row:focus-within .session-delete {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .session-delete:hover { background: rgb(230 126 128 / 12%); color: var(--pi-red); }
 
     .chevron { color: var(--pi-lavender); font-weight: 700; opacity: 0; }
     .session-row.active .chevron { opacity: 1; }
@@ -506,11 +552,13 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
         return;
       }
       for (const session of sessions) {
-        const row = document.createElement("button");
-        row.type = "button";
+        const row = document.createElement("div");
         row.className = "session-row" + (session.active ? " active" : "");
-        row.title = session.title;
-        row.setAttribute("aria-current", session.active ? "true" : "false");
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "session-open";
+        open.title = session.title;
+        open.setAttribute("aria-current", session.active ? "true" : "false");
 
         const chevron = document.createElement("span");
         chevron.className = "chevron";
@@ -526,10 +574,26 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
         const meta = document.createElement("span");
         meta.className = "meta";
         meta.textContent = session.meta || "";
-        row.append(chevron, title, meta);
-        row.addEventListener("click", () => {
+        open.append(chevron, title, meta);
+        open.addEventListener("click", () => {
           vscode.postMessage({ type: "open", kind: session.kind, id: session.id, path: session.path });
         });
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "session-delete";
+        remove.textContent = "×";
+        remove.title = "Delete session permanently";
+        remove.setAttribute("aria-label", "Delete " + session.title + " permanently");
+        remove.addEventListener("click", () => {
+          vscode.postMessage({
+            type: "session-delete",
+            kind: session.kind,
+            id: session.id,
+            path: session.path,
+          });
+        });
+        row.append(open, remove);
         sessionList.appendChild(row);
       }
     }

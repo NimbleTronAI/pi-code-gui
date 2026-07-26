@@ -6,6 +6,7 @@ import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesProvider } from "./pi-packages-provider.js";
 import {
   PiSessionSidebarProvider,
+  type PiSidebarDeleteTarget,
   type PiSidebarSession,
   type PiSidebarState,
 } from "./session-sidebar-provider.js";
@@ -23,6 +24,12 @@ interface SessionWindow {
   webviewPanel: PiWebviewPanel;
   initialized: boolean;
   isStreaming: boolean;
+  /** True after the session is removed, including while async initialization settles. */
+  closed: boolean;
+  /** Delete a session file created by an initialization already in flight. */
+  deleteFileWhenReady: boolean;
+  /** Target file known before PiService finishes restoring the session. */
+  restoringPath?: string;
   /** Cached display label derived from session name or tab summary */
   label: string;
 }
@@ -39,13 +46,15 @@ async function saveOpenSessionPaths(): Promise<void> {
   if (!extContext) { return; }
   const paths: string[] = [];
   for (const sw of sessions) {
-    const fp = sw.piService.sessionFilePath;
+    const fp = sw.piService.sessionFilePath ?? sw.restoringPath;
     if (fp) { paths.push(fp); }
   }
   await extContext.workspaceState.update("pi-on-code.openSessionPaths", paths);
   await extContext.workspaceState.update("pi-on-code.sessionCounter", sessionCounter);
   // Persist which session was active so we can restore focus after reload
-  const activePath = activeSessionWindow?.piService.sessionFilePath ?? null;
+  const activePath = activeSessionWindow
+    ? activeSessionWindow.piService.sessionFilePath ?? activeSessionWindow.restoringPath ?? null
+    : null;
   await extContext.workspaceState.update("pi-on-code.activeSessionPath", activePath);
 }
 
@@ -73,11 +82,11 @@ function getSidebarState(): PiSidebarState {
   const openPaths = new Set<string>();
 
   for (const sw of sessions) {
-    const sessionPath = sw.piService.sessionFilePath ?? undefined;
+    const sessionPath = sw.piService.sessionFilePath ?? sw.restoringPath;
     if (sessionPath) { openPaths.add(sessionPath); }
     const title = sw.piService.sessionName
       ?? sw.webviewPanel.summary
-      ?? getGenericSessionLabel(sw.id);
+      ?? sw.label;
     items.push({
       id: sw.id,
       title: cleanSessionTitle(title),
@@ -148,15 +157,89 @@ function formatRelativeAge(timestamp: number | undefined): string {
   return `${Math.floor(days / 30)}mo`;
 }
 
-/** Create a new session window pair */
-function createSessionWindow(context: vscode.ExtensionContext): SessionWindow {
+async function deleteSessionFileIfPresent(filePath: string | null | undefined): Promise<void> {
+  if (!filePath) { return; }
+  try {
+    await PiService.deleteSessionFile(filePath);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") { throw error; }
+  }
+}
+
+async function deleteSidebarSession(target: PiSidebarDeleteTarget): Promise<void> {
+  const openSession = target.kind === "open" && target.id
+    ? sessions.find((session) => session.id === target.id)
+    : undefined;
+  const pastSession = target.kind === "past" && target.path
+    ? sessionTreeProvider?.pastSessions.find((session) => session.path === target.path)
+    : undefined;
+
+  if (!openSession && !pastSession) {
+    vscode.window.showWarningMessage("This session no longer exists.");
+    await refreshPastSessionsList();
+    return;
+  }
+
+  const title = openSession
+    ? cleanSessionTitle(openSession.piService.sessionName ?? openSession.webviewPanel.summary ?? openSession.label)
+    : cleanSessionTitle(pastSession?.name ?? pastSession?.firstMessage ?? "Untitled session");
+  const streamingDetail = openSession?.isStreaming
+    ? "The session is still running. It will be stopped before deletion. "
+    : "";
+  const detail = `${streamingDetail}The session history will be permanently deleted. This cannot be undone.`;
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete “${title}” permanently?`,
+    { modal: true, detail },
+    "Delete Session",
+  );
+  if (confirm !== "Delete Session") { return; }
+
+  try {
+    if (openSession) {
+      const wasActive = activeSessionWindow === openSession;
+      const knownSessionPath = openSession.piService.sessionFilePath ?? openSession.restoringPath;
+      openSession.deleteFileWhenReady = true;
+      openSession.webviewPanel.onDispose = null;
+      if (openSession.isStreaming) {
+        try { await openSession.piService.abort(); } catch { /* continue deleting */ }
+      }
+      openSession.piService.dispose();
+      const sessionPath = knownSessionPath ?? openSession.piService.sessionFilePath;
+      removeSession(openSession);
+      openSession.webviewPanel.dispose();
+      await deleteSessionFileIfPresent(sessionPath);
+      await refreshPastSessionsList();
+      await saveOpenSessionPaths();
+      if (wasActive && activeSessionWindow) {
+        await activeSessionWindow.webviewPanel.show();
+      }
+    } else {
+      await deleteSessionFileIfPresent(pastSession?.path);
+      await refreshPastSessionsList();
+    }
+    sessionTreeProvider?.refresh();
+  } catch (error: unknown) {
+    vscode.window.showErrorMessage(
+      `Delete failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    await refreshPastSessionsList();
+  }
+}
+
+/** Create a new session window pair. Restore hints prevent transient duplicate rows. */
+function createSessionWindow(
+  context: vscode.ExtensionContext,
+  restore?: { path: string; title?: string },
+): SessionWindow {
   const id = `session-${++sessionCounter}`;
   const piService = new PiService();
   const webviewPanel = new PiWebviewPanel(context, piService);
   const sw: SessionWindow = {
     id, piService, webviewPanel,
     initialized: false, isStreaming: false,
-    label: getGenericSessionLabel(id),
+    closed: false, deleteFileWhenReady: false,
+    restoringPath: restore?.path,
+    label: restore?.title ? cleanSessionTitle(restore.title) : getGenericSessionLabel(id),
   };
 
   // Track when this panel becomes active
@@ -224,6 +307,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       },
       resumeSession: (sessionPath) => {
         void vscode.commands.executeCommand("pi-on-code.resumePastSession", sessionPath);
+      },
+      deleteSession: async (target) => {
+        await deleteSidebarSession(target);
       },
       searchPackages: async (query) => {
         await packagesTreeProvider?.refreshAll(query);
@@ -484,7 +570,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** Create a new session window initialized from a forked session file. */
   async function openForkedSession(forkedPath: string): Promise<void> {
-    const newSw = createSessionWindow(context);
+    const newSw = createSessionWindow(context, { path: forkedPath });
     setActiveSession(newSw);
     void newSw.webviewPanel.show();
     sessionTreeProvider?.refresh();
@@ -658,7 +744,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       try {
         // Create a new session tab (like Add Pi Session) and resume into it
-        const sw = createSessionWindow(context);
+        const summary = sessionTreeProvider?.pastSessions.find((session) => session.path === resolved);
+        const sw = createSessionWindow(context, {
+          path: resolved,
+          title: summary?.name ?? summary?.firstMessage,
+        });
         setActiveSession(sw);
         void sw.webviewPanel.show();
         sessionTreeProvider?.refresh();
@@ -867,7 +957,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Restore every session that was open, in order.
       piLog(`Restoring ${savedPaths.length} open sessions...`);
       for (let i = 0; i < savedPaths.length; i++) {
-        const sw = createSessionWindow(context);
+        const sw = createSessionWindow(context, { path: savedPaths[i] });
         if (i === 0) { setActiveSession(sw); }
         if (autoOpen) { void sw.webviewPanel.show(); }
         void initSessionInBackground(context, sw, { openPath: savedPaths[i] });
@@ -1268,6 +1358,7 @@ async function refreshPastSessionsList(): Promise<void> {
 }
 
 async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string }): Promise<void> {
+  if (sw.closed) { return; }
   const fresh = opts?.fresh ?? false;
   const openPath = opts?.openPath;
   // Ensure tree provider exists ASAP so the tree view shows something
@@ -1283,6 +1374,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     : Promise.resolve();
 
   const status = await PiService.checkInstall();
+  if (sw.closed) { return; }
 
   if (!status.installed) {
     sw.webviewPanel.postMessage({
@@ -1319,6 +1411,19 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     result = await sw.piService.initialize(openPath ? { openPath } : { fresh });
   } catch (e: unknown) {
     result = { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  if (sw.closed) {
+    const sessionPath = sw.piService.sessionFilePath;
+    sw.piService.dispose();
+    if (sw.deleteFileWhenReady) {
+      try { await deleteSessionFileIfPresent(sessionPath); }
+      catch (error: unknown) {
+        piWarn(`Failed to delete closed session: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      await refreshPastSessionsList();
+    }
+    return;
   }
 
   if (!result.success) {
@@ -1421,6 +1526,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
 }
 
 function removeSession(sw: SessionWindow): void {
+  sw.closed = true;
   const idx = sessions.indexOf(sw);
   if (idx !== -1) {
     sessions.splice(idx, 1);
@@ -1441,7 +1547,7 @@ function removeSession(sw: SessionWindow): void {
 function restoreActiveSession(activePath: string | undefined): void {
   if (!extContext || !activePath) { return; }
   for (const sw of sessions) {
-    if (sw.piService.sessionFilePath === activePath) {
+    if ((sw.piService.sessionFilePath ?? sw.restoringPath) === activePath) {
       setActiveSession(sw);
       void sw.webviewPanel.show();
       return;
