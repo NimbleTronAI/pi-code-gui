@@ -12,7 +12,7 @@ import {
 } from "../render/engine.js";
 import { restoreScrollAfterPrepend } from "../render/history-pagination.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
-import { scrollSelectedSlashItemIntoView } from "../render/slash-navigation.js";
+import { navigateAutocompleteSelection } from "../render/autocomplete-navigation.js";
 import {
   nextWaitingFrame,
   PI_TUI_SPINNER_FRAMES,
@@ -1897,9 +1897,16 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
     if (state.fileAutocompleteOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
-      if (e.key === "ArrowDown") { state.fileSelectedIdx++; }
-      else { state.fileSelectedIdx = Math.max(0, state.fileSelectedIdx - 1); }
-      updateFileAutocomplete();
+      navigateAutocompleteSelection({
+        currentIndex: state.fileSelectedIdx,
+        itemCount: state.workspaceFileResults.length + 2,
+        direction: e.key === "ArrowDown" ? "next" : "previous",
+        container: state.fileAutocomplete,
+        renderSelection: function (index) {
+          state.fileSelectedIdx = index;
+          updateFileAutocomplete();
+        },
+      });
       return;
     }
     // #8: Tab to accept slash autocomplete
@@ -1917,10 +1924,16 @@ let sbSettings = document.getElementById("pi-sb-settings");
     // #8: Arrow keys in slash autocomplete
     if (state.slashAutocompleteOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
-      if (e.key === "ArrowDown") {state.slashSelectedIdx++;}
-      else {state.slashSelectedIdx = Math.max(0, state.slashSelectedIdx - 1);}
-      updateSlashAutocomplete(state.slashFilter);
-      scrollSelectedSlashItemIntoView(state.slashAutocomplete);
+      navigateAutocompleteSelection({
+        currentIndex: state.slashSelectedIdx,
+        itemCount: getSlashAutocompleteMatches(state.slashFilter).length,
+        direction: e.key === "ArrowDown" ? "next" : "previous",
+        container: state.slashAutocomplete,
+        renderSelection: function (index) {
+          state.slashSelectedIdx = index;
+          updateSlashAutocomplete(state.slashFilter);
+        },
+      });
       return;
     }
     // #2: Up arrow in empty input → show user message history
@@ -2790,14 +2803,21 @@ export function handleSlashCommandsUpdate(data: any) {
     }
   }
 
+export function getSlashAutocompleteMatches(filter: string) {
+    if (!filter) { return []; }
+    const normalized = filter.toLowerCase();
+    return getSlashCommands().filter(function (command) {
+      return command.cmd.toLowerCase().indexOf(normalized) === 0;
+    });
+  }
+
 export function updateSlashAutocomplete(filter: string) {
     if (!filter || filter.length === 0) {
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
       return;
     }
-    var f = filter.toLowerCase();
-    var matches = getSlashCommands().filter(function (sc) { return sc.cmd.toLowerCase().indexOf(f) === 0; });
+    var matches = getSlashAutocompleteMatches(filter);
     if (matches.length === 0) {
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
