@@ -4,6 +4,7 @@ import {
   PI_TUI_SPINNER_FRAMES,
   shouldKeepWaitingIndicator,
   shouldPlaceWaitingIndicatorAfterMessage,
+  shouldShowFollowUpHint,
   shouldShowPromptWaitingIndicator,
 } from "../webview/render/waiting-indicator.js";
 
@@ -16,6 +17,12 @@ suite("Webview prompt waiting indicator", () => {
   test("places a pending indicator after the echoed user message", () => {
     assert.strictEqual(shouldPlaceWaitingIndicatorAfterMessage("user"), true);
     assert.strictEqual(shouldPlaceWaitingIndicatorAfterMessage("assistant"), false);
+  });
+
+  test("shows the follow-up hint only while working with non-empty input", () => {
+    assert.strictEqual(shouldShowFollowUpHint(true, "next task"), true);
+    assert.strictEqual(shouldShowFollowUpHint(true, "  \n "), false);
+    assert.strictEqual(shouldShowFollowUpHint(false, "next task"), false);
   });
 
   test("uses Pi TUI spinner frames while the agent is active", () => {

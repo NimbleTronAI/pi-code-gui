@@ -487,7 +487,7 @@ export class PiWebviewPanel {
     <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking level">thinking: off</div>
     <div class="pi-sb-item" id="pi-sb-effort" title="Click to change effort">effort: auto</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
-    <span class="pi-sb-hint" title="Queue a follow-up while Pi is working">Alt+Enter follow-up</span>
+    <span class="pi-sb-hint" id="pi-sb-follow-up-hint" title="Queue a follow-up while Pi is working" hidden>Alt+Enter follow-up</span>
     <div class="pi-sb-item spacer"></div>
     <div class="pi-sb-item" id="pi-sb-extensions" title="Manage extensions for this session">extensions: 0</div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>

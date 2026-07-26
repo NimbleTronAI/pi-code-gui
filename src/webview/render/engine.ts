@@ -13,6 +13,7 @@ import { html, safe } from "./html.js";
 import { renderInlineTokens, type MarkdownTokens } from "./markdown-inline.js";
 import { CodeBlock } from "../components/code-block.js";
 import { ThinkingBlock } from "../components/thinking-block.js";
+import { shouldShowFollowUpHint } from "./waiting-indicator.js";
 
 // ═══ Utilities ══════════════════════════════════════════════
 
@@ -216,6 +217,11 @@ export function scrollToBottom(): void {
   }
 }
 
+export function updateFollowUpHintVisibility(): void {
+  const isWorking = state.isStreaming || state.isCompacting || state.isRetrying;
+  state.sbFollowUpHint.hidden = !shouldShowFollowUpHint(isWorking, state.promptInput.value);
+}
+
 export function updateStreamingState(): void {
   if (state.isStreaming || state.isCompacting || state.isRetrying) {
     const isFollowUp = state.queueMode === "queue";
@@ -232,6 +238,7 @@ export function updateStreamingState(): void {
     state.steerDropdown.classList.add("hidden");
     state.abortButton.classList.add("hidden");
   }
+  updateFollowUpHintVisibility();
 }
 
 // ═══ Markdown Rendering ════════════════════════════════════

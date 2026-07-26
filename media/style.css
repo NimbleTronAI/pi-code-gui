@@ -833,6 +833,8 @@
     color: var(--fg-secondary, var(--vscode-descriptionForeground));
     opacity: 0.72;
     white-space: nowrap;
+
+    &[hidden] { display: none; }
   }
 
   /* ═══ Live panel (extension TUI widgets) ══════════════════ */

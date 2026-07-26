@@ -4,6 +4,10 @@ export function shouldShowPromptWaitingIndicator(isStreaming: boolean): boolean 
   return !isStreaming;
 }
 
+export function shouldShowFollowUpHint(isWorking: boolean, input: string): boolean {
+  return isWorking && input.trim().length > 0;
+}
+
 export function nextWaitingFrame(frame: number): number {
   return (frame + 1) % PI_TUI_SPINNER_FRAMES.length;
 }

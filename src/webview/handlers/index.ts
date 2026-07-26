@@ -7,7 +7,7 @@ import {
   renderDiffMarkup, formatToolError, getLangFromPath,
   getCompactReadLabel, registerToolRenderer, getToolRenderer,
   hideWelcome, resetChat, scrollToBottom, updateStreamingState,
-  renderToolResultTruncated, renderBlockToHTML,
+  updateFollowUpHintVisibility, renderToolResultTruncated, renderBlockToHTML,
   shortenPath, renderCodeBlockHTML,
   setupCodeBlockHandlers,
 } from "../render/engine.js";
@@ -1490,6 +1490,7 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
         state.promptInput.value = "";
         state.promptInput.style.height = "auto";
         state.promptInput.style.overflowY = "hidden";
+        updateFollowUpHintVisibility();
         clearAttachments();
         return;
       }
@@ -1501,6 +1502,7 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
       state.promptInput.value = "";
       state.promptInput.style.height = "auto";
       state.promptInput.style.overflowY = "hidden";
+      updateFollowUpHintVisibility();
       clearAttachments();
       return;
     }
@@ -1534,6 +1536,7 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
     state.promptInput.value = "";
     state.promptInput.style.height = "auto";
     state.promptInput.style.overflowY = "hidden";
+    updateFollowUpHintVisibility();
     clearAttachments();
   }
 
@@ -1677,6 +1680,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
         var sel = state.slashAutocomplete.querySelector(".slash-item.selected");
         if (sel) {
           state.promptInput.value = sel.getAttribute("data-cmd") + " ";
+          resizePromptInput();
         }
         state.slashAutocomplete.classList.remove("visible");
         state.slashAutocompleteOpen = false;
@@ -1727,6 +1731,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
     }
+    updateFollowUpHintVisibility();
   });
 
 export function resizePromptInput(): void {
@@ -1735,6 +1740,7 @@ export function resizePromptInput(): void {
     var newHeight = Math.min(state.promptInput.scrollHeight, maxHeight);
     state.promptInput.style.height = newHeight + "px";
     state.promptInput.style.overflowY = state.promptInput.scrollHeight > maxHeight ? "auto" : "hidden";
+    updateFollowUpHintVisibility();
   }
 
 export function handleInsertCommand(command: string) {

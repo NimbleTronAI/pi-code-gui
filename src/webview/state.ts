@@ -126,6 +126,7 @@ export interface AppState {
   sbModel: HTMLElement;
   sbThinking: HTMLElement;
   sbEffort: HTMLElement;
+  sbFollowUpHint: HTMLElement;
   sbExtensions: HTMLElement;
   sbUsage: HTMLElement;
 }
@@ -223,6 +224,7 @@ export const state: AppState = {
   sbModel: null!,
   sbThinking: null!,
   sbEffort: null!,
+  sbFollowUpHint: null!,
   sbExtensions: null!,
   sbUsage: null!,
 };
@@ -245,6 +247,7 @@ export function initState(doc: Document): void {
   state.sbModel = doc.getElementById("pi-sb-model")!;
   state.sbThinking = doc.getElementById("pi-sb-thinking")!;
   state.sbEffort = doc.getElementById("pi-sb-effort")!;
+  state.sbFollowUpHint = doc.getElementById("pi-sb-follow-up-hint")!;
   state.sbExtensions = doc.getElementById("pi-sb-extensions")!;
   state.sbUsage = doc.getElementById("pi-sb-usage")!;
 
