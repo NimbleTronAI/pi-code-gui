@@ -18,6 +18,7 @@ import {
   scrollToBottom,
 } from "./render/engine.js";
 import { shouldLoadOlderHistory } from "./render/history-pagination.js";
+import { ScrollJumpControls } from "./components/scroll-jump-controls.js";
 
 // Side-effect imports (self-register on load)
 import "./tools/index.js";
@@ -35,6 +36,13 @@ initState(document);
 
 // Start MutationObserver for debug logging
 initDebugObserver();
+
+const scrollJumpControls = new ScrollJumpControls(state.chatContainer, {
+  onNavigate: (destination) => {
+    state.hasScrolledUp = destination !== "bottom";
+  },
+});
+scrollJumpControls.mount(document.body);
 
 // Set up event delegation (code copy buttons, file path clicks)
 setupCodeBlockHandlers();
