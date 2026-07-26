@@ -10,6 +10,48 @@ import {
 import { highlightCode } from "../highlight.js";
 import { html, safe } from "../render/html.js";
 import { ToolBlock } from "../components/tool-block.js";
+import {
+  DEFAULT_TOOL_COLLAPSE_LINES,
+  shouldAutoCollapseToolText,
+} from "./collapse.js";
+
+function clearToolTextCollapse(target: HTMLElement): void {
+  target.classList.remove("tool-text-collapsible", "is-collapsed", "is-expanded");
+  const next = target.nextElementSibling;
+  if (next?.classList.contains("tool-collapse-btn")) { next.remove(); }
+}
+
+function applyToolTextCollapse(
+  target: HTMLElement,
+  text: string,
+  maxLines = DEFAULT_TOOL_COLLAPSE_LINES,
+): void {
+  clearToolTextCollapse(target);
+  if (!shouldAutoCollapseToolText(text, maxLines)) { return; }
+
+  const totalLines = text.split("\n").length;
+  const hiddenLines = Math.max(totalLines - maxLines, 1);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tool-collapse-btn";
+  button.setAttribute("aria-expanded", "false");
+  button.textContent = totalLines > maxLines
+    ? `▼ ${hiddenLines} more lines`
+    : "▼ Show full output";
+
+  target.classList.add("tool-text-collapsible", "is-collapsed");
+  target.insertAdjacentElement("afterend", button);
+  button.addEventListener("click", () => {
+    const expanded = target.classList.toggle("is-expanded");
+    target.classList.toggle("is-collapsed", !expanded);
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.textContent = expanded
+      ? "▲ Show less"
+      : totalLines > maxLines
+        ? `▼ ${hiddenLines} more lines`
+        : "▼ Show full output";
+  });
+}
 
 // ── Tool data shapes ─────────────────────────────────────────
 type ToolData = Record<string, unknown> & {
@@ -104,10 +146,16 @@ export const writeToolRenderer = {
         }
       }
 
-      // Re-render final content, scroll to top
+      // Re-render final content, then collapse long writes like Pi TUI's
+      // default compact tool view. The user can expand the complete file.
       renderWriteContentBlock(el);
       var sv = el.querySelector(".tool-scroll-view");
       if (sv) { sv.scrollTop = 0; }
+      var writeContentEl = el.querySelector(".tool-content");
+      var finalWriteContent = (el as unknown as { _writeState?: { content?: string } })._writeState?.content || "";
+      if (writeContentEl instanceof HTMLElement) {
+        applyToolTextCollapse(writeContentEl, finalWriteContent);
+      }
 
       // Only show error output (matching TUI: result hidden on success)
       if (isError && result && result.content) {
@@ -150,20 +198,19 @@ export function processWriteUpdate(el: ToolEl, text: string) {
 
   /** Update the .tool-content area of a write block with highlighted file content. */
 export function renderWriteContentBlock(el: ToolEl) {
-    var tc = el.querySelector(".tool-content");
+    var tc = el.querySelector<HTMLElement>(".tool-content");
     if (!tc) {return;}
     var writeState: any = (el as any)._writeState || {};
     var content = writeState.content || "";
     var lang = writeState.lang;
     var active = el.getAttribute("data-status") !== "done" && el.getAttribute("data-status") !== "error";
 
-    // Fixed-size scrollable container — same height active and done.
-    // The code block is rendered at full natural height inside a scroll-view
-    // that caps the visible area.  Auto-scrolls to bottom during streaming.
-    var scrollView = tc!.querySelector(".tool-scroll-view");
+    // Keep streaming writes bounded. Once complete, the reusable tool
+    // collapse control owns the height and exposes an explicit expander.
+    var scrollView = tc.querySelector<HTMLElement>(".tool-scroll-view");
     if (!scrollView) {
-      tc.innerHTML = '<div class="tool-scroll-view" style="max-height:15rem;overflow-y:auto;"></div>';
-      scrollView = tc.querySelector(".tool-scroll-view");
+      tc.innerHTML = '<div class="tool-scroll-view"></div>';
+      scrollView = tc.querySelector<HTMLElement>(".tool-scroll-view");
       var cbComp = new CodeBlock({ code: content, lang: lang, showHeader: true, showCopy: true });
       cbComp.mount(scrollView!);
     } else {
@@ -185,6 +232,7 @@ export function renderWriteContentBlock(el: ToolEl) {
       }
     }
 
+    scrollView!.setAttribute("style", active ? "max-height:15rem;overflow-y:auto;" : "");
     if (active) {
       scrollView!.scrollTop = scrollView!.scrollHeight;
     }
@@ -339,9 +387,10 @@ export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; n
       result += html`<div class="edit-change">${editHeader}<div class="edit-old">- ${lang ? safe(highlightCode(oldText, lang)) : oldText}</div><div class="edit-new">+ ${lang ? safe(highlightCode(newText, lang)) : newText}</div></div>`;
     }
 
-    // Only use scroll wrapper when there are many edits; otherwise let it grow naturally.
-    var needsScroll = edits.length > 3;
-    var scrollStyle = needsScroll ? "max-height:15rem;overflow-y:auto;" : "";
+    // Bound active streaming previews. Completed long edits use the shared
+    // collapsed preview so one large replacement cannot fill the transcript.
+    var needsStreamingScroll = active && edits.length > 3;
+    var scrollStyle = needsStreamingScroll ? "max-height:15rem;overflow-y:auto;" : "";
 
     var scrollView = tc!.querySelector(".tool-scroll-view");
     if (!scrollView) {
@@ -353,6 +402,7 @@ export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; n
     }
 
     if (active && scrollView) {
+      clearToolTextCollapse(tc as HTMLElement);
       scrollView!.scrollTop = scrollView!.scrollHeight;
       requestAnimationFrame(function () {
         var blocks = scrollView!.querySelectorAll(".edit-old, .edit-new");
@@ -362,6 +412,11 @@ export function renderEditPreviews(el: ToolEl, edits: Array<{ oldText: string; n
           }
         }
       });
+    } else {
+      const previewText = edits
+        .map((edit) => `${edit.oldText || ""}\n${edit.newText || ""}`)
+        .join("\n");
+      applyToolTextCollapse(tc as HTMLElement, previewText);
     }
   }
 
@@ -498,10 +553,10 @@ export const readToolRenderer = {
       var readState: any = (el as any)._readState || {};
       var lang = readState.lang;
 
-      // Syntax-highlighted code in a scrollable container when tall.
-      // No expand/collapse — just native scroll.
-      (tr as HTMLElement).style.maxHeight = "20rem";
-      (tr as HTMLElement).style.overflowY = "auto";
+      // Syntax-highlighted code. Long reads start collapsed and retain an
+      // explicit expander instead of becoming a permanently tall scroll box.
+      (tr as HTMLElement).style.maxHeight = "";
+      (tr as HTMLElement).style.overflowY = "";
       tr.innerHTML = "";
       var cb = new CodeBlock({ code: text, lang: lang, showHeader: true, showCopy: true });
       cb.mount(tr);
@@ -548,6 +603,7 @@ export const readToolRenderer = {
         });
         tr.appendChild(contEl);
       }
+      applyToolTextCollapse(tr as HTMLElement, text);
     },
   };
 
@@ -559,7 +615,7 @@ export const defaultToolRenderer = {
       return createToolBlock(data.toolName, data.toolCallId, "pending", data.args);
     },
     update: function (el: ToolEl, partialResult: ToolPartialResult) {
-      var tr = el.querySelector(".tool-result");
+      var tr = el.querySelector<HTMLElement>(".tool-result");
       if (!tr || !partialResult || !partialResult.content) {return;}
       var text = partialResult.content
         .filter(function (c: { type: string; text: string }) { return c.type === "text"; })
@@ -594,7 +650,13 @@ export const defaultToolRenderer = {
           tr.innerHTML = html`<div style="color:var(--vscode-errorForeground);white-space:pre-wrap;font-size:0.85em;margin-top:4px;">${displayText}</div>`;
         } else {
           var lines = (text as string).split("\n");
-          tr.innerHTML = lines.length > 50 ? renderToolResultTruncated(text) : renderToolResult(text);
+          if (lines.length > DEFAULT_TOOL_COLLAPSE_LINES) {
+            clearToolTextCollapse(tr as HTMLElement);
+            tr.innerHTML = renderToolResultTruncated(text, DEFAULT_TOOL_COLLAPSE_LINES);
+          } else {
+            tr.innerHTML = renderToolResult(text);
+            applyToolTextCollapse(tr as HTMLElement, text);
+          }
         }
       }
     },
@@ -636,8 +698,11 @@ export const bashToolRenderer = {
           .map(function (c: { type: string; text: string }) { return c.text; })
           .join("\n");
       }
-      var outEl = el.querySelector(".bash-output");
-      if (outEl && text) {morphRender(outEl, escapeHtml(text));}
+      var outEl = el.querySelector<HTMLElement>(".bash-output");
+      if (outEl && text) {
+        morphRender(outEl, escapeHtml(text));
+        applyToolTextCollapse(outEl, text);
+      }
       var footer = el.querySelector(".bash-footer");
       var details = result && result.details ? result.details : {};
       var exitCode = details.exitCode !== undefined ? details.exitCode : 0;

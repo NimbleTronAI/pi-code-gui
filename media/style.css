@@ -275,7 +275,9 @@
     overflow-x: auto;
     background: var(--vscode-textCodeBlock-background);
     font-family: var(--vscode-editor-font-family);
-    font-size: 0.85em; line-height: 1.55;
+    /* Use the editor's configured size directly. Tool containers already use
+       relative sizing, so em here would shrink fenced code a second time. */
+    font-size: var(--vscode-editor-font-size); line-height: 1.55;
     white-space: pre; tab-size: 2;
 
     code {
@@ -475,7 +477,7 @@
     }
 
     .tool-content {
-      margin-top: 4px; font-size: 0.85em;
+      margin-top: 4px;
 
       .code-block-wrapper { margin: 4px 0; }
       /* Default: code-block is its own scroll container */
@@ -493,7 +495,7 @@
     .edit-change {
       margin: 2px 0;
       font-family: var(--vscode-editor-font-family);
-      font-size: 0.85em; line-height: 1.5;
+      font-size: var(--vscode-editor-font-size); line-height: 1.5;
       white-space: pre-wrap; word-break: break-word;
 
       .edit-header {
@@ -531,6 +533,51 @@
       color: var(--vscode-descriptionForeground);
       font-style: italic;
       margin-top: 4px;
+    }
+  }
+
+  /* Long tool payloads mirror Pi TUI's compact-by-default view. */
+  .tool-text-collapsible {
+    position: relative;
+
+    &.is-collapsed {
+      max-height: 15rem !important;
+      overflow: hidden !important;
+
+      &::after {
+        content: "";
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: 3rem;
+        background: linear-gradient(transparent, var(--tool-bg));
+        pointer-events: none;
+      }
+    }
+
+    &.is-expanded {
+      max-height: none !important;
+      overflow: visible !important;
+    }
+  }
+
+  .tool-collapse-btn {
+    display: block;
+    width: 100%;
+    padding: 4px;
+    border: 0;
+    border-top: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.8em;
+    text-align: center;
+
+    &:hover {
+      background: var(--vscode-list-hoverBackground);
+      color: var(--fg-primary);
     }
   }
 
