@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Finalized the Marketplace identity as `auchan.pion-code` with the `Pi / Code` display name and a transparent icon.
+- Fixed initial history replay and restoration of previously open session tabs.
+
 ## 0.2.0
 
 - Added persistent multi-session navigation, startup restoration of previously open session tabs, lazy history loading, and reliable conversation scroll following.

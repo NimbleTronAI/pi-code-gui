@@ -29,7 +29,7 @@ suite("Marketplace manifest", () => {
     assert.strictEqual(manifest.publisher, "auchan");
     assert.strictEqual(manifest.name, "pion-code");
     assert.strictEqual(manifest.displayName, "Pi / Code");
-    assert.strictEqual(manifest.version, "0.2.0");
+    assert.strictEqual(manifest.version, "0.2.1");
   });
 
   test("requires a trusted filesystem workspace", () => {
