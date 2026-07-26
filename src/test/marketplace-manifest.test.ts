@@ -2,6 +2,8 @@ import * as assert from "node:assert";
 import { readFileSync } from "node:fs";
 
 interface ExtensionManifest {
+  name: string;
+  displayName: string;
   publisher: string;
   version: string;
   extensionKind?: string[];
@@ -23,8 +25,10 @@ const ignorePath = new URL("../../.vscodeignore", import.meta.url);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as ExtensionManifest;
 
 suite("Marketplace manifest", () => {
-  test("uses release publisher and version metadata", () => {
+  test("uses release identity and version metadata", () => {
     assert.strictEqual(manifest.publisher, "auchan");
+    assert.strictEqual(manifest.name, "pi-on-vsc");
+    assert.strictEqual(manifest.displayName, "Pi on VS Code");
     assert.strictEqual(manifest.version, "0.2.0");
   });
 

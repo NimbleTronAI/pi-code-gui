@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "pi-on-code",
+      "name": "pi-on-vsc",
       "dependencies": {
         "highlight.js": "^11.11.1",
         "morphdom": "^2.7.8",
