@@ -72,7 +72,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly actions: PiSidebarActions,
-    private readonly brandIcon: vscode.Uri,
+    private readonly brandIconDark: vscode.Uri,
+    private readonly brandIconLight: vscode.Uri,
     private readonly previewCacheRoot: vscode.Uri,
   ) {}
 
@@ -81,7 +82,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [
-        vscode.Uri.joinPath(this.brandIcon, ".."),
+        vscode.Uri.joinPath(this.brandIconDark, ".."),
         this.previewCacheRoot,
       ],
     };
@@ -221,7 +222,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 
   private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
-    const brandIconUri = webview.asWebviewUri(this.brandIcon);
+    const brandIconDarkUri = webview.asWebviewUri(this.brandIconDark);
+    const brandIconLightUri = webview.asWebviewUri(this.brandIconLight);
     return /* html */ `<!doctype html>
 <html lang="en">
 <head>
@@ -231,17 +233,44 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
         content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data:; media-src ${webview.cspSource} https:;">
   <style nonce="${nonce}">
     :root {
+      color-scheme: light dark;
+      --pi-bg: var(--vscode-sideBar-background, #0b0c0e);
+      --pi-panel: var(--vscode-sideBarSectionHeader-background, var(--pi-bg));
+      --pi-brand-bg: var(--vscode-sideBarTitle-background, var(--pi-bg));
+      --pi-input-bg: var(--vscode-input-background, var(--pi-panel));
+      --pi-hover: var(--vscode-list-hoverBackground, var(--pi-panel));
+      --pi-active: var(--vscode-list-activeSelectionBackground, var(--pi-panel));
+      --pi-active-text: var(--vscode-list-activeSelectionForeground, var(--vscode-sideBar-foreground));
+      --pi-border: var(--vscode-sideBar-border, var(--vscode-panel-border));
+      --pi-text: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+      --pi-strong: var(--vscode-foreground, var(--pi-text));
+      --pi-muted: var(--vscode-descriptionForeground, var(--pi-text));
+      --pi-faint: var(--vscode-disabledForeground, var(--pi-muted));
+      --pi-lavender: var(--vscode-textLink-foreground, #b9a6ff);
+      --pi-green: var(--vscode-testing-iconPassed, #83c092);
+      --pi-red: var(--vscode-errorForeground, #e67e80);
+      --pi-green-glow: rgb(131 192 146 / 34%);
+    }
+
+    body.vscode-dark,
+    body.vscode-high-contrast {
       color-scheme: dark;
-      --pi-bg: #0b0c0e;
-      --pi-panel: #0e1012;
-      --pi-active: #14171a;
-      --pi-border: #2b2f35;
-      --pi-text: #e7e1d5;
-      --pi-muted: #71808a;
-      --pi-faint: #58636b;
       --pi-lavender: #b9a6ff;
-      --pi-green: #83c092;
-      --pi-red: #e67e80;
+    }
+
+    body.vscode-light,
+    body.vscode-high-contrast-light {
+      color-scheme: light;
+      --pi-lavender: #6846c7;
+      --pi-green: var(--vscode-testing-iconPassed, #26733d);
+      --pi-red: var(--vscode-errorForeground, #c42b1c);
+      --pi-green-glow: rgb(38 115 61 / 24%);
+    }
+
+    body.vscode-high-contrast,
+    body.vscode-high-contrast-light {
+      --pi-border: var(--vscode-contrastBorder, var(--vscode-panel-border));
+      --pi-lavender: var(--vscode-focusBorder);
     }
 
     * { box-sizing: border-box; }
@@ -282,7 +311,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       gap: 9px;
       padding: 0 14px;
       border-bottom: 1px solid var(--pi-border);
-      background: #090a0c;
+      background: var(--pi-brand-bg);
     }
 
     .pi-mark {
@@ -292,10 +321,15 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       flex: 0 0 22px;
       object-fit: contain;
     }
+    .pi-mark-light { display: none; }
+    body.vscode-light .pi-mark-dark,
+    body.vscode-high-contrast-light .pi-mark-dark { display: none; }
+    body.vscode-light .pi-mark-light,
+    body.vscode-high-contrast-light .pi-mark-light { display: block; }
 
     .wordmark {
       min-width: 0;
-      color: #fff9ea;
+      color: var(--pi-strong);
       font-weight: 700;
       letter-spacing: .01em;
       white-space: nowrap;
@@ -305,7 +339,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     .icon-button {
       border: 0;
       background: transparent;
-      color: #d8d2c7;
+      color: var(--pi-text);
       cursor: pointer;
     }
 
@@ -316,14 +350,14 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     .new-session:hover,
-    .icon-button:hover { color: #fff; }
+    .icon-button:hover { color: var(--pi-strong); }
 
     .section-title {
       height: 42px;
       display: flex;
       align-items: center;
       padding: 5px 15px 0;
-      color: #697984;
+      color: var(--pi-faint);
       font-size: 9px;
       letter-spacing: .18em;
       text-transform: uppercase;
@@ -341,14 +375,14 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       padding-right: 5px;
       border-left: 1px solid transparent;
       background: transparent;
-      color: #d8d2c7;
+      color: var(--pi-text);
     }
 
-    .session-row:hover { background: #111416; color: #fff9ea; }
+    .session-row:hover { background: var(--pi-hover); color: var(--pi-strong); }
     .session-row.active {
       border-left-color: var(--pi-lavender);
       background: var(--pi-active);
-      color: #fff9ea;
+      color: var(--pi-active-text);
       font-weight: 700;
     }
 
@@ -405,7 +439,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       margin-right: 6px;
       display: inline-block;
       background: var(--pi-green);
-      box-shadow: 0 0 0 0 rgb(131 192 146 / 0%);
+      box-shadow: 0 0 0 0 transparent;
       vertical-align: 1px;
       animation: session-breathe 1.8s ease-in-out infinite;
     }
@@ -413,11 +447,11 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     @keyframes session-breathe {
       0%, 100% {
         opacity: .45;
-        box-shadow: 0 0 0 0 rgb(131 192 146 / 0%);
+        box-shadow: 0 0 0 0 transparent;
       }
       50% {
         opacity: 1;
-        box-shadow: 0 0 5px 2px rgb(131 192 146 / 34%);
+        box-shadow: 0 0 5px 2px var(--pi-green-glow);
       }
     }
 
@@ -446,7 +480,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       padding: 8px;
       border: 0;
       background: transparent;
-      color: #697984;
+      color: var(--pi-faint);
       font-size: 9px;
       letter-spacing: .18em;
       text-align: left;
@@ -463,7 +497,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       display: flex;
       margin: 0 5px 10px;
       border: 1px solid var(--pi-border);
-      background: #090a0c;
+      background: var(--pi-input-bg);
     }
     .package-search input {
       min-width: 0;
@@ -507,7 +541,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       min-width: 0;
       flex: 1;
       overflow: hidden;
-      color: #fff9ea;
+      color: var(--pi-strong);
       font-weight: 700;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -531,7 +565,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       padding: 0;
       border: 1px solid var(--pi-border);
-      background: #070809;
+      background: var(--pi-panel);
       cursor: zoom-in;
     }
     .package-preview img,
@@ -594,7 +628,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 <body>
   <main class="sidebar">
     <header class="brand">
-      <img class="pi-mark" src="${brandIconUri}" alt="">
+      <img class="pi-mark pi-mark-dark" src="${brandIconDarkUri}" alt="" aria-hidden="true">
+      <img class="pi-mark pi-mark-light" src="${brandIconLightUri}" alt="" aria-hidden="true">
       <span class="wordmark">pi / code</span>
       <button class="new-session" id="new-session" type="button" aria-label="New Pi session">+ new</button>
     </header>

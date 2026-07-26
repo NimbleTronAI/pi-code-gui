@@ -1567,22 +1567,22 @@
 /* Pi Web visual system ---------------------------------------------------- */
 
 :root {
-  color-scheme: dark;
-  --pi-bg: #0b0c0e;
-  --pi-surface: #101215;
-  --pi-surface-raised: #14171a;
-  --pi-line: #2b2f35;
-  --pi-line-soft: #20242a;
-  --pi-text: #e7e1d5;
-  --pi-muted: #8f948f;
-  --pi-faint: #626863;
-  --pi-lavender: #b9a6ff;
-  --pi-green: #83c092;
-  --pi-amber: #e6b673;
-  --pi-red: #e67e80;
+  color-scheme: light dark;
+  --pi-bg: var(--vscode-editor-background, #0b0c0e);
+  --pi-surface: var(--vscode-sideBar-background, #101215);
+  --pi-surface-raised: var(--vscode-editorWidget-background, #14171a);
+  --pi-line: var(--vscode-panel-border, #2b2f35);
+  --pi-line-soft: var(--vscode-widget-border, var(--pi-line));
+  --pi-text: var(--vscode-editor-foreground, #e7e1d5);
+  --pi-muted: var(--vscode-descriptionForeground, #8f948f);
+  --pi-faint: var(--vscode-disabledForeground, var(--pi-muted));
+  --pi-lavender: var(--vscode-textLink-foreground, #b9a6ff);
+  --pi-green: var(--vscode-testing-iconPassed, #83c092);
+  --pi-amber: var(--vscode-editorWarning-foreground, #e6b673);
+  --pi-red: var(--vscode-errorForeground, #e67e80);
   --bg-primary: var(--pi-bg);
   --bg-secondary: var(--pi-surface);
-  --bg-input: var(--pi-surface);
+  --bg-input: var(--vscode-input-background, var(--pi-surface));
   --fg-primary: var(--pi-text);
   --fg-secondary: var(--pi-muted);
   --border-color: var(--pi-line);
@@ -1590,8 +1590,30 @@
   --error: var(--pi-red);
   --warning: var(--pi-amber);
   --success: var(--pi-green);
-  --thinking-bg: var(--pi-surface);
-  --tool-bg: var(--pi-surface);
+  --thinking-bg: var(--vscode-textBlockQuote-background, var(--pi-surface));
+  --tool-bg: var(--vscode-textCodeBlock-background, var(--pi-surface));
+}
+
+body.vscode-dark,
+body.vscode-high-contrast {
+  color-scheme: dark;
+  --pi-lavender: #b9a6ff;
+}
+
+body.vscode-light,
+body.vscode-high-contrast-light {
+  color-scheme: light;
+  --pi-lavender: #6846c7;
+  --pi-green: var(--vscode-testing-iconPassed, #26733d);
+  --pi-amber: var(--vscode-editorWarning-foreground, #986f0b);
+  --pi-red: var(--vscode-errorForeground, #c42b1c);
+}
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --pi-line: var(--vscode-contrastBorder, var(--vscode-panel-border));
+  --pi-line-soft: var(--pi-line);
+  --pi-lavender: var(--vscode-focusBorder);
 }
 
 * {
@@ -1964,12 +1986,12 @@ input:focus-visible {
 
 .edit-change .edit-old {
   border-radius: 0;
-  background: rgba(230, 126, 128, 0.12);
+  background: var(--vscode-diffEditor-removedLineBackground, rgb(230 126 128 / 12%));
 }
 
 .edit-change .edit-new {
   border-radius: 0;
-  background: rgba(131, 192, 146, 0.12);
+  background: var(--vscode-diffEditor-insertedLineBackground, rgb(131 192 146 / 12%));
 }
 
 #live-panel,
