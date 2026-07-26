@@ -369,6 +369,7 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private historyToolResultsById = new Map<string, any>();
   private historyPageLoading = false;
+  private historyReplayCollector: PiServiceEvent[] | null = null;
 
   // Settings state (#3)
   private _autoCompactionEnabled = true;
@@ -404,6 +405,11 @@ export class PiService {
         },
       });
     }
+    if (this.historyReplayCollector) {
+      this.historyReplayCollector.push(event);
+      return;
+    }
+
     // Dispatch to listeners (always, even on validation failures for backward compat)
     for (const l of this.listeners) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1201,10 +1207,10 @@ export class PiService {
   /** Replay the next older history page above the current Webview content. */
   async loadOlderHistory(): Promise<void> {
     if (this.historyPageLoading) { return; }
-    if (this._isStreaming || this.historyCursor <= 0) {
+    if (this.historyCursor <= 0) {
       this.emit({
-        type: "history-page-end",
-        data: { hasMoreHistory: this.historyCursor > 0 },
+        type: "history-page",
+        data: { hasMoreHistory: false, events: [] },
       });
       return;
     }
@@ -1212,23 +1218,38 @@ export class PiService {
 
     const end = this.historyCursor;
     const start = findHistoryPageStart(this.historyEntries, end);
-    this.emit({
-      type: "history-page-start",
-      data: { hasMoreHistory: start > 0 },
-    });
+    const events: PiServiceEvent[] = [];
+    let replayPromise: Promise<void>;
     try {
-      await this.replayHistoryEntries(
+      this.historyReplayCollector = events;
+      replayPromise = this.replayHistoryEntries(
         this.historyEntries.slice(start, end),
         this.historyToolResultsById,
         false,
       );
+    } finally {
+      // replayHistoryEntries runs synchronously when yielding is disabled.
+      // Stop collecting before awaiting so live events remain live.
+      this.historyReplayCollector = null;
+    }
+
+    let delivered = false;
+    try {
+      await replayPromise;
       this.historyCursor = start;
+      this.emit({
+        type: "history-page",
+        data: { hasMoreHistory: this.historyCursor > 0, events },
+      });
+      delivered = true;
     } finally {
       this.historyPageLoading = false;
-      this.emit({
-        type: "history-page-end",
-        data: { hasMoreHistory: this.historyCursor > 0 },
-      });
+      if (!delivered) {
+        this.emit({
+          type: "history-page",
+          data: { hasMoreHistory: this.historyCursor > 0, events: [] },
+        });
+      }
     }
   }
 

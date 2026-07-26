@@ -30,20 +30,23 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, true);
   });
 
-  test("accepts lazy history pagination messages", () => {
+  test("accepts atomic lazy history pages", () => {
     const request = validateWebviewToExtension({ type: "loadOlderHistory" });
-    const start = validateExtensionToWebview({
-      type: "history-page-start",
-      data: { hasMoreHistory: true },
-    });
-    const end = validateExtensionToWebview({
-      type: "history-page-end",
-      data: { hasMoreHistory: false },
+    const page = validateExtensionToWebview({
+      type: "history-page",
+      data: {
+        hasMoreHistory: true,
+        events: [
+          { type: "chat-message", data: { role: "user", content: "older" } },
+          { type: "assistant-start", data: { messageId: "assistant-1" } },
+          { type: "stream-delta", data: { delta: "response" } },
+          { type: "assistant-end", data: {} },
+        ],
+      },
     });
 
     assert.strictEqual(request.success, true);
-    assert.strictEqual(start.success, true);
-    assert.strictEqual(end.success, true);
+    assert.strictEqual(page.success, true);
   });
 
   test("accepts visible editor context updates and prompt selections", () => {
