@@ -8,6 +8,7 @@ src/**
 esbuild.js
 esbuild.webview.js
 scripts/**
+artifacts/**
 vsc-extension-quickstart.md
 **/tsconfig.json
 tsconfig.webview.json

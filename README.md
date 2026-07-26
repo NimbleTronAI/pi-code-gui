@@ -56,8 +56,8 @@ bun run build
 ```
 
 `bun run build` checks types and lint, creates production bundles, and writes
-`pi-on-code-<version>.vsix` in the project root. Press F5 in VS Code to launch
-the Extension Development Host.
+`artifacts/pi-on-code-<version>.vsix`. Press F5 in VS Code to launch the
+Extension Development Host.
 
 ## Architecture and attribution
 

@@ -3,6 +3,7 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+artifacts/
 env/
 .pi/
 media/bundle.js
