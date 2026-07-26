@@ -1726,6 +1726,14 @@ input:focus-visible {
   text-transform: uppercase;
 }
 
+/* Assistant containers are created before the first model token arrives.
+   Keep a truly empty container out of layout so its border/padding does not
+   appear as a blank conversation row. It becomes visible automatically as
+   soon as text or a thinking block is inserted. */
+.message.assistant:has(> .message-content:only-child:empty) {
+  display: none;
+}
+
 .message .message-content,
 .message.user .message-content,
 .message.assistant .message-content {
