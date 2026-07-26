@@ -1793,9 +1793,14 @@ let sbSettings = document.getElementById("pi-sb-settings");
       highlightUserMsgItem();
       return;
     }
-    // Esc to close all overlays
+    // Esc cancels @ file search, or closes any other open overlay.
     if (e.key === "Escape") {
-      if (state.slashAutocompleteOpen || state.fileAutocompleteOpen || state.settingsOpen || state.extensionsOpen || state.userMsgSelectorOpen) {
+      if (state.fileAutocompleteOpen) {
+        e.preventDefault();
+        cancelWorkspaceFileAutocomplete();
+        return;
+      }
+      if (state.slashAutocompleteOpen || state.settingsOpen || state.extensionsOpen || state.userMsgSelectorOpen) {
         closeAllOverlays();
         e.preventDefault();
         return;
@@ -2485,6 +2490,23 @@ export function addWorkspaceFileAttachment(item: { id: string; path: string; nam
       state.workspaceFileAttachments.push(item);
       renderAttachments();
     }
+  }
+
+export function cancelWorkspaceFileAutocomplete(): void {
+    var updated = removeWorkspaceFileMention(
+      state.promptInput.value,
+      state.fileMentionStart,
+      state.promptInput.selectionStart,
+    );
+    state.fileMentionStart = -1;
+    state.fileFilter = "";
+    state.workspaceFileResults = [];
+    state.fileAutocomplete.classList.remove("visible");
+    state.fileAutocompleteOpen = false;
+    state.promptInput.value = updated.text;
+    state.promptInput.selectionStart = state.promptInput.selectionEnd = updated.cursor;
+    state.promptInput.dispatchEvent(new Event("input"));
+    state.promptInput.focus();
   }
 
 export function acceptWorkspaceFile(item: { id: string; path: string; name: string }): void {
