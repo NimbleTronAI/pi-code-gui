@@ -318,8 +318,29 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       margin-right: 6px;
       display: inline-block;
       background: var(--pi-green);
+      box-shadow: 0 0 0 0 rgb(131 192 146 / 0%);
       vertical-align: 1px;
+      animation: session-breathe 1.8s ease-in-out infinite;
     }
+
+    @keyframes session-breathe {
+      0%, 100% {
+        opacity: .45;
+        box-shadow: 0 0 0 0 rgb(131 192 146 / 0%);
+      }
+      50% {
+        opacity: 1;
+        box-shadow: 0 0 5px 2px rgb(131 192 146 / 34%);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .streaming-dot {
+        opacity: 1;
+        animation: none;
+      }
+    }
+
     .empty { padding: 7px 25px; color: var(--pi-muted); line-height: 1.7; }
 
     .packages-section { border-top: 1px solid var(--pi-border); }
