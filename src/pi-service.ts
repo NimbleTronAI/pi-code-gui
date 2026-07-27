@@ -928,7 +928,15 @@ export class PiService {
       input: (prompt: string, defaultValue?: string) => {
         return this._showDialog("input", prompt, { defaultValue });
       },
-      custom: () => undefined,
+      // Rendering a TUI component tree is impossible in the webview host, so
+      // this mirrors the SDK's own RPC mode (`modes/rpc/rpc-mode.js`):
+      // resolve to undefined so extensions take their cancelled/fallback
+      // branch. It MUST return a Promise — `ExtensionUIContext.custom()` is
+      // declared as `Promise<T>` and extensions chain `.then()` on it.
+      custom: async () => {
+        piWarn("ui.custom() is not supported in the webview host — resolving undefined");
+        return undefined;
+      },
 
       // TUI compatibility stubs discovered via the Proxy at runtime
       setToolsExpanded: (_expanded: boolean) => { /* stub — TUI widget expand/collapse */ },
