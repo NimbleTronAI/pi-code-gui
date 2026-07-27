@@ -251,7 +251,15 @@ export function reconcileThinkingCapability<T extends ThinkingModel>(
  *  offers `xhigh` (the reported inconsistency). On select, the SDK's own clamp maps our
  *  `xhigh` up to the model's `max` tier, so the wire still gets `reasoning_effort:"max"`.
  *  Only aliases when `xhigh` is absent, so a model exposing a genuinely distinct `xhigh`
- *  keeps it untouched. */
+ *  keeps it untouched.
+ *
+ *  RETIRE THIS if the binary ever makes `max` a first-class 7th thinking level distinct from
+ *  `xhigh` (upstream request: Dicklesworthstone/pi_agent_rust#139). This shim is correct ONLY
+ *  while `max` and `xhigh` are the same wire tier; once they are genuinely different (e.g. Kimi
+ *  K3, which accepts only `max`), folding `max` into `xhigh` HIDES the real top tier and
+ *  reintroduces the exact conflation #139 removes. The fix at that point: add `max` to
+ *  THINKING_LEVELS, drop/narrow this alias, and split the bundled catalog's `xhigh:"max"`
+ *  labeling into distinct rungs. See also REASONING_DESCR in thinking-dial.ts. */
 export function aliasMaxToXhigh(
   map: Record<string, string | null> | null | undefined,
 ): Record<string, string | null> | null | undefined {
