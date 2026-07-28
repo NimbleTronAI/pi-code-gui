@@ -1354,6 +1354,33 @@ export class PiService {
       .map((c: any) => ({ name: c.name, id: c.id, arguments: c.arguments }));
   }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private assistantEndData(message: any): {
+    stopReason?: string;
+    errorMessage?: string;
+    toolCalls: string[];
+  } {
+    const toolCalls = this.extractToolCallsFromContent(message?.content);
+    const hasVisibleContent = this.extractTextFromContent(message?.content).trim().length > 0
+      || this.extractThinkingFromContent(message?.content).trim().length > 0
+      || toolCalls.length > 0;
+    const stopReason = message?.stopReason;
+
+    if (!hasVisibleContent && stopReason !== "error" && stopReason !== "aborted") {
+      return {
+        stopReason: "error",
+        errorMessage: "The model returned an empty response. Try enabling thinking/reasoning or selecting another model.",
+        toolCalls: [],
+      };
+    }
+
+    return {
+      stopReason,
+      errorMessage: message?.errorMessage,
+      toolCalls: toolCalls.map((toolCall) => toolCall.id),
+    };
+  }
+
   /** Get entries once per event, plus pre-built lookups to avoid O(n²) scans. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private getEntriesWithLookups(): { entries: any[]; byMessageId: Map<string, any>; byToolCallId: Map<string, any> } {
@@ -1484,8 +1511,12 @@ export class PiService {
       case "message_end":
         if (event.message?.role === "user") { break; }
         if (event.message?.role === "assistant") {
-          const toolCalls = this.extractToolCallsFromContent(event.message.content);
-          this.emit({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
+          const data = this.assistantEndData(event.message);
+          if (data.stopReason === "error" && event.message.stopReason !== "error") {
+            const model = this._model?.id ?? this._model?.name ?? "unknown model";
+            piWarn(`Empty assistant response from ${model} (thinking: ${this._thinkingLevel}, original stop reason: ${event.message.stopReason ?? "missing"})`);
+          }
+          this.emit({ type: "assistant-end", data });
           this.reportStatus();
         } else if (event.message?.role === "custom") {
           const { entries } = this.getEntriesWithLookups();

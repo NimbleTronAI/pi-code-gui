@@ -59,6 +59,46 @@ suite("PiService session persistence", () => {
     assert.ok(!events.some((event) => event.type === "custom-message" && event.data?.customType === "pi-on-code-diagnostic"));
   });
 
+  test("surfaces an empty successful assistant response as an error", () => {
+    const events: Array<{ type: string; data?: { stopReason?: string; errorMessage?: string } }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    service._model = { id: "gpt-5.6-sol" };
+    service._thinkingLevel = "off";
+    service.sessionManager = { getEntries: () => [] };
+    service.onEvent((event: { type: string; data?: { stopReason?: string; errorMessage?: string } }) => events.push(event));
+
+    service.handleAgentEvent({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "stop" },
+    });
+
+    const end = events.find((event) => event.type === "assistant-end");
+    assert.strictEqual(end?.data?.stopReason, "error");
+    assert.match(end?.data?.errorMessage ?? "", /empty response/i);
+    assert.match(end?.data?.errorMessage ?? "", /thinking\/reasoning/i);
+  });
+
+  test("preserves a provider error on an empty assistant response", () => {
+    const events: Array<{ type: string; data?: { stopReason?: string; errorMessage?: string } }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    service.sessionManager = { getEntries: () => [] };
+    service.onEvent((event: { type: string; data?: { stopReason?: string; errorMessage?: string } }) => events.push(event));
+
+    service.handleAgentEvent({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Request timed out." },
+    });
+
+    const end = events.find((event) => event.type === "assistant-end");
+    assert.deepStrictEqual(end?.data, {
+      stopReason: "error",
+      errorMessage: "Request timed out.",
+      toolCalls: [],
+    });
+  });
+
   test("extracts image attachments from persisted user message content", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
     const service = new PiService() as any;
