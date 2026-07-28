@@ -672,8 +672,7 @@ export class PiWebviewPanel {
       const uri = value.toLowerCase().startsWith("file:")
         ? vscode.Uri.parse(value)
         : vscode.Uri.file(resolveFileLinkPath(value, getWorkspaceCwd()));
-      const document = await vscode.workspace.openTextDocument(uri);
-      await vscode.window.showTextDocument(document, { preview: true });
+      await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       piError(`Could not open file link "${filePath}": ${message}`);
