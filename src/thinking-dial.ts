@@ -28,7 +28,7 @@ export function toggleThinkingTarget(realLevel: string, defaultReasoning: string
 
 export const REASONING_DESCR: Record<string, string> = {
   minimal: "minimal reasoning", low: "brief reasoning", medium: "balanced reasoning",
-  high: "extended reasoning", xhigh: "maximum reasoning",
+  high: "extended reasoning", xhigh: "very high reasoning", max: "maximum reasoning",
 };
 
 /** A row in the /thinking QuickPick: a group separator or a selectable level. */

@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, aliasMaxToXhigh, computeTokenCost, buildThinkingCompat } from "../../model-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat } from "../../model-catalog.js";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -38,29 +38,15 @@ test("reconcile respects a deliberately non-reasoning model that is ABSENT from 
   assert.equal(out.reasoning, false); // unknown model — not upgraded
 });
 
-// aliasMaxToXhigh: pi-ai's live catalog keys DeepSeek's top tier `max` (its 7-level ladder);
-// our 6-level ladder + the Rust path label it `xhigh`. Without the alias, the TS picker drops
-// the tier (caps at high) while Rust offers xhigh — the reported cross-runtime inconsistency.
-test("reconcile aliases a live `max`-keyed top tier to `xhigh` so the TS picker surfaces it", () => {
-  // The exact shape ModelRuntime.getModel returns for deepseek-v4-pro on pi-ai 0.80.x.
+// First-class `max` (pi_agent_rust#139): a live `max`-keyed top tier is now surfaced AS `max`,
+// not folded into `xhigh` (aliasMaxToXhigh is retired). The reconcile pass passes it through
+// untouched — and returns the SAME object, since it already reasons (no clobber).
+test("reconcile surfaces a live `max`-keyed top tier as first-class max, unchanged", () => {
   const live = { reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" } };
   const out = reconcileThinkingCapability(DS_PROVIDERS, "deepseek", "deepseek-v4-pro", live);
-  assert.equal((out as any).thinkingLevelMap.xhigh, "max"); // aliased in
-  // The picker now offers the same rungs as the Rust (bundled-catalog) path.
-  assert.deepEqual(getSupportedThinkingLevels(out), ["off", "high", "xhigh"]);
-});
-
-test("aliasMaxToXhigh only fires when `max` is present and `xhigh` is absent", () => {
-  // Already has xhigh → untouched (a genuinely distinct xhigh is preserved).
-  const both = { minimal: null, high: "high", xhigh: "high", max: "max" };
-  assert.equal(aliasMaxToXhigh(both), both);
-  // No max → untouched.
-  const noMax = { high: "high" };
-  assert.equal(aliasMaxToXhigh(noMax), noMax);
-  // max:null (unsupported) → not aliased.
-  assert.deepEqual(aliasMaxToXhigh({ high: "high", max: null }), { high: "high", max: null });
-  // null/undefined maps pass through.
-  assert.equal(aliasMaxToXhigh(null), null);
+  assert.equal(out, live, "an already-reasoning model is returned by identity (same-object contract)");
+  assert.equal((out as any).thinkingLevelMap.xhigh, undefined, "no phantom xhigh is aliased in");
+  assert.deepEqual(getSupportedThinkingLevels(out), ["off", "high", "max"], "max is offered as its own rung");
 });
 
 test("computeTokenCost: tokens × per-million rates, summed (matches pi-ai calculateCost)", () => {
@@ -174,9 +160,34 @@ test("getSupportedThinkingLevels: a non-reasoning model supports only off", () =
   assert.deepEqual(getSupportedThinkingLevels({}), ["off"]);
 });
 
-test("getSupportedThinkingLevels: a reasoning model with no map gets the full range except xhigh", () => {
+test("getSupportedThinkingLevels: a reasoning model with no map gets the full range except xhigh AND max", () => {
+  // Both top rungs require an explicit mapping, so an unmapped model surfaces neither.
   assert.deepEqual(getSupportedThinkingLevels({ reasoning: true }),
     ["off", "minimal", "low", "medium", "high"]);
+});
+
+test("getSupportedThinkingLevels: max is offered only when explicitly mapped (first-class, #139)", () => {
+  const withMax = { reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" } };
+  assert.deepEqual(getSupportedThinkingLevels(withMax), ["off", "high", "max"]);
+  // A pre-#139 catalog keys the top tier `xhigh:"max"` (no max KEY) → xhigh, never max.
+  const preFix = { reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "max" } };
+  assert.deepEqual(getSupportedThinkingLevels(preFix), ["off", "high", "xhigh"]);
+  // A model exposing BOTH distinct rungs (e.g. Anthropic effort:"max" above xhigh) offers both.
+  const both = { reasoning: true, thinkingLevelMap: { high: "high", xhigh: "xhigh", max: "max" } };
+  assert.deepEqual(getSupportedThinkingLevels(both), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+});
+
+test("THINKING_LEVELS is the 7-rung ladder topping at max", () => {
+  assert.deepEqual([...THINKING_LEVELS], ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+});
+
+test("clampThinkingLevel: max is the top rung — a max request snaps down when unsupported", () => {
+  // Model tops out at high (no xhigh/max mapping): a max request degrades to high, not off.
+  const highOnly = { reasoning: true, thinkingLevelMap: { minimal: "x", low: "x", medium: "x", high: "x" } };
+  assert.equal(clampThinkingLevel(highOnly, "max"), "high");
+  // Model that genuinely supports max keeps it.
+  const withMax = { reasoning: true, thinkingLevelMap: { high: "high", max: "max" } };
+  assert.equal(clampThinkingLevel(withMax, "max"), "max");
 });
 
 test("getSupportedThinkingLevels: DeepSeek (minimal/low/medium → null) collapses to off/high/xhigh", () => {

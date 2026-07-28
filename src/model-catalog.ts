@@ -82,8 +82,16 @@ export function thinkingLevelIsLive(api: string | null | undefined): boolean {
 /** The full graded thinking range, lowest→highest, matching rust-pi's `--thinking`
  *  possible-values and pi-ai's EXTENDED_THINKING_LEVELS. "off" is the floor. This
  *  is the *superset*; the levels a concrete model actually honors are a subset —
- *  see getSupportedThinkingLevels. */
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+ *  see getSupportedThinkingLevels.
+ *
+ *  `max` is the first-class 7th tier added upstream (pi_agent_rust#139) — distinct from
+ *  `xhigh`, since some models (e.g. Kimi K3) accept only `max` and Anthropic exposes
+ *  `effort:"max"` above xhigh. Like `xhigh` it is offered ONLY when a model explicitly maps
+ *  it: a pre-#139 pi-ai keys its top tier `xhigh:"max"` (no `max` KEY), so on the current
+ *  bundled catalog and the pinned v0.1.22 binary `max` is never surfaced or sent. It lights up
+ *  once the bundled catalog is regenerated from a post-#139 pi-ai (and the rust pin is bumped);
+ *  the presence of a distinct `max` key is itself the signal the backend understands it. */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** The thinking-capability shape read off a catalog/SDK model. Mirrors the fields
@@ -106,7 +114,10 @@ export function getSupportedThinkingLevels(model: ThinkingModel): ThinkingLevel[
   return THINKING_LEVELS.filter((level) => {
     const mapped = model.thinkingLevelMap?.[level];
     if (mapped === null) { return false; }
-    if (level === "xhigh") { return mapped !== undefined; }
+    // xhigh and max are top-tier rungs offered ONLY when the model explicitly maps them —
+    // an absent key means the model doesn't distinguish that tier (a pre-#139 catalog never
+    // carries a `max` key), so it must not be surfaced.
+    if (level === "xhigh" || level === "max") { return mapped !== undefined; }
     return true;
   });
 }
@@ -227,44 +238,14 @@ export function reconcileThinkingCapability<T extends ThinkingModel>(
   id: string,
   base: T,
 ): T {
-  // Normalize pi-ai's top rung to this extension's ladder BEFORE anything else (see
-  // aliasMaxToXhigh) — otherwise a model whose live catalog keys its top tier `max`
-  // (e.g. DeepSeek) loses that tier in our `xhigh`-only picker. Preserve the same-object
-  // contract when nothing is aliased (callers rely on `out === base` = no clobber).
-  const aliasedMap = aliasMaxToXhigh(base.thinkingLevelMap);
-  const normalized = aliasedMap === base.thinkingLevelMap ? base : ({ ...base, thinkingLevelMap: aliasedMap } as T);
-  if (normalized.reasoning) { return normalized; }
+  // A live `max`-keyed top tier is now first-class (THINKING_LEVELS carries `max`), so it is
+  // passed through untouched — no longer folded into `xhigh`. Preserve the same-object contract
+  // (callers rely on `out === base` = no clobber): return `base` directly when it already reasons.
+  if (base.reasoning) { return base; }
   const bundled = findCatalogThinkingModel(providers, provider, id);
   if (bundled?.reasoning) {
-    return { ...normalized, reasoning: true, thinkingLevelMap: normalized.thinkingLevelMap ?? bundled.thinkingLevelMap };
+    return { ...base, reasoning: true, thinkingLevelMap: base.thinkingLevelMap ?? bundled.thinkingLevelMap };
   }
-  return normalized;
+  return base;
 }
 
-/** pi-ai's live catalog uses a 7-level ladder — `[off,minimal,low,medium,high,xhigh,max]`
- *  — with a distinct top rung `max`, and labels some providers' top reasoning tier `max`
- *  (DeepSeek: `reasoning_effort:"max"`). This extension's ladder is 6 levels topping at
- *  `xhigh` (THINKING_LEVELS), and both the bundled catalog and the Rust path label that
- *  same DeepSeek tier `xhigh:"max"`. So when a live pi-ai model keys its top tier `max`
- *  and has NO separate `xhigh`, alias it to `xhigh` — otherwise getSupportedThinkingLevels
- *  (keyed by our ladder) can't surface it and the TS picker caps at `high` while Rust
- *  offers `xhigh` (the reported inconsistency). On select, the SDK's own clamp maps our
- *  `xhigh` up to the model's `max` tier, so the wire still gets `reasoning_effort:"max"`.
- *  Only aliases when `xhigh` is absent, so a model exposing a genuinely distinct `xhigh`
- *  keeps it untouched.
- *
- *  RETIRE THIS if the binary ever makes `max` a first-class 7th thinking level distinct from
- *  `xhigh` (upstream request: Dicklesworthstone/pi_agent_rust#139). This shim is correct ONLY
- *  while `max` and `xhigh` are the same wire tier; once they are genuinely different (e.g. Kimi
- *  K3, which accepts only `max`), folding `max` into `xhigh` HIDES the real top tier and
- *  reintroduces the exact conflation #139 removes. The fix at that point: add `max` to
- *  THINKING_LEVELS, drop/narrow this alias, and split the bundled catalog's `xhigh:"max"`
- *  labeling into distinct rungs. See also REASONING_DESCR in thinking-dial.ts. */
-export function aliasMaxToXhigh(
-  map: Record<string, string | null> | null | undefined,
-): Record<string, string | null> | null | undefined {
-  if (map && map.max !== undefined && map.max !== null && map.xhigh === undefined) {
-    return { ...map, xhigh: map.max };
-  }
-  return map;
-}

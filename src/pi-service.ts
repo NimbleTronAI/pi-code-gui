@@ -1239,7 +1239,11 @@ export class PiService {
    *  so we only ever narrow the choices when we have real metadata to narrow by. */
   supportedThinkingLevels(): string[] {
     const full = this.currentFullModel();
-    return full ? getSupportedThinkingLevels(full) : [...THINKING_LEVELS];
+    // When the model is fully unknown, offer the graded range speculatively — but NOT `max`:
+    // it is the one level a pre-#139 binary can't honor, and an unresolved model gives us no
+    // evidence the backend supports it (getSupportedThinkingLevels surfaces max only from an
+    // explicit per-model mapping, which this fallback has none of).
+    return full ? getSupportedThinkingLevels(full) : THINKING_LEVELS.filter((l) => l !== "max");
   }
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */

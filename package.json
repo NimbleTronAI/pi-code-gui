@@ -334,7 +334,8 @@
             "low",
             "medium",
             "high",
-            "xhigh"
+            "xhigh",
+            "max"
           ],
           "description": "Default thinking level for new sessions"
         },
