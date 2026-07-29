@@ -24,6 +24,20 @@ export interface LoadedExtension {
   path: string;
 }
 
+export interface LoadedSkill {
+  name: string;
+  description: string;
+  path: string;
+  scope?: "user" | "project" | "temporary";
+}
+
+export interface SlashCommandInfo {
+  cmd: string;
+  desc: string;
+  source: "builtin" | "extension" | "prompt" | "skill";
+  scope?: "user" | "project" | "temporary";
+}
+
 function extensionDisplayName(extensionPath: string): string {
   const parts = extensionPath.replace(/\\/g, "/").split("/").filter(Boolean);
   const nodeModulesIndex = parts.lastIndexOf("node_modules");
@@ -613,7 +627,7 @@ export class PiService {
         diagnostic.type === "error" ? piWarn(message) : piLog(message);
       }
       const { skills: discoveredSkills } = this.resourceLoader.getSkills();
-      piLog(`Extensions: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
+      piLog(`Skills: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       return { success: false, error: `Runtime service setup failed: ${e.message ?? e}` };
@@ -992,8 +1006,8 @@ export class PiService {
       piWarn(`bindExtensions failed: ${e.message ?? e}`);
     }
 
-    // Push updated extension and slash-command lists after registration.
-    this.emitLoadedExtensions();
+    // Push updated capability and slash-command lists after registration.
+    this.emitCapabilities();
     this.emitSlashCommands();
   }
 
@@ -1018,51 +1032,103 @@ export class PiService {
     }
   }
 
-  /** Notify the webview about extensions active in this session. */
-  emitLoadedExtensions(): void {
+  getLoadedSkills(): LoadedSkill[] {
+    try {
+      const rawSkills: unknown = this.resourceLoader?.getSkills?.()?.skills;
+      if (!Array.isArray(rawSkills)) { return []; }
+      return rawSkills.flatMap((value): LoadedSkill[] => {
+        if (!value || typeof value !== "object") { return []; }
+        const skill = value as Record<string, unknown>;
+        if (typeof skill.name !== "string" || typeof skill.filePath !== "string") { return []; }
+        const sourceInfo = skill.sourceInfo && typeof skill.sourceInfo === "object"
+          ? skill.sourceInfo as Record<string, unknown>
+          : undefined;
+        const scope = sourceInfo?.scope;
+        return [{
+          name: skill.name,
+          description: typeof skill.description === "string" ? skill.description : "",
+          path: skill.filePath,
+          scope: scope === "user" || scope === "project" || scope === "temporary"
+            ? scope
+            : undefined,
+        }];
+      });
+    } catch (error: unknown) {
+      piWarn(`Could not inspect loaded skills: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /** Notify the Webview about capabilities active in the current Pi session. */
+  emitCapabilities(): void {
     this.emit({
-      type: "extensions-update",
-      data: { extensions: this.getLoadedExtensions() },
+      type: "capabilities-update",
+      data: {
+        extensions: this.getLoadedExtensions(),
+        skills: this.getLoadedSkills(),
+      },
     });
   }
 
-  /** Get all slash commands available to the user.
-   *  Includes extension-registered commands, builtin SDK commands,
-   *  and builtin prompt templates.  Each entry carries a `source`
-   *  field so the UI can group or label them. */
-  getAllSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
-    const result: Array<{ cmd: string; desc: string; source: string }> = [];
+  /** Mirror Pi RPC get_commands: extensions, prompt templates, and skills. */
+  getAllSlashCommands(): SlashCommandInfo[] {
+    const result: SlashCommandInfo[] = [];
+    const readScope = (value: unknown): SlashCommandInfo["scope"] => {
+      if (!value || typeof value !== "object") { return undefined; }
+      const scope = (value as Record<string, unknown>).scope;
+      return scope === "user" || scope === "project" || scope === "temporary"
+        ? scope
+        : undefined;
+    };
 
-    // ── Extension commands ──────────────────────────
     try {
- 
-      const rawSession = (this.session);
-      const runner = rawSession?.extensionRunner ?? rawSession?._extensionRunner;
-      if (runner && typeof runner.getRegisteredCommands === "function") {
-        const commands = runner.getRegisteredCommands();
-        if (commands && commands.length > 0) {
-          for (const c of commands) {
-            const source = c?.sourceInfo?.source
-              ? `extension (${c.sourceInfo.source})`
-              : "extension";
-            result.push({
-              cmd: `/${c.invocationName}`,
-              desc: c.description ?? "",
-              source,
-            });
-          }
+      const runner = this.session?.extensionRunner ?? this.session?._extensionRunner;
+      const commands: unknown = runner?.getRegisteredCommands?.();
+      if (Array.isArray(commands)) {
+        for (const value of commands) {
+          if (!value || typeof value !== "object") { continue; }
+          const command = value as Record<string, unknown>;
+          if (typeof command.invocationName !== "string") { continue; }
+          result.push({
+            cmd: `/${command.invocationName}`,
+            desc: typeof command.description === "string" ? command.description : "",
+            source: "extension",
+            scope: readScope(command.sourceInfo),
+          });
         }
       }
-    } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
+    } catch (error: unknown) {
+      piWarn(`Could not inspect extension commands: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
-    // ── Builtin prompt templates ────────────────────
-    result.push(
-      { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
-      { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
-      { cmd: "/refactor", desc: "Refactor the selected code", source: "builtin" },
-    );
+    try {
+      const prompts: unknown = this.resourceLoader?.getPrompts?.()?.prompts;
+      if (Array.isArray(prompts)) {
+        for (const value of prompts) {
+          if (!value || typeof value !== "object") { continue; }
+          const prompt = value as Record<string, unknown>;
+          if (typeof prompt.name !== "string") { continue; }
+          result.push({
+            cmd: `/${prompt.name}`,
+            desc: typeof prompt.description === "string" ? prompt.description : "",
+            source: "prompt",
+            scope: readScope(prompt.sourceInfo),
+          });
+        }
+      }
+    } catch (error: unknown) {
+      piWarn(`Could not inspect prompt templates: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
-    // ── Builtin SDK commands ────────────────────────
+    for (const skill of this.getLoadedSkills()) {
+      result.push({
+        cmd: `/skill:${skill.name}`,
+        desc: skill.description,
+        source: "skill",
+        scope: skill.scope,
+      });
+    }
+
     result.push(
       { cmd: "/model", desc: "Switch model", source: "builtin" },
       { cmd: "/new", desc: "Start new session", source: "builtin" },
@@ -1078,7 +1144,16 @@ export class PiService {
       { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
     );
 
-    return result;
+    const builtinNames = new Set(
+      result.filter((command) => command.source === "builtin").map((command) => command.cmd),
+    );
+    const seen = new Set<string>();
+    return result.filter((command) => {
+      if (command.source !== "builtin" && builtinNames.has(command.cmd)) { return false; }
+      if (seen.has(command.cmd)) { return false; }
+      seen.add(command.cmd);
+      return true;
+    });
   }
 
   /** Emit all registered slash commands to the webview for autocomplete. */
@@ -1773,20 +1848,20 @@ export class PiService {
   }
 
   /**
-   * Reload extension runtime resources without replaying conversation history.
+   * Reload capability resources without replaying conversation history.
    * The SDK rebuilds its runtime in place, so the current Session and Webview
    * message DOM remain intact even for very long conversations.
    */
-  async reloadExtensions(): Promise<void> {
+  async reloadCapabilities(): Promise<void> {
     if (!this.session) { throw new Error("Pi session is not initialized"); }
     await this.session.reload();
-    this.emitLoadedExtensions();
+    this.emitCapabilities();
     this.emitSlashCommands();
   }
 
   /** Reload all resources and replay the current session into the Webview. */
   async reloadContext(): Promise<void> {
-    await this.reloadExtensions();
+    await this.reloadCapabilities();
     await this.emitInitialHistoryReplay();
   }
 

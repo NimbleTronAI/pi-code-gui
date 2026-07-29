@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolvePiPackagePath } from "./pi-service.js";
@@ -15,8 +16,12 @@ export interface InstalledPackage {
   installedPath?: string;
 }
 
-export interface ManagedExtension {
+export type CapabilityKind = "extension" | "skill";
+
+export interface ManagedCapability {
+  kind: CapabilityKind;
   name: string;
+  description?: string;
   path: string;
   enabled: boolean;
   source: string;
@@ -36,9 +41,10 @@ interface PackageSourceConfig {
 interface PackageSettings {
   packages?: Array<string | PackageSourceConfig>;
   extensions?: string[];
+  skills?: string[];
 }
 
-interface ResolvedExtensionResource {
+interface ResolvedCapabilityResource {
   path: string;
   enabled: boolean;
   metadata: {
@@ -57,10 +63,15 @@ interface DynamicSettingsManager {
   setProjectPackages(packages: Array<string | PackageSourceConfig>): void;
   setExtensionPaths(paths: string[]): void;
   setProjectExtensionPaths(paths: string[]): void;
+  setSkillPaths(paths: string[]): void;
+  setProjectSkillPaths(paths: string[]): void;
 }
 
 interface DynamicPackageManager {
-  resolve(): Promise<{ extensions: ResolvedExtensionResource[] }>;
+  resolve(): Promise<{
+    extensions: ResolvedCapabilityResource[];
+    skills: ResolvedCapabilityResource[];
+  }>;
   listConfiguredPackages(): InstalledPackage[];
   installAndPersist(source: string, options: { local: boolean }): Promise<void>;
   removeAndPersist(source: string, options: { local: boolean }): Promise<void>;
@@ -76,6 +87,28 @@ function extensionName(extensionPath: string, source: string): string {
   if (source && source !== "auto") { return source.replace(/^(npm|git):/, ""); }
   const fileName = path.basename(extensionPath);
   return fileName.replace(/\.[^.]+$/, "") || fileName;
+}
+
+function skillDetails(skillPath: string): { name: string; description?: string } {
+  const fileName = path.basename(skillPath);
+  const fallbackName = fileName.toLowerCase() === "skill.md"
+    ? path.basename(path.dirname(skillPath))
+    : fileName.replace(/\.[^.]+$/, "");
+  try {
+    const content = fs.readFileSync(skillPath, "utf8").slice(0, 8 * 1024);
+    const frontmatter = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+    if (!frontmatter) { return { name: fallbackName }; }
+    const readField = (field: string): string | undefined => {
+      const match = frontmatter[1].match(new RegExp(`^${field}:\\s*(.+)$`, "m"));
+      return match?.[1]?.trim().replace(/^(["'])(.*)\1$/, "$2");
+    };
+    return {
+      name: readField("name") || fallbackName,
+      description: readField("description"),
+    };
+  } catch {
+    return { name: fallbackName };
+  }
 }
 
 export interface MarketplacePackage {
@@ -197,43 +230,60 @@ export class PiPackageService {
     }
   }
 
-  /** List extension resources resolved from current user/project settings. */
-  async listExtensions(): Promise<ManagedExtension[]> {
+  /** List extension and skill resources with their persisted enabled state. */
+  async listCapabilities(): Promise<ManagedCapability[]> {
     if (!this.packageManager || !this.settingsManager) { return []; }
     await this.settingsManager.reload();
     const resolved = await this.packageManager.resolve();
-    return resolved.extensions.map((extension) => ({
-        name: extensionName(extension.path, extension.metadata.source),
-        path: extension.path,
-        enabled: extension.enabled,
-        source: extension.metadata.source,
-        scope: extension.metadata.scope,
-        origin: extension.metadata.origin,
-      }));
+    const extensions = resolved.extensions.map((extension): ManagedCapability => ({
+      kind: "extension",
+      name: extensionName(extension.path, extension.metadata.source),
+      path: extension.path,
+      enabled: extension.enabled,
+      source: extension.metadata.source,
+      scope: extension.metadata.scope,
+      origin: extension.metadata.origin,
+    }));
+    const skills = resolved.skills.map((skill): ManagedCapability => ({
+      kind: "skill",
+      ...skillDetails(skill.path),
+      path: skill.path,
+      enabled: skill.enabled,
+      source: skill.metadata.source,
+      scope: skill.metadata.scope,
+      origin: skill.metadata.origin,
+    }));
+    return [...skills, ...extensions];
   }
 
-  /** Persist an extension resource override. Session reload is handled by the caller. */
-  async setExtensionEnabled(extensionPath: string, enabled: boolean): Promise<void> {
+  /** Persist a capability resource override. Session reload is handled by the caller. */
+  async setCapabilityEnabled(
+    kind: CapabilityKind,
+    capabilityPath: string,
+    enabled: boolean,
+  ): Promise<void> {
     if (!this.packageManager || !this.settingsManager) {
       throw new Error("Package manager not initialized");
     }
 
     await this.settingsManager.reload();
     const resolved = await this.packageManager.resolve();
-    const resource = resolved.extensions.find(
-      (extension) => path.resolve(extension.path) === path.resolve(extensionPath),
+    const resources = kind === "skill" ? resolved.skills : resolved.extensions;
+    const resource = resources.find(
+      (candidate) => path.resolve(candidate.path) === path.resolve(capabilityPath),
     );
-    if (!resource?.metadata) { throw new Error("Extension resource was not found"); }
+    if (!resource?.metadata) { throw new Error(`${kind} resource was not found`); }
 
     const metadata = resource.metadata;
     if (metadata.scope === "temporary") {
-      throw new Error("Temporary extensions cannot be persisted");
+      throw new Error(`Temporary ${kind}s cannot be persisted`);
     }
 
-    const baseDir = metadata.baseDir ?? path.dirname(extensionPath);
-    const relativePath = path.relative(baseDir, extensionPath).replace(/\\/g, "/");
+    const baseDir = metadata.baseDir ?? path.dirname(capabilityPath);
+    const relativePath = path.relative(baseDir, capabilityPath).replace(/\\/g, "/");
     const matchesPath = (pattern: string): boolean =>
       pattern.replace(/^[!+-]/, "").replace(/\\/g, "/") === relativePath;
+    const resourceKey = kind === "skill" ? "skills" : "extensions";
 
     if (metadata.origin === "package") {
       const settings = metadata.scope === "project"
@@ -247,10 +297,12 @@ export class PiPackageService {
 
       const current = packages[packageIndex];
       const next: PackageSourceConfig = typeof current === "string" ? { source: current } : { ...current };
-      const originalPatterns = next.extensions;
+      const originalPatterns = next[resourceKey];
       let patterns = [...(originalPatterns ?? [])].filter((pattern) => !matchesPath(pattern));
       if (enabled) {
-        if (originalPatterns?.length === 0) {
+        if (next.autoload === false) {
+          patterns.push(`+${relativePath}`);
+        } else if (originalPatterns?.length === 0) {
           patterns = [relativePath];
         } else if (originalPatterns?.some((pattern) => !/^[!+-]/.test(pattern))) {
           patterns.push(`+${relativePath}`);
@@ -260,9 +312,9 @@ export class PiPackageService {
       }
 
       if (patterns.length > 0 || originalPatterns?.length === 0) {
-        next.extensions = [...new Set(patterns)];
+        next[resourceKey] = [...new Set(patterns)];
       } else {
-        delete next.extensions;
+        delete next[resourceKey];
       }
       packages[packageIndex] = next;
       if (metadata.scope === "project") {
@@ -276,9 +328,16 @@ export class PiPackageService {
     const settings = metadata.scope === "project"
       ? this.settingsManager.getProjectSettings()
       : this.settingsManager.getGlobalSettings();
-    const patterns = [...(settings.extensions ?? [])].filter((pattern: string) => !matchesPath(pattern));
+    const originalPatterns = settings[resourceKey] ?? [];
+    const patterns = originalPatterns.filter((pattern) => !matchesPath(pattern));
     if (!enabled) { patterns.push(`-${relativePath}`); }
-    if (metadata.scope === "project") {
+    if (kind === "skill") {
+      if (metadata.scope === "project") {
+        this.settingsManager.setProjectSkillPaths(patterns);
+      } else {
+        this.settingsManager.setSkillPaths(patterns);
+      }
+    } else if (metadata.scope === "project") {
       this.settingsManager.setProjectExtensionPaths(patterns);
     } else {
       this.settingsManager.setExtensionPaths(patterns);

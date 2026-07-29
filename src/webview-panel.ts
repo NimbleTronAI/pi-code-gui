@@ -17,8 +17,10 @@ import {
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
-export interface ExtensionPanelItem {
+export interface CapabilityPanelItem {
+  kind: "extension" | "skill";
   name: string;
+  description?: string;
   path: string;
   enabled: boolean;
   source: string;
@@ -26,9 +28,13 @@ export interface ExtensionPanelItem {
   origin: "package" | "top-level";
 }
 
-export interface ExtensionPanelActions {
-  list: () => Promise<ExtensionPanelItem[]>;
-  setEnabled: (extensionPath: string, enabled: boolean) => Promise<void>;
+export interface CapabilityPanelActions {
+  list: () => Promise<CapabilityPanelItem[]>;
+  setEnabled: (
+    kind: CapabilityPanelItem["kind"],
+    capabilityPath: string,
+    enabled: boolean,
+  ) => Promise<void>;
 }
 
 export class PiWebviewPanel {
@@ -55,7 +61,7 @@ export class PiWebviewPanel {
   constructor(
     private context: vscode.ExtensionContext,
     piService: PiService,
-    private readonly extensionPanelActions: ExtensionPanelActions,
+    private readonly capabilityPanelActions: CapabilityPanelActions,
   ) {
     this.piService = piService;
   }
@@ -105,7 +111,7 @@ export class PiWebviewPanel {
     this.setupWebviewHandlers();
     this.setupEditorContextTracking();
     this.setupServiceHandlers();
-    this.piService.emitLoadedExtensions();
+    this.piService.emitCapabilities();
 
     this.panel.onDidChangeViewState((e) => {
       if (!e.webviewPanel.active) { return; }
@@ -497,7 +503,7 @@ export class PiWebviewPanel {
           clearInterval(statusInterval);
           statusInterval = null;
           this._tabInitialized = true;
-          this.piService.emitLoadedExtensions();
+          this.piService.emitCapabilities();
           this.updateTabIndicator();
         }
       }, 500);
@@ -578,16 +584,16 @@ export class PiWebviewPanel {
             void this.triggerEffortPicker();
             break;
 
-          case "getExtensions":
-            void this.postExtensionsPanelState();
+          case "getCapabilities":
+            void this.postCapabilitiesPanelState();
             break;
 
-          case "reloadExtensions":
-            void this.triggerExtensionsReload();
+          case "reloadCapabilities":
+            void this.triggerCapabilitiesReload();
             break;
 
-          case "setExtensionEnabled":
-            void this.triggerExtensionToggle(message.path, message.enabled);
+          case "setCapabilityEnabled":
+            void this.triggerCapabilityToggle(message.kind, message.path, message.enabled);
             break;
 
           case "openUrl":
@@ -938,7 +944,7 @@ export class PiWebviewPanel {
     <div id="pi-extension-status" class="pi-sb-item"></div>
     <span class="pi-sb-hint" id="pi-sb-follow-up-hint" title="Queue a follow-up while Pi is working" hidden>Alt+Enter follow-up</span>
     <div class="pi-sb-item spacer"></div>
-    <div class="pi-sb-item" id="pi-sb-extensions" title="Manage extensions for this session">extensions: 0</div>
+    <div class="pi-sb-item" id="pi-sb-capabilities" title="Manage capabilities for this session">capabilities: 0</div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>
     <div class="pi-sb-item" id="pi-sb-settings" title="Settings">⚙</div>
   </div>
@@ -946,7 +952,7 @@ export class PiWebviewPanel {
 
   <div class="user-msg-selector-overlay" id="user-msg-overlay"></div>
   <div class="settings-overlay" id="settings-overlay"></div>
-  <div class="extensions-overlay" id="extensions-overlay"></div>
+  <div class="extensions-overlay" id="capabilities-overlay"></div>
   <div class="slash-autocomplete" id="slash-autocomplete"></div>
   <div class="file-autocomplete" id="file-autocomplete"></div>
 
@@ -955,53 +961,66 @@ export class PiWebviewPanel {
 </html>`;
   }
 
-  /** Push extension resources and their enabled state into the custom panel. */
-  private async postExtensionsPanelState(): Promise<void> {
-    this.postMessage({ type: "extensions-panel-update", data: { extensions: [], loading: true } });
+  /** Push extension and skill resources into the Capabilities panel. */
+  private async postCapabilitiesPanelState(): Promise<void> {
+    this.postMessage({
+      type: "capabilities-panel-update",
+      data: { capabilities: [], loading: true },
+    });
     try {
-      const extensions = await this.extensionPanelActions.list();
-      this.postMessage({ type: "extensions-panel-update", data: { extensions } });
+      const capabilities = await this.capabilityPanelActions.list();
+      this.postMessage({ type: "capabilities-panel-update", data: { capabilities } });
     } catch (error: unknown) {
       this.postMessage({
-        type: "extensions-panel-update",
+        type: "capabilities-panel-update",
         data: {
-          extensions: [],
+          capabilities: [],
           error: error instanceof Error ? error.message : String(error),
         },
       });
     }
   }
 
-  /** Reload extension runtime state without replaying conversation history. */
-  private async triggerExtensionsReload(): Promise<void> {
-    this.postMessage({ type: "extensions-panel-update", data: { extensions: [], loading: true } });
+  /** Reload runtime resources without replaying conversation history. */
+  private async triggerCapabilitiesReload(): Promise<void> {
+    this.postMessage({
+      type: "capabilities-panel-update",
+      data: { capabilities: [], loading: true },
+    });
     try {
-      await this.piService.reloadExtensions();
-      await this.postExtensionsPanelState();
+      await this.piService.reloadCapabilities();
+      await this.postCapabilitiesPanelState();
     } catch (error: unknown) {
       this.postMessage({
-        type: "extensions-panel-update",
+        type: "capabilities-panel-update",
         data: {
-          extensions: [],
+          capabilities: [],
           error: `Reload failed: ${error instanceof Error ? error.message : String(error)}`,
         },
       });
     }
   }
 
-  /** Persist one extension toggle, then reload the session to apply it. */
-  private async triggerExtensionToggle(extensionPath: string, enabled: boolean): Promise<void> {
-    this.postMessage({ type: "extensions-panel-update", data: { extensions: [], loading: true } });
+  /** Persist one capability toggle, then reload the runtime resources. */
+  private async triggerCapabilityToggle(
+    kind: "extension" | "skill",
+    capabilityPath: string,
+    enabled: boolean,
+  ): Promise<void> {
+    this.postMessage({
+      type: "capabilities-panel-update",
+      data: { capabilities: [], loading: true },
+    });
     try {
-      await this.extensionPanelActions.setEnabled(extensionPath, enabled);
-      await this.piService.reloadExtensions();
-      await this.postExtensionsPanelState();
+      await this.capabilityPanelActions.setEnabled(kind, capabilityPath, enabled);
+      await this.piService.reloadCapabilities();
+      await this.postCapabilitiesPanelState();
     } catch (error: unknown) {
       this.postMessage({
-        type: "extensions-panel-update",
+        type: "capabilities-panel-update",
         data: {
-          extensions: [],
-          error: `Could not ${enabled ? "enable" : "disable"} extension: ${error instanceof Error ? error.message : String(error)}`,
+          capabilities: [],
+          error: `Could not ${enabled ? "enable" : "disable"} ${kind}: ${error instanceof Error ? error.message : String(error)}`,
         },
       });
     }

@@ -158,26 +158,34 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, true);
   });
 
-  test("accepts active extension updates", () => {
+  test("accepts active capability updates", () => {
     const result = validateExtensionToWebview({
-      type: "extensions-update",
+      type: "capabilities-update",
       data: {
         extensions: [
           { name: "@example/pi-tools", path: "/tmp/node_modules/@example/pi-tools/index.js" },
         ],
+        skills: [{
+          name: "review",
+          description: "Review changes",
+          path: "/tmp/skills/review/SKILL.md",
+          scope: "user",
+        }],
       },
     });
 
     assert.strictEqual(result.success, true);
   });
 
-  test("accepts extension panel updates", () => {
+  test("accepts capability panel updates", () => {
     const result = validateExtensionToWebview({
-      type: "extensions-panel-update",
+      type: "capabilities-panel-update",
       data: {
-        extensions: [{
-          name: "demo",
-          path: "/tmp/demo-extension.js",
+        capabilities: [{
+          kind: "skill",
+          name: "review",
+          description: "Review changes",
+          path: "/tmp/skills/review/SKILL.md",
           enabled: true,
           source: "auto",
           scope: "project",
@@ -189,17 +197,32 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(result.success, true);
   });
 
-  test("accepts extension panel controls", () => {
-    const listResult = validateWebviewToExtension({ type: "getExtensions" });
-    const reloadResult = validateWebviewToExtension({ type: "reloadExtensions" });
+  test("accepts capability panel controls", () => {
+    const listResult = validateWebviewToExtension({ type: "getCapabilities" });
+    const reloadResult = validateWebviewToExtension({ type: "reloadCapabilities" });
     const toggleResult = validateWebviewToExtension({
-      type: "setExtensionEnabled",
-      path: "/tmp/demo-extension.js",
+      type: "setCapabilityEnabled",
+      kind: "skill",
+      path: "/tmp/skills/review/SKILL.md",
       enabled: false,
     });
 
     assert.strictEqual(listResult.success, true);
     assert.strictEqual(reloadResult.success, true);
     assert.strictEqual(toggleResult.success, true);
+  });
+
+  test("accepts sourced slash commands", () => {
+    const result = validateExtensionToWebview({
+      type: "slash-commands-update",
+      data: {
+        commands: [
+          { cmd: "/skill:review", desc: "Review changes", source: "skill", scope: "user" },
+          { cmd: "/release", desc: "Prepare release", source: "prompt", scope: "project" },
+        ],
+      },
+    });
+
+    assert.strictEqual(result.success, true);
   });
 });

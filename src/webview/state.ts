@@ -27,6 +27,13 @@ export interface WorkspaceFileItem {
   external?: boolean;
 }
 
+export interface SlashCommandItem {
+  cmd: string;
+  desc: string;
+  source?: "builtin" | "extension" | "prompt" | "skill";
+  scope?: "user" | "project" | "temporary";
+}
+
 export interface AppState {
   // ── Boolean flags
   isStreaming: boolean;
@@ -80,12 +87,14 @@ export interface AppState {
     autoAttachActiveEditor: boolean;
   };
   settingsOpen: boolean;
-  extensionsOpen: boolean;
-  extensionsState: {
+  capabilitiesOpen: boolean;
+  capabilitiesState: {
     loading: boolean;
     error?: string;
-    extensions: Array<{
+    capabilities: Array<{
+      kind: "extension" | "skill";
       name: string;
+      description?: string;
       path: string;
       enabled: boolean;
       source: string;
@@ -141,8 +150,8 @@ export interface AppState {
   widgetCards: Record<string, HTMLElement>;
 
   // ── Slash commands
-  builtinSlashCommands: Array<{ cmd: string; desc: string }>;
-  extensionSlashCommands: Array<{ cmd: string; desc: string }>;
+  builtinSlashCommands: SlashCommandItem[];
+  extensionSlashCommands: SlashCommandItem[];
   localSlashCommands: string[];
 
   // ── DOM refs (always populated by initState before any handler runs)
@@ -155,7 +164,7 @@ export interface AppState {
   attachmentBar: HTMLElement;
   userMsgOverlay: HTMLElement;
   settingsOverlay: HTMLElement;
-  extensionsOverlay: HTMLElement;
+  capabilitiesOverlay: HTMLElement;
   slashAutocomplete: HTMLElement;
   fileAutocomplete: HTMLElement;
   livePanel: HTMLElement;
@@ -164,7 +173,7 @@ export interface AppState {
   sbThinking: HTMLElement;
   sbEffort: HTMLElement;
   sbFollowUpHint: HTMLElement;
-  sbExtensions: HTMLElement;
+  sbCapabilities: HTMLElement;
   sbUsage: HTMLElement;
 }
 
@@ -204,8 +213,8 @@ export const state: AppState = {
     autoAttachActiveEditor: true,
   },
   settingsOpen: false,
-  extensionsOpen: false,
-  extensionsState: { loading: false, extensions: [] },
+  capabilitiesOpen: false,
+  capabilitiesState: { loading: false, capabilities: [] },
 
   scopedModels: [],
 
@@ -241,19 +250,19 @@ export const state: AppState = {
   widgetCards: {},
 
   builtinSlashCommands: [
-    { cmd: "/compact", desc: "Compact context" },
-    { cmd: "/resume", desc: "Resume a previous session" },
-    { cmd: "/export", desc: "Export session to HTML" },
-    { cmd: "/fork", desc: "Fork session from message" },
-    { cmd: "/sessions", desc: "List sessions" },
-    { cmd: "/model", desc: "Change model" },
-    { cmd: "/thinking", desc: "Set thinking level" },
-    { cmd: "/new", desc: "Start new session" },
-    { cmd: "/settings", desc: "Open settings" },
-    { cmd: "/login", desc: "Configure provider authentication" },
-    { cmd: "/logout", desc: "Remove provider authentication" },
-    { cmd: "/debug", desc: "Dump webview state for troubleshooting" },
-    { cmd: "/reload", desc: "Reload extensions, skills, and context" },
+    { cmd: "/compact", desc: "Compact context", source: "builtin" },
+    { cmd: "/resume", desc: "Resume a previous session", source: "builtin" },
+    { cmd: "/export", desc: "Export session to HTML", source: "builtin" },
+    { cmd: "/fork", desc: "Fork session from message", source: "builtin" },
+    { cmd: "/sessions", desc: "List sessions", source: "builtin" },
+    { cmd: "/model", desc: "Change model", source: "builtin" },
+    { cmd: "/thinking", desc: "Set thinking level", source: "builtin" },
+    { cmd: "/new", desc: "Start new session", source: "builtin" },
+    { cmd: "/settings", desc: "Open settings", source: "builtin" },
+    { cmd: "/login", desc: "Configure provider authentication", source: "builtin" },
+    { cmd: "/logout", desc: "Remove provider authentication", source: "builtin" },
+    { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
+    { cmd: "/reload", desc: "Reload extensions, skills, and context", source: "builtin" },
   ],
   extensionSlashCommands: [],
   localSlashCommands: [
@@ -269,7 +278,7 @@ export const state: AppState = {
   attachmentBar: null!,
   userMsgOverlay: null!,
   settingsOverlay: null!,
-  extensionsOverlay: null!,
+  capabilitiesOverlay: null!,
   slashAutocomplete: null!,
   fileAutocomplete: null!,
   livePanel: null!,
@@ -278,7 +287,7 @@ export const state: AppState = {
   sbThinking: null!,
   sbEffort: null!,
   sbFollowUpHint: null!,
-  sbExtensions: null!,
+  sbCapabilities: null!,
   sbUsage: null!,
 };
 
@@ -293,7 +302,7 @@ export function initState(doc: Document): void {
   state.attachmentBar = doc.getElementById("attachment-bar")!;
   state.userMsgOverlay = doc.getElementById("user-msg-overlay")!;
   state.settingsOverlay = doc.getElementById("settings-overlay")!;
-  state.extensionsOverlay = doc.getElementById("extensions-overlay")!;
+  state.capabilitiesOverlay = doc.getElementById("capabilities-overlay")!;
   state.slashAutocomplete = doc.getElementById("slash-autocomplete")!;
   state.fileAutocomplete = doc.getElementById("file-autocomplete")!;
   state.livePanel = doc.getElementById("live-panel")!;
@@ -302,7 +311,7 @@ export function initState(doc: Document): void {
   state.sbThinking = doc.getElementById("pi-sb-thinking")!;
   state.sbEffort = doc.getElementById("pi-sb-effort")!;
   state.sbFollowUpHint = doc.getElementById("pi-sb-follow-up-hint")!;
-  state.sbExtensions = doc.getElementById("pi-sb-extensions")!;
+  state.sbCapabilities = doc.getElementById("pi-sb-capabilities")!;
   state.sbUsage = doc.getElementById("pi-sb-usage")!;
 
   if (typeof marked !== "undefined") {
