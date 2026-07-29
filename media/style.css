@@ -1646,6 +1646,86 @@
   opacity: 0.85;
 }
 
+/* ── Remote custom TUI overlay ─────────────────────────── */
+.pi-custom-ui-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 78%, transparent);
+}
+
+.pi-custom-ui-panel {
+  --pi-custom-ui-width: 82ch;
+  position: relative;
+  box-sizing: border-box;
+  width: min(calc(var(--pi-custom-ui-width) + 32px), calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 16px;
+  overflow: hidden;
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  box-shadow: 0 8px 28px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+  outline: none;
+}
+
+.pi-custom-ui-panel:focus-visible {
+  border-color: var(--vscode-focusBorder);
+}
+
+.pi-custom-ui-content {
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: calc(100vh - 64px);
+  margin: 0;
+  overflow: auto;
+  color: inherit;
+  background: transparent;
+  font-family: var(--vscode-editor-font-family, var(--vscode-font-family));
+  font-size: var(--vscode-editor-font-size, 13px);
+  line-height: 1.35;
+  white-space: pre;
+  tab-size: 2;
+  user-select: text;
+}
+
+.pi-custom-ui-close {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--vscode-icon-foreground);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 0;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 18px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.pi-custom-ui-close:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.pi-custom-ui-close:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.pi-custom-ui-close:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Pi Web visual system ---------------------------------------------------- */
 
 :root {

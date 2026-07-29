@@ -1,0 +1,192 @@
+// ── Remote custom TUI component ─────────────────────────────
+//
+// The extension host owns the component and sends rendered text frames. This
+// Webview component displays those frames and forwards terminal-style input.
+
+export interface CustomUiKeyEvent {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing?: boolean;
+}
+
+const SPECIAL_KEYS: Record<string, string> = {
+  ArrowUp: "\x1b[A",
+  ArrowDown: "\x1b[B",
+  ArrowRight: "\x1b[C",
+  ArrowLeft: "\x1b[D",
+  Home: "\x1b[H",
+  End: "\x1b[F",
+  PageUp: "\x1b[5~",
+  PageDown: "\x1b[6~",
+  Insert: "\x1b[2~",
+  Delete: "\x1b[3~",
+  Backspace: "\x7f",
+  Enter: "\r",
+  Escape: "\x1b",
+  Tab: "\t",
+};
+
+/** Convert a browser key event into the input sequences understood by pi-tui. */
+export function encodeCustomUiKey(event: CustomUiKeyEvent): string | null {
+  if (event.isComposing || event.metaKey) { return null; }
+  if (event.key === "Tab" && event.shiftKey) { return "\x1b[Z"; }
+
+  const special = SPECIAL_KEYS[event.key];
+  if (special) { return special; }
+
+  if (event.ctrlKey && event.key.length === 1) {
+    const upper = event.key.toUpperCase();
+    const code = upper.charCodeAt(0);
+    if (code >= 64 && code <= 95) {
+      return String.fromCharCode(code - 64);
+    }
+  }
+
+  if (event.key.length === 1 && !event.ctrlKey) {
+    return event.altKey ? `\x1b${event.key}` : event.key;
+  }
+  return null;
+}
+
+interface CustomUiHostWindow {
+  __vscode: { postMessage(message: unknown): void };
+}
+
+function postHostMessage(message: unknown): void {
+  (window as unknown as CustomUiHostWindow).__vscode.postMessage(message);
+}
+
+export interface CustomUiFrame {
+  id: string;
+  lines: string[];
+  columns: number;
+  overlay?: boolean;
+}
+
+export class CustomUi {
+  readonly el: HTMLElement;
+
+  private readonly panelEl: HTMLElement;
+  private readonly contentEl: HTMLElement;
+  private readonly closeButton: HTMLButtonElement;
+  private readonly resizeObserver: ResizeObserver;
+  private columns: number;
+  private closeRequested = false;
+
+  constructor(private frame: CustomUiFrame) {
+    this.columns = frame.columns;
+    this.el = document.createElement("div");
+    this.el.className = `pi-custom-ui-backdrop${frame.overlay ? " overlay" : ""}`;
+    this.el.dataset.customUiId = frame.id;
+
+    this.panelEl = document.createElement("section");
+    this.panelEl.className = "pi-custom-ui-panel";
+    this.panelEl.setAttribute("role", "dialog");
+    this.panelEl.setAttribute("aria-modal", "true");
+    this.panelEl.setAttribute("aria-label", "Extension interface");
+    this.panelEl.tabIndex = 0;
+    this.setColumns(frame.columns);
+    this.el.appendChild(this.panelEl);
+
+    this.closeButton = document.createElement("button");
+    this.closeButton.type = "button";
+    this.closeButton.className = "pi-custom-ui-close";
+    this.closeButton.title = "Close (Escape)";
+    this.closeButton.setAttribute("aria-label", "Close extension interface");
+    this.closeButton.textContent = "×";
+    this.closeButton.addEventListener("click", () => this.requestClose());
+    this.panelEl.appendChild(this.closeButton);
+
+    this.contentEl = document.createElement("pre");
+    this.contentEl.className = "pi-custom-ui-content";
+    this.contentEl.setAttribute("aria-live", "polite");
+    this.panelEl.appendChild(this.contentEl);
+    this.renderLines(frame.lines);
+
+    this.panelEl.addEventListener("keydown", (event) => this.handleKey(event));
+    this.panelEl.addEventListener("pointerdown", () => this.panelEl.focus());
+
+    this.resizeObserver = new ResizeObserver(() => this.reportWidth());
+  }
+
+  mount(): void {
+    document.body.appendChild(this.el);
+    this.resizeObserver.observe(this.contentEl);
+    requestAnimationFrame(() => {
+      this.panelEl.focus();
+      this.reportWidth();
+    });
+  }
+
+  update(frame: CustomUiFrame): void {
+    if (frame.id !== this.frame.id) { return; }
+    this.frame = frame;
+    this.closeRequested = false;
+    this.closeButton.disabled = false;
+    this.setColumns(frame.columns);
+    this.renderLines(frame.lines);
+  }
+
+  destroy(): void {
+    this.resizeObserver.disconnect();
+    this.el.remove();
+  }
+
+  private renderLines(lines: string[]): void {
+    // textContent is intentional: extension output must never become Webview HTML.
+    this.contentEl.textContent = lines.join("\n");
+  }
+
+  private setColumns(columns: number): void {
+    this.columns = Math.max(20, Math.min(240, Math.round(columns)));
+    this.panelEl.style.setProperty("--pi-custom-ui-width", `${this.columns}ch`);
+  }
+
+  private handleKey(event: KeyboardEvent): void {
+    const input = encodeCustomUiKey(event);
+    if (!input) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    this.postInput(input);
+  }
+
+  private requestClose(): void {
+    if (this.closeRequested) { return; }
+    this.closeRequested = true;
+    this.closeButton.disabled = true;
+    this.postInput("\x1b");
+    this.panelEl.focus();
+  }
+
+  private postInput(input: string): void {
+    postHostMessage({
+      type: "custom_ui_input",
+      id: this.frame.id,
+      input,
+      columns: this.columns,
+    });
+  }
+
+  private reportWidth(): void {
+    const style = getComputedStyle(this.contentEl);
+    const probe = document.createElement("span");
+    probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${style.font};`;
+    probe.textContent = "0000000000";
+    this.panelEl.appendChild(probe);
+    const charWidth = probe.getBoundingClientRect().width / 10;
+    probe.remove();
+    if (!Number.isFinite(charWidth) || charWidth <= 0) { return; }
+
+    const columns = Math.max(20, Math.min(240, Math.floor(this.contentEl.clientWidth / charWidth)));
+    if (columns === this.columns) { return; }
+    this.columns = columns;
+    postHostMessage({
+      type: "custom_ui_resize",
+      id: this.frame.id,
+      columns,
+    });
+  }
+}

@@ -225,4 +225,31 @@ suite("Shared webview protocol", () => {
 
     assert.strictEqual(result.success, true);
   });
+
+  test("accepts remote custom UI frames and input", () => {
+    const openResult = validateExtensionToWebview({
+      type: "custom-ui-open",
+      data: {
+        id: "custom_mcp",
+        lines: ["╭─ MCP ─╮", "│ chrome-devtools │", "╰───────╯"],
+        columns: 82,
+        overlay: true,
+      },
+    });
+    const inputResult = validateWebviewToExtension({
+      type: "custom_ui_input",
+      id: "custom_mcp",
+      input: "\u001b[A",
+      columns: 72,
+    });
+    const resizeResult = validateWebviewToExtension({
+      type: "custom_ui_resize",
+      id: "custom_mcp",
+      columns: 72,
+    });
+
+    assert.strictEqual(openResult.success, true);
+    assert.strictEqual(inputResult.success, true);
+    assert.strictEqual(resizeResult.success, true);
+  });
 });

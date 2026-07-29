@@ -48,6 +48,55 @@ suite("PiService extension UI context", () => {
     assert.strictEqual(await result, undefined);
   });
 
+  test("renders and drives a focused custom component", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused white-box regression test
+    const service = new PiService() as any;
+    const events: AnyRecord[] = [];
+    let bindings: AnyRecord | undefined;
+    service.session = {
+      bindExtensions: async (received: AnyRecord) => { bindings = received; },
+      dispose: () => undefined,
+    };
+    service.onEvent((event: AnyRecord) => events.push(event));
+
+    try {
+      await service.bindExtensionUI();
+      assert.ok(bindings?.uiContext);
+      let selected = false;
+      const resultPromise = bindings.uiContext.custom(
+        (tui: AnyRecord, _theme: AnyRecord, keybindings: AnyRecord, done: (value: string) => void) => ({
+          render: (width: number) => [`width=${width}`, selected ? "selected" : "idle"],
+          handleInput: (data: string) => {
+            if (keybindings.matches(data, "tui.select.down")) {
+              selected = true;
+              tui.requestRender();
+            }
+            if (keybindings.matches(data, "tui.select.confirm")) {
+              done("accepted");
+            }
+          },
+          invalidate: () => undefined,
+        }),
+        { overlay: true, overlayOptions: { width: 82 } },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const open = events.find((event) => event.type === "custom-ui-open");
+      assert.ok(open, "custom UI did not emit its initial frame");
+      assert.deepStrictEqual(open.data.lines, ["width=82", "idle"]);
+
+      service.handleCustomUiInput(open.data.id, "\x1b[B", 72);
+      const update = [...events].reverse().find((event) => event.type === "custom-ui-update");
+      assert.deepStrictEqual(update?.data.lines, ["width=72", "selected"]);
+
+      service.handleCustomUiInput(open.data.id, "\r", 72);
+      assert.strictEqual(await resultPromise, "accepted");
+      assert.ok(events.some((event) => event.type === "custom-ui-close"));
+    } finally {
+      service.dispose();
+    }
+  });
+
   test("provides a theme for extensions that format status text", async () => {
     const { uiContext } = await captureUIContext();
 
