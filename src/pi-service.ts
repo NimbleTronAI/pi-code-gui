@@ -858,6 +858,11 @@ export class PiService {
     // Wrapped in a Proxy so any unknown method calls (e.g. from TUI-only
     // extensions) silently no-op instead of throwing "is not a function".
     const baseUIContext = {
+      // Extensions may format status text through ui.theme before calling
+      // setStatus(). Keep the text unchanged because the Webview owns colors.
+      theme: {
+        fg: (_role: string, text: string) => text,
+      },
       notify: (message: string, level: "info" | "error") => {
         if (level === "error") {
           piWarn(`ui.notify(error): ${message.substring(0, 120)}`);

@@ -48,6 +48,18 @@ suite("PiService extension UI context", () => {
     assert.strictEqual(await result, undefined);
   });
 
+  test("provides a theme for extensions that format status text", async () => {
+    const { uiContext } = await captureUIContext();
+
+    assert.strictEqual(uiContext.theme.fg("accent", "MCP: connected"), "MCP: connected");
+    assert.doesNotThrow(() => {
+      const status = uiContext.theme
+        ? uiContext.theme.fg("accent", "MCP: 1 server enabled (1 connected)")
+        : "MCP: 1 server enabled (1 connected)";
+      uiContext.setStatus("mcp", status);
+    });
+  });
+
   test("unimplemented ui methods still no-op through the proxy", async () => {
     const { uiContext } = await captureUIContext();
 
