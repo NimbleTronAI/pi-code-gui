@@ -13,6 +13,7 @@ import {
 import { restoreScrollAfterPrepend } from "../render/history-pagination.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
 import { navigateAutocompleteSelection } from "../render/autocomplete-navigation.js";
+import { renderSlashSourceLabel } from "../render/slash-autocomplete.js";
 import {
   nextWaitingFrame,
   PI_TUI_SPINNER_FRAMES,
@@ -2871,7 +2872,7 @@ export function updateSlashAutocomplete(filter: string) {
       result += html`
         <div class="slash-item${i === state.slashSelectedIdx ? " selected" : ""}" data-index="${i}" data-cmd="${sc.cmd}">
           <span class="slash-cmd">${sc.cmd}</span>
-          ${sourceLabel ? html`<span class="slash-source">${sourceLabel}</span>` : ""}
+          ${renderSlashSourceLabel(sourceLabel)}
           <span class="slash-desc">${sc.desc}</span>
         </div>`;
     }
