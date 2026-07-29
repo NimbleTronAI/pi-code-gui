@@ -332,6 +332,35 @@ Apply your changes using edit tools.`,
   ];
 }
 
+interface RemoteCustomUiComponent {
+  render(width: number): string[];
+  handleInput?(data: string): void;
+  invalidate?(): void;
+  dispose?(): void;
+}
+
+interface RemoteCustomUiEntry {
+  component: RemoteCustomUiComponent | null;
+  width: number;
+  overlay: boolean;
+  lastFrame: string | null;
+  opened: boolean;
+  settled: boolean;
+  finish(value: unknown): void;
+}
+
+interface RemoteCustomUiOptions {
+  overlay?: boolean;
+  overlayOptions?: { width?: number | string } | (() => { width?: number | string });
+}
+
+type RemoteCustomUiFactory = (
+  tui: { requestRender(): void },
+  theme: Record<string, unknown>,
+  keybindings: { matches(data: string, keybinding: string): boolean },
+  done: (value: unknown) => void,
+) => RemoteCustomUiComponent | Promise<RemoteCustomUiComponent>;
+
 // ── PiService ────────────────────────────────────────────
 
 export class PiService {
@@ -371,6 +400,9 @@ export class PiService {
 
   // Pending interactive dialogs (select/confirm/input).  Maps dialog ID → Promise resolve.
   private _pendingDialogs = new Map<string, { resolve: (v: unknown) => void }>();
+
+  // Focused TUI components whose text frames are rendered by the Webview.
+  private _customUis = new Map<string, RemoteCustomUiEntry>();
 
   // Turn tracking (like AgentSession._turnIndex in the SDK)
   private turnIndex = 0;
@@ -949,14 +981,11 @@ export class PiService {
       input: (prompt: string, defaultValue?: string) => {
         return this._showDialog("input", prompt, { defaultValue });
       },
-      // Rendering a TUI component tree is impossible in the webview host, so
-      // this mirrors the SDK's own RPC mode (`modes/rpc/rpc-mode.js`):
-      // resolve to undefined so extensions take their cancelled/fallback
-      // branch. It MUST return a Promise — `ExtensionUIContext.custom()` is
-      // declared as `Promise<T>` and extensions chain `.then()` on it.
-      custom: async () => {
-        piWarn("ui.custom() is not supported in the webview host — resolving undefined");
-        return undefined;
+      // Run focused TUI components in the extension host and send their
+      // rendered text frames to the Webview. Keyboard input travels back to
+      // the component through handleInput().
+      custom: (factory: RemoteCustomUiFactory, options?: RemoteCustomUiOptions) => {
+        return this._showCustomUi(factory, options);
       },
 
       // TUI compatibility stubs discovered via the Proxy at runtime
@@ -1955,6 +1984,146 @@ export class PiService {
     try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     try { this.session.agent.abort(); } catch (e: any) { piWarn(`abort() failed: ${e?.message ?? e}`); }
+  }
+
+  private _renderCustomUi(id: string): void {
+    const entry = this._customUis.get(id);
+    if (!entry || entry.settled || !entry.component) { return; }
+
+    try {
+      const rendered = entry.component.render(entry.width);
+      if (!Array.isArray(rendered)) {
+        throw new Error("component.render() did not return an array");
+      }
+      const ansiRegex = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+      const lines = rendered.slice(0, 300).map((line) => String(line).replace(ansiRegex, "").slice(0, 4_000));
+      const frame = lines.join("\n");
+      if (entry.opened && entry.lastFrame === frame) { return; }
+
+      entry.lastFrame = frame;
+      const type = entry.opened ? "custom-ui-update" as const : "custom-ui-open" as const;
+      entry.opened = true;
+      this.emit({
+        type,
+        data: { id, lines, columns: entry.width, overlay: entry.overlay },
+      });
+    } catch (error: unknown) {
+      piWarn(`custom UI render failed: ${error instanceof Error ? error.message : String(error)}`);
+      entry.finish(undefined);
+    }
+  }
+
+  private _showCustomUi(
+    factory: RemoteCustomUiFactory,
+    options?: RemoteCustomUiOptions,
+  ): Promise<unknown> {
+    if (this.listeners.length === 0) {
+      return Promise.resolve(undefined);
+    }
+
+    const id = `custom_${Math.random().toString(36).slice(2, 10)}`;
+    const resolvedOverlayOptions = typeof options?.overlayOptions === "function"
+      ? options.overlayOptions()
+      : options?.overlayOptions;
+    const requestedWidth = resolvedOverlayOptions?.width;
+    const width = typeof requestedWidth === "number"
+      ? Math.max(20, Math.min(240, Math.round(requestedWidth)))
+      : 82;
+
+    return new Promise((resolve, reject) => {
+      const entry: RemoteCustomUiEntry = {
+        component: null,
+        width,
+        overlay: options?.overlay ?? false,
+        lastFrame: null,
+        opened: false,
+        settled: false,
+        finish: (value: unknown) => {
+          if (entry.settled) { return; }
+          entry.settled = true;
+          this._customUis.delete(id);
+          if (entry.opened) {
+            this.emit({ type: "custom-ui-close", data: { id } });
+          }
+          try { entry.component?.dispose?.(); } catch { /* best-effort cleanup */ }
+          resolve(value);
+        },
+      };
+      this._customUis.set(id, entry);
+
+      const tui = {
+        requestRender: () => this._renderCustomUi(id),
+      };
+      const passthrough = (_roleOrText: string, text?: string): string => text ?? _roleOrText;
+      const theme: Record<string, unknown> = {
+        fg: passthrough,
+        bg: passthrough,
+        bold: passthrough,
+        italic: passthrough,
+        underline: passthrough,
+        inverse: passthrough,
+        strikethrough: passthrough,
+        getFgAnsi: () => "",
+        getBgAnsi: () => "",
+        getColorMode: () => "truecolor",
+      };
+      const keybindings = {
+        matches: (data: string, keybinding: string): boolean => {
+          if (keybinding === "tui.select.up") { return data === "\x1b[A"; }
+          if (keybinding === "tui.select.down") { return data === "\x1b[B"; }
+          if (keybinding === "tui.select.confirm") { return data === "\r" || data === "\n"; }
+          return false;
+        },
+      };
+
+      Promise.resolve(factory(tui, theme, keybindings, entry.finish))
+        .then((component) => {
+          if (!component || typeof component.render !== "function") {
+            throw new Error("ui.custom() factory did not return a renderable component");
+          }
+          if (entry.settled) {
+            try { component.dispose?.(); } catch { /* best-effort cleanup */ }
+            return;
+          }
+          entry.component = component;
+          this._renderCustomUi(id);
+        })
+        .catch((error: unknown) => {
+          this._customUis.delete(id);
+          entry.settled = true;
+          if (entry.opened) {
+            this.emit({ type: "custom-ui-close", data: { id } });
+          }
+          piWarn(`ui.custom() failed: ${error instanceof Error ? error.message : String(error)}`);
+          reject(error);
+        });
+    });
+  }
+
+  handleCustomUiInput(id: string, input: string, columns?: number): void {
+    const entry = this._customUis.get(id);
+    if (!entry || entry.settled || !entry.component) { return; }
+    if (columns !== undefined) {
+      entry.width = Math.max(20, Math.min(240, Math.round(columns)));
+    }
+    try {
+      entry.component.handleInput?.(input);
+      this._renderCustomUi(id);
+    } catch (error: unknown) {
+      piWarn(`custom UI input failed: ${error instanceof Error ? error.message : String(error)}`);
+      entry.finish(undefined);
+    }
+  }
+
+  resizeCustomUi(id: string, columns: number): void {
+    const entry = this._customUis.get(id);
+    if (!entry || entry.settled) { return; }
+    const width = Math.max(20, Math.min(240, Math.round(columns)));
+    if (entry.width === width) { return; }
+    entry.width = width;
+    entry.lastFrame = null;
+    entry.component?.invalidate?.();
+    this._renderCustomUi(id);
   }
 
   /** Resolve a pending interactive dialog (called from webview-panel.ts). */
@@ -3044,6 +3213,7 @@ export class PiService {
     // Kill any running bash processes before tearing down the session.
     // Without this, processes orphaned by session close survive as zombies.
     try { this.session?.abortBash?.(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
+    for (const entry of [...this._customUis.values()]) { entry.finish(undefined); }
     if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
     this.initialHistoryReplayEvents = [];
     this.capturingInitialHistoryReplay = false;

@@ -673,6 +673,14 @@ export class PiWebviewPanel {
             this.piService.resolveDialog(message.id, message.value);
             break;
 
+          case "custom_ui_input":
+            this.piService.handleCustomUiInput(message.id, message.input, message.columns);
+            break;
+
+          case "custom_ui_resize":
+            this.piService.resizeCustomUi(message.id, message.columns);
+            break;
+
           case "clearQueue":
             await this.piService.clearQueue();
             break;

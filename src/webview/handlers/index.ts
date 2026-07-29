@@ -26,6 +26,7 @@ import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
 import { Dialog, dialogQuestionStem } from "../components/dialog.js";
+import { CustomUi } from "../components/custom-ui.js";
 import { findWorkspaceFileMention, removeWorkspaceFileMention } from "../file-mention.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
@@ -207,6 +208,9 @@ function handleExtensionMessage(msg: any): void {
       case "widget-update":      handleWidgetUpdate(msg.data); break;
       case "registerMessageRenderer": handleRegisterMessageRenderer(msg.data); break;
       case "show_dialog":          handleShowDialog(msg.data); break;
+      case "custom-ui-open":       handleCustomUiOpen(msg.data); break;
+      case "custom-ui-update":     handleCustomUiUpdate(msg.data); break;
+      case "custom-ui-close":      handleCustomUiClose(msg.data); break;
 
       default:
         // Surface unknown message types as visible notifications.
@@ -2627,6 +2631,36 @@ export function clearWidgetCards() {
       }
     }
     state.widgetCards = {};
+  }
+
+  // ═══ Focused custom TUI bridge ═══════════════════════════
+
+const customUis = new Map<string, CustomUi>();
+
+export function handleCustomUiOpen(data: any): void {
+    if (!data?.id || !Array.isArray(data.lines)) { return; }
+    const existing = customUis.get(data.id);
+    if (existing) {
+      existing.update(data);
+      return;
+    }
+    const customUi = new CustomUi(data);
+    customUis.set(data.id, customUi);
+    customUi.mount();
+  }
+
+export function handleCustomUiUpdate(data: any): void {
+    if (!data?.id || !Array.isArray(data.lines)) { return; }
+    customUis.get(data.id)?.update(data);
+  }
+
+export function handleCustomUiClose(data: any): void {
+    if (!data?.id) { return; }
+    const customUi = customUis.get(data.id);
+    if (!customUi) { return; }
+    customUi.destroy();
+    customUis.delete(data.id);
+    state.promptInput.focus();
   }
 
   // ═══ Interactive Dialog Bridge ═══════════════════════════

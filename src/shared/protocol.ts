@@ -448,6 +448,21 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       defaultValue: z.string().optional(),
     }),
   }),
+
+  // Focused custom TUI component rendered remotely by the Webview.
+  z.object({
+    type: z.enum(["custom-ui-open", "custom-ui-update"]),
+    data: z.object({
+      id: z.string().min(1),
+      lines: z.array(z.string()).max(300),
+      columns: z.number().int().min(20).max(240),
+      overlay: z.boolean().optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal("custom-ui-close"),
+    data: z.object({ id: z.string().min(1) }),
+  }),
 ]);
 
 // ═══ Webview → Extension schemas ═══════════════════════════
@@ -503,6 +518,17 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("clearQueue") }),
   z.object({ type: z.literal("resendUserMessage"), text: z.string() }),
   z.object({ type: z.literal("extension_ui_response"), id: z.string(), value: z.unknown() }),
+  z.object({
+    type: z.literal("custom_ui_input"),
+    id: z.string().min(1),
+    input: z.string().min(1).max(32),
+    columns: z.number().int().min(20).max(240).optional(),
+  }),
+  z.object({
+    type: z.literal("custom_ui_resize"),
+    id: z.string().min(1),
+    columns: z.number().int().min(20).max(240),
+  }),
 ]);
 
 // ═══ Derived TypeScript types ═════════════════════════════
