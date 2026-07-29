@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+- Added per-session Capabilities management for Skills and Extensions, including compact source links, persisted toggles, and session-aligned snapshots.
+- Added Skills, Prompt Templates, and Extension Commands to Slash autocomplete with source and scope badges.
+- Added a focused Custom TUI bridge for interactive extension panels such as `pi-mcp-adapter`, with keyboard input, mouse-wheel navigation, responsive overlays, and safe ANSI color rendering.
+- Fixed MCP connection status updates, Custom TUI width stability, and capability state synchronization across Sessions.
+
 ## 0.2.1
 
 - Finalized the Marketplace identity as `auchan.pion-code` with the `Pi / Code` display name and a transparent icon.
