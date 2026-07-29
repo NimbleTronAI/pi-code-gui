@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import * as fs from "node:fs";
 import { PiService } from "./pi-service.js";
 import { PiWebviewPanel } from "./webview-panel.js";
-import { PiPackageService } from "./pi-package-service.js";
+import { PiPackageService, type ManagedCapability } from "./pi-package-service.js";
+import { filterSessionCapabilitySnapshot } from "./capability-snapshot.js";
 import { PiPackagesProvider } from "./pi-packages-provider.js";
 import {
   PiSessionSidebarProvider,
@@ -77,6 +78,39 @@ let sessionSidebarProvider: PiSessionSidebarProvider | null = null;
 
 let packagesTreeProvider: PiPackagesProvider | null = null;
 let packageService: PiPackageService | null = null;
+
+async function scanSessionCapabilities(piService: PiService): Promise<ManagedCapability[]> {
+  const loadedSkills = piService.getLoadedSkills();
+  const loadedExtensions = piService.getLoadedExtensions();
+  if (packageService?.isReady) {
+    const capabilities = await packageService.listCapabilities();
+    return filterSessionCapabilitySnapshot(capabilities, {
+      extensions: loadedExtensions.map((extension) => extension.path),
+      skills: loadedSkills.map((skill) => skill.path),
+    });
+  }
+
+  return [
+    ...loadedSkills.map((skill): ManagedCapability => ({
+      kind: "skill",
+      name: skill.name,
+      description: skill.description,
+      path: skill.path,
+      enabled: true,
+      source: skill.name,
+      scope: skill.scope ?? "temporary",
+      origin: "top-level",
+    })),
+    ...loadedExtensions.map((extension): ManagedCapability => ({
+      kind: "extension",
+      ...extension,
+      enabled: true,
+      source: extension.name,
+      scope: "temporary",
+      origin: "top-level",
+    })),
+  ];
+}
 
 /** The primary (first) session — used for status bar and tree provider */
 function primarySession(): SessionWindow | undefined {
@@ -240,28 +274,7 @@ function createSessionWindow(
   const id = `session-${++sessionCounter}`;
   const piService = new PiService(context.secrets);
   const webviewPanel = new PiWebviewPanel(context, piService, {
-    list: async () => {
-      if (packageService?.isReady) { return packageService.listCapabilities(); }
-      const skills = piService.getLoadedSkills().map((skill) => ({
-        kind: "skill" as const,
-        name: skill.name,
-        description: skill.description,
-        path: skill.path,
-        enabled: true,
-        source: skill.name,
-        scope: skill.scope ?? "temporary" as const,
-        origin: "top-level" as const,
-      }));
-      const extensions = piService.getLoadedExtensions().map((extension) => ({
-        kind: "extension" as const,
-        ...extension,
-        enabled: true,
-        source: extension.name,
-        scope: "temporary" as const,
-        origin: "top-level" as const,
-      }));
-      return [...skills, ...extensions];
-    },
+    scan: () => scanSessionCapabilities(piService),
     setEnabled: async (kind, capabilityPath, enabled) => {
       if (!packageService?.isReady) { throw new Error("Package service is not ready"); }
       await packageService.setCapabilityEnabled(kind, capabilityPath, enabled);
@@ -1089,6 +1102,17 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // when the user expands or searches the Packages section.
   await packagesTreeProvider.refreshInstalled();
 
+  // Session initialization can finish before the package service is ready.
+  // Complete those startup snapshots now so disabled resources remain
+  // manageable without making panel-open rescan the filesystem.
+  for (const sw of sessions.filter((candidate) => candidate.initialized && !candidate.closed)) {
+    try {
+      await sw.webviewPanel.refreshCapabilitiesSnapshot();
+    } catch (error: unknown) {
+      piWarn(`Capability snapshot completion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   // ── Register package commands ────────────────
 
   // Install a package from the marketplace or command palette.
@@ -1506,6 +1530,11 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   }
 
   sw.initialized = true;
+  try {
+    await sw.webviewPanel.refreshCapabilitiesSnapshot();
+  } catch (error: unknown) {
+    piWarn(`Initial capability snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // Primary session gets phase 3/4 commands
   if (sw === primarySession()) {
