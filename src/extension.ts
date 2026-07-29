@@ -241,18 +241,30 @@ function createSessionWindow(
   const piService = new PiService(context.secrets);
   const webviewPanel = new PiWebviewPanel(context, piService, {
     list: async () => {
-      if (packageService?.isReady) { return packageService.listExtensions(); }
-      return piService.getLoadedExtensions().map((extension) => ({
+      if (packageService?.isReady) { return packageService.listCapabilities(); }
+      const skills = piService.getLoadedSkills().map((skill) => ({
+        kind: "skill" as const,
+        name: skill.name,
+        description: skill.description,
+        path: skill.path,
+        enabled: true,
+        source: skill.name,
+        scope: skill.scope ?? "temporary" as const,
+        origin: "top-level" as const,
+      }));
+      const extensions = piService.getLoadedExtensions().map((extension) => ({
+        kind: "extension" as const,
         ...extension,
         enabled: true,
         source: extension.name,
         scope: "temporary" as const,
         origin: "top-level" as const,
       }));
+      return [...skills, ...extensions];
     },
-    setEnabled: async (extensionPath, enabled) => {
+    setEnabled: async (kind, capabilityPath, enabled) => {
       if (!packageService?.isReady) { throw new Error("Package service is not ready"); }
-      await packageService.setExtensionEnabled(extensionPath, enabled);
+      await packageService.setCapabilityEnabled(kind, capabilityPath, enabled);
     },
   });
   const sw: SessionWindow = {

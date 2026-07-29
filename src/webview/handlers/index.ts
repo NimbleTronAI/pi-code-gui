@@ -198,8 +198,8 @@ function handleExtensionMessage(msg: any): void {
       case "viewport-refresh":    window.dispatchEvent(new Event("pi-viewport-refresh")); break;
 
       // Extensions and slash commands active in this session
-      case "extensions-update": handleExtensionsUpdate(msg.data); break;
-      case "extensions-panel-update": handleExtensionsPanelUpdate(msg.data); break;
+      case "capabilities-update": handleCapabilitiesUpdate(msg.data); break;
+      case "capabilities-panel-update": handleCapabilitiesPanelUpdate(msg.data); break;
       case "slash-commands-update": handleSlashCommandsUpdate(msg.data); break;
 
       // Widget bridge from extensions (setWidget calls)
@@ -774,7 +774,7 @@ let sbDot = document.getElementById("pi-sb-dot");
 let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
 let sbEffort = document.getElementById("pi-sb-effort");
-let sbExtensions = document.getElementById("pi-sb-extensions");
+let sbCapabilities = document.getElementById("pi-sb-capabilities");
 let sbUsage = document.getElementById("pi-sb-usage");
 
 export function setSbDot(state: string) {
@@ -792,20 +792,28 @@ export function sbModelText(modelId: string) {
     return "\u03C0 " + short;
   }
 
-export function handleExtensionsUpdate(data: unknown) {
-    if (!sbExtensions) { return; }
-    const rawExtensions = data && typeof data === "object" && "extensions" in data
-      ? (data as { extensions?: unknown }).extensions
-      : undefined;
-    const extensions = Array.isArray(rawExtensions)
-      ? rawExtensions.filter((extension: unknown): extension is { name: string } =>
-          !!extension && typeof extension === "object" && "name" in extension &&
-          typeof (extension as { name?: unknown }).name === "string")
+export function handleCapabilitiesUpdate(data: unknown) {
+    if (!sbCapabilities) { return; }
+    const payload = data && typeof data === "object"
+      ? data as { extensions?: unknown; skills?: unknown }
+      : {};
+    const names = (value: unknown): string[] => Array.isArray(value)
+      ? value.flatMap((item): string[] => {
+          if (!item || typeof item !== "object" || !("name" in item)) { return []; }
+          const name = (item as { name?: unknown }).name;
+          return typeof name === "string" ? [name] : [];
+        })
       : [];
-    sbExtensions.textContent = `extensions: ${extensions.length}`;
-    sbExtensions.title = extensions.length > 0
-      ? `Active in this session:\n${extensions.map((extension) => extension.name).join("\n")}`
-      : "No Pi extensions are active in this session";
+    const extensions = names(payload.extensions);
+    const skills = names(payload.skills);
+    const count = extensions.length + skills.length;
+    sbCapabilities.textContent = `capabilities: ${count}`;
+    sbCapabilities.title = count > 0
+      ? [
+          skills.length > 0 ? `Skills:\n${skills.join("\n")}` : "",
+          extensions.length > 0 ? `Extensions:\n${extensions.join("\n")}` : "",
+        ].filter(Boolean).join("\n\n")
+      : "No Pi capabilities are active in this session";
   }
 
 export function handleStatusUpdate(data: any) {
@@ -1854,9 +1862,9 @@ export function sendPrompt(modeOverride?: "steer" | "queue"): void {
       window.__vscode.postMessage({ type: "pickEffort" });
     });
   }
-  if (sbExtensions) {
-    sbExtensions.addEventListener("click", function () {
-      toggleExtensionsPanel();
+  if (sbCapabilities) {
+    sbCapabilities.addEventListener("click", function () {
+      toggleCapabilitiesPanel();
     });
   }
   if (sbUsage) {
@@ -1885,7 +1893,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     if (state.settingsOpen && !state.settingsOverlay.contains(target) && target !== sbSettings && !sbSettings?.contains(target)) {
       closeAllOverlays();
     }
-    if (state.extensionsOpen && !state.extensionsOverlay.contains(target) && target !== sbExtensions && !sbExtensions?.contains(target)) {
+    if (state.capabilitiesOpen && !state.capabilitiesOverlay.contains(target) && target !== sbCapabilities && !sbCapabilities?.contains(target)) {
       closeAllOverlays();
     }
     if (state.userMsgSelectorOpen && !state.userMsgOverlay.contains(target) && target !== state.promptInput) {
@@ -1973,7 +1981,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
         cancelWorkspaceFileAutocomplete();
         return;
       }
-      if (state.slashAutocompleteOpen || state.settingsOpen || state.extensionsOpen || state.userMsgSelectorOpen) {
+      if (state.slashAutocompleteOpen || state.settingsOpen || state.capabilitiesOpen || state.userMsgSelectorOpen) {
         closeAllOverlays();
         e.preventDefault();
         return;
@@ -2172,76 +2180,85 @@ export function closeUserMsgSelector() {
     state.userMsgOverlay.classList.remove("visible");
   }
 
-  // ═══ Extensions Panel ═══════════════════════════════════
+  // ═══ Capabilities Panel ═════════════════════════════════
 
-export function handleExtensionsPanelUpdate(data: any) {
-    state.extensionsState = {
+export function handleCapabilitiesPanelUpdate(data: any) {
+    state.capabilitiesState = {
       loading: data?.loading === true,
       error: typeof data?.error === "string" ? data.error : undefined,
-      extensions: Array.isArray(data?.extensions) ? data.extensions : [],
+      capabilities: Array.isArray(data?.capabilities) ? data.capabilities : [],
     };
-    renderExtensionsPanel();
+    renderCapabilitiesPanel();
   }
 
-export function renderExtensionsPanel() {
-    if (!state.extensionsOverlay || !state.extensionsOpen) { return; }
-    const panelState = state.extensionsState;
+export function renderCapabilitiesPanel() {
+    if (!state.capabilitiesOverlay || !state.capabilitiesOpen) { return; }
+    const panelState = state.capabilitiesState;
     let result = html`<div class="extensions-title-row">
-      <div class="extensions-title">Extensions</div>
+      <div class="extensions-title">Capabilities</div>
       <button class="extensions-refresh" type="button" title="Reload extensions, skills, and context">↻</button>
     </div>`;
 
     if (panelState.loading) {
-      result += '<div class="extensions-empty">Reloading extensions...</div>';
+      result += '<div class="extensions-empty">Reloading capabilities...</div>';
     } else if (panelState.error) {
       result += html`<div class="extensions-error">${panelState.error}</div>`;
-    } else if (panelState.extensions.length === 0) {
-      result += '<div class="extensions-empty">No extensions are available in this session.</div>';
+    } else if (panelState.capabilities.length === 0) {
+      result += '<div class="extensions-empty">No capabilities are available in this session.</div>';
     } else {
-      for (const extension of panelState.extensions) {
-        result += html`<div class="extensions-row">
-          <div class="extensions-info" title="${extension.path}">
-            <div class="extensions-name">${extension.name}</div>
-            <div class="extensions-meta">${extension.scope} · ${extension.origin}</div>
-          </div>
-          <button class="extensions-toggle${extension.enabled ? " on" : ""}"
-            type="button" data-path="${extension.path}" data-enabled="${extension.enabled ? "true" : "false"}"
-            aria-label="${extension.enabled ? "Disable" : "Enable"} ${extension.name}"
-            aria-pressed="${extension.enabled ? "true" : "false"}"></button>
-        </div>`;
+      for (const kind of ["skill", "extension"] as const) {
+        const capabilities = panelState.capabilities.filter((item) => item.kind === kind);
+        if (capabilities.length === 0) { continue; }
+        result += html`<div class="capabilities-section-title">${kind === "skill" ? "Skills" : "Extensions"}</div>`;
+        for (const capability of capabilities) {
+          result += html`<div class="extensions-row">
+            <div class="extensions-info" title="${capability.path}">
+              <div class="extensions-name">${capability.name}</div>
+              ${capability.description ? html`<div class="capabilities-description">${capability.description}</div>` : ""}
+              <div class="extensions-meta">${capability.scope} · ${capability.origin}</div>
+            </div>
+            <button class="extensions-toggle${capability.enabled ? " on" : ""}"
+              type="button" data-kind="${capability.kind}" data-path="${capability.path}"
+              data-enabled="${capability.enabled ? "true" : "false"}"
+              aria-label="${capability.enabled ? "Disable" : "Enable"} ${capability.name}"
+              aria-pressed="${capability.enabled ? "true" : "false"}"></button>
+          </div>`;
+        }
       }
     }
 
-    state.extensionsOverlay.innerHTML = result;
-    state.extensionsOverlay.querySelector(".extensions-refresh")?.addEventListener("click", function (event) {
+    state.capabilitiesOverlay.innerHTML = result;
+    state.capabilitiesOverlay.querySelector(".extensions-refresh")?.addEventListener("click", function (event) {
       event.stopPropagation();
-      window.__vscode.postMessage({ type: "reloadExtensions" });
+      window.__vscode.postMessage({ type: "reloadCapabilities" });
     });
-    state.extensionsOverlay.querySelectorAll(".extensions-toggle").forEach(function (toggle) {
+    state.capabilitiesOverlay.querySelectorAll(".extensions-toggle").forEach(function (toggle) {
       toggle.addEventListener("click", function (event) {
         event.stopPropagation();
-        const extensionPath = toggle.getAttribute("data-path");
+        const kind = toggle.getAttribute("data-kind");
+        const capabilityPath = toggle.getAttribute("data-path");
         const currentlyEnabled = toggle.getAttribute("data-enabled") === "true";
-        if (!extensionPath) { return; }
+        if ((kind !== "skill" && kind !== "extension") || !capabilityPath) { return; }
         window.__vscode.postMessage({
-          type: "setExtensionEnabled",
-          path: extensionPath,
+          type: "setCapabilityEnabled",
+          kind,
+          path: capabilityPath,
           enabled: !currentlyEnabled,
         });
       });
     });
   }
 
-export function toggleExtensionsPanel() {
-    if (state.extensionsOpen) {
+export function toggleCapabilitiesPanel() {
+    if (state.capabilitiesOpen) {
       closeAllOverlays();
       return;
     }
     closeAllOverlays();
-    state.extensionsOpen = true;
-    state.extensionsOverlay.classList.add("visible");
-    renderExtensionsPanel();
-    window.__vscode.postMessage({ type: "getExtensions" });
+    state.capabilitiesOpen = true;
+    state.capabilitiesOverlay.classList.add("visible");
+    renderCapabilitiesPanel();
+    window.__vscode.postMessage({ type: "getCapabilities" });
   }
 
   // ═══ #3: Settings Panel ═══════════════════════════════════
@@ -2323,13 +2340,13 @@ export function toggleSettingsPanel() {
 
 export function closeAllOverlays() {
     state.settingsOpen = false;
-    state.extensionsOpen = false;
+    state.capabilitiesOpen = false;
     state.userMsgSelectorOpen = false;
     state.slashAutocompleteOpen = false;
     state.fileAutocompleteOpen = false;
     state.fileMentionStart = -1;
     state.settingsOverlay.classList.remove("visible");
-    state.extensionsOverlay.classList.remove("visible");
+    state.capabilitiesOverlay.classList.remove("visible");
     state.userMsgOverlay.classList.remove("visible");
     state.slashAutocomplete.classList.remove("visible");
     state.fileAutocomplete.classList.remove("visible");
@@ -2840,9 +2857,12 @@ export function updateSlashAutocomplete(filter: string) {
     var result = "";
     for (var i = 0; i < matches.length; i++) {
       var sc = matches[i];
+      var scopeLabel = sc.scope === "user" ? "[u]" : sc.scope === "project" ? "[p]" : sc.scope === "temporary" ? "[t]" : "";
+      var sourceLabel = [scopeLabel, sc.source].filter(Boolean).join(" ");
       result += html`
         <div class="slash-item${i === state.slashSelectedIdx ? " selected" : ""}" data-index="${i}" data-cmd="${sc.cmd}">
           <span class="slash-cmd">${sc.cmd}</span>
+          ${sourceLabel ? html`<span class="slash-source">${sourceLabel}</span>` : ""}
           <span class="slash-desc">${sc.desc}</span>
         </div>`;
     }

@@ -375,18 +375,26 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("insertCommand"), command: z.string() }),
   z.object({ type: z.literal("viewport-refresh") }),
 
-  // Extensions active in the current Pi session
+  // Capabilities active in the current Pi session
   z.object({
-    type: z.literal("extensions-update"),
+    type: z.literal("capabilities-update"),
     data: z.object({
       extensions: z.array(z.object({ name: z.string(), path: z.string() })),
+      skills: z.array(z.object({
+        name: z.string(),
+        description: z.string(),
+        path: z.string(),
+        scope: z.enum(["user", "project", "temporary"]).optional(),
+      })),
     }),
   }),
   z.object({
-    type: z.literal("extensions-panel-update"),
+    type: z.literal("capabilities-panel-update"),
     data: z.object({
-      extensions: z.array(z.object({
+      capabilities: z.array(z.object({
+        kind: z.enum(["extension", "skill"]),
         name: z.string(),
+        description: z.string().optional(),
         path: z.string(),
         enabled: z.boolean(),
         source: z.string(),
@@ -398,11 +406,16 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
     }),
   }),
 
-  // Slash commands from extensions
+  // Slash commands from builtins, extensions, prompt templates, and skills
   z.object({
     type: z.literal("slash-commands-update"),
     data: z.object({
-      commands: z.array(z.object({ cmd: z.string(), desc: z.string() })),
+      commands: z.array(z.object({
+        cmd: z.string(),
+        desc: z.string(),
+        source: z.enum(["builtin", "extension", "prompt", "skill"]).optional(),
+        scope: z.enum(["user", "project", "temporary"]).optional(),
+      })),
     }),
   }),
 
@@ -467,10 +480,11 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("pickThinkingLevel") }),
   z.object({ type: z.literal("pickEffort") }),
   z.object({ type: z.literal("pickContextBudget") }),
-  z.object({ type: z.literal("getExtensions") }),
-  z.object({ type: z.literal("reloadExtensions") }),
+  z.object({ type: z.literal("getCapabilities") }),
+  z.object({ type: z.literal("reloadCapabilities") }),
   z.object({
-    type: z.literal("setExtensionEnabled"),
+    type: z.literal("setCapabilityEnabled"),
+    kind: z.enum(["extension", "skill"]),
     path: z.string().min(1),
     enabled: z.boolean(),
   }),

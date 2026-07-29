@@ -1105,6 +1105,15 @@
   }
 
   .extensions-title { color: var(--fg-primary); font-size: 0.9em; font-weight: 600; }
+  .capabilities-section-title {
+    margin-top: 8px;
+    padding: 4px 2px;
+    color: var(--fg-secondary);
+    font-size: 0.72em;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
   .extensions-refresh {
     width: 24px;
     height: 22px;
@@ -1126,6 +1135,15 @@
   .extensions-row:last-child { border-bottom: 0; }
   .extensions-info { min-width: 0; flex: 1; }
   .extensions-name { overflow: hidden; color: var(--fg-primary); text-overflow: ellipsis; white-space: nowrap; }
+  .capabilities-description {
+    display: -webkit-box;
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--fg-secondary);
+    font-size: 0.75em;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
   .extensions-meta { margin-top: 2px; color: var(--fg-secondary); font-size: 0.75em; }
   .extensions-empty,
   .extensions-error { padding: 12px 2px; color: var(--fg-secondary); font-size: 0.85em; }
@@ -1214,6 +1232,11 @@
     }
 
     .slash-cmd { font-weight: 600; color: var(--accent); flex-shrink: 0; }
+    .slash-source {
+      flex-shrink: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.72em;
+    }
     .slash-desc { color: var(--vscode-descriptionForeground); font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   }
 
@@ -2366,7 +2389,7 @@ html.pi-viewport-recovering #pi-web-app {
   color: var(--pi-green);
 }
 
-#pi-sb-extensions {
+#pi-sb-capabilities {
   color: var(--pi-muted);
 }
 
