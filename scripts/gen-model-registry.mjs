@@ -13,7 +13,12 @@
 // providers — Bedrock, Azure, Vertex, Copilot — carry an empty baseUrl and can't be
 // expressed as a plain models.json entry, so they stay on the Rust binary's native
 // handling and are intentionally skipped.
-import { getProviders, getModels } from "@earendil-works/pi-ai";
+// pi-ai 0.81.0 removed the module-level getProviders()/getModels() this script was built on
+// (0.82.1 fails at import: "does not provide an export named 'getModels'"). The built-in catalog
+// moved behind ./providers/all, which exposes the same data through getBuiltinProviders() /
+// getBuiltinModels(id) — the per-model field shape (baseUrl, api, reasoning, contextWindow,
+// maxTokens, input, cost, thinkingLevelMap, compat) is unchanged, so only the enumeration moved.
+import { getBuiltinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -38,9 +43,8 @@ const providers = {};
 const skipped = [];
 let modelCount = 0;
 
-for (const prov of getProviders()) {
-  const provId = typeof prov === "string" ? prov : prov.id;
-  const models = getModels(provId) ?? [];
+for (const provId of getBuiltinProviders()) {
+  const models = getBuiltinModels(provId) ?? [];
   if (!models.length) { continue; }
   const { baseUrl, api } = models[0];
   if (!baseUrl || baseUrl.includes("{") || SPECIAL_APIS.has(api) || SPECIAL_PROVIDERS.has(provId)) {
