@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
 import {
   encodeCustomUiKey,
+  encodeCustomUiWheel,
   fitCustomUiColumns,
   type CustomUiKeyEvent,
 } from "../webview/components/custom-ui.js";
@@ -32,6 +33,12 @@ suite("Webview custom UI", () => {
     assert.strictEqual(encodeCustomUiKey(key("r", { ctrlKey: true })), "\x12");
     assert.strictEqual(encodeCustomUiKey(key("x", { altKey: true })), "\x1bx");
     assert.strictEqual(encodeCustomUiKey(key("k", { metaKey: true })), null);
+  });
+
+  test("maps mouse-wheel movement to list navigation", () => {
+    assert.strictEqual(encodeCustomUiWheel(10), "\x1b[B");
+    assert.strictEqual(encodeCustomUiWheel(-10), "\x1b[A");
+    assert.strictEqual(encodeCustomUiWheel(0), null);
   });
 
   test("fits width from the viewport without cumulative shrinking", () => {

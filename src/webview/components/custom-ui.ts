@@ -3,6 +3,8 @@
 // The extension host owns the component and sends rendered text frames. This
 // Webview component displays those frames and forwards terminal-style input.
 
+import { parseAnsi, type AnsiStyle } from "../render/ansi.js";
+
 export interface CustomUiKeyEvent {
   key: string;
   ctrlKey: boolean;
@@ -51,6 +53,12 @@ export function encodeCustomUiKey(event: CustomUiKeyEvent): string | null {
   return null;
 }
 
+/** Map vertical mouse-wheel movement to list navigation. */
+export function encodeCustomUiWheel(deltaY: number): string | null {
+  if (!Number.isFinite(deltaY) || deltaY === 0) { return null; }
+  return deltaY > 0 ? SPECIAL_KEYS.ArrowDown : SPECIAL_KEYS.ArrowUp;
+}
+
 interface CustomUiHostWindow {
   __vscode: { postMessage(message: unknown): void };
 }
@@ -64,6 +72,10 @@ export interface CustomUiFrame {
   lines: string[];
   columns: number;
   overlay?: boolean;
+  anchor?:
+    | "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right"
+    | "top-center" | "bottom-center" | "left-center" | "right-center";
+  maxHeight?: number | string;
 }
 
 const CUSTOM_UI_HORIZONTAL_CHROME_PX = 68;
@@ -126,6 +138,8 @@ export class CustomUi {
 
     this.panelEl.addEventListener("keydown", (event) => this.handleKey(event));
     this.panelEl.addEventListener("pointerdown", () => this.panelEl.focus());
+    this.panelEl.addEventListener("wheel", (event) => this.handleWheel(event), { passive: false });
+    this.applyLayout(frame);
   }
 
   mount(): void {
@@ -143,6 +157,7 @@ export class CustomUi {
     this.closeRequested = false;
     this.closeButton.disabled = false;
     this.setColumns(frame.columns);
+    this.applyLayout(frame);
     this.renderLines(frame.lines);
   }
 
@@ -152,8 +167,60 @@ export class CustomUi {
   }
 
   private renderLines(lines: string[]): void {
-    // textContent is intentional: extension output must never become Webview HTML.
-    this.contentEl.textContent = lines.join("\n");
+    this.contentEl.replaceChildren();
+    for (const segment of parseAnsi(lines.join("\n"))) {
+      const span = document.createElement("span");
+      span.textContent = segment.text;
+      this.applyAnsiStyle(span, segment.style);
+      this.contentEl.appendChild(span);
+    }
+  }
+
+  private applyAnsiStyle(element: HTMLElement, style: AnsiStyle): void {
+    let foreground = style.foreground;
+    let background = style.background;
+    if (style.inverse) {
+      const previousForeground = foreground;
+      foreground = background ?? "var(--vscode-editor-background)";
+      background = previousForeground ?? "var(--vscode-editor-foreground)";
+    }
+    if (foreground) { element.style.color = foreground; }
+    if (background) { element.style.backgroundColor = background; }
+    if (style.bold) { element.style.fontWeight = "700"; }
+    if (style.dim) { element.style.opacity = "0.7"; }
+    if (style.italic) { element.style.fontStyle = "italic"; }
+    const decorations = [
+      style.underline ? "underline" : "",
+      style.strikethrough ? "line-through" : "",
+    ].filter(Boolean);
+    if (decorations.length > 0) { element.style.textDecorationLine = decorations.join(" "); }
+  }
+
+  private applyLayout(frame: CustomUiFrame): void {
+    this.el.dataset.anchor = frame.anchor ?? "center";
+    if (typeof frame.maxHeight === "number") {
+      const contentHeight = `${frame.maxHeight * 1.35}em`;
+      this.panelEl.style.setProperty(
+        "--pi-custom-ui-max-height",
+        `min(calc(${contentHeight} + 34px), calc(100vh - 32px))`,
+      );
+      this.panelEl.style.setProperty(
+        "--pi-custom-ui-content-max-height",
+        `min(${contentHeight}, calc(100vh - 64px))`,
+      );
+    } else if (typeof frame.maxHeight === "string" && /^\d+(?:\.\d+)?%$/.test(frame.maxHeight)) {
+      this.panelEl.style.setProperty(
+        "--pi-custom-ui-max-height",
+        `min(${frame.maxHeight}, calc(100vh - 32px))`,
+      );
+      this.panelEl.style.setProperty(
+        "--pi-custom-ui-content-max-height",
+        `min(calc(${frame.maxHeight} - 34px), calc(100vh - 64px))`,
+      );
+    } else {
+      this.panelEl.style.removeProperty("--pi-custom-ui-max-height");
+      this.panelEl.style.removeProperty("--pi-custom-ui-content-max-height");
+    }
   }
 
   private setColumns(columns: number): void {
@@ -166,6 +233,14 @@ export class CustomUi {
     if (!input) { return; }
     event.preventDefault();
     event.stopPropagation();
+    this.postInput(input);
+  }
+
+  private handleWheel(event: WheelEvent): void {
+    if (event.ctrlKey || event.shiftKey) { return; }
+    const input = encodeCustomUiWheel(event.deltaY);
+    if (!input) { return; }
+    event.preventDefault();
     this.postInput(input);
   }
 

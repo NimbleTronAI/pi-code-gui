@@ -457,6 +457,14 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       lines: z.array(z.string()).max(300),
       columns: z.number().int().min(20).max(240),
       overlay: z.boolean().optional(),
+      anchor: z.enum([
+        "center", "top-left", "top-right", "bottom-left", "bottom-right",
+        "top-center", "bottom-center", "left-center", "right-center",
+      ]).optional(),
+      maxHeight: z.union([
+        z.number().positive().max(300),
+        z.string().regex(/^\d+(?:\.\d+)?%$/),
+      ]).optional(),
     }),
   }),
   z.object({

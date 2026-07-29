@@ -234,6 +234,8 @@ suite("Shared webview protocol", () => {
         lines: ["╭─ MCP ─╮", "│ chrome-devtools │", "╰───────╯"],
         columns: 82,
         overlay: true,
+        anchor: "top-center",
+        maxHeight: "80%",
       },
     });
     const inputResult = validateWebviewToExtension({
