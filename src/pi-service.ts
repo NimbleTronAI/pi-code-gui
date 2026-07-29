@@ -339,19 +339,31 @@ interface RemoteCustomUiComponent {
   dispose?(): void;
 }
 
+type RemoteCustomUiAnchor =
+  | "center" | "top-left" | "top-right" | "bottom-left" | "bottom-right"
+  | "top-center" | "bottom-center" | "left-center" | "right-center";
+
 interface RemoteCustomUiEntry {
   component: RemoteCustomUiComponent | null;
   width: number;
   overlay: boolean;
+  anchor: RemoteCustomUiAnchor;
+  maxHeight?: number | string;
   lastFrame: string | null;
   opened: boolean;
   settled: boolean;
   finish(value: unknown): void;
 }
 
+interface RemoteCustomUiOverlayOptions {
+  width?: number | string;
+  maxHeight?: number | string;
+  anchor?: RemoteCustomUiAnchor;
+}
+
 interface RemoteCustomUiOptions {
   overlay?: boolean;
-  overlayOptions?: { width?: number | string } | (() => { width?: number | string });
+  overlayOptions?: RemoteCustomUiOverlayOptions | (() => RemoteCustomUiOverlayOptions);
 }
 
 type RemoteCustomUiFactory = (
@@ -1995,8 +2007,10 @@ export class PiService {
       if (!Array.isArray(rendered)) {
         throw new Error("component.render() did not return an array");
       }
-      const ansiRegex = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
-      const lines = rendered.slice(0, 300).map((line) => String(line).replace(ansiRegex, "").slice(0, 4_000));
+      const terminalControlRegex = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+      const lines = rendered.slice(0, 300).map((line) => String(line)
+        .replace(terminalControlRegex, (sequence) => /^\x1b\[[0-9;]*m$/.test(sequence) ? sequence : "")
+        .slice(0, 4_000));
       const frame = lines.join("\n");
       if (entry.opened && entry.lastFrame === frame) { return; }
 
@@ -2005,7 +2019,14 @@ export class PiService {
       entry.opened = true;
       this.emit({
         type,
-        data: { id, lines, columns: entry.width, overlay: entry.overlay },
+        data: {
+          id,
+          lines,
+          columns: entry.width,
+          overlay: entry.overlay,
+          anchor: entry.anchor,
+          ...(entry.maxHeight !== undefined ? { maxHeight: entry.maxHeight } : {}),
+        },
       });
     } catch (error: unknown) {
       piWarn(`custom UI render failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -2029,12 +2050,20 @@ export class PiService {
     const width = typeof requestedWidth === "number"
       ? Math.max(20, Math.min(240, Math.round(requestedWidth)))
       : 82;
+    const requestedMaxHeight = resolvedOverlayOptions?.maxHeight;
+    const maxHeight = typeof requestedMaxHeight === "number"
+      ? Math.max(1, Math.min(300, requestedMaxHeight))
+      : typeof requestedMaxHeight === "string" && /^\d+(?:\.\d+)?%$/.test(requestedMaxHeight)
+        ? requestedMaxHeight
+        : undefined;
 
     return new Promise((resolve, reject) => {
       const entry: RemoteCustomUiEntry = {
         component: null,
         width,
         overlay: options?.overlay ?? false,
+        anchor: resolvedOverlayOptions?.anchor ?? "center",
+        maxHeight,
         lastFrame: null,
         opened: false,
         settled: false,

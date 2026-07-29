@@ -1663,7 +1663,7 @@
   position: relative;
   box-sizing: border-box;
   width: min(calc(var(--pi-custom-ui-width) + 34px), calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
+  max-height: var(--pi-custom-ui-max-height, calc(100vh - 32px));
   padding: 16px;
   overflow: hidden;
   color: var(--vscode-editor-foreground);
@@ -1674,6 +1674,42 @@
   outline: none;
 }
 
+.pi-custom-ui-backdrop[data-anchor="top-left"] {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.pi-custom-ui-backdrop[data-anchor="top-right"] {
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.pi-custom-ui-backdrop[data-anchor="bottom-left"] {
+  align-items: flex-end;
+  justify-content: flex-start;
+}
+
+.pi-custom-ui-backdrop[data-anchor="bottom-right"] {
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.pi-custom-ui-backdrop[data-anchor="top-center"] {
+  align-items: flex-start;
+}
+
+.pi-custom-ui-backdrop[data-anchor="bottom-center"] {
+  align-items: flex-end;
+}
+
+.pi-custom-ui-backdrop[data-anchor="left-center"] {
+  justify-content: flex-start;
+}
+
+.pi-custom-ui-backdrop[data-anchor="right-center"] {
+  justify-content: flex-end;
+}
+
 .pi-custom-ui-panel:focus-visible {
   border-color: var(--vscode-focusBorder);
 }
@@ -1681,7 +1717,7 @@
 .pi-custom-ui-content {
   box-sizing: border-box;
   max-width: 100%;
-  max-height: calc(100vh - 64px);
+  max-height: var(--pi-custom-ui-content-max-height, calc(100vh - 64px));
   margin: 0;
   overflow: auto;
   color: inherit;

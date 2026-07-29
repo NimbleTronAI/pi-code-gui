@@ -65,7 +65,11 @@ suite("PiService extension UI context", () => {
       let selected = false;
       const resultPromise = bindings.uiContext.custom(
         (tui: AnyRecord, _theme: AnyRecord, keybindings: AnyRecord, done: (value: string) => void) => ({
-          render: (width: number) => [`width=${width}`, selected ? "selected" : "idle"],
+          render: (width: number) => [
+            `\x1b[36mwidth=${width}\x1b[0m`,
+            selected ? "selected" : "idle",
+            "safe\x1b[2J",
+          ],
           handleInput: (data: string) => {
             if (keybindings.matches(data, "tui.select.down")) {
               selected = true;
@@ -77,17 +81,19 @@ suite("PiService extension UI context", () => {
           },
           invalidate: () => undefined,
         }),
-        { overlay: true, overlayOptions: { width: 82 } },
+        { overlay: true, overlayOptions: { width: 82, anchor: "top-center", maxHeight: "80%" } },
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
       const open = events.find((event) => event.type === "custom-ui-open");
       assert.ok(open, "custom UI did not emit its initial frame");
-      assert.deepStrictEqual(open.data.lines, ["width=82", "idle"]);
+      assert.deepStrictEqual(open.data.lines, ["\x1b[36mwidth=82\x1b[0m", "idle", "safe"]);
+      assert.strictEqual(open.data.anchor, "top-center");
+      assert.strictEqual(open.data.maxHeight, "80%");
 
       service.handleCustomUiInput(open.data.id, "\x1b[B", 72);
       const update = [...events].reverse().find((event) => event.type === "custom-ui-update");
-      assert.deepStrictEqual(update?.data.lines, ["width=72", "selected"]);
+      assert.deepStrictEqual(update?.data.lines, ["\x1b[36mwidth=72\x1b[0m", "selected", "safe"]);
 
       service.handleCustomUiInput(open.data.id, "\r", 72);
       assert.strictEqual(await resultPromise, "accepted");
