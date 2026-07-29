@@ -1662,7 +1662,7 @@
   --pi-custom-ui-width: 82ch;
   position: relative;
   box-sizing: border-box;
-  width: min(calc(var(--pi-custom-ui-width) + 32px), calc(100vw - 32px));
+  width: min(calc(var(--pi-custom-ui-width) + 34px), calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   padding: 16px;
   overflow: hidden;

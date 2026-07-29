@@ -66,17 +66,35 @@ export interface CustomUiFrame {
   overlay?: boolean;
 }
 
+const CUSTOM_UI_HORIZONTAL_CHROME_PX = 68;
+
+/** Fit a preferred terminal width to the Webview viewport without self-measurement. */
+export function fitCustomUiColumns(
+  preferredColumns: number,
+  viewportWidth: number,
+  characterWidth: number,
+): number {
+  const preferred = Math.max(20, Math.min(240, Math.round(preferredColumns)));
+  if (!Number.isFinite(viewportWidth) || !Number.isFinite(characterWidth) || characterWidth <= 0) {
+    return preferred;
+  }
+  const available = Math.floor((viewportWidth - CUSTOM_UI_HORIZONTAL_CHROME_PX) / characterWidth);
+  return Math.max(20, Math.min(preferred, available));
+}
+
 export class CustomUi {
   readonly el: HTMLElement;
 
   private readonly panelEl: HTMLElement;
   private readonly contentEl: HTMLElement;
   private readonly closeButton: HTMLButtonElement;
-  private readonly resizeObserver: ResizeObserver;
+  private readonly preferredColumns: number;
+  private readonly onViewportResize = () => this.reportViewportWidth();
   private columns: number;
   private closeRequested = false;
 
   constructor(private frame: CustomUiFrame) {
+    this.preferredColumns = frame.columns;
     this.columns = frame.columns;
     this.el = document.createElement("div");
     this.el.className = `pi-custom-ui-backdrop${frame.overlay ? " overlay" : ""}`;
@@ -108,16 +126,14 @@ export class CustomUi {
 
     this.panelEl.addEventListener("keydown", (event) => this.handleKey(event));
     this.panelEl.addEventListener("pointerdown", () => this.panelEl.focus());
-
-    this.resizeObserver = new ResizeObserver(() => this.reportWidth());
   }
 
   mount(): void {
     document.body.appendChild(this.el);
-    this.resizeObserver.observe(this.contentEl);
+    window.addEventListener("resize", this.onViewportResize);
     requestAnimationFrame(() => {
       this.panelEl.focus();
-      this.reportWidth();
+      this.reportViewportWidth();
     });
   }
 
@@ -131,7 +147,7 @@ export class CustomUi {
   }
 
   destroy(): void {
-    this.resizeObserver.disconnect();
+    window.removeEventListener("resize", this.onViewportResize);
     this.el.remove();
   }
 
@@ -170,17 +186,22 @@ export class CustomUi {
     });
   }
 
-  private reportWidth(): void {
+  private reportViewportWidth(): void {
     const style = getComputedStyle(this.contentEl);
     const probe = document.createElement("span");
-    probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${style.font};`;
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.whiteSpace = "pre";
+    probe.style.fontFamily = style.fontFamily;
+    probe.style.fontSize = style.fontSize;
+    probe.style.fontWeight = style.fontWeight;
+    probe.style.fontStyle = style.fontStyle;
     probe.textContent = "0000000000";
-    this.panelEl.appendChild(probe);
-    const charWidth = probe.getBoundingClientRect().width / 10;
+    document.body.appendChild(probe);
+    const characterWidth = probe.getBoundingClientRect().width / 10;
     probe.remove();
-    if (!Number.isFinite(charWidth) || charWidth <= 0) { return; }
 
-    const columns = Math.max(20, Math.min(240, Math.floor(this.contentEl.clientWidth / charWidth)));
+    const columns = fitCustomUiColumns(this.preferredColumns, window.innerWidth, characterWidth);
     if (columns === this.columns) { return; }
     this.columns = columns;
     postHostMessage({

@@ -1,5 +1,9 @@
 import * as assert from "node:assert";
-import { encodeCustomUiKey, type CustomUiKeyEvent } from "../webview/components/custom-ui.js";
+import {
+  encodeCustomUiKey,
+  fitCustomUiColumns,
+  type CustomUiKeyEvent,
+} from "../webview/components/custom-ui.js";
 
 function key(
   value: string,
@@ -28,5 +32,11 @@ suite("Webview custom UI", () => {
     assert.strictEqual(encodeCustomUiKey(key("r", { ctrlKey: true })), "\x12");
     assert.strictEqual(encodeCustomUiKey(key("x", { altKey: true })), "\x1bx");
     assert.strictEqual(encodeCustomUiKey(key("k", { metaKey: true })), null);
+  });
+
+  test("fits width from the viewport without cumulative shrinking", () => {
+    assert.strictEqual(fitCustomUiColumns(82, 800, 8), 82);
+    assert.strictEqual(fitCustomUiColumns(82, 420, 8), 44);
+    assert.strictEqual(fitCustomUiColumns(82, 800, 8), 82);
   });
 });
