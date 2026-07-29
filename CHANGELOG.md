@@ -12,6 +12,9 @@
 - **Honest thinking-level control under Rust.** A model's thinking *level* only affects generation on provider transports that actually transmit it (`anthropic-messages`, `openai-responses`, `google-generative-ai`). On OpenAI-compatible chat APIs (`openai-completions` — including **DeepSeek**) the level is never sent on the wire (the model self-allocates its reasoning), so picking one was a silent no-op the binary still reported as success. The status bar now shows a read-only **reasoning: on/off** badge for those providers instead of a graded "thinking: …" picker. Verified against rust-pi 0.1.20 (provider request body + live `get_state`).
 
 ### Added
+- **`max` thinking level.** Some models put their top reasoning tier behind `max` rather than `xhigh` — Kimi K3 exposes `max` with `xhigh` explicitly unsupported, and DeepSeek V4 Pro has no `xhigh` at all — so under the previous six-rung ladder (off → xhigh) those tiers were simply unreachable. `max` is now a first-class level, offered only for models that actually map it, and only when the active backend accepts it: Rust needs **v0.1.23+** (older binaries reject `max` outright, so it is withheld rather than offered and failed), while the TypeScript runtime supports it via the in-process SDK. The bundled model catalog was regenerated from pi-ai 0.82.1 (854 models, 30 providers) to carry the new tier.
+
+### Added
 - **Rust runtime tool dependencies surfaced + auto-offered.** Rust Pi's `find` and `grep` tools require the external `fd` and `ripgrep` (`rg`) binaries on `PATH` — a documented `pi_agent_rust` prerequisite that its installer does not install. After a managed Rust install, the extension now detects whether they're present and offers a one-click install (`apt install fd-find ripgrep` on Linux incl. the `fdfind`→`fd` symlink, `brew install fd ripgrep` on macOS); otherwise the `find`/`grep` tools fail at runtime. See [Requirements](README.md#requirements).
 
 ## [0.1.1]
