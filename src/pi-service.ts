@@ -12,7 +12,7 @@ import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } fro
 import { setupRustModels, reseedRustAuth } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
@@ -1240,10 +1240,21 @@ export class PiService {
   supportedThinkingLevels(): string[] {
     const full = this.currentFullModel();
     // When the model is fully unknown, offer the graded range speculatively — but NOT `max`:
-    // it is the one level a pre-#139 binary can't honor, and an unresolved model gives us no
-    // evidence the backend supports it (getSupportedThinkingLevels surfaces max only from an
-    // explicit per-model mapping, which this fallback has none of).
-    return full ? getSupportedThinkingLevels(full) : THINKING_LEVELS.filter((l) => l !== "max");
+    // an unresolved model gives us no evidence the backend supports it (getSupportedThinkingLevels
+    // surfaces max only from an explicit per-model mapping, which this fallback has none of).
+    const levels = full ? getSupportedThinkingLevels(full) : THINKING_LEVELS.filter((l) => l !== "max");
+    return this.backendHonorsMax() ? levels : levels.filter((l) => l !== "max");
+  }
+
+  /** Whether the ACTIVE backend accepts `max`. The bundled catalog maps `max` for 131 models,
+   *  but a mapping only says the MODEL has the tier — the backend still has to accept it:
+   *  a pre-#139 rust-pi rejects `set_thinking_level("max")` as a validation error, so offering
+   *  it there turns a picker entry into a hard failure. TS goes through the in-process SDK,
+   *  which carries its own post-#139 pi-ai and clamps rather than rejecting. */
+  private backendHonorsMax(): boolean {
+    if (this.capabilities.kind !== "rust") { return true; }
+    try { return rustHonorsMaxThinkingLevel(detectRustBinary().version); }
+    catch { return false; }   // fail closed — never offer a level we can't confirm
   }
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */

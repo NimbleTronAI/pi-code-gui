@@ -86,13 +86,38 @@ export function thinkingLevelIsLive(api: string | null | undefined): boolean {
  *
  *  `max` is the first-class 7th tier added upstream (pi_agent_rust#139) — distinct from
  *  `xhigh`, since some models (e.g. Kimi K3) accept only `max` and Anthropic exposes
- *  `effort:"max"` above xhigh. Like `xhigh` it is offered ONLY when a model explicitly maps
- *  it: a pre-#139 pi-ai keys its top tier `xhigh:"max"` (no `max` KEY), so on the current
- *  bundled catalog and the pinned v0.1.22 binary `max` is never surfaced or sent. It lights up
- *  once the bundled catalog is regenerated from a post-#139 pi-ai (and the rust pin is bumped);
- *  the presence of a distinct `max` key is itself the signal the backend understands it. */
+ *  `effort:"max"` above xhigh. Like `xhigh` it is offered ONLY when a model explicitly maps it.
+ *
+ *  A per-model mapping is necessary but NOT sufficient: the bundled catalog (pi-ai 0.82.1) now
+ *  carries 131 `max` keys, but whether the level can actually be SENT depends on the backend.
+ *  Measured against a real pre-#139 binary (0.1.20): a `max` key in models.json parses fine and
+ *  the model still lists, but `set_thinking_level("max")` is rejected —
+ *  `Validation error: Invalid thinking level: max` — identically to a garbage value, while
+ *  `xhigh` is accepted and clamped to `high`. So the catalog alone can't gate it; see
+ *  rustHonorsMaxThinkingLevel. */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+/** First rust-pi release whose thinking-level validator accepts `max` (upstream #139). */
+export const MIN_RUST_VERSION_FOR_MAX = "0.1.23";
+
+/** Whether a rust-pi binary will accept `set_thinking_level("max")`.
+ *
+ *  Gates on the DETECTED binary, not the pinned one: the two diverge routinely (a user on an
+ *  older build, or — as of v0.1.23 — a platform the release shipped no asset for). Offering a
+ *  level the live binary rejects turns a picker entry into a hard validation error, so this
+ *  fails CLOSED: an absent or unparseable version means "assume it can't". Only the numeric
+ *  triple is compared; `--version` also carries a build hash and timestamp. */
+export function rustHonorsMaxThinkingLevel(version: string | undefined): boolean {
+  const found = version?.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!found) { return false; }
+  const min = MIN_RUST_VERSION_FOR_MAX.split(".").map(Number);
+  const got = [Number(found[1]), Number(found[2]), Number(found[3])];
+  for (let i = 0; i < 3; i++) {
+    if (got[i] !== min[i]) { return got[i] > min[i]; }
+  }
+  return true; // exactly the minimum
+}
 
 /** The thinking-capability shape read off a catalog/SDK model. Mirrors the fields
  *  @earendil-works/pi-ai carries per model. `thinkingLevelMap` maps each graded

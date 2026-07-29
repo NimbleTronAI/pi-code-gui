@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat } from "../../model-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, rustHonorsMaxThinkingLevel } from "../../model-catalog.js";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -245,4 +245,34 @@ test("findCatalogThinkingModel: returns null for an unknown provider or model", 
   assert.equal(findCatalogThinkingModel(CATALOG, "deepseek", "nope"), null);
   assert.equal(findCatalogThinkingModel(CATALOG, "no-provider", "deepseek-v4-pro"), null);
   assert.equal(findCatalogThinkingModel(undefined, "deepseek", "deepseek-v4-pro"), null);
+});
+
+// ── `max` backend gate (upstream pi_agent_rust#139) ──────────────────
+// The bundled catalog (pi-ai 0.82.1) maps `max` for 131 models, but a mapping only says the
+// MODEL has the tier. Measured against a real pre-#139 binary (0.1.20): the catalog parses and
+// the model lists, but `set_thinking_level("max")` comes back
+// `Validation error: Invalid thinking level: max` — the same rejection a garbage value gets,
+// while `xhigh` is accepted and clamped to `high`. So the version gate is what stands between a
+// picker entry and a hard error.
+test("rustHonorsMaxThinkingLevel: accepts the minimum and anything above it", () => {
+  assert.equal(rustHonorsMaxThinkingLevel("pi 0.1.23 (abc123 2026-07-28T17:53:33Z)"), true);
+  assert.equal(rustHonorsMaxThinkingLevel("0.1.23"), true);
+  assert.equal(rustHonorsMaxThinkingLevel("0.1.24"), true);
+  assert.equal(rustHonorsMaxThinkingLevel("0.2.0"), true);
+  assert.equal(rustHonorsMaxThinkingLevel("1.0.0"), true);
+});
+
+test("rustHonorsMaxThinkingLevel: rejects every pre-#139 build", () => {
+  // 0.1.20 is the build this was actually measured against; 0.1.22 was the previous pin.
+  assert.equal(rustHonorsMaxThinkingLevel("pi 0.1.20 (87b70f74 2026-07-05T16:30:25Z)"), false);
+  assert.equal(rustHonorsMaxThinkingLevel("0.1.22"), false);
+  assert.equal(rustHonorsMaxThinkingLevel("0.1.9"), false);   // not a string compare: 9 < 23
+  assert.equal(rustHonorsMaxThinkingLevel("0.0.99"), false);
+});
+
+test("rustHonorsMaxThinkingLevel: fails CLOSED on anything it can't parse", () => {
+  // Offering a level the binary rejects is worse than withholding one it would accept.
+  for (const v of [undefined, "", "unknown", "pi (dev build)", "v1"]) {
+    assert.equal(rustHonorsMaxThinkingLevel(v), false, `${JSON.stringify(v)} must not enable max`);
+  }
 });
