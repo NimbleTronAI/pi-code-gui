@@ -1133,18 +1133,19 @@
     border-bottom: 1px solid var(--border-color);
   }
   .extensions-row:last-child { border-bottom: 0; }
+  .extensions-row.capability-skill { min-height: 32px; padding-block: 4px; }
   .extensions-info { min-width: 0; flex: 1; }
   .extensions-name { overflow: hidden; color: var(--fg-primary); text-overflow: ellipsis; white-space: nowrap; }
-  .capabilities-description {
-    display: -webkit-box;
-    margin-top: 2px;
-    overflow: hidden;
-    color: var(--fg-secondary);
-    font-size: 0.75em;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+  .capability-name-link {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    color: var(--accent);
+    text-decoration: none;
   }
+  .capability-name-link:hover { text-decoration: underline; }
   .extensions-meta { margin-top: 2px; color: var(--fg-secondary); font-size: 0.75em; }
+  .extensions-meta:empty { display: none; }
   .extensions-empty,
   .extensions-error { padding: 12px 2px; color: var(--fg-secondary); font-size: 0.85em; }
   .extensions-error { color: var(--vscode-errorForeground); }

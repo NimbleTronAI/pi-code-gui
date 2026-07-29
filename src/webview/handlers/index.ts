@@ -2211,11 +2211,10 @@ export function renderCapabilitiesPanel() {
         if (capabilities.length === 0) { continue; }
         result += html`<div class="capabilities-section-title">${kind === "skill" ? "Skills" : "Extensions"}</div>`;
         for (const capability of capabilities) {
-          result += html`<div class="extensions-row">
+          result += html`<div class="extensions-row capability-${capability.kind}">
             <div class="extensions-info" title="${capability.path}">
-              <div class="extensions-name">${capability.name}</div>
-              ${capability.description ? html`<div class="capabilities-description">${capability.description}</div>` : ""}
-              <div class="extensions-meta">${capability.scope} · ${capability.origin}</div>
+              <a class="extensions-name capability-name-link" href="#" data-capability-path="${capability.path}">${capability.name}</a>
+              <div class="extensions-meta">${capability.kind === "extension" ? `${capability.scope} · ${capability.origin}` : ""}</div>
             </div>
             <button class="extensions-toggle${capability.enabled ? " on" : ""}"
               type="button" data-kind="${capability.kind}" data-path="${capability.path}"
@@ -2231,6 +2230,16 @@ export function renderCapabilitiesPanel() {
     state.capabilitiesOverlay.querySelector(".extensions-refresh")?.addEventListener("click", function (event) {
       event.stopPropagation();
       window.__vscode.postMessage({ type: "reloadCapabilities" });
+    });
+    state.capabilitiesOverlay.querySelectorAll(".capability-name-link").forEach(function (link) {
+      link.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const capabilityPath = link.getAttribute("data-capability-path");
+        if (capabilityPath) {
+          window.__vscode.postMessage({ type: "openFile", path: capabilityPath });
+        }
+      });
     });
     state.capabilitiesOverlay.querySelectorAll(".extensions-toggle").forEach(function (toggle) {
       toggle.addEventListener("click", function (event) {
