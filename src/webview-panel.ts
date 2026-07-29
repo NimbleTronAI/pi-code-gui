@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { appendEditorContext, truncateUtf8, type PromptEditorContext } from "./editor-context.js";
 import { resolveFileLinkPath } from "./file-link.js";
 import { mergeInitialHistoryEvents } from "./history-event-sync.js";
+import { SessionCapabilitySnapshot } from "./capability-snapshot.js";
 import { piError } from "./logger.js";
 import { getWorkspaceCwd } from "./workspace-context.js";
 import type { PiService } from "./pi-service.js";
@@ -29,7 +30,7 @@ export interface CapabilityPanelItem {
 }
 
 export interface CapabilityPanelActions {
-  list: () => Promise<CapabilityPanelItem[]>;
+  scan: () => Promise<CapabilityPanelItem[]>;
   setEnabled: (
     kind: CapabilityPanelItem["kind"],
     capabilityPath: string,
@@ -49,6 +50,7 @@ export class PiWebviewPanel {
   private editorContextUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private workspaceFileCache: { loadedAt: number; items: WorkspaceFileItem[] } | null = null;
   private pickedContextAttachments = new Map<string, WorkspaceFileItem>();
+  private capabilitySnapshot: SessionCapabilitySnapshot<CapabilityPanelItem>;
 
   // Tab indicator state
   private _tabInitialized = false;
@@ -64,6 +66,9 @@ export class PiWebviewPanel {
     private readonly capabilityPanelActions: CapabilityPanelActions,
   ) {
     this.piService = piService;
+    this.capabilitySnapshot = new SessionCapabilitySnapshot(
+      () => this.capabilityPanelActions.scan(),
+    );
   }
 
   /** Register a callback that fires when the panel/webview is closed. */
@@ -969,24 +974,17 @@ export class PiWebviewPanel {
 </html>`;
   }
 
-  /** Push extension and skill resources into the Capabilities panel. */
-  private async postCapabilitiesPanelState(): Promise<void> {
+  /** Replace this Session's capability snapshot at an explicit refresh boundary. */
+  async refreshCapabilitiesSnapshot(): Promise<void> {
+    await this.capabilitySnapshot.refresh();
+  }
+
+  /** Push this Session's captured capabilities without rescanning the filesystem. */
+  private postCapabilitiesPanelState(): void {
     this.postMessage({
       type: "capabilities-panel-update",
-      data: { capabilities: [], loading: true },
+      data: { capabilities: this.capabilitySnapshot.read() },
     });
-    try {
-      const capabilities = await this.capabilityPanelActions.list();
-      this.postMessage({ type: "capabilities-panel-update", data: { capabilities } });
-    } catch (error: unknown) {
-      this.postMessage({
-        type: "capabilities-panel-update",
-        data: {
-          capabilities: [],
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
-    }
   }
 
   /** Reload runtime resources without replaying conversation history. */
@@ -997,7 +995,8 @@ export class PiWebviewPanel {
     });
     try {
       await this.piService.reloadCapabilities();
-      await this.postCapabilitiesPanelState();
+      await this.refreshCapabilitiesSnapshot();
+      this.postCapabilitiesPanelState();
     } catch (error: unknown) {
       this.postMessage({
         type: "capabilities-panel-update",
@@ -1022,7 +1021,8 @@ export class PiWebviewPanel {
     try {
       await this.capabilityPanelActions.setEnabled(kind, capabilityPath, enabled);
       await this.piService.reloadCapabilities();
-      await this.postCapabilitiesPanelState();
+      await this.refreshCapabilitiesSnapshot();
+      this.postCapabilitiesPanelState();
     } catch (error: unknown) {
       this.postMessage({
         type: "capabilities-panel-update",
