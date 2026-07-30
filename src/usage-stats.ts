@@ -22,14 +22,32 @@ export interface UsageStats extends RawUsage {
   costKnown: boolean;
 }
 
+/** Whether rates say anything we can price a turn with.
+ *
+ *  All-zero rates are NOT a price of zero — they are the catalog declining to state one. 99 of
+ *  the 854 bundled models sit at 0/0, and they are two different things wearing the same face:
+ *  genuinely free models (openrouter `:free`, google `gemma-*`, nvidia NIM) and whole
+ *  subscription providers (`qwen-token-plan`, `xiaomi-token-plan-*`, `zai`, `kimi-coding`) where
+ *  there simply is no per-token price because a plan was bought up front. pi-ai gives us no flag
+ *  to tell them apart, and the only alternative — hardcoding a provider list — is exactly the
+ *  brittleness catalog generation exists to avoid. So we decline to assert: a plan user sees
+ *  "$??" and applies their own mental model instead of a confident "$0.00" that quietly
+ *  understates their quota burn. Cache rates alone can't price a turn, so only input/output
+ *  count here. */
+function ratesArePriceable(rates: CostRates | null): rates is CostRates {
+  return rates !== null && (rates.input > 0 || rates.output > 0);
+}
+
 /** Combine the backend's raw usage with the catalog rates into the display stats. Pure.
- *  - Rust: the binary reports cost:0, so cost = tokens × rates (0 when no rates); costKnown
- *    tracks whether we hold rates at all.
- *  - SDK: keeps the SDK's own computed cost; costKnown when it computed one OR we hold rates
- *    (a rates-bearing model with no turns yet legitimately shows $0.00, not $??). */
+ *  - Rust: the binary reports cost:0, so cost = tokens × rates (0 when unpriceable); costKnown
+ *    tracks whether we hold rates we can actually price with.
+ *  - SDK: keeps the SDK's own computed cost; costKnown when it computed one OR we hold
+ *    priceable rates (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
+ *    An SDK-computed cost > 0 always wins — that is a measurement, not an inference. */
 export function computeUsageStats(u: RawUsage, rates: CostRates | null, runtime: Runtime): UsageStats {
+  const priceable = ratesArePriceable(rates);
   if (runtime === "rust") {
-    return { ...u, cost: rates ? computeTokenCost(u, rates) : 0, costKnown: rates !== null };
+    return { ...u, cost: priceable ? computeTokenCost(u, rates) : 0, costKnown: priceable };
   }
-  return { ...u, costKnown: u.cost > 0 || rates !== null };
+  return { ...u, costKnown: u.cost > 0 || priceable };
 }

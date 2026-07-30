@@ -22,7 +22,11 @@ export const FALLBACK_MODELS: ModelChoice[] = [
  *  there's no data. Pure. */
 export function formatModelDetail(cost?: ModelCost, contextWindow?: number): string {
   const parts: string[] = [];
-  if (cost) { parts.push(`$${cost.input}/$${cost.output} per M tokens`); }
+  // All-zero rates are the catalog declining to state a price, not a price of zero — the same
+  // call the status chip makes (see ratesArePriceable in usage-stats.ts). Rendering
+  // "$0/$0 per M tokens" would assert free for subscription providers that merely have no
+  // per-token rate, so the pricing clause is omitted and only the context window shows.
+  if (cost && (cost.input > 0 || cost.output > 0)) { parts.push(`$${cost.input}/$${cost.output} per M tokens`); }
   if (contextWindow) { parts.push(`${Math.round(contextWindow / 1000)}K context`); }
   return parts.join(" · ");
 }

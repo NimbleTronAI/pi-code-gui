@@ -56,3 +56,12 @@ test("FALLBACK_MODELS is a non-empty static list with no pricing", () => {
   assert.ok(FALLBACK_MODELS.every((m) => m.provider && m.modelId && m.cost === undefined));
 });
 
+
+test("formatModelDetail: all-zero rates omit the pricing clause (no '$0/$0 per M tokens')", () => {
+  // Same call the status chip makes: 0/0 is the catalog declining to state a price, so asserting
+  // "free" in the picker would mislead subscription-provider users the same way $0.00 would.
+  assert.equal(formatModelDetail({ input: 0, output: 0 }, 128_000), "128K context");
+  assert.equal(formatModelDetail({ input: 0, output: 0 }, undefined), "");
+  // A real rate on either side is still worth showing.
+  assert.equal(formatModelDetail({ input: 0, output: 2 }, undefined), "$0/$2 per M tokens");
+});

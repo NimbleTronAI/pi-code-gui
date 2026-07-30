@@ -52,3 +52,58 @@ test("passes token counts and context through unchanged", () => {
     { input: 10, output: 20, cacheRead: 5, cacheWrite: 2, contextPercent: 42, contextWindow: 200_000 },
   );
 });
+
+// ── all-zero rates mean "no price stated", not "free" ─────────────────
+// 99 of the 854 bundled models sit at 0/0, mixing genuinely-free models with whole
+// subscription providers (qwen-token-plan, xiaomi-token-plan-*, zai, kimi-coding) that have no
+// per-token price because a plan was bought up front. pi-ai gives no flag to separate them, so
+// we decline to assert $0.00 and let the user apply their own model.
+const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+const PAID = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+const USED = { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 200_000 };
+
+test("rust: all-zero rates render $?? rather than a confident $0.00", () => {
+  const s = computeUsageStats(USED, ZERO, "rust");
+  assert.equal(s.costKnown, false, "a subscription plan's quota burn must not read as free");
+  assert.equal(s.cost, 0);
+});
+
+test("rust: real rates still price the turn", () => {
+  const s = computeUsageStats(USED, PAID, "rust");
+  assert.equal(s.costKnown, true);
+  assert.ok(s.cost > 0, "tokens x rates");
+});
+
+test("typescript: all-zero rates and no SDK cost → $??", () => {
+  assert.equal(computeUsageStats(USED, ZERO, "typescript").costKnown, false);
+});
+
+test("typescript: an SDK-COMPUTED cost wins over zero rates (a measurement, not an inference)", () => {
+  const s = computeUsageStats({ ...USED, cost: 0.02 }, ZERO, "typescript");
+  assert.equal(s.costKnown, true);
+  assert.equal(s.cost, 0.02);
+});
+
+test("a rates-bearing model with no turns yet still shows $0.00, not $??", () => {
+  const idle = { ...USED, input: 0, output: 0 };
+  assert.equal(computeUsageStats(idle, PAID, "rust").costKnown, true);
+  assert.equal(computeUsageStats(idle, PAID, "typescript").costKnown, true);
+});
+
+test("cache-only rates can't price a turn → still $??", () => {
+  const cacheOnly = { input: 0, output: 0, cacheRead: 0.5, cacheWrite: 6.25 };
+  assert.equal(computeUsageStats(USED, cacheOnly, "rust").costKnown, false);
+});
+
+test("negative sentinel rates render $?? — never a negative cost", () => {
+  // openrouter/auto and openrouter/auto-beta ship input/output of -1000000: pi-ai's way of
+  // saying "pricing varies", since an auto-router picks an arbitrary downstream model. The
+  // previous `rates !== null` test accepted them, and tokens x negative rates put a NEGATIVE
+  // figure in the status bar (-$1500 after 1500 tokens, measured).
+  const sentinel = { input: -1_000_000, output: -1_000_000, cacheRead: -1_000_000, cacheWrite: -1_000_000 };
+  for (const rt of ["rust", "typescript"] as const) {
+    const s = computeUsageStats(USED, sentinel, rt);
+    assert.equal(s.costKnown, false, `${rt}: unpriceable`);
+    assert.ok(s.cost >= 0, `${rt}: cost must never go negative`);
+  }
+});
