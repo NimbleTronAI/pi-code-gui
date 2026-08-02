@@ -13,7 +13,11 @@ import {
 import { restoreScrollAfterPrepend } from "../render/history-pagination.js";
 import { isAllowedMarkdownLink } from "../render/markdown-inline.js";
 import { navigateAutocompleteSelection } from "../render/autocomplete-navigation.js";
-import { renderSlashSourceLabel } from "../render/slash-autocomplete.js";
+import {
+  filterSlashCommands,
+  getSlashCommandFilter,
+  renderSlashSourceLabel,
+} from "../render/slash-autocomplete.js";
 import {
   nextWaitingFrame,
   PI_TUI_SPINNER_FRAMES,
@@ -2073,11 +2077,11 @@ let sbSettings = document.getElementById("pi-sb-settings");
       state.fileMentionStart = -1;
       state.fileAutocomplete.classList.remove("visible");
       state.fileAutocompleteOpen = false;
-      var slashMatch = val.match(/^\/(\w*)$/);
-      if (slashMatch) {
-        state.slashFilter = val;
+      var slashFilter = getSlashCommandFilter(val);
+      if (slashFilter !== null) {
+        state.slashFilter = slashFilter;
         state.slashSelectedIdx = 0;
-        updateSlashAutocomplete(val);
+        updateSlashAutocomplete(slashFilter);
       } else {
         state.slashAutocomplete.classList.remove("visible");
         state.slashAutocompleteOpen = false;
@@ -2876,10 +2880,7 @@ export function handleSlashCommandsUpdate(data: any) {
 
 export function getSlashAutocompleteMatches(filter: string) {
     if (!filter) { return []; }
-    const normalized = filter.toLowerCase();
-    return getSlashCommands().filter(function (command) {
-      return command.cmd.toLowerCase().indexOf(normalized) === 0;
-    });
+    return filterSlashCommands(getSlashCommands(), filter);
   }
 
 export function updateSlashAutocomplete(filter: string) {
