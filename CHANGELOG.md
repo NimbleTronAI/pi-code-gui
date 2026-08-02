@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- Added substring search across Slash command names and descriptions, including `skill:` names containing `:` and `-` separators.
+- Ranked Slash search results by exact, prefix, command-segment, command-substring, and description relevance while preserving stable ordering for ties.
+
 ## 0.2.2
 
 - Added per-session Capabilities management for Skills and Extensions, including compact source links, persisted toggles, and session-aligned snapshots.
