@@ -1,6 +1,10 @@
 import * as assert from "node:assert";
 import { html } from "../webview/render/html.js";
-import { renderSlashSourceLabel } from "../webview/render/slash-autocomplete.js";
+import {
+  filterSlashCommands,
+  getSlashCommandFilter,
+  renderSlashSourceLabel,
+} from "../webview/render/slash-autocomplete.js";
 
 function withMockDocument(run: () => void): void {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -35,6 +39,33 @@ function withMockDocument(run: () => void): void {
 }
 
 suite("Webview slash command rendering", () => {
+  test("matches command substrings, skill names, and descriptions", () => {
+    const commands = [
+      { cmd: "/skill:karpathy-guidelines", desc: "Apply coding guidelines" },
+      { cmd: "/mcp-auth", desc: "Authenticate an MCP server" },
+      { cmd: "/release", desc: "Prepare Marketplace publishing" },
+    ];
+
+    assert.deepStrictEqual(
+      filterSlashCommands(commands, "/guidelines").map((command) => command.cmd),
+      ["/skill:karpathy-guidelines"],
+    );
+    assert.deepStrictEqual(
+      filterSlashCommands(commands, "/skill:karpathy").map((command) => command.cmd),
+      ["/skill:karpathy-guidelines"],
+    );
+    assert.deepStrictEqual(
+      filterSlashCommands(commands, "/publishing").map((command) => command.cmd),
+      ["/release"],
+    );
+  });
+
+  test("keeps autocomplete active for skill separators", () => {
+    assert.strictEqual(getSlashCommandFilter("/skill:karpathy-guidelines"), "/skill:karpathy-guidelines");
+    assert.strictEqual(getSlashCommandFilter("/skill:karpathy guidelines"), null);
+    assert.strictEqual(getSlashCommandFilter("//skill"), null);
+  });
+
   test("renders source badges as markup instead of literal text", () => {
     withMockDocument(() => {
       const rendered = html`<div>${renderSlashSourceLabel("[u] extension")}</div>`;
