@@ -60,6 +60,29 @@ suite("Webview slash command rendering", () => {
     );
   });
 
+  test("ranks command-name matches ahead of description matches", () => {
+    const commands = [
+      { cmd: "/mcp-auth", desc: "Authenticate an MCP server" },
+      { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file" },
+      { cmd: "/explain-code", desc: "Explain code at current cursor position" },
+      { cmd: "/skill:karpathy-guidelines", desc: "Behavioral guidelines" },
+      { cmd: "/new", desc: "Start a new session" },
+      { cmd: "/resume", desc: "Resume a previous session" },
+    ];
+
+    assert.deepStrictEqual(
+      filterSlashCommands(commands, "/n").map((command) => command.cmd),
+      [
+        "/new",
+        "/fix-diagnostics",
+        "/explain-code",
+        "/skill:karpathy-guidelines",
+        "/mcp-auth",
+        "/resume",
+      ],
+    );
+  });
+
   test("keeps autocomplete active for skill separators", () => {
     assert.strictEqual(getSlashCommandFilter("/skill:karpathy-guidelines"), "/skill:karpathy-guidelines");
     assert.strictEqual(getSlashCommandFilter("/skill:karpathy guidelines"), null);
