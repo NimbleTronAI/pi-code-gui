@@ -30,8 +30,12 @@ type Method = "managed" | "curl" | "manual" | "detect";
 export async function installRustInteractive(context: vscode.ExtensionContext): Promise<boolean> {
   const preferred = vscode.workspace.getConfiguration("pi-code-gui").get<string>("rustInstallMethod") ?? "managed";
   const items: Array<vscode.QuickPickItem & { id: Method }> = [
-    { label: "$(cloud-download) Managed download (recommended)", detail: "Download the verified prebuilt binary from GitHub releases into an extension-managed location. No PATH changes, no remote scripts.", id: "managed" },
-    { label: "$(terminal) Official installer (curl | sh)", detail: "Easiest; sets up PATH automatically. May rename an existing TypeScript `pi` command to `legacy-pi`.", id: "curl" },
+    // Each option states its OWN downside explicitly. The two risks are disjoint and the copy
+    // used to leave that to inference: "No PATH changes, no remote scripts" only answers "does
+    // the managed option also rename my pi?" if you notice it is a rebuttal of the next line.
+    // Say it outright — that question is the whole basis for choosing between them.
+    { label: "$(cloud-download) Managed download (recommended)", detail: "Checksum-verified binary into extension-managed storage. Leaves PATH alone and does NOT touch an existing `pi` command. Risk: may not run against older system libraries — detected on install, with a fallback offered.", id: "managed" },
+    { label: "$(terminal) Official installer (curl | sh)", detail: "Runs the upstream install.sh from GitHub and sets up PATH for you. Risk: executes a remote script, and MAY RENAME an existing TypeScript `pi` command to `legacy-pi`.", id: "curl" },
     { label: "$(book) Guide me (manual)", detail: "Open the install instructions; the extension detects the binary afterward.", id: "manual" },
     { label: "$(search) Detect an existing binary", detail: "Look on PATH and common locations (~/.cargo/bin, ~/.local/bin, /usr/local/bin).", id: "detect" },
   ];
