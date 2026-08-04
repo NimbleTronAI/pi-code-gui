@@ -185,6 +185,11 @@ export const writeToolRenderer = {
         }
       }
 
+      if (!isError && typeof result?.details?.changeSummary === "string") {
+        var writeStatus = el.querySelector<HTMLElement>(".tool-status");
+        if (writeStatus) { writeStatus.textContent = result.details.changeSummary; }
+      }
+
       // Re-render final content, then collapse long writes like Pi TUI's
       // default compact tool view. The user can expand the complete file.
       renderWriteContentBlock(el);
@@ -369,8 +374,14 @@ export const editToolRenderer = {
         }
       }
 
+      const completedEdits = (el as unknown as { _editEdits?: Array<{ oldText: string; newText: string }> })._editEdits;
+      if (!isError && completedEdits?.length) {
+        var editStatus = el.querySelector<HTMLElement>(".tool-status");
+        if (editStatus) { editStatus.textContent = `${completedEdits.length} ${completedEdits.length === 1 ? "edit" : "edits"}`; }
+      }
+
       // Re-render previews to collapse to max 3 now that streaming is done
-      if ((el as any)._editEdits) { renderEditPreviews(el as any, (el as any)._editEdits); }
+      if (completedEdits) { renderEditPreviews(el, completedEdits); }
 
       var text = "";
       if (result && result.content) {

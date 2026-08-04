@@ -10,6 +10,7 @@ import { type ImageContent, type PiServiceEvent, validateExtensionToWebview } fr
 import { piLog, piWarn } from "./logger.js";
 import { getWorkspaceCwd, getWorkspaceUri } from "./workspace-context.js";
 import { readProviderApiKey } from "./provider-credentials.js";
+import { formatLineChangeSummary } from "./tool-change-summary.js";
 
 /** Find the last element matching predicate (ES2023 findLast polyfill). */
 function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
@@ -404,6 +405,7 @@ export class PiService {
 
   // Track current assistant message content (for toolCall stubs during message_update)
   private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any }> = new Map();
+  private writeOriginalContents = new Map<string, string>();
 
   // Widget activity timer (cleared on dispose to prevent leaks)
   private _widgetTimer: ReturnType<typeof setInterval> | null = null;
@@ -1689,6 +1691,17 @@ export class PiService {
           }
         } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
 
+        if (event.toolName === "write" && typeof args?.path === "string") {
+          const filePath = path.isAbsolute(args.path) ? args.path : path.resolve(getWorkspaceCwd(), args.path);
+          try {
+            this.writeOriginalContents.set(event.toolCallId, fs.readFileSync(filePath, "utf8"));
+          } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              this.writeOriginalContents.set(event.toolCallId, "");
+            }
+          }
+        }
+
         if (event.toolName === "bash" || event.toolName === "exec") {
           this.emit({ type: "bash-start", data: { toolCallId: event.toolCallId, command: args?.command ?? "", entryId: tcEntryId } });
         } else {
@@ -1717,7 +1730,19 @@ export class PiService {
           const text = event.result?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
           this.emit({ type: "bash-end", data: { toolCallId: event.toolCallId, command: event.args?.command ?? "", exitCode: event.isError ? 1 : 0, cancelled: false, output: text ?? "", isError: event.isError, entryId: tcEntryId } });
         } else {
-          this.emit({ type: "tool-end", data: { toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: event.isError, entryId: tcEntryId } });
+          let result = event.result;
+          const originalContent = this.writeOriginalContents.get(event.toolCallId);
+          this.writeOriginalContents.delete(event.toolCallId);
+          if (event.toolName === "write" && !event.isError && originalContent !== undefined && typeof event.args?.content === "string") {
+            result = {
+              ...event.result,
+              details: {
+                ...(event.result?.details ?? {}),
+                changeSummary: formatLineChangeSummary(originalContent, event.args.content),
+              },
+            };
+          }
+          this.emit({ type: "tool-end", data: { toolCallId: event.toolCallId, toolName: event.toolName, result, isError: event.isError, entryId: tcEntryId } });
         }
         break;
       }
