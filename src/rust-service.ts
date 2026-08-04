@@ -19,7 +19,7 @@ import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToS
 import { isRustExtensionConflict } from "./rust-interop.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
-import { thinkingLevelIsLive } from "./model-catalog.js";
+import { thinkingLevelIsLive, clampThinkingLevelForRust } from "./model-catalog.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
 import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
@@ -230,7 +230,9 @@ export class RustService implements PiBackend {
     // its file; overriding with the setting would silently switch its model on
     // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
     const restoring = !!openPath || !fresh;
-    const thinking = cfg.defaultThinkingLevel?.trim() || "off";
+    // Clamp against the DETECTED binary: `--thinking max` is rejected during argument parsing
+    // by a pre-#139 build, which exits 2 before any RPC exists — the session never starts.
+    const thinking = clampThinkingLevelForRust(cfg.defaultThinkingLevel?.trim() || "off", status.version);
     if (!restoring) {
       if (provider) { args.push("--provider", provider); }
       if (modelId) { args.push("--model", modelId); }

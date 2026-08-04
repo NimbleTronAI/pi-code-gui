@@ -12,7 +12,7 @@ import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } fro
 import { setupRustModels, reseedRustAuth } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
@@ -1093,6 +1093,20 @@ export class PiService {
     if (!this.backend) {
       piWarn(`setThinkingLevel("${level}") ignored: session not initialized`);
       return;
+    }
+    // Clamp centrally rather than per-caller. The picker is gated, but it is not the only way
+    // in: the off<->on toggle derives its target from the SAVED DEFAULT, which is user-editable,
+    // persisted, and shared with the TypeScript runtime where `max` is legitimately offered. On
+    // a pre-#139 binary that reaches the wire as a rejected request; clamping here means every
+    // caller — picker, toggle, or any future one — is covered by construction.
+    if (this.capabilities.kind === "rust") {
+      let rustVersion: string | undefined;
+      try { rustVersion = detectRustBinary().version; } catch { /* unknown → clamp fails closed */ }
+      const clamped = clampThinkingLevelForRust(level, rustVersion);
+      if (clamped !== level) {
+        piWarn(`Thinking level "${level}" isn't supported by the installed Rust Pi — using "${clamped}".`);
+        level = clamped;
+      }
     }
     // The backend sets it on the wire and returns the EFFECTIVE level after its own
     // clamp (Rust re-reads get_state; the SDK records the clamped level itself and

@@ -119,6 +119,23 @@ export function rustHonorsMaxThinkingLevel(version: string | undefined): boolean
   return true; // exactly the minimum
 }
 
+/** Clamp a thinking level to what THIS rust binary will actually accept.
+ *
+ *  Gating the PICKER (PiService.supportedThinkingLevels) is not enough on its own: the level
+ *  also reaches the binary as a CLI argument at spawn, `--thinking <level>`, and that path
+ *  bypassed the gate entirely. A pre-#139 binary rejects `max` during ARGUMENT PARSING and
+ *  exits 2 before the RPC channel exists, so the whole session dies —
+ *  "invalid value 'max' for '--thinking'" — rather than degrading. `max` reaches this setting
+ *  even on a binary that can never honour it: defaultThinkingLevel is user-editable, persists,
+ *  and is shared with the TypeScript runtime, where `max` IS offered.
+ *
+ *  Downgrades to `xhigh`, the next rung down and a value every affected build accepts — it is
+ *  listed in that binary's own error text. Anything else passes through untouched. */
+export function clampThinkingLevelForRust(level: string, rustVersion: string | undefined): string {
+  if (level !== "max" || rustHonorsMaxThinkingLevel(rustVersion)) { return level; }
+  return "xhigh";
+}
+
 /** The thinking-capability shape read off a catalog/SDK model. Mirrors the fields
  *  @earendil-works/pi-ai carries per model. `thinkingLevelMap` maps each graded
  *  level to the provider's effort token, or `null` when that level isn't a distinct

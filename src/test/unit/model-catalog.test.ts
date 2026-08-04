@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, rustHonorsMaxThinkingLevel } from "../../model-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, rustHonorsMaxThinkingLevel, clampThinkingLevelForRust } from "../../model-catalog.js";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -275,4 +275,44 @@ test("rustHonorsMaxThinkingLevel: fails CLOSED on anything it can't parse", () =
   for (const v of [undefined, "", "unknown", "pi (dev build)", "v1"]) {
     assert.equal(rustHonorsMaxThinkingLevel(v), false, `${JSON.stringify(v)} must not enable max`);
   }
+});
+
+// ── the --thinking spawn argument (regression: Rust sessions died at startup) ──────
+// Gating the PICKER was not enough. defaultThinkingLevel also reaches the binary as a CLI
+// argument, `--thinking <level>`, and a pre-#139 build rejects `max` during ARGUMENT PARSING:
+//
+//   error: invalid value 'max' for '--thinking <THINKING>'
+//   [possible values: off, minimal, low, medium, high, xhigh]
+//
+// It exits 2 before any RPC channel exists, so the session never starts — the user saw
+// "Pi init failed: Rust process exited immediately (code 2)". `max` reaches that setting even
+// on a binary that can't honour it: it is user-editable, persisted, and shared with the
+// TypeScript runtime, where max IS legitimately offered.
+test("clampThinkingLevelForRust: max downgrades to xhigh on a pre-#139 binary", () => {
+  assert.equal(clampThinkingLevelForRust("max", "pi 0.1.20 (87b70f74)"), "xhigh");
+  assert.equal(clampThinkingLevelForRust("max", "0.1.22"), "xhigh");
+});
+
+test("clampThinkingLevelForRust: max passes through once the binary accepts it", () => {
+  assert.equal(clampThinkingLevelForRust("max", "pi 0.1.23 (590d6189)"), "max");
+  assert.equal(clampThinkingLevelForRust("max", "0.2.0"), "max");
+});
+
+test("clampThinkingLevelForRust: an unknown version fails CLOSED", () => {
+  // Never send a level we can't confirm — the failure mode is a dead session, not a warning.
+  assert.equal(clampThinkingLevelForRust("max", undefined), "xhigh");
+  assert.equal(clampThinkingLevelForRust("max", "pi (dev build)"), "xhigh");
+});
+
+test("clampThinkingLevelForRust: every other level is untouched on every version", () => {
+  for (const v of [undefined, "0.1.20", "0.1.23"]) {
+    for (const l of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
+      assert.equal(clampThinkingLevelForRust(l, v), l, `${l} @ ${v}`);
+    }
+  }
+});
+
+test("clampThinkingLevelForRust: xhigh is a value the failing binary itself listed as valid", () => {
+  // The downgrade target is taken from that binary's own error text, not guessed.
+  assert.equal(clampThinkingLevelForRust("xhigh", "0.1.20"), "xhigh");
 });
