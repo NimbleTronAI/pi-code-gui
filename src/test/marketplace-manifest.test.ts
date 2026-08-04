@@ -49,6 +49,16 @@ suite("Marketplace manifest", () => {
     );
   });
 
+  test("publishes the auto-collapse tool results preference", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {};
+    const setting = properties["pi-on-code.autoCollapseToolResults"] as {
+      type?: string;
+      default?: boolean;
+    } | undefined;
+    assert.strictEqual(setting?.type, "boolean");
+    assert.strictEqual(setting?.default, true);
+  });
+
   test("publishes credential and installation commands", () => {
     const commands = new Set(
       manifest.contributes?.commands?.map(({ command }) => command) ?? [],
