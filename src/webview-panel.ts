@@ -470,6 +470,8 @@ export class PiWebviewPanel {
         if (event.affectsConfiguration("pi-on-code.autoAttachActiveEditor")) {
           scheduleUpdate();
           this.piService.emitSettings();
+        } else if (event.affectsConfiguration("pi-on-code.autoCollapseToolResults")) {
+          this.piService.emitSettings();
         }
       }),
       { dispose: () => {

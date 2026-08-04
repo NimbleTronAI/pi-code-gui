@@ -2657,3 +2657,12 @@ html.pi-viewport-recovering #pi-web-app {
 .bash-execution.auto-tool-result-collapsed .bash-header {
   cursor: pointer;
 }
+
+.bash-status {
+  margin-left: auto;
+  color: var(--pi-muted);
+}
+
+.bash-status.error {
+  color: var(--pi-red);
+}
