@@ -718,6 +718,7 @@ export function handleStatusUpdate(data: MsgData<"status-update">): void {
 export function handleStatus(data: MsgData<"status">): void {
     setSbRuntime(data.runtime);
     if (data.ready) {
+      state.sessionUnavailable = false;
       state.promptInput.disabled = false;
       state.sendButton.disabled = false;
       state.promptInput.placeholder = "Ask pi to do something...";
@@ -728,8 +729,15 @@ export function handleStatus(data: MsgData<"status">): void {
       renderThinkingBadge(data);
       setSbDot("idle");
     } else if (data.model === "not installed" || data.model === "init failed") {
-      state.promptInput.disabled = true;
-      state.sendButton.disabled = true;
+      // Keep the box USABLE. Disabling it created a catch-22: the failure message tells you to
+      // run /login, and the only place to type that was the box we had just disabled — leaving
+      // no way out of a failed session from inside the tab. The extension services /login,
+      // /new, /model and friends itself (sendPrompt intercepts them before any backend call),
+      // so they work perfectly well with a dead backend. Only free-form prompts are refused.
+      state.sessionUnavailable = true;
+      state.promptInput.disabled = false;
+      state.sendButton.disabled = false;
+      state.promptInput.placeholder = "Session not started — /login, /new and /model still work";
     }
   }
 
@@ -1332,8 +1340,16 @@ export function sendPrompt(): void {
     // Reset scroll tracking — user clearly wants to follow the new response
     state.hasScrolledUp = false;
 
+    var isLocalCommand = !!text && state.localSlashCommands.indexOf(text) !== -1;
+    // With no live backend, a free-form prompt has nowhere to go — say so instead of swallowing
+    // it. The extension-serviced commands below are still allowed through.
+    if (state.sessionUnavailable && !isLocalCommand) {
+      addErrorMessage("This session isn't running, so prompts can't be sent. Try **/login** to re-authenticate, or **/new** to start a fresh session.");
+      return;
+    }
+
     // Intercept local slash commands before sending to LLM
-    if (text && state.localSlashCommands.indexOf(text) !== -1) {
+    if (isLocalCommand) {
       var cmd = text.slice(1); // strip leading "/"
 
       // /debug: dump webview state as a structured message in chat, plus

@@ -1686,11 +1686,19 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     });
 
     if (!primarySession() || primarySession() === sw) {
+      // An expired sign-in is the one init failure with a specific, one-click remedy — and the
+      // one most likely to strand the user, since the binary's own advice ("run pi login") names
+      // something they cannot reach from a session that failed to start. Offer it directly.
+      const authExpired = /invalid_grant|token refresh failed|token expired|oauth token/i.test(result.error ?? "");
+      const SIGN_IN = "Sign in";
+      const actions = authExpired ? [SIGN_IN, "Retry"] : ["Retry"];
       const action = await vscode.window.showErrorMessage(
         redactSecrets(`Pi init failed: ${result.error}`),
-        "Retry",
+        ...actions,
       );
-      if (action === "Retry") {
+      if (action === SIGN_IN) {
+        await vscode.commands.executeCommand("pi-code-gui.login");
+      } else if (action === "Retry") {
         closeSession(sw);
         addSession(context, runtime);
       }

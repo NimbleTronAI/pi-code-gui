@@ -11,6 +11,10 @@ import type { ToolBlockEntry, ToolRenderer } from "./tools/types.js";
 export interface AppState {
   // ── Boolean flags
   isStreaming: boolean;
+  /** The backend failed to start (or isn't installed), so prompts can't be sent — but the
+   *  extension-serviced slash commands still can. Drives the limited-input mode rather than
+   *  disabling the box outright. */
+  sessionUnavailable: boolean;
   isCompacting: boolean;
   isRetrying: boolean;
   _inBatch: boolean;
@@ -109,6 +113,7 @@ export interface AppState {
 
 export const state: AppState = {
   isStreaming: false,
+  sessionUnavailable: false,
   isCompacting: false,
   isRetrying: false,
   _inBatch: false,

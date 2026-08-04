@@ -116,3 +116,48 @@ test("a genuine missing-API-key error still classifies as one", () => {
   handlers.addErrorMessage("No API key found for provider anthropic.");
   assert.match(doc.querySelector(".message-content.error").textContent, /API key required/);
 });
+
+// ── the failed-session catch-22 ──────────────────────────────────────
+// A failed init disabled the prompt box outright. The failure message tells the user to run
+// /login — and the only place to type it was the box we had just disabled, so a session that
+// failed to authenticate could not be recovered from inside its own tab.
+test("a failed init leaves the input USABLE, not disabled", () => {
+  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  const st = stateMod.state;
+  assert.equal(st.promptInput.disabled, false, "disabling this is what trapped the user");
+  assert.equal(st.sendButton.disabled, false);
+  assert.equal(st.sessionUnavailable, true);
+  assert.match(st.promptInput.placeholder, /\/login/, "the placeholder must name a way out");
+});
+
+test("with no backend, a local slash command is still dispatched", () => {
+  const doc = (globalThis as any).document;
+  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  const st = stateMod.state;
+  const sent: any[] = [];
+  (globalThis as any).window.__vscode.postMessage = (m: any) => sent.push(m);
+  st.promptInput.value = "/login";
+  handlers.sendPrompt();
+  assert.deepEqual(sent, [{ type: "slashCommand", command: "login" }],
+    "/login must reach the extension even with a dead backend");
+  doc.getElementById("chat-container").innerHTML = "";
+});
+
+test("with no backend, a free-form prompt is refused with a way forward — not swallowed", () => {
+  const doc = (globalThis as any).document;
+  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  const st = stateMod.state;
+  const sent: any[] = [];
+  (globalThis as any).window.__vscode.postMessage = (m: any) => sent.push(m);
+  st.promptInput.value = "please refactor this file";
+  handlers.sendPrompt();
+  assert.deepEqual(sent, [], "a prompt with no backend must not be sent into the void");
+  assert.match(doc.querySelector(".message-content.error").textContent, /\/login/);
+  doc.getElementById("chat-container").innerHTML = "";
+});
+
+test("a ready session clears the limited mode", () => {
+  handlers.handleStatus({ runtime: "rust", ready: true, model: { provider: "anthropic", id: "x" } });
+  assert.equal(stateMod.state.sessionUnavailable, false);
+  assert.equal(stateMod.state.promptInput.disabled, false);
+});
