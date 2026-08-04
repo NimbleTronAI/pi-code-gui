@@ -181,3 +181,29 @@ export function shouldDisableRustExtensions(cwd: string): boolean {
   return workspaceHasTsPiExtensions(cwd);
 }
 
+
+/** The pure decision behind the "your Rust binary isn't the tested version" notice.
+ *
+ *  Returns the globalState key to record when the user should be told, or null to stay quiet.
+ *  Extracted from extension.ts so the dedup rule is testable — it had two bugs that both
+ *  presented as SILENCE, which is exactly the failure mode a notification can't reveal:
+ *
+ *  1. The stored key was the DETECTED version alone. Once a user had been told about their
+ *     0.1.20, moving the pin (v0.1.22 -> v0.1.23) matched the stored key and returned early —
+ *     so the release the bump exists to announce never reached anyone already warned.
+ *  2. Managed builds were skipped entirely, on the reasoning that "the managed build is
+ *     pinned". True the day it is installed; false the moment the pin moves. That left managed
+ *     users on a stale binary with no signal at all. Managed-ness belongs in the WORDING, not
+ *     in whether to speak.
+ */
+export function rustVersionNoticeKey(
+  detectedVersion: string | undefined,
+  pinnedTag: string,
+  alreadyWarned: string | undefined,
+): string | null {
+  const detected = detectedVersion?.match(/\d+\.\d+\.\d+/)?.[0];
+  const pinned = pinnedTag.replace(/^v/, "");
+  if (!detected || detected === pinned) { return null; }
+  const key = `${detected}->${pinned}`;
+  return alreadyWarned === key ? null : key;
+}

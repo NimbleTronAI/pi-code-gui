@@ -15,7 +15,7 @@ import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary, Runtime } from "./types.js";
 import { planPanelRestore } from "./panel-restore.js";
 import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext } from "./runtime-detection.js";
-import { detectRustBinary } from "./rust-resolver.js";
+import { detectRustBinary, rustVersionNoticeKey } from "./rust-resolver.js";
 import { isRustSessionPath, listRustSessions, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { isRustSessionHeader } from "./session-format.js";
 import { installRustInteractive } from "./rust-install.js";
@@ -200,17 +200,26 @@ async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promi
   if (!status?.installed || !status.version || !status.binaryPath) { return; }
   const detected = status.version.match(/\d+\.\d+\.\d+/)?.[0];
   const pinnedVersion = pinnedRust.tag.replace(/^v/, "");
-  if (!detected || detected === pinnedVersion) { return; }
-  // The managed build is pinned, so never warn about it.
+  // Dedup on the (detected, pinned) PAIR — see rustVersionNoticeKey for the two silent bugs
+  // this replaces. One notice per pairing, so a pin bump reaches people already warned about
+  // their binary, without nagging on every launch.
+  const key = rustVersionNoticeKey(status.version, pinnedRust.tag, context.globalState.get<string>("rustVersionWarned"));
+  if (!key) { return; }
+  await context.globalState.update("rustVersionWarned", key);
+
+  // Managed builds are NOT exempt: the pin moves, so a managed binary goes stale too. Being
+  // managed only changes the wording — and it is the case where one click genuinely resolves it.
+  let managed = false;
   const managedDir = path.resolve(path.join(context.globalStorageUri.fsPath, "rust-pi"));
-  try { if (path.resolve(status.binaryPath).startsWith(managedDir)) { return; } } catch { /* ignore */ }
-  // One notification per distinct version, so we don't nag every launch.
-  if (context.globalState.get<string>("rustVersionWarned") === detected) { return; }
-  await context.globalState.update("rustVersionWarned", detected);
-  void vscode.window.showWarningMessage(
-    `Rust Pi ${detected} is installed, but this extension is tested against ${pinnedVersion}. ` +
-    "If you hit odd behaviour, run “PiGui: Install Rust Pi” for the managed build, or update the extension.",
+  try { managed = path.resolve(status.binaryPath).startsWith(managedDir); } catch { /* ignore */ }
+
+  // Actionable, rather than naming a command the user has to go and find.
+  const action = managed ? `Update to ${pinnedVersion}` : `Install ${pinnedVersion}`;
+  const choice = await vscode.window.showWarningMessage(
+    `Rust Pi ${detected} is installed; this extension is built and tested against ${pinnedVersion}.`,
+    action, "Not now",
   );
+  if (choice === action) { await vscode.commands.executeCommand("pi-code-gui.installRust"); }
 }
 
 // ── Activate ───────────────────────────────────────────
