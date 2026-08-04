@@ -78,7 +78,15 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         const tag = String(release.tag_name ?? pinnedRust.tag);
         const assets = (release.assets ?? []) as Array<{ name: string; browser_download_url: string }>;
         const binAsset = assets.find((a) => a.name === asset.archive);
-        const sumsAsset = assets.find((a) => a.name === "SHA256SUMS");
+        // EVERY SHA256SUMS* asset, not just the exact name. A release can carry its checksums
+        // split across several files: v0.1.23 shipped 3 binaries on day one, then added
+        // pi-linux-arm64 / pi-darwin-amd64 a week later with their hashes in a SEPARATE
+        // "SHA256SUMS.issue-146", leaving the original SHA256SUMS untouched. Reading only the
+        // exact name found no entry for the arm64 archive and failed it as
+        // "Checksum verification failed" — which reads as tampering when the hash was merely
+        // in the sibling file. Same trust boundary either way: every one of these is an asset
+        // on the same release, fetched over HTTPS from the same origin.
+        const sumsAssets = assets.filter((a) => a.name === "SHA256SUMS" || a.name.startsWith("SHA256SUMS."));
         if (!binAsset) { throw new Error(`Release ${tag} has no asset ${asset.archive}`); }
 
         const archivePath = path.join(tmp, asset.archive);
@@ -88,14 +96,23 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         // A release with no SHA256SUMS asset must be a hard failure, not a silent
         // skip: the managed-install path promises a verified binary, so running an
         // unverifiable one would break that contract.
-        if (!sumsAsset) {
+        if (sumsAssets.length === 0) {
           throw new Error(`Release ${tag} has no SHA256SUMS asset — refusing to install an unverified binary.`);
         }
         progress.report({ message: "Verifying checksum…" });
         const sumsPath = path.join(tmp, "SHA256SUMS");
-        await download(sumsAsset.browser_download_url, sumsPath, ac.signal);
+        const chunks: string[] = [];
+        for (const [i, s] of sumsAssets.entries()) {
+          const part = path.join(tmp, `SHA256SUMS.part${i}`);
+          await download(s.browser_download_url, part, ac.signal);
+          chunks.push(fs.readFileSync(part, "utf-8"));
+        }
+        fs.writeFileSync(sumsPath, chunks.join("\n"));
         if (!verifyChecksum(archivePath, asset.archive, sumsPath)) {
-          throw new Error("Checksum verification failed — aborting.");
+          throw new Error(
+            `Checksum verification failed for ${asset.archive} — aborting. ` +
+            `(Checked ${sumsAssets.length} checksum file(s): ${sumsAssets.map((s) => s.name).join(", ")}.)`,
+          );
         }
 
         progress.report({ message: "Extracting…" });
@@ -239,7 +256,7 @@ function download(url: string, dest: string, signal?: AbortSignal, redirects = 5
   });
 }
 
-function verifyChecksum(file: string, name: string, sumsPath: string): boolean {
+export function verifyChecksum(file: string, name: string, sumsPath: string): boolean {
   const sums = fs.readFileSync(sumsPath, "utf-8");
   // SHA256SUMS lines are "<hex>  <name>" (the name may carry a leading "*" in
   // binary mode). Match the filename field EXACTLY — a substring match could
