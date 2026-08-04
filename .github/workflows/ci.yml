@@ -44,3 +44,6 @@ jobs:
 
       - name: Bundle webview
         run: bun esbuild.webview.js
+
+      - name: Run VS Code integration tests
+        run: xvfb-run -a bun x vscode-test
