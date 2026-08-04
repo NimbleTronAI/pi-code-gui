@@ -213,13 +213,20 @@ async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promi
   const managedDir = path.resolve(path.join(context.globalStorageUri.fsPath, "rust-pi"));
   try { managed = path.resolve(status.binaryPath).startsWith(managedDir); } catch { /* ignore */ }
 
-  // Actionable, rather than naming a command the user has to go and find.
-  const action = managed ? `Update to ${pinnedVersion}` : `Install ${pinnedVersion}`;
+  // Discoverable, but WITHOUT promising an outcome. Automated installs are not reliable on
+  // every platform — a release can ship no asset for a given platform/arch, and a downloaded
+  // binary can still fail to run against an older system libc (both are handled explicitly in
+  // rust-install.ts). So the button opens the install CHOOSER — managed download, official
+  // installer, manual instructions, or detect-existing — rather than claiming it will install
+  // anything. "Show install options" is a promise we can actually keep; "Install 0.1.23" is not.
+  const SHOW = "Show install options";
   const choice = await vscode.window.showWarningMessage(
-    `Rust Pi ${detected} is installed; this extension is built and tested against ${pinnedVersion}.`,
-    action, "Not now",
+    managed
+      ? `The extension-managed Rust Pi is ${detected}; this build is tested against ${pinnedVersion}.`
+      : `Rust Pi ${detected} is installed; this extension is built and tested against ${pinnedVersion}.`,
+    SHOW, "Not now",
   );
-  if (choice === action) { await vscode.commands.executeCommand("pi-code-gui.installRust"); }
+  if (choice === SHOW) { await vscode.commands.executeCommand("pi-code-gui.installRust"); }
 }
 
 // ── Activate ───────────────────────────────────────────

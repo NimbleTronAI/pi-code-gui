@@ -453,16 +453,21 @@ export class PiService {
       catalogProviders: () => this.bundledProviders,
       // Arbitrary JS in the webview — ask once per custom type and remember the answer.
       confirmRendererConsent: (customType) => confirmRendererConsent(customType),
-      notifyOutdatedPiAi: (installed, supported) => {
+      notifyOutdatedPiAi: (installed, supported, belowFloor) => {
         const UPDATE = "Update";
-        void vscode.window.showWarningMessage(
-          `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${supported}+. It still works, but update for full compatibility.`,
-          UPDATE,
-        ).then((choice) => {
+        // Below the floor is a compatibility problem (we drop to a legacy code path); merely
+        // behind this build's target is a nudge. Same one-click offer either way, different
+        // severity and wording, so a routine "newer version exists" doesn't read as breakage.
+        const message = belowFloor
+          ? `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${supported}+. It still works via a legacy path, but update for full compatibility.`
+          : `A newer Pi (TypeScript) SDK is available: you have pi-ai ${installed}, this extension is built against ${supported}. Updating keeps model support and pricing in step.`;
+        const show = belowFloor ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+        void show(message, UPDATE).then((choice) => {
           if (choice === UPDATE) {
             const term = vscode.window.createTerminal("Update Pi SDK");
             term.show();
-            // Typed, not executed — the user reviews and runs it (modifies global npm).
+            // Typed, NOT executed — the user reviews and runs it, because this mutates global
+            // npm state and automated installs are not reliable on every platform.
             term.sendText("npm install -g @earendil-works/pi-coding-agent", false);
           }
         });

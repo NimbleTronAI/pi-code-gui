@@ -27,3 +27,28 @@ export function compareSemver(a: string, b: string): number {
 export function isOlderThan(installed: string, minimum: string): boolean {
   return compareSemver(installed, minimum) < 0;
 }
+
+/** What (if anything) to tell the user about their installed pi-ai SDK.
+ *
+ *  Two distinct situations that deserve different severity, decided here so the rule is
+ *  testable rather than buried in an effectful method:
+ *
+ *  - `belowFloor`: the SDK predates the API this extension is written against, so we run it
+ *    through a legacy fallback. A genuine compatibility problem.
+ *  - otherwise: the SDK merely predates the version THIS BUILD is current with (the pi-ai its
+ *    bundled catalog was generated from). Routine — a nudge, not breakage.
+ *
+ *  Returns null when the SDK is at or ahead of the target, so a current user is never nagged.
+ *  The previous code compared against the floor ALONE, which meant anyone at or above it heard
+ *  nothing no matter how far they drifted — the failure this exists to fix.
+ */
+export function piAiVersionNotice(
+  installed: string,
+  floor: string,
+  target: string,
+): { version: string; belowFloor: boolean } | null {
+  if (!installed) { return null; }
+  if (isOlderThan(installed, floor)) { return { version: floor, belowFloor: true }; }
+  if (isOlderThan(installed, target)) { return { version: target, belowFloor: false }; }
+  return null;
+}

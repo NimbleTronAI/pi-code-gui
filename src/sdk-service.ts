@@ -18,7 +18,8 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { piDebug, piWarn } from "./logger.js";
-import { isOlderThan } from "./version-compare.js";
+import { piAiVersionNotice } from "./version-compare.js";
+import bundledRegistry from "./model-registry.generated.json";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import type { PiServiceEvent } from "./types.js";
@@ -32,6 +33,13 @@ export type CatalogProviders = Record<string, { models: Array<ThinkingModel & { 
  *  createModels()/providers-all). Below this we still run via a legacy fallback,
  *  but warn the user once per host to update. */
 const SUPPORTED_PI_AI_VERSION = "0.80.0";
+
+/** The pi-ai version this build of the extension is actually current with — taken from the
+ *  bundled catalog, which is generated from it. Self-maintaining: every `pnpm run
+ *  gen:model-registry` moves this target, so shipping a fresher catalog automatically starts
+ *  nudging users whose SDK predates it. That matters because the catalog is what the extension
+ *  hands the backends: models, thinking tiers and PRICING it carries can outrun an older SDK. */
+const TARGET_PI_AI_VERSION = (bundledRegistry as { piAiVersion?: string }).piAiVersion ?? SUPPORTED_PI_AI_VERSION;
 let _piAiVersionWarned = false;
 
 /**
@@ -267,7 +275,9 @@ export interface SdkDeps {
   fileExists(p: string): boolean;
   readFileUtf8(p: string): Promise<string>;
   /** Surface the "installed pi-ai is older than supported" nudge (UI; no-op in tests). */
-  notifyOutdatedPiAi(installed: string, supported: string): void;
+  /** `belowFloor` distinguishes "we fall back to a legacy code path" (a real compatibility
+   *  problem) from "a newer tested version exists" (a nudge). */
+  notifyOutdatedPiAi(installed: string, supported: string, belowFloor: boolean): void;
   /** Build the vscode_* bridge tools (keeps the vscode-coupled bridge-tools module
    *  out of this file, so SdkService stays headlessly importable). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -740,10 +750,15 @@ export class SdkService implements PiBackend {
     try {
       const pkgPath = path.join(this.piRoot, "node_modules", "@earendil-works", "pi-ai", "package.json");
       const installed = (JSON.parse(await this.deps.readFileUtf8(pkgPath)) as { version?: string }).version ?? "";
-      if (!installed || !isOlderThan(installed, SUPPORTED_PI_AI_VERSION)) { return; }
+      if (!installed) { return; }
+      // TWO tiers. This used to test the FLOOR only, so anyone at 0.80.0+ was never told
+      // anything however far behind they drifted — a user sitting on 0.82.1 while the
+      // extension shipped a 0.83.0 catalog heard nothing at all.
+      const notice = piAiVersionNotice(installed, SUPPORTED_PI_AI_VERSION, TARGET_PI_AI_VERSION);
+      if (!notice) { return; }
       _piAiVersionWarned = true;
-      piWarn(`pi-ai ${installed} is older than the supported ${SUPPORTED_PI_AI_VERSION}.`);
-      this.deps.notifyOutdatedPiAi(installed, SUPPORTED_PI_AI_VERSION);
+      piWarn(`pi-ai ${installed} is ${notice.belowFloor ? `below the supported floor ${notice.version}` : `behind this build's target ${notice.version}`}.`);
+      this.deps.notifyOutdatedPiAi(installed, notice.version, notice.belowFloor);
     } catch (e: unknown) {
       piWarn(`pi-ai version check skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
