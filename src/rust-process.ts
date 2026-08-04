@@ -21,6 +21,11 @@ export interface RustResponse {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface RustEvent { type: string;[k: string]: any; }
 
+/** How long to wait after "exit" for stdio to close before giving up on the stderr that
+ *  explains the exit. Generous enough for a normal flush, short enough that a genuinely stuck
+ *  pipe doesn't stall the error the user is waiting on. */
+const DRAIN_GRACE_MS = 250;
+
 /** RPC command names PiService sends to the Rust subprocess. Centralized so a
  *  typo is a compile error rather than a silent timeout, and so call sites are
  *  greppable/refactorable. Values verified against rust-pi 0.1.18. */
@@ -106,7 +111,11 @@ export class RustProcess {
     });
     child.on("exit", (code, signal) => {
       piDebug(`RustProcess: exited code=${code} signal=${signal}`);
-      this.failAllPending(new Error(`Rust process exited (code ${code ?? "?"})${this.stderrHint()}`));
+      // Drain first — see afterStderrDrained. Reading stderrTail on "exit" loses the very
+      // message that explains the exit.
+      this.afterStderrDrained(child, () => {
+        this.failAllPending(new Error(`Rust process exited (code ${code ?? "?"})${this.stderrHint()}`));
+      });
       if (!this.disposed) { this.opts.onExit(code, signal); }
     });
 
@@ -123,7 +132,9 @@ export class RustProcess {
       child.once("error", settleReject);
       child.once("exit", (code) => {
         if (code !== 0 && code !== null) {
-          settleReject(new Error(`Rust process exited immediately (code ${code})${this.stderrHint()}`));
+          this.afterStderrDrained(child, () => {
+            settleReject(new Error(`Rust process exited immediately (code ${code})${this.stderrHint()}`));
+          });
         }
       });
       if (this.opts.readyCommand) {
@@ -242,6 +253,26 @@ export class RustProcess {
   private stderrHint(): string {
     const t = this.stderrTail.trim();
     return t ? ` — last stderr: ${t.slice(-500)}` : "";
+  }
+
+  /** Run `done` once the child's stdio has actually drained.
+   *
+   *  Node fires "exit" when the process terminates, but its stdio streams may still have
+   *  buffered data; "close" is the event that fires after they are all closed. Building the
+   *  failure message on "exit" therefore RACES the stderr that explains the failure, and loses
+   *  it whenever the binary does async work before printing. Observed exactly that: an
+   *  argv-parse rejection (written and exited almost synchronously) carried its stderr through,
+   *  while an expired-OAuth exit — the binary attempts a token refresh first — reached the user
+   *  as a bare "exited immediately (code 1)" with the actionable text stripped off, even though
+   *  the binary had printed "OAuth token expired or invalid / Run 'pi login <provider>'".
+   *
+   *  Idempotent by contract: both callers guard against a double call, so the timeout backstop
+   *  is safe if "close" never arrives (a detached grandchild holding the pipe open). */
+  private afterStderrDrained(child: { once(ev: string, cb: () => void): unknown }, done: () => void): void {
+    let ran = false;
+    const run = (): void => { if (!ran) { ran = true; done(); } };
+    child.once("close", run);
+    setTimeout(run, DRAIN_GRACE_MS);
   }
 
   private failAllPending(err: Error): void {

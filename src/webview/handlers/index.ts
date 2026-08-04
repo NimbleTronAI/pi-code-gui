@@ -1099,7 +1099,15 @@ export function addErrorMessage(message: string): void {
     var msg = message || "";
     var isApiKeyError = false;
 
-    if (/api.?key/i.test(msg)) {
+    // Expired/invalid OAuth is checked FIRST, because the backend's own advice text mentions
+    // "API key" as an alternative ("Or set API key directly via environment variable") and would
+    // otherwise match the api-key branch below — sending a user whose subscription token merely
+    // expired off to configure an API key they don't need. The fix is to log in again.
+    if (/invalid_grant|token refresh failed|token expired|oauth token/i.test(msg)) {
+      heading = "<strong>Sign-in expired</strong>";
+      help = '<small>Your provider sign-in is no longer valid. Run <code>/login</code> in the chat ' +
+             '(or <strong>PiGui: Set Up API Key / Login</strong> from the command palette) to re-authenticate.</small>';
+    } else if (/api.?key/i.test(msg)) {
       heading = "<strong>API key required</strong>";
       help = '<small>Run <strong>PiGui: Set Up API Key / Login</strong> from the command palette ' +
              '(<code>Ctrl+Shift+P</code>), or set <code>ANTHROPIC_API_KEY</code> / ' +

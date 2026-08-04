@@ -32,12 +32,27 @@ setInterval(() => {}, 60000);
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// Reproduces the real startup failure whose diagnosis was being thrown away: the binary writes
+// an explanatory error to stderr and exits non-zero straight away. Node fires "exit" before
+// stdio has necessarily drained, so reading the stderr tail at that moment raced the very
+// message that explains the exit. Live example: an expired OAuth token exited 1 having printed
+// "OAuth token expired or invalid / Run 'pi login <provider>'", and the user was shown a bare
+// "Rust process exited immediately (code 1)".
+const FAILING_SRC = `
+process.stderr.write("Error: Authentication error: OAuth token refresh failed for: anthropic\\n");
+process.stderr.write("OAuth token expired or invalid\\n");
+process.exit(1);
+`;
+
 let tmp: string;
 let fakeBin: string;
+let failingBin: string;
 before(() => {
   tmp = mkdtempSync(join(tmpdir(), "rpc-test-"));
   fakeBin = join(tmp, "fake.mjs");
   writeFileSync(fakeBin, FAKE_SRC);
+  failingBin = join(tmp, "failing.mjs");
+  writeFileSync(failingBin, FAILING_SRC);
 });
 after(() => { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ } });
 
@@ -152,6 +167,22 @@ test("a pending request rejected by a crash carries the binary's stderr", async 
       assert.match(e.message, /Rust process exited/, "still says what happened");
       assert.match(e.message, /last stderr/, "carries the stderr tail");
       assert.match(e.message, /panic: something exploded/, "includes the binary's own words");
+      return true;
+    },
+  );
+  rp.dispose();
+});
+
+test("an immediate non-zero exit carries the stderr that EXPLAINS it", async () => {
+  const { rp } = spawnFake({ binaryPath: process.execPath, args: [failingBin] });
+  await assert.rejects(
+    () => rp.spawn(),
+    (e: Error) => {
+      assert.match(e.message, /exited immediately \(code 1\)/);
+      // The point of the fix: without draining, this assertion fails and the user is left with
+      // an exit code and nothing else.
+      assert.match(e.message, /last stderr:/, "the failure must carry its stderr, not just a code");
+      assert.match(e.message, /OAuth token expired or invalid/, "…and specifically the ACTIONABLE line");
       return true;
     },
   );

@@ -87,3 +87,32 @@ test("assistant-end after streaming leaves the message in place and clears the c
   // The streamed assistant message survives end-of-turn.
   assert.ok(cc.querySelector(".message-content"), "assistant message remains after assistant-end");
 });
+
+// ── error-card classification ────────────────────────────────────────
+// An expired OAuth token must not be filed as "API key required". The backend's own advice text
+// offers an API key as an ALTERNATIVE ("Or set API key directly via environment variable"), so a
+// naive /api.?key/ test matches it and sends a user whose subscription simply expired off to
+// configure a key they do not need. The actual fix is to log in again.
+test("an expired-OAuth failure is reported as a sign-in problem, not a missing API key", () => {
+  const doc = (globalThis as any).document;
+  doc.getElementById("chat-container").innerHTML = "";
+  handlers.addErrorMessage(
+    "Pi init failed: Failed to start Rust Pi: Rust process exited immediately (code 1) — last stderr: " +
+    "Error: Authentication error: OAuth token refresh failed for: anthropic " +
+    '(Anthropic token refresh failed: {"error":"invalid_grant"})\n' +
+    "OAuth token expired or invalid\nSuggestions:\n  • Run 'pi login <provider>' to re-authenticate\n" +
+    "  • Or set API key directly via environment variable",
+  );
+  const card = doc.querySelector(".message-content.error");
+  const text = card.textContent;
+  assert.match(text, /Sign-in expired/, "must name the real problem");
+  assert.doesNotMatch(text, /API key required/, "must not send them to configure an API key");
+  assert.match(text, /\/login/, "must give the actionable fix");
+});
+
+test("a genuine missing-API-key error still classifies as one", () => {
+  const doc = (globalThis as any).document;
+  doc.getElementById("chat-container").innerHTML = "";
+  handlers.addErrorMessage("No API key found for provider anthropic.");
+  assert.match(doc.querySelector(".message-content.error").textContent, /API key required/);
+});
