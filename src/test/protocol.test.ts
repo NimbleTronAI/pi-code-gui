@@ -141,15 +141,20 @@ suite("Shared webview protocol", () => {
         autoCompaction: true,
         autoRetry: true,
         showImages: true,
+        autoCollapseToolResults: true,
         autoAttachActiveEditor: false,
       },
     });
     const toggleResult = validateWebviewToExtension({
       type: "toggleAutoAttachActiveEditor",
     });
+    const collapseToggleResult = validateWebviewToExtension({
+      type: "toggleAutoCollapseToolResults",
+    });
 
     assert.strictEqual(updateResult.success, true);
     assert.strictEqual(toggleResult.success, true);
+    assert.strictEqual(collapseToggleResult.success, true);
   });
 
   test("accepts viewport refresh requests for restored panels", () => {

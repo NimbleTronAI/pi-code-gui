@@ -15,6 +15,36 @@ import {
   shouldAutoCollapseToolText,
 } from "./collapse.js";
 
+function applyAutoToolResultCollapse(el: ToolEl): void {
+  const header = el.querySelector<HTMLElement>(".tool-header, .bash-header");
+  if (!header) { return; }
+
+  const collapsible = el as ToolEl & { _autoToolCollapseBound?: boolean };
+  if (!collapsible._autoToolCollapseBound) {
+    collapsible._autoToolCollapseBound = true;
+    header.tabIndex = 0;
+    header.setAttribute("role", "button");
+    const toggle = (): void => {
+      if (!state.settingsState.autoCollapseToolResults) { return; }
+      el.classList.toggle("auto-tool-result-collapsed");
+      header.setAttribute("aria-expanded", el.classList.contains("auto-tool-result-collapsed") ? "false" : "true");
+    };
+    header.addEventListener("click", (event) => {
+      if ((event.target as Element).closest(".tool-path")) { return; }
+      toggle();
+    });
+    header.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    });
+  }
+
+  el.classList.toggle("auto-tool-result-collapsed", state.settingsState.autoCollapseToolResults);
+  header.setAttribute("aria-expanded", state.settingsState.autoCollapseToolResults ? "false" : "true");
+}
+
 function clearToolTextCollapse(target: HTMLElement): void {
   target.classList.remove("tool-text-collapsible", "is-collapsed", "is-expanded");
   const next = target.nextElementSibling;
@@ -127,6 +157,7 @@ export const writeToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       // Flush any pending rAF render
       if ((el as any)._writeRafId) { cancelAnimationFrame((el as any)._writeRafId); (el as any)._writeRafId = null; }
       if ((el as any)._writePending) { processWriteUpdate(el, (el as any)._writePending); (el as any)._writePending = null; }
@@ -314,6 +345,7 @@ export const editToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var tb = (el as any)._toolBlock;
       if (tb) {
         (tb as any).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -502,6 +534,7 @@ export const readToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var tb = (el as any)._toolBlock;
       if (tb) {
         (tb as any).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -627,6 +660,7 @@ export const defaultToolRenderer = {
       morphRender(tr, renderToolResult(displayText));
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var statusEl = el.querySelector(".tool-status");
       if (statusEl) {
         statusEl.textContent = isError ? "error" : "done";
@@ -690,6 +724,7 @@ export const bashToolRenderer = {
       // Output is handled exclusively by handleBashOutput.
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var toolCallId = el.id.replace(/^(entry-|bash-)/, "");
       var text = "";
       if (result && result.content) {

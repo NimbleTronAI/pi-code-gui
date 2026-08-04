@@ -84,6 +84,7 @@ export interface AppState {
     autoCompaction: boolean;
     autoRetry: boolean;
     showImages: boolean;
+    autoCollapseToolResults: boolean;
     autoAttachActiveEditor: boolean;
   };
   settingsOpen: boolean;
@@ -210,6 +211,7 @@ export const state: AppState = {
     autoCompaction: true,
     autoRetry: true,
     showImages: true,
+    autoCollapseToolResults: true,
     autoAttachActiveEditor: true,
   },
   settingsOpen: false,

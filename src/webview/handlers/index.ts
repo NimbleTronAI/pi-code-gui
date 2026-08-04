@@ -2289,6 +2289,9 @@ export function handleSettingsUpdate(data: any) {
         state.dismissedEditorContextIds = {};
       }
       document.body.classList.toggle("hide-message-images", data.showImages === false);
+      document.querySelectorAll<HTMLElement>(".tool-block, .bash-execution").forEach((el) => {
+        el.classList.toggle("auto-tool-result-collapsed", data.autoCollapseToolResults === true);
+      });
       renderSettingsPanel();
       renderAttachments();
     }
@@ -2314,6 +2317,7 @@ export function renderSettingsPanel() {
       { key: "autoCompaction", label: "Auto-compaction" },
       { key: "autoRetry", label: "Auto-retry" },
       { key: "showImages", label: "Show images" },
+      { key: "autoCollapseToolResults", label: "Auto-collapse tool results" },
       { key: "autoAttachActiveEditor", label: "Auto-attach active file" },
     ];
 
@@ -2338,6 +2342,7 @@ export function renderSettingsPanel() {
         if (key === "autoCompaction") { window.__vscode.postMessage({ type: "toggleAutoCompaction" }); }
         else if (key === "autoRetry") { window.__vscode.postMessage({ type: "toggleAutoRetry" }); }
         else if (key === "showImages") { window.__vscode.postMessage({ type: "toggleShowImages" }); }
+        else if (key === "autoCollapseToolResults") { window.__vscode.postMessage({ type: "toggleAutoCollapseToolResults" }); }
         else if (key === "autoAttachActiveEditor") {
           window.__vscode.postMessage({ type: "toggleAutoAttachActiveEditor" });
         }

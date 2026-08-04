@@ -438,6 +438,7 @@ export class PiService {
   private _autoCompactionEnabled = true;
   private _autoRetryEnabled = true;
   private _showImages = true;
+  private _autoCollapseToolResults = true;
 
   constructor(private readonly secrets?: vscode.SecretStorage) {}
 
@@ -2419,6 +2420,7 @@ export class PiService {
   get autoCompactionEnabled(): boolean { return this._autoCompactionEnabled; }
   get autoRetryEnabled(): boolean { return this._autoRetryEnabled; }
   get showImages(): boolean { return this._showImages; }
+  get autoCollapseToolResults(): boolean { return this._autoCollapseToolResults; }
   get autoAttachActiveEditor(): boolean {
     return vscode.workspace.getConfiguration("pi-on-code").get<boolean>(
       "autoAttachActiveEditor",
@@ -2583,6 +2585,7 @@ export class PiService {
         autoCompaction: this._autoCompactionEnabled,
         autoRetry: this._autoRetryEnabled,
         showImages: this._showImages,
+        autoCollapseToolResults: this._autoCollapseToolResults,
         autoAttachActiveEditor: this.autoAttachActiveEditor,
       },
     });
@@ -2609,6 +2612,12 @@ export class PiService {
     this._showImages = !this._showImages;
     this.emitSettings();
     return this._showImages;
+  }
+
+  async toggleAutoCollapseToolResults(): Promise<boolean> {
+    this._autoCollapseToolResults = !this._autoCollapseToolResults;
+    this.emitSettings();
+    return this._autoCollapseToolResults;
   }
 
   async toggleAutoAttachActiveEditor(): Promise<boolean> {

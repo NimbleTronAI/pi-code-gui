@@ -2646,3 +2646,14 @@ html.pi-viewport-recovering #pi-web-app {
     padding-inline: 8px;
   }
 }
+
+/* Completed tool results can be shown as a compact, title-only row. */
+.tool-block.auto-tool-result-collapsed > :not(.tool-header),
+.bash-execution.auto-tool-result-collapsed > :not(.bash-header) {
+  display: none;
+}
+
+.tool-block.auto-tool-result-collapsed .tool-header,
+.bash-execution.auto-tool-result-collapsed .bash-header {
+  cursor: pointer;
+}
