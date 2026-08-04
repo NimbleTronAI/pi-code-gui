@@ -583,6 +583,8 @@
     "check:diagram": "node scripts/check-diagram.mjs",
     "gen:model-registry": "node scripts/gen-model-registry.mjs",
     "check:model-registry": "node scripts/check-model-registry.mjs",
+    "check:currency": "node scripts/check-currency.mjs",
+    "check:currency:strict": "node scripts/check-currency.mjs --strict",
     "compile-tests": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p . --outDir out",
     "compile-tests:webview": "tsc -p tsconfig.test-webview.json",
     "watch-tests": "tsc -p . -w --outDir out",
@@ -608,7 +610,7 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.83.0",
     "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "^28.0.3",
     "@types/node": "~22.19.19",

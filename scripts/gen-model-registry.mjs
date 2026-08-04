@@ -18,7 +18,7 @@
 // moved behind ./providers/all, which exposes the same data through getBuiltinProviders() /
 // getBuiltinModels(id) — the per-model field shape (baseUrl, api, reasoning, contextWindow,
 // maxTokens, input, cost, thinkingLevelMap, compat) is unchanged, so only the enumeration moved.
-import { getBuiltinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import { getBuiltinProviders, getBuiltinModels, getBuiltinModelDataGeneratedAt } from "@earendil-works/pi-ai/providers/all";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -86,7 +86,16 @@ for (const provId of getBuiltinProviders()) {
   providers[provId] = entry;
 }
 
-const out = { generatedFrom: "@earendil-works/pi-ai", piAiVersion, providers };
+// Stamp WHEN upstream generated this catalog, not just which package version carried it.
+// Pricing rides on this file, and a version number alone doesn't say how old the rates are —
+// pi-ai can republish the same version line for a while. check-currency.mjs reports it.
+const modelDataGeneratedAt = getBuiltinModelDataGeneratedAt();
+const out = {
+  generatedFrom: "@earendil-works/pi-ai",
+  piAiVersion,
+  ...(modelDataGeneratedAt ? { modelDataGeneratedAt: new Date(modelDataGeneratedAt).toISOString() } : {}),
+  providers,
+};
 writeFileSync(join(root, "src", "model-registry.generated.json"), JSON.stringify(out) + "\n");
-console.log(`model-registry.generated.json: ${Object.keys(providers).length} providers, ${modelCount} models (pi-ai ${piAiVersion}).`);
+console.log(`model-registry.generated.json: ${Object.keys(providers).length} providers, ${modelCount} models (pi-ai ${piAiVersion}, model data ${modelDataGeneratedAt ? new Date(modelDataGeneratedAt).toISOString().slice(0,10) : "undated"}).`);
 console.log(`Skipped special-auth providers: ${skipped.join(", ") || "(none)"}`);
