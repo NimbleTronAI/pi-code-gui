@@ -580,6 +580,17 @@ export function handleAssistantEnd(data: any) {
         }
       }
 
+      const copyText = mc?.getAttribute("data-raw");
+      if (copyText && !state.currentAssistantEl.querySelector(".assistant-copy-btn")) {
+        const copyButton = document.createElement("button");
+        copyButton.type = "button";
+        copyButton.className = "assistant-copy-btn";
+        copyButton.textContent = "Copy";
+        copyButton.setAttribute("aria-label", "Copy assistant response");
+        (copyButton as HTMLButtonElement & { _copyText?: string })._copyText = copyText;
+        state.currentAssistantEl.appendChild(copyButton);
+      }
+
       // Handle error/abort stop reasons (like TUI)
       if (data && data.stopReason) {
         if (data.stopReason === "aborted") {

@@ -2738,3 +2738,28 @@ html.pi-viewport-recovering #pi-web-app {
 .bash-execution.auto-tool-result-collapsed .bash-command-copy {
   display: none;
 }
+
+.message.assistant {
+  position: relative;
+}
+
+.assistant-copy-btn {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  opacity: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--pi-line);
+  border-radius: 3px;
+  background: var(--pi-surface-raised);
+  color: var(--pi-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.message.assistant:hover .assistant-copy-btn,
+.assistant-copy-btn:focus-visible {
+  opacity: 1;
+
+}
