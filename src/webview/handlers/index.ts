@@ -2434,11 +2434,11 @@ export function renderInlineCustomMessage(data: any) {
   }
 
 export function handleCustomMessage(data: any) {
-    hideWelcome();
     var customType = data.customType || "custom";
 
     // ── display: true → inline in conversation stream ──────
     if (data.display === true) {
+      hideWelcome();
       renderInlineCustomMessage(data);
       return;
     }
@@ -2452,6 +2452,7 @@ export function handleCustomMessage(data: any) {
         infoContent = data.content.filter(function (c: any) { return c.type === "text"; }).map(function (c: any) { return c.text; }).join("\n");
       }
       if (infoContent) {
+        hideWelcome();
         var infoEl = document.createElement("div");
         infoEl.className = "message assistant";
         infoEl.innerHTML = html`<div class="message-content muted">${infoContent}</div>`;
