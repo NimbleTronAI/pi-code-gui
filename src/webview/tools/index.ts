@@ -1,4 +1,5 @@
 import { state } from "../state.js";
+import { summarizeLineChanges } from "../../tool-change-summary.js";
 import { logEvent } from "../debug.js";
 import {
   createToolBlock, morphRender, escapeHtml, renderToolResult,
@@ -106,11 +107,6 @@ type ToolResult = {
   text?: string;
 };
 type ToolEl = HTMLElement;
-
-function countLines(text: string): number {
-  if (!text) { return 0; }
-  return text.endsWith("\n") ? text.slice(0, -1).split("\n").length : text.split("\n").length;
-}
 
 function setChangeSummary(el: ToolEl, summary: string): void {
   const match = /^\+(\d+) −(\d+)$/.exec(summary);
@@ -389,8 +385,9 @@ export const editToolRenderer = {
 
       const completedEdits = (el as unknown as { _editEdits?: Array<{ oldText: string; newText: string }> })._editEdits;
       if (!isError && completedEdits?.length) {
-        const additions = completedEdits.reduce((total, edit) => total + countLines(edit.newText), 0);
-        const deletions = completedEdits.reduce((total, edit) => total + countLines(edit.oldText), 0);
+        const changes = completedEdits.map((edit) => summarizeLineChanges(edit.oldText, edit.newText));
+        const additions = changes.reduce((total, change) => total + change.additions, 0);
+        const deletions = changes.reduce((total, change) => total + change.deletions, 0);
         setChangeSummary(el, `+${additions} −${deletions}`);
       }
 
