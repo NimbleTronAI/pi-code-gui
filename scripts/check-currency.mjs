@@ -20,6 +20,7 @@
 // people who are not doing a release. --strict is the release gate.
 
 import { readFileSync, existsSync } from "node:fs";
+import { runSupplyChainChecks } from "./supply-chain.mjs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -117,6 +118,13 @@ record("pi-coding-agent (TS backend)", sdkInstalled, sdkLatest,
   `  -> npm install -g @earendil-works/pi-coding-agent@latest, then re-run the TS side of the\n` +
   `     side-by-side. This one is NOT pinned in-repo, so drift here is invisible until it breaks.`);
 
+// ── 4. supply chain ─────────────────────────────────────────────────
+// Currency alone does not protect you: the ChainDrop campaign shipped MALICIOUS versions of
+// packages we were otherwise current with. See scripts/supply-chain.mjs.
+const sc = runSupplyChainChecks();
+const critical = sc.findings.filter((f) => f.severity === "CRITICAL");
+const review = sc.findings.filter((f) => f.severity === "REVIEW");
+
 // ── report ──────────────────────────────────────────────────────────
 const w = rows.reduce((m, r) => Math.max(m, r[0].length), 0);
 console.log("\nUpstream currency\n");
@@ -126,6 +134,18 @@ for (const [name, ours, latest, state] of rows) {
 }
 if (notes.length) { console.log("\n" + notes.join("\n")); }
 
+console.log(`\nSupply chain (${sc.scanned} installed packages scanned)`);
+if (critical.length === 0 && review.length === 0) {
+  console.log("   no known-compromised versions, no indicators of compromise, no unrecognised install hooks");
+} else {
+  for (const f of critical) { console.log(`  !! ${f.what}\n     ${f.where}`); }
+  for (const f of review) { console.log(`  ?  ${f.what}\n     ${f.where}`); }
+}
+
+if (critical.length) {
+  console.log(`\ncheck-currency: FAILED — ${critical.length} supply-chain finding(s). This is not advisory.`);
+  process.exit(1);
+}
 if (unreachable && STRICT) {
   console.log(`\ncheck-currency: FAILED — ${unreachable} source(s) unreachable and --strict was set.`);
   process.exit(1);

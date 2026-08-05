@@ -601,7 +601,8 @@
     "publish": "vsce publish --no-yarn --skip-duplicate",
     "un-publish": "vsce unpublish",
     "vsix:openvsx": "pnpm run package && pnpm exec ovsx publish",
-    "test:vscode": "vscode-test"
+    "test:vscode": "vscode-test",
+    "check:supply-chain": "node scripts/check-currency.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

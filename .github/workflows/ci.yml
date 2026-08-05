@@ -22,6 +22,9 @@ jobs:
           node-version: '22'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # Supply-chain gate: known-compromised versions, IOC filenames/strings/hashes, and
+      # install hooks outside the allowlist. Exits non-zero on a CRITICAL finding.
+      - run: node scripts/check-currency.mjs
       # The licence wall is a repo invariant, not a local convenience — assert it in CI too.
       - run: pnpm run check:cleanroom
       - run: pnpm run check-types
