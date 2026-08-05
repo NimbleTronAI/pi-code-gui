@@ -2698,3 +2698,18 @@ html.pi-viewport-recovering #pi-web-app {
   flex: 0 0 auto;
   margin-left: auto;
 }
+
+/* Collapsed cards stay compact; expanding reveals the preserved full title. */
+.tool-block.auto-tool-result-collapsed .tool-header,
+.bash-execution.auto-tool-result-collapsed .bash-header {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.tool-block.auto-tool-result-collapsed .tool-path,
+.bash-execution.auto-tool-result-collapsed .bash-command {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
