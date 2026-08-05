@@ -923,7 +923,7 @@ export function handleToolStart(data: any) {
           var codeEl = argsEl.querySelector("code");
           if (codeEl) {
             try {
-              codeEl.textContent = truncate(JSON.stringify(data.args, null, 2), 200);
+              codeEl.textContent = JSON.stringify(data.args, null, 2);
             } catch (_e) { /* ignore stringify errors */ }
           }
         }
