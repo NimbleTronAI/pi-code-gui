@@ -457,3 +457,40 @@ test("setModel leaves the native window alone when no budget is set", async () =
   await svc.setModel("p", "m");
   assert.equal(setModels[0].contextWindow, 1_000_000);
 });
+
+// ── the Auto-retry toggle actually has to toggle something ────────────
+// setAutoRetry was an empty method, so on TypeScript the settings toggle flipped an
+// extension-local flag, told the webview it had changed, and left the session retrying exactly
+// as before — a control that lied, on the DEFAULT runtime, about re-billing. The SDK exposes
+// AgentSession.setAutoRetryEnabled (verified in pi-coding-agent 0.83.0); it was never wired.
+test("setAutoRetry reaches the SDK session", async () => {
+  const calls: Any[] = [];
+  const { svc } = makeService();
+  (svc as Any).session = { setAutoRetryEnabled: (v: boolean) => calls.push(v) };
+  await svc.setAutoRetry(false);
+  await svc.setAutoRetry(true);
+  assert.deepEqual(calls, [false, true], "both directions must reach the session");
+});
+
+test("setAutoRetry degrades quietly on an SDK that lacks the method", async () => {
+  const { svc } = makeService();
+  (svc as Any).session = {};                       // older SDK: no setter
+  await assert.doesNotReject(() => svc.setAutoRetry(false));
+  (svc as Any).session = null;                     // not initialized
+  await assert.doesNotReject(() => svc.setAutoRetry(false));
+});
+
+test("readSessionSettings reports the session's REAL flags, not assumed defaults", () => {
+  const { svc } = makeService();
+  (svc as Any).session = { autoCompactionEnabled: false, autoRetryEnabled: false };
+  assert.deepEqual(svc.readSessionSettings(), { autoCompaction: false, autoRetry: false },
+    "a resumed session with settings off must not display them as on");
+});
+
+test("readSessionSettings returns undefined rather than guessing when the SDK is older", () => {
+  const { svc } = makeService();
+  (svc as Any).session = {};
+  assert.deepEqual(svc.readSessionSettings(), { autoCompaction: undefined, autoRetry: undefined });
+  (svc as Any).session = null;
+  assert.deepEqual(svc.readSessionSettings(), {});
+});

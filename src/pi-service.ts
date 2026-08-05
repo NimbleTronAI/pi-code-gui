@@ -349,6 +349,15 @@ export class PiService {
     await this.sendInitialMessages();
     this.emit({ type: "batch-end", data: { hasEntries } });
 
+    // Seed the settings toggles from the SESSION's real state before advertising them. They
+    // used to be hardcoded `true` and never read back, so a resumed session whose settings
+    // differed showed a UI that disagreed with its own behaviour — and, until setAutoRetry was
+    // wired, a retry toggle that had never done anything anyway. The Rust path never had this
+    // gap (applyState syncs both from get_state). Absent values keep the current default.
+    const sessionSettings = this._sdk?.readSessionSettings() ?? {};
+    if (typeof sessionSettings.autoCompaction === "boolean") { this._autoCompactionEnabled = sessionSettings.autoCompaction; }
+    if (typeof sessionSettings.autoRetry === "boolean") { this._autoRetryEnabled = sessionSettings.autoRetry; }
+
     this.reportStatus();
     try {
       this.emitSettings();

@@ -891,7 +891,30 @@ export class SdkService implements PiBackend {
 
   /** Auto-retry has no in-process SDK session toggle — PiService tracks the flag
    *  locally. Kept for PiBackend symmetry (a no-op on the TS runtime). */
-  async setAutoRetry(_enabled: boolean): Promise<void> { /* no session-level toggle */ }
+  async setAutoRetry(enabled: boolean): Promise<void> {
+    // The SDK DOES expose this (AgentSession.setAutoRetryEnabled → SettingsManager.setRetryEnabled);
+    // it simply was never wired, so the settings toggle flipped an extension-local flag, told the
+    // webview it had changed, and left the session retrying exactly as before. Same guarded shape
+    // as setAutoCompaction, so an older SDK without the method degrades instead of throwing.
+    if (this.session && typeof this.session.setAutoRetryEnabled === "function") {
+      await this.session.setAutoRetryEnabled(enabled);
+    }
+  }
+
+  /** The session's ACTUAL settings, for seeding the UI at init.
+   *
+   *  PiService previously hardcoded both to `true` and never read them back, so a resumed
+   *  session whose settings differed showed toggles that disagreed with its own behaviour. The
+   *  Rust path never had this gap — applyState syncs both from get_state. Undefined when the
+   *  SDK predates the getters, so the caller keeps its default rather than inventing one. */
+  readSessionSettings(): { autoCompaction?: boolean; autoRetry?: boolean } {
+    const s = this.session;
+    if (!s) { return {}; }
+    return {
+      autoCompaction: typeof s.autoCompactionEnabled === "boolean" ? s.autoCompactionEnabled : undefined,
+      autoRetry: typeof s.autoRetryEnabled === "boolean" ? s.autoRetryEnabled : undefined,
+    };
+  }
 
   /** Cumulative token/cost usage from the session manager's assistant entries, plus
    *  live context %/window. Cost here is the SDK's own per-turn cost; the catalog-rate
