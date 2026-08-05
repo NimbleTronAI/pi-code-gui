@@ -9,6 +9,7 @@ export interface PiSidebarSession {
   streaming: boolean;
   kind: "open" | "past";
   path?: string;
+  referenceId?: string;
 }
 
 export interface PiSidebarPackage {
@@ -55,6 +56,7 @@ interface PiSidebarActions {
   focusSession: (sessionId: string) => void;
   resumeSession: (path: string) => void;
   deleteSession: (target: PiSidebarDeleteTarget) => void | Promise<void>;
+  copySessionId: (sessionId: string) => void | Promise<void>;
   searchPackages: (query: string) => void | Promise<void>;
   refreshPackages: () => void | Promise<void>;
   installPackage: (source: string) => void | Promise<void>;
@@ -110,6 +112,11 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
             void this.actions.deleteSession({ kind: "open", id: payload.id });
           } else if (payload.kind === "past" && typeof payload.path === "string") {
             void this.actions.deleteSession({ kind: "past", path: payload.path });
+          }
+          break;
+        case "session-copy-id":
+          if (typeof payload.sessionId === "string") {
+            void this.actions.copySessionId(payload.sessionId);
           }
           break;
         case "package-search":
@@ -378,6 +385,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       color: var(--pi-text);
     }
 
+    .session-row.has-copy-id { grid-template-columns: minmax(0, 1fr) 24px 24px; }
     .session-row:hover { background: var(--pi-hover); color: var(--pi-strong); }
     .session-row.active {
       border-left-color: var(--pi-lavender);
@@ -400,7 +408,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
     }
 
-    .session-delete {
+    .session-delete,
+    .session-copy-id {
       width: 22px;
       height: 22px;
       padding: 0;
@@ -415,10 +424,13 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
     }
     .session-row:hover .session-delete,
-    .session-row:focus-within .session-delete {
+    .session-row:hover .session-copy-id,
+    .session-row:focus-within .session-delete,
+    .session-row:focus-within .session-copy-id {
       opacity: 1;
       pointer-events: auto;
     }
+    .session-copy-id:hover { background: var(--pi-hover); color: var(--pi-strong); }
     .session-delete:hover { background: rgb(230 126 128 / 12%); color: var(--pi-red); }
 
     .chevron { color: var(--pi-lavender); font-weight: 700; opacity: 0; }
@@ -734,6 +746,20 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
         open.addEventListener("click", () => {
           vscode.postMessage({ type: "open", kind: session.kind, id: session.id, path: session.path });
         });
+
+        if (session.referenceId) {
+          row.classList.add("has-copy-id");
+          const copyId = document.createElement("button");
+          copyId.type = "button";
+          copyId.className = "session-copy-id";
+          copyId.textContent = "#";
+          copyId.title = "Copy session ID";
+          copyId.setAttribute("aria-label", "Copy session ID for " + session.title);
+          copyId.addEventListener("click", () => {
+            vscode.postMessage({ type: "session-copy-id", sessionId: session.referenceId });
+          });
+          row.appendChild(copyId);
+        }
 
         const remove = document.createElement("button");
         remove.type = "button";

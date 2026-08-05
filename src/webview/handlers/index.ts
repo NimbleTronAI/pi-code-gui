@@ -2841,7 +2841,7 @@ export function updateFileAutocomplete(): void {
       var item = state.workspaceFileResults[i];
       result += html`
         <div class="file-item${i + 2 === state.fileSelectedIdx ? " selected" : ""}" data-file-id="${item.id}">
-          <span class="file-name">${item.name}</span>
+          <span class="file-name">${item.source === "session" ? "session: " : ""}${item.name}</span>
           <span class="file-path">${item.path}</span>
         </div>`;
     }

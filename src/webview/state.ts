@@ -25,6 +25,7 @@ export interface WorkspaceFileItem {
   name: string;
   kind?: "file" | "folder";
   external?: boolean;
+  source?: "workspace" | "session";
 }
 
 export interface SlashCommandItem {

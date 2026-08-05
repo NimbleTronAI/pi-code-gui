@@ -36,6 +36,7 @@ export interface CapabilityPanelActions {
     capabilityPath: string,
     enabled: boolean,
   ) => Promise<void>;
+  listSessionReferences?: () => WorkspaceFileItem[];
 }
 
 export class PiWebviewPanel {
@@ -377,9 +378,11 @@ export class PiWebviewPanel {
       };
     }
 
+    const sessionItems = this.capabilityPanelActions.listSessionReferences?.() ?? [];
+    for (const item of sessionItems) { this.pickedContextAttachments.set(item.id, item); }
     const normalized = query.trim().toLowerCase();
-    const items = this.workspaceFileCache.items
-      .filter((item) => !normalized || item.path.toLowerCase().includes(normalized))
+    const items = [...sessionItems, ...this.workspaceFileCache.items]
+      .filter((item) => !normalized || item.path.toLowerCase().includes(normalized) || item.name.toLowerCase().includes(normalized))
       .sort((left, right) => {
         const leftName = left.name.toLowerCase();
         const rightName = right.name.toLowerCase();

@@ -16,6 +16,8 @@ import { getWorkspaceCwd, getWorkspaceRoot, getWorkspaceUri } from "./workspace-
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary } from "./types.js";
+import type { WorkspaceFileItem } from "./shared/protocol.js";
+import { extractSessionId } from "./session-reference.js";
 import { shouldRevealSessionPanel } from "./session-startup.js";
 import { findReusableDraft, shouldPromoteDraft } from "./session-draft.js";
 import {
@@ -124,6 +126,38 @@ function primarySession(): SessionWindow | undefined {
   return sessions[0];
 }
 
+function readSessionId(sessionPath: string | undefined): string | undefined {
+  if (!sessionPath) { return undefined; }
+  try { return extractSessionId(fs.readFileSync(sessionPath, "utf8")); }
+  catch { return undefined; }
+}
+
+function getSessionReferenceItems(current: PiService): WorkspaceFileItem[] {
+  const items: WorkspaceFileItem[] = [];
+  const seen = new Set<string>();
+  const add = (sessionPath: string | undefined, title: string, knownId?: string | null): void => {
+    if (!sessionPath || seen.has(sessionPath) || sessionPath === current.sessionFilePath) { return; }
+    const sessionId = knownId || readSessionId(sessionPath);
+    if (!sessionId) { return; }
+    seen.add(sessionPath);
+    items.push({
+      id: vscode.Uri.file(sessionPath).toString(),
+      path: `session:${sessionId}`,
+      name: cleanSessionTitle(title),
+      kind: "file",
+      external: true,
+      source: "session",
+    });
+  };
+  for (const sw of sessions) {
+    add(sw.piService.sessionFilePath ?? sw.restoringPath, sw.piService.sessionName ?? sw.label, sw.piService.sessionIdValue);
+  }
+  for (const session of sessionTreeProvider?.pastSessions ?? []) {
+    add(session.path, session.name ?? session.firstMessage ?? "Untitled session");
+  }
+  return items;
+}
+
 function getSidebarState(): PiSidebarState {
   const items: PiSidebarSession[] = [];
   const openPaths = new Set<string>();
@@ -143,6 +177,7 @@ function getSidebarState(): PiSidebarState {
       streaming: sw.isStreaming,
       kind: "open",
       path: sessionPath,
+      referenceId: sw.piService.sessionIdValue ?? readSessionId(sessionPath),
     });
   }
 
@@ -162,6 +197,7 @@ function getSidebarState(): PiSidebarState {
       streaming: false,
       kind: "past",
       path: session.path,
+      referenceId: readSessionId(session.path),
     });
   }
 
@@ -288,6 +324,7 @@ function createSessionWindow(
       if (!packageService?.isReady) { throw new Error("Package service is not ready"); }
       await packageService.setCapabilityEnabled(kind, capabilityPath, enabled);
     },
+    listSessionReferences: () => getSessionReferenceItems(piService),
   });
   webviewPanel.initialWelcomeVisible = draft;
   const sw: SessionWindow = {
@@ -371,6 +408,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       },
       deleteSession: async (target) => {
         await deleteSidebarSession(target);
+      },
+      copySessionId: async (sessionId) => {
+        await vscode.env.clipboard.writeText(sessionId);
+        vscode.window.showInformationMessage("Session ID copied to clipboard");
       },
       searchPackages: async (query) => {
         await packagesTreeProvider?.refreshAll(query);

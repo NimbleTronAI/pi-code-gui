@@ -46,6 +46,7 @@ const WorkspaceFileItemSchema = z.object({
   name: z.string().min(1),
   kind: z.enum(["file", "folder"]).optional(),
   external: z.boolean().optional(),
+  source: z.enum(["workspace", "session"]).optional(),
 });
 
 // Pi tool results and custom messages use the same multimodal content model:
