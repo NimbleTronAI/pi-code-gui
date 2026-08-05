@@ -585,7 +585,7 @@
     "check:model-registry": "node scripts/check-model-registry.mjs",
     "check:currency": "node scripts/check-currency.mjs",
     "check:currency:strict": "node scripts/check-currency.mjs --strict",
-    "compile-tests": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p . --outDir out",
+    "compile-tests": "node scripts/clean-out.mjs && tsc -p . --outDir out",
     "compile-tests:webview": "tsc -p tsconfig.test-webview.json",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "pnpm run check:cleanroom && pnpm run compile-tests && pnpm run compile && pnpm run lint",
