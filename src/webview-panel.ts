@@ -470,6 +470,8 @@ export class PiWebviewPanel {
         if (event.affectsConfiguration("pi-on-code.autoAttachActiveEditor")) {
           scheduleUpdate();
           this.piService.emitSettings();
+        } else if (event.affectsConfiguration("pi-on-code.autoCollapseToolResults")) {
+          this.piService.emitSettings();
         }
       }),
       { dispose: () => {
@@ -625,6 +627,10 @@ export class PiWebviewPanel {
 
           case "toggleShowImages":
             await this.piService.toggleShowImages();
+            break;
+
+          case "toggleAutoCollapseToolResults":
+            await this.piService.toggleAutoCollapseToolResults();
             break;
 
           case "toggleAutoAttachActiveEditor":
@@ -1112,6 +1118,10 @@ export class PiWebviewPanel {
         description: "Display image attachments in chat",
       },
       {
+        label: makeToggleLabel("Auto-collapse tool results", ps.autoCollapseToolResults),
+        description: "Show completed tool results as titles until expanded",
+      },
+      {
         label: makeToggleLabel("Auto-attach active file", ps.autoAttachActiveEditor),
         description: "Attach the active editor or selection to new prompts",
       },
@@ -1132,6 +1142,8 @@ export class PiWebviewPanel {
       await ps.toggleAutoRetry();
     } else if (picked.label.includes("Show images")) {
       await ps.toggleShowImages();
+    } else if (picked.label.includes("Auto-collapse tool results")) {
+      await ps.toggleAutoCollapseToolResults();
     } else if (picked.label.includes("Auto-attach active file")) {
       await ps.toggleAutoAttachActiveEditor();
     } else if (picked.label.includes("Context budget")) {

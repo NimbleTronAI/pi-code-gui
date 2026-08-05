@@ -1,4 +1,5 @@
 import { state } from "../state.js";
+import { summarizeLineChanges } from "../../tool-change-summary.js";
 import { logEvent } from "../debug.js";
 import {
   createToolBlock, morphRender, escapeHtml, renderToolResult,
@@ -14,6 +15,44 @@ import {
   DEFAULT_TOOL_COLLAPSE_LINES,
   shouldAutoCollapseToolText,
 } from "./collapse.js";
+
+export function applyAutoToolResultCollapse(el: ToolEl): void {
+  const header = el.querySelector<HTMLElement>(".tool-header, .bash-header");
+  if (!header) { return; }
+  const collapsible = el as ToolEl & { _autoToolCollapseBound?: boolean; _autoToolResultManuallyExpanded?: boolean };
+  const enabled = state.settingsState.autoCollapseToolResults;
+
+  if (!enabled) {
+    el.classList.remove("auto-tool-result-collapsed");
+    header.removeAttribute("role");
+    header.removeAttribute("tabindex");
+    header.removeAttribute("aria-expanded");
+    return;
+  }
+
+  if (!collapsible._autoToolCollapseBound) {
+    collapsible._autoToolCollapseBound = true;
+    header.tabIndex = 0;
+    header.setAttribute("role", "button");
+    const toggle = (): void => {
+      const collapsed = el.classList.toggle("auto-tool-result-collapsed");
+      collapsible._autoToolResultManuallyExpanded = !collapsed;
+      header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    };
+    header.addEventListener("click", (event) => {
+      if ((event.target as Element).closest(".tool-path")) { return; }
+      toggle();
+    });
+    header.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+    });
+  }
+
+  if (!collapsible._autoToolResultManuallyExpanded) {
+    el.classList.add("auto-tool-result-collapsed");
+    header.setAttribute("aria-expanded", "false");
+  }
+}
 
 function clearToolTextCollapse(target: HTMLElement): void {
   target.classList.remove("tool-text-collapsible", "is-collapsed", "is-expanded");
@@ -68,6 +107,15 @@ type ToolResult = {
   text?: string;
 };
 type ToolEl = HTMLElement;
+
+function setChangeSummary(el: ToolEl, summary: string): void {
+  const match = /^\+(\d+) −(\d+)$/.exec(summary);
+  const status = el.querySelector<HTMLElement>(".tool-status");
+  if (!status || !match) { return; }
+  status.innerHTML = `<span class="tool-change-add">+${match[1]}</span> <span class="tool-change-remove">−${match[2]}</span>`;
+  status.setAttribute("aria-label", `${match[1]} lines added, ${match[2]} lines removed`);
+}
+
 import { CodeBlock } from "../components/code-block.js";
 
 
@@ -127,6 +175,7 @@ export const writeToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       // Flush any pending rAF render
       if ((el as any)._writeRafId) { cancelAnimationFrame((el as any)._writeRafId); (el as any)._writeRafId = null; }
       if ((el as any)._writePending) { processWriteUpdate(el, (el as any)._writePending); (el as any)._writePending = null; }
@@ -144,6 +193,10 @@ export const writeToolRenderer = {
         if (entryId && !el.id.startsWith("entry-")) {
           el.id = "entry-" + entryId;
         }
+      }
+
+      if (!isError && typeof result?.details?.changeSummary === "string") {
+        setChangeSummary(el, result.details.changeSummary);
       }
 
       // Re-render final content, then collapse long writes like Pi TUI's
@@ -314,6 +367,7 @@ export const editToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var tb = (el as any)._toolBlock;
       if (tb) {
         (tb as any).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -329,8 +383,16 @@ export const editToolRenderer = {
         }
       }
 
+      const completedEdits = (el as unknown as { _editEdits?: Array<{ oldText: string; newText: string }> })._editEdits;
+      if (!isError && completedEdits?.length) {
+        const changes = completedEdits.map((edit) => summarizeLineChanges(edit.oldText, edit.newText));
+        const additions = changes.reduce((total, change) => total + change.additions, 0);
+        const deletions = changes.reduce((total, change) => total + change.deletions, 0);
+        setChangeSummary(el, `+${additions} −${deletions}`);
+      }
+
       // Re-render previews to collapse to max 3 now that streaming is done
-      if ((el as any)._editEdits) { renderEditPreviews(el as any, (el as any)._editEdits); }
+      if (completedEdits) { renderEditPreviews(el, completedEdits); }
 
       var text = "";
       if (result && result.content) {
@@ -502,6 +564,7 @@ export const readToolRenderer = {
       }
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var tb = (el as any)._toolBlock;
       if (tb) {
         (tb as any).update({ status: isError ? "error" : "done", entryId: entryId });
@@ -627,6 +690,7 @@ export const defaultToolRenderer = {
       morphRender(tr, renderToolResult(displayText));
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var statusEl = el.querySelector(".tool-status");
       if (statusEl) {
         statusEl.textContent = isError ? "error" : "done";
@@ -676,7 +740,7 @@ export const bashToolRenderer = {
       var cmd = (data.args?.command as string) || "";
       if ((cmd as string).length > 120) {cmd = cmd!.slice(0, 120) + "\u2026";}
       block.innerHTML = html`
-        <div class="bash-header">$ ${cmd}</div>
+        <div class="bash-header">$ ${cmd}<span class="bash-status">running</span></div>
         <div class="bash-output"></div>
         <div class="bash-footer"><span class="bash-spinner"></span> <span class="cancel-hint">running\u2026</span></div>`;
       state.bashBlocks[data.toolCallId] = block;
@@ -690,6 +754,7 @@ export const bashToolRenderer = {
       // Output is handled exclusively by handleBashOutput.
     },
     finalize: function (el: ToolEl, result: ToolResult, isError: boolean, entryId?: string) {
+      queueMicrotask(() => applyAutoToolResultCollapse(el));
       var toolCallId = el.id.replace(/^(entry-|bash-)/, "");
       var text = "";
       if (result && result.content) {
@@ -710,6 +775,11 @@ export const bashToolRenderer = {
         footer.innerHTML = html`
           <span class="exit-code${isError ? " error" : ""}">exit: ${exitCode}</span>
           ${details.cancelled ? " <span>(cancelled)</span>" : ""}`;
+      }
+      var bashStatus = el.querySelector<HTMLElement>(".bash-status");
+      if (bashStatus) {
+        bashStatus.textContent = isError ? "error" : `exit: ${exitCode}`;
+        bashStatus.classList.toggle("error", isError);
       }
       if (entryId && !el.id.startsWith("entry-")) {
         el.id = "entry-" + entryId;
@@ -870,6 +940,7 @@ export function handleToolStart(data: any) {
     var renderer = getToolRenderer(data.toolName) || defaultToolRenderer;
     var block = (renderer as any).create(data);
     if (!block) { console.warn("[pi-on-code] tool renderer returned null for", data.toolName); return; }
+    applyAutoToolResultCollapse(block);
 
     if (data.entryId && !block.id.startsWith("entry-")) {
       block.id = "entry-" + data.entryId;

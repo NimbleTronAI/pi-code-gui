@@ -2646,3 +2646,31 @@ html.pi-viewport-recovering #pi-web-app {
     padding-inline: 8px;
   }
 }
+
+/* Completed tool results can be shown as a compact, title-only row. */
+.tool-block.auto-tool-result-collapsed > :not(.tool-header),
+.bash-execution.auto-tool-result-collapsed > :not(.bash-header) {
+  display: none;
+}
+
+.tool-block.auto-tool-result-collapsed .tool-header,
+.bash-execution.auto-tool-result-collapsed .bash-header {
+  cursor: pointer;
+}
+
+.bash-status {
+  margin-left: auto;
+  color: var(--pi-muted);
+}
+
+.bash-status.error {
+  color: var(--pi-red);
+}
+
+.tool-status .tool-change-add {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.tool-status .tool-change-remove {
+  color: var(--vscode-testing-iconFailed, #f14c4c);
+}

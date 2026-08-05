@@ -36,7 +36,7 @@ import {
   handleToolStart, handleToolUpdate, handleToolEnd,
   writeToolRenderer, editToolRenderer, readToolRenderer,
   bashToolRenderer, defaultToolRenderer,
-  insertToolBlock,
+  insertToolBlock, applyAutoToolResultCollapse,
 } from "../tools/index.js";
 
 
@@ -317,6 +317,7 @@ export function handleAgentEnd() {
           statusEl.className = "tool-status success";
         }
         block.setAttribute("data-status", "done");
+        applyAutoToolResultCollapse(block);
       }
     });
     state.currentToolBlocks = {};
@@ -329,6 +330,7 @@ export function handleAgentEnd() {
         block.setAttribute("data-status", "done");
         var footer = block.querySelector(".bash-footer");
         if (footer) { footer.innerHTML = '<span class="exit-code">exit: -</span> <span>(ended)</span>'; }
+        applyAutoToolResultCollapse(block);
         delete state.bashBlocks[id as string];
         delete state.bashOutputs[id];
       }
@@ -2289,6 +2291,11 @@ export function handleSettingsUpdate(data: any) {
         state.dismissedEditorContextIds = {};
       }
       document.body.classList.toggle("hide-message-images", data.showImages === false);
+      if (data.autoCollapseToolResults === false) {
+        document.querySelectorAll<HTMLElement>(".tool-block, .bash-execution").forEach((el) => {
+          applyAutoToolResultCollapse(el);
+        });
+      }
       renderSettingsPanel();
       renderAttachments();
     }
@@ -2314,6 +2321,7 @@ export function renderSettingsPanel() {
       { key: "autoCompaction", label: "Auto-compaction" },
       { key: "autoRetry", label: "Auto-retry" },
       { key: "showImages", label: "Show images" },
+      { key: "autoCollapseToolResults", label: "Auto-collapse tool results" },
       { key: "autoAttachActiveEditor", label: "Auto-attach active file" },
     ];
 
@@ -2338,6 +2346,7 @@ export function renderSettingsPanel() {
         if (key === "autoCompaction") { window.__vscode.postMessage({ type: "toggleAutoCompaction" }); }
         else if (key === "autoRetry") { window.__vscode.postMessage({ type: "toggleAutoRetry" }); }
         else if (key === "showImages") { window.__vscode.postMessage({ type: "toggleShowImages" }); }
+        else if (key === "autoCollapseToolResults") { window.__vscode.postMessage({ type: "toggleAutoCollapseToolResults" }); }
         else if (key === "autoAttachActiveEditor") {
           window.__vscode.postMessage({ type: "toggleAutoAttachActiveEditor" });
         }
@@ -3024,6 +3033,7 @@ export function handleBashStart(data: Record<string, unknown>) {
       entryId: data.entryId as string,
       fromMessage: false,
     });
+    applyAutoToolResultCollapse(block as HTMLElement);
     insertToolBlock(block as HTMLElement);
     state.bashBlocks[callId as string] = block;
     state.bashOutputs[callId as string] = "";

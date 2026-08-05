@@ -10,6 +10,7 @@ import { type ImageContent, type PiServiceEvent, validateExtensionToWebview } fr
 import { piLog, piWarn } from "./logger.js";
 import { getWorkspaceCwd, getWorkspaceUri } from "./workspace-context.js";
 import { readProviderApiKey } from "./provider-credentials.js";
+import { formatLineChangeSummary } from "./tool-change-summary.js";
 
 /** Find the last element matching predicate (ES2023 findLast polyfill). */
 function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
@@ -404,6 +405,7 @@ export class PiService {
 
   // Track current assistant message content (for toolCall stubs during message_update)
   private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any }> = new Map();
+  private writeChanges = new Map<string, { before: string; after: string }>();
 
   // Widget activity timer (cleared on dispose to prevent leaks)
   private _widgetTimer: ReturnType<typeof setInterval> | null = null;
@@ -1689,6 +1691,18 @@ export class PiService {
           }
         } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
 
+        if (event.toolName === "write" && typeof args?.path === "string" && typeof args?.content === "string") {
+          const filePath = path.isAbsolute(args.path) ? args.path : path.resolve(getWorkspaceCwd(), args.path);
+          let before = "";
+          try {
+            before = fs.readFileSync(filePath, "utf8");
+          } catch {
+            // A failed snapshot must not interfere with the write itself. The
+            // successful result will use an empty baseline in this rare case.
+          }
+          this.writeChanges.set(event.toolCallId, { before, after: args.content });
+        }
+
         if (event.toolName === "bash" || event.toolName === "exec") {
           this.emit({ type: "bash-start", data: { toolCallId: event.toolCallId, command: args?.command ?? "", entryId: tcEntryId } });
         } else {
@@ -1717,7 +1731,19 @@ export class PiService {
           const text = event.result?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
           this.emit({ type: "bash-end", data: { toolCallId: event.toolCallId, command: event.args?.command ?? "", exitCode: event.isError ? 1 : 0, cancelled: false, output: text ?? "", isError: event.isError, entryId: tcEntryId } });
         } else {
-          this.emit({ type: "tool-end", data: { toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: event.isError, entryId: tcEntryId } });
+          let result = event.result;
+          const writeChange = this.writeChanges.get(event.toolCallId);
+          this.writeChanges.delete(event.toolCallId);
+          if (event.toolName === "write" && !event.isError && writeChange) {
+            result = {
+              ...event.result,
+              details: {
+                ...(event.result?.details ?? {}),
+                changeSummary: formatLineChangeSummary(writeChange.before, writeChange.after),
+              },
+            };
+          }
+          this.emit({ type: "tool-end", data: { toolCallId: event.toolCallId, toolName: event.toolName, result, isError: event.isError, entryId: tcEntryId } });
         }
         break;
       }
@@ -2419,6 +2445,9 @@ export class PiService {
   get autoCompactionEnabled(): boolean { return this._autoCompactionEnabled; }
   get autoRetryEnabled(): boolean { return this._autoRetryEnabled; }
   get showImages(): boolean { return this._showImages; }
+  get autoCollapseToolResults(): boolean {
+    return vscode.workspace.getConfiguration("pi-on-code").get<boolean>("autoCollapseToolResults", true);
+  }
   get autoAttachActiveEditor(): boolean {
     return vscode.workspace.getConfiguration("pi-on-code").get<boolean>(
       "autoAttachActiveEditor",
@@ -2583,6 +2612,7 @@ export class PiService {
         autoCompaction: this._autoCompactionEnabled,
         autoRetry: this._autoRetryEnabled,
         showImages: this._showImages,
+        autoCollapseToolResults: this.autoCollapseToolResults,
         autoAttachActiveEditor: this.autoAttachActiveEditor,
       },
     });
@@ -2609,6 +2639,19 @@ export class PiService {
     this._showImages = !this._showImages;
     this.emitSettings();
     return this._showImages;
+  }
+
+  async toggleAutoCollapseToolResults(): Promise<boolean> {
+    const config = vscode.workspace.getConfiguration("pi-on-code");
+    const inspected = config.inspect<boolean>("autoCollapseToolResults");
+    const target = inspected?.workspaceFolderValue !== undefined
+      ? vscode.ConfigurationTarget.WorkspaceFolder
+      : inspected?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    await config.update("autoCollapseToolResults", !this.autoCollapseToolResults, target);
+    this.emitSettings();
+    return this.autoCollapseToolResults;
   }
 
   async toggleAutoAttachActiveEditor(): Promise<boolean> {
