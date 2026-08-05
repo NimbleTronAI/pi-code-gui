@@ -289,6 +289,7 @@ function createSessionWindow(
       await packageService.setCapabilityEnabled(kind, capabilityPath, enabled);
     },
   });
+  webviewPanel.initialWelcomeVisible = draft;
   const sw: SessionWindow = {
     id, piService, webviewPanel,
     initialized: false, isStreaming: false, draft,

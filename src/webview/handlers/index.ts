@@ -6,7 +6,7 @@ import {
   truncate, formatTokens, renderToolResult, renderFileContent,
   renderDiffMarkup, formatToolError, getLangFromPath,
   getCompactReadLabel, registerToolRenderer, getToolRenderer,
-  hideWelcome, resetChat, scrollToBottom, updateStreamingState,
+  hideWelcome, showWelcome, resetChat, scrollToBottom, updateStreamingState,
   updateFollowUpHintVisibility, renderToolResultTruncated, renderBlockToHTML,
   shortenPath, renderCodeBlockHTML,
 } from "../render/engine.js";
@@ -884,6 +884,7 @@ export function handleBatchStart(data: any) {
 
 export function handleBatchEnd(data: any) {
     state._inBatch = false;
+    if (data?.hasEntries === false) { showWelcome(); }
     state.historyHasMore = data?.hasMoreHistory === true;
     document.body.classList.remove("no-animate");
     // Force-scroll to bottom after the newest page is restored. Triple-rAF
