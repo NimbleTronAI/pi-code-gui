@@ -2763,3 +2763,45 @@ html.pi-viewport-recovering #pi-web-app {
   opacity: 1;
 
 }
+
+.message.assistant:has(.assistant-copy-btn) {
+  padding-bottom: 28px;
+}
+
+.message.user {
+  position: relative;
+}
+
+.message.user:has(.user-copy-btn) {
+  padding-right: 42px;
+}
+
+.user-copy-btn,
+.tool-copy-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--pi-line);
+  border-radius: 3px;
+  background: var(--pi-surface-raised);
+  color: var(--pi-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.message.user:hover .user-copy-btn,
+.user-copy-btn:focus-visible,
+.tool-block:hover .tool-copy-btn,
+.bash-execution:hover .tool-copy-btn,
+.tool-copy-btn:focus-visible {
+  opacity: 1;
+}
+
+.tool-block,
+.bash-execution {
+  position: relative;
+}

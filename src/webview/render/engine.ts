@@ -477,13 +477,13 @@ export function setupCodeBlockHandlers() {
       return;
     }
 
-    const assistantCopyBtn = target?.closest(".assistant-copy-btn") as (HTMLButtonElement & { _copyText?: string }) | null;
-    if (assistantCopyBtn) {
+    const responseCopyBtn = target?.closest(".assistant-copy-btn, .user-copy-btn, .tool-copy-btn") as (HTMLButtonElement & { _copyText?: string }) | null;
+    if (responseCopyBtn) {
       e.preventDefault();
-      const text = assistantCopyBtn._copyText || "";
+      const text = responseCopyBtn._copyText || "";
       navigator.clipboard.writeText(text).then(
-        () => { assistantCopyBtn.textContent = "Copied!"; setTimeout(() => { assistantCopyBtn.textContent = "Copy"; }, 2000); },
-        () => { assistantCopyBtn.textContent = "Failed"; setTimeout(() => { assistantCopyBtn.textContent = "Copy"; }, 2000); },
+        () => { responseCopyBtn.textContent = "Copied!"; setTimeout(() => { responseCopyBtn.textContent = "Copy"; }, 2000); },
+        () => { responseCopyBtn.textContent = "Failed"; setTimeout(() => { responseCopyBtn.textContent = "Copy"; }, 2000); },
       );
       return;
     }
