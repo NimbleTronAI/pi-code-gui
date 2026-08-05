@@ -2745,7 +2745,7 @@ html.pi-viewport-recovering #pi-web-app {
 
 .assistant-copy-btn {
   position: absolute;
-  bottom: 0;
+  bottom: 6px;
   left: 0;
   opacity: 0;
   padding: 2px 7px;
