@@ -477,6 +477,17 @@ export function setupCodeBlockHandlers() {
       return;
     }
 
+    const responseCopyBtn = target?.closest(".assistant-copy-btn, .user-copy-btn, .tool-copy-btn") as (HTMLButtonElement & { _copyText?: string }) | null;
+    if (responseCopyBtn) {
+      e.preventDefault();
+      const text = responseCopyBtn._copyText || "";
+      navigator.clipboard.writeText(text).then(
+        () => { responseCopyBtn.textContent = "Copied!"; setTimeout(() => { responseCopyBtn.textContent = "Copy"; }, 2000); },
+        () => { responseCopyBtn.textContent = "Failed"; setTimeout(() => { responseCopyBtn.textContent = "Copy"; }, 2000); },
+      );
+      return;
+    }
+
     const btn = target?.closest(".code-copy-btn");
     if (!btn) {
       const pathEl = target?.closest(".tool-path") as HTMLElement | null;

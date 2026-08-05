@@ -1,5 +1,6 @@
 import { state } from "../state.js";
 import { summarizeLineChanges } from "../../tool-change-summary.js";
+import { selectToolOutputCopyText } from "../../tool-output-copy.js";
 import { logEvent } from "../debug.js";
 import {
   createToolBlock, morphRender, escapeHtml, renderToolResult,
@@ -999,6 +1000,33 @@ export function handleToolUpdate(data: any) {
     scrollToBottom();
   }
 
+export function addToolOutputCopyButton(block: HTMLElement, result: ToolResult): void {
+    if (block.querySelector(".tool-copy-btn")) { return; }
+    var fallbackText = (result?.content || [])
+      .filter(function (part: { type: string; text?: string }) { return part.type === "text" && typeof part.text === "string"; })
+      .map(function (part: { type: string; text?: string }) { return part.text || ""; })
+      .join("\n");
+    var editOutput = (block as unknown as { _editEdits?: Array<{ oldText: string; newText: string }> })._editEdits
+      ?.map(function (edit) { return `- ${edit.oldText || ""}\n+ ${edit.newText || ""}`; })
+      .join("\n");
+    var writeOutput = (block as unknown as { _writeState?: { content?: string } })._writeState?.content;
+    var copyText = selectToolOutputCopyText([
+      editOutput,
+      writeOutput,
+      block.querySelector<HTMLElement>(".bash-output")?.textContent,
+      block.querySelector<HTMLElement>(".tool-result")?.textContent,
+      block.querySelector<HTMLElement>(".tool-content")?.textContent,
+    ], fallbackText);
+    if (!copyText) { return; }
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "tool-copy-btn";
+    button.textContent = "Copy";
+    button.setAttribute("aria-label", "Copy tool output");
+    (button as HTMLButtonElement & { _copyText?: string })._copyText = copyText;
+    block.appendChild(button);
+  }
+
 export function handleToolEnd(data: any) {
     var callId = data.toolCallId;
     var entry = state.currentToolBlocks[callId];
@@ -1015,6 +1043,7 @@ export function handleToolEnd(data: any) {
       if (bashBlock) {
         logEvent("tool-end:FALLBACK-BASH", { callId: callId });
         bashToolRenderer.finalize(bashBlock, data.result, data.isError, data.entryId);
+        addToolOutputCopyButton(bashBlock, data.result);
         delete state.bashBlocks[callId];
         delete state.bashOutputs[callId];
         return;
@@ -1025,12 +1054,14 @@ export function handleToolEnd(data: any) {
         logEvent("tool-end:FALLBACK-DOM", { callId: callId, tag: domBlock.tagName, classes: domBlock.className });
         // Use defaultToolRenderer to finalize
         defaultToolRenderer.finalize(domBlock, data.result, data.isError, data.entryId);
+        addToolOutputCopyButton(domBlock, data.result);
       }
       return;
     }
     var block = (entry as any).el || entry;
     var renderer = (entry as any).renderer || defaultToolRenderer;
     (renderer as any).finalize(block, data.result, data.isError, data.entryId);
+    addToolOutputCopyButton(block, data.result);
     delete state.currentToolBlocks[callId];
     scrollToBottom();
   }

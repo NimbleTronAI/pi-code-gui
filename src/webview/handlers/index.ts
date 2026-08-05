@@ -36,7 +36,7 @@ import {
   handleToolStart, handleToolUpdate, handleToolEnd,
   writeToolRenderer, editToolRenderer, readToolRenderer,
   bashToolRenderer, defaultToolRenderer,
-  insertToolBlock, applyAutoToolResultCollapse,
+  insertToolBlock, applyAutoToolResultCollapse, addToolOutputCopyButton,
 } from "../tools/index.js";
 
 
@@ -515,6 +515,15 @@ export function handleChatMessage(data: any) {
       var editorContext = createMessageEditorContext(data.editorContext);
       if (editorContext) { mc.appendChild(editorContext); }
     }
+    if (data.role === "user" && typeof data.content === "string" && data.content.trim()) {
+      var userCopyButton = document.createElement("button");
+      userCopyButton.type = "button";
+      userCopyButton.className = "user-copy-btn";
+      userCopyButton.textContent = "Copy";
+      userCopyButton.setAttribute("aria-label", "Copy user message");
+      (userCopyButton as HTMLButtonElement & { _copyText?: string })._copyText = data.content;
+      el.appendChild(userCopyButton);
+    }
     state.chatContainer.appendChild(el);
     if (shouldPlaceWaitingIndicatorAfterMessage(data.role)) {
       var waitingIndicator = document.getElementById("working-indicator");
@@ -578,6 +587,17 @@ export function handleAssistantEnd(data: any) {
             mc.prepend(thinkingBlock);
           }
         }
+      }
+
+      const copyText = mc?.getAttribute("data-raw");
+      if (copyText?.trim() && !state.currentAssistantEl.querySelector(".assistant-copy-btn")) {
+        const copyButton = document.createElement("button");
+        copyButton.type = "button";
+        copyButton.className = "assistant-copy-btn";
+        copyButton.textContent = "Copy";
+        copyButton.setAttribute("aria-label", "Copy assistant response");
+        (copyButton as HTMLButtonElement & { _copyText?: string })._copyText = copyText;
+        state.currentAssistantEl.appendChild(copyButton);
       }
 
       // Handle error/abort stop reasons (like TUI)
@@ -3072,6 +3092,7 @@ export function handleBashEnd(data: Record<string, unknown>) {
       details: { exitCode: data.exitCode, cancelled: data.cancelled },
     };
     bashToolRenderer.finalize(block as any, result as any, data.isError as boolean, data.entryId as any);
+    addToolOutputCopyButton(block as HTMLElement, result as any);
     delete state.currentToolBlocks[callId as string];
     delete state.bashBlocks[callId as string];
     delete state.bashOutputs[callId as string];
