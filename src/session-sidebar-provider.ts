@@ -385,7 +385,6 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       color: var(--pi-text);
     }
 
-    .session-row.has-copy-id { grid-template-columns: minmax(0, 1fr) 24px 24px; }
     .session-row:hover { background: var(--pi-hover); color: var(--pi-strong); }
     .session-row.active {
       border-left-color: var(--pi-lavender);
@@ -408,8 +407,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
     }
 
-    .session-delete,
-    .session-copy-id {
+    .session-actions { position: relative; }
+    .session-menu-toggle {
       width: 22px;
       height: 22px;
       padding: 0;
@@ -423,15 +422,40 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       pointer-events: none;
       cursor: pointer;
     }
-    .session-row:hover .session-delete,
-    .session-row:hover .session-copy-id,
-    .session-row:focus-within .session-delete,
-    .session-row:focus-within .session-copy-id {
+    .session-row:hover .session-menu-toggle,
+    .session-row:focus-within .session-menu-toggle {
       opacity: 1;
       pointer-events: auto;
     }
-    .session-copy-id:hover { background: var(--pi-hover); color: var(--pi-strong); }
-    .session-delete:hover { background: rgb(230 126 128 / 12%); color: var(--pi-red); }
+    .session-menu-toggle:hover { background: var(--pi-hover); color: var(--pi-strong); }
+    .session-menu {
+      position: absolute;
+      z-index: 20;
+      top: 24px;
+      right: 0;
+      min-width: 150px;
+      padding: 4px;
+      border: 1px solid var(--pi-border);
+      border-radius: 4px;
+      background: var(--pi-panel);
+      box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+    }
+    .session-menu[hidden] { display: none; }
+    .session-menu-item {
+      width: 100%;
+      padding: 6px 8px;
+      border: 0;
+      border-radius: 2px;
+      background: transparent;
+      color: var(--pi-text);
+      font: inherit;
+      text-align: left;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .session-menu-item:hover,
+    .session-menu-item:focus { background: var(--pi-hover); color: var(--pi-strong); outline: none; }
+    .session-menu-delete { color: var(--pi-red); }
 
     .chevron { color: var(--pi-lavender); font-weight: 700; opacity: 0; }
     .session-row.active .chevron { opacity: 1; }
@@ -710,6 +734,16 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({ type: "open-url", url: "https://pi.dev/packages" });
     });
 
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".session-menu").forEach((menu) => { menu.hidden = true; });
+      document.querySelectorAll(".session-menu-toggle").forEach((toggle) => toggle.setAttribute("aria-expanded", "false"));
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      document.querySelectorAll(".session-menu").forEach((menu) => { menu.hidden = true; });
+      document.querySelectorAll(".session-menu-toggle").forEach((toggle) => toggle.setAttribute("aria-expanded", "false"));
+    });
+
     function renderSessions(sessions) {
       sessionList.replaceChildren();
       if (sessions.length === 0) {
@@ -747,26 +781,40 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
           vscode.postMessage({ type: "open", kind: session.kind, id: session.id, path: session.path });
         });
 
+        const actions = document.createElement("div");
+        actions.className = "session-actions";
+        const menuToggle = document.createElement("button");
+        menuToggle.type = "button";
+        menuToggle.className = "session-menu-toggle";
+        menuToggle.textContent = "…";
+        menuToggle.title = "Session actions";
+        menuToggle.setAttribute("aria-label", "Actions for " + session.title);
+        menuToggle.setAttribute("aria-haspopup", "menu");
+        menuToggle.setAttribute("aria-expanded", "false");
+        const menu = document.createElement("div");
+        menu.className = "session-menu";
+        menu.setAttribute("role", "menu");
+        menu.hidden = true;
+
         if (session.referenceId) {
-          row.classList.add("has-copy-id");
           const copyId = document.createElement("button");
           copyId.type = "button";
-          copyId.className = "session-copy-id";
-          copyId.textContent = "#";
-          copyId.title = "Copy session ID";
-          copyId.setAttribute("aria-label", "Copy session ID for " + session.title);
+          copyId.className = "session-menu-item";
+          copyId.textContent = "Copy session ID";
+          copyId.setAttribute("role", "menuitem");
           copyId.addEventListener("click", () => {
             vscode.postMessage({ type: "session-copy-id", sessionId: session.referenceId });
+            menu.hidden = true;
+            menuToggle.setAttribute("aria-expanded", "false");
           });
-          row.appendChild(copyId);
+          menu.appendChild(copyId);
         }
 
         const remove = document.createElement("button");
         remove.type = "button";
-        remove.className = "session-delete";
-        remove.textContent = "×";
-        remove.title = "Delete session permanently";
-        remove.setAttribute("aria-label", "Delete " + session.title + " permanently");
+        remove.className = "session-menu-item session-menu-delete";
+        remove.textContent = "Delete session";
+        remove.setAttribute("role", "menuitem");
         remove.addEventListener("click", () => {
           vscode.postMessage({
             type: "session-delete",
@@ -774,9 +822,23 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
             id: session.id,
             path: session.path,
           });
+          menu.hidden = true;
+          menuToggle.setAttribute("aria-expanded", "false");
         });
+        menu.appendChild(remove);
+        menuToggle.addEventListener("click", (event) => {
+          event.stopPropagation();
+          document.querySelectorAll(".session-menu").forEach((candidate) => {
+            if (candidate !== menu) candidate.hidden = true;
+          });
+          menu.hidden = !menu.hidden;
+          menuToggle.setAttribute("aria-expanded", String(!menu.hidden));
+          if (!menu.hidden) menu.querySelector(".session-menu-item")?.focus();
+        });
+        menu.addEventListener("click", (event) => event.stopPropagation());
+        actions.append(menuToggle, menu);
         row.prepend(open);
-        row.append(remove);
+        row.append(actions);
         sessionList.appendChild(row);
       }
     }
