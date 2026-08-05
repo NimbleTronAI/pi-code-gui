@@ -59,6 +59,8 @@ export class PiWebviewPanel {
 
   /** Callback invoked when the panel is disposed (VS Code tab closed) */
   private _onDispose: PanelDisposeCallback | null = null;
+  private _onBeforePrompt: ((text: string) => void) | null = null;
+  private _initialWelcomeVisible = false;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -73,6 +75,8 @@ export class PiWebviewPanel {
 
   /** Register a callback that fires when the panel/webview is closed. */
   set onDispose(cb: PanelDisposeCallback | null) { this._onDispose = cb; }
+  set onBeforePrompt(cb: ((text: string) => void) | null) { this._onBeforePrompt = cb; }
+  set initialWelcomeVisible(value: boolean) { this._initialWelcomeVisible = value; }
 
   /** Register a callback that fires when this panel/view becomes active. */
   set onActivate(cb: (() => void) | null) { this._onActivateCb = cb; }
@@ -536,9 +540,9 @@ export class PiWebviewPanel {
               const promptText = editorContext
                 ? appendEditorContext(msg.text, editorContext)
                 : msg.text;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-              this.piService.sendPrompt(promptText, msg.images, msg.mode).catch((error: any) => {
-                let errMsg = error.message ?? String(error);
+              this._onBeforePrompt?.(msg.text);
+              this.piService.sendPrompt(promptText, msg.images, msg.mode).catch((error: unknown) => {
+                let errMsg = error instanceof Error ? error.message : String(error);
                 if (/api.?key|login|authenticate|provider/i.test(errMsg)) {
                   errMsg += "\n\n[Set up an API key →](https://pi.dev/docs/latest/quickstart)";
                 }
@@ -935,7 +939,7 @@ export class PiWebviewPanel {
 <body>
   <div id="pi-web-app">
   <div id="chat-container">
-    <div id="welcome" class="welcome-message">
+    <div id="welcome" class="welcome-message"${this._initialWelcomeVisible ? "" : ' style="display:none"'}>
       <div class="welcome-kicker">Pi-native agent workspace</div>
       <h2>Pi on Code</h2>
       <p>Use Pi inside the editor without losing the clarity of its terminal UI.</p>

@@ -176,6 +176,10 @@ export function createToolBlock(toolName: string, toolCallId: string, status: st
   return block;
 }
 
+export function showWelcome() {
+  if (state.welcome) { state.welcome.style.removeProperty("display"); }
+}
+
 export function hideWelcome() {
   if (state._inBatch) {return;}
   if (state.welcome) {

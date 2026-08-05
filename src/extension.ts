@@ -17,6 +17,7 @@ import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary } from "./types.js";
 import { shouldRevealSessionPanel } from "./session-startup.js";
+import { findReusableDraft, shouldPromoteDraft } from "./session-draft.js";
 import {
   clearProviderApiKeys,
   storeProviderApiKey,
@@ -31,6 +32,8 @@ interface SessionWindow {
   webviewPanel: PiWebviewPanel;
   initialized: boolean;
   isStreaming: boolean;
+  /** Not listed or persisted until the first user prompt is sent. */
+  draft: boolean;
   /** True after the session is removed, including while async initialization settles. */
   closed: boolean;
   /** Delete a session file created by an initialization already in flight. */
@@ -53,14 +56,18 @@ async function saveOpenSessionPaths(): Promise<void> {
   if (!extContext) { return; }
   const paths: string[] = [];
   for (const sw of sessions) {
+    if (sw.draft) { continue; }
     const fp = sw.piService.sessionFilePath ?? sw.restoringPath;
-    if (fp) { paths.push(fp); }
+    if (fp && fs.existsSync(fp)) { paths.push(fp); }
   }
   await extContext.workspaceState.update("pi-on-code.openSessionPaths", paths);
   await extContext.workspaceState.update("pi-on-code.sessionCounter", sessionCounter);
   // Persist which session was active so we can restore focus after reload
-  const activePath = activeSessionWindow
-    ? activeSessionWindow.piService.sessionFilePath ?? activeSessionWindow.restoringPath ?? null
+  const candidateActivePath = activeSessionWindow && !activeSessionWindow.draft
+    ? activeSessionWindow.piService.sessionFilePath ?? activeSessionWindow.restoringPath
+    : undefined;
+  const activePath = candidateActivePath && fs.existsSync(candidateActivePath)
+    ? candidateActivePath
     : null;
   await extContext.workspaceState.update("pi-on-code.activeSessionPath", activePath);
 }
@@ -122,6 +129,7 @@ function getSidebarState(): PiSidebarState {
   const openPaths = new Set<string>();
 
   for (const sw of sessions) {
+    if (sw.draft) { continue; }
     const sessionPath = sw.piService.sessionFilePath ?? sw.restoringPath;
     if (sessionPath) { openPaths.add(sessionPath); }
     const title = sw.piService.sessionName
@@ -270,6 +278,7 @@ async function deleteSidebarSession(target: PiSidebarDeleteTarget): Promise<void
 function createSessionWindow(
   context: vscode.ExtensionContext,
   restore?: { path: string; title?: string },
+  draft = false,
 ): SessionWindow {
   const id = `session-${++sessionCounter}`;
   const piService = new PiService(context.secrets);
@@ -280,9 +289,10 @@ function createSessionWindow(
       await packageService.setCapabilityEnabled(kind, capabilityPath, enabled);
     },
   });
+  webviewPanel.initialWelcomeVisible = draft;
   const sw: SessionWindow = {
     id, piService, webviewPanel,
-    initialized: false, isStreaming: false,
+    initialized: false, isStreaming: false, draft,
     closed: false, deleteFileWhenReady: false,
     restoringPath: restore?.path,
     label: restore?.title ? cleanSessionTitle(restore.title) : getGenericSessionLabel(id),
@@ -318,12 +328,17 @@ function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
     // conversation, so the session file already exists on disk.  We just
     // need to clean up and remove it from the open-sessions list so it
     // appears under Past Sessions.
+    const draftPath = sw.draft ? sw.piService.sessionFilePath : null;
+    if (sw.draft) { sw.deleteFileWhenReady = true; }
     sw.piService.dispose();
     removeSession(sw);
 
-    // Refresh past sessions list from disk so the closed session appears
-    // under Past Sessions immediately.
-    void refreshPastSessionsList();
+    // Drafts must disappear completely; completed sessions become history.
+    if (draftPath) {
+      void deleteSessionFileIfPresent(draftPath).then(refreshPastSessionsList);
+    } else {
+      void refreshPastSessionsList();
+    }
     // Persist remaining open sessions for next reload
     void saveOpenSessionPaths();
   };
@@ -1320,10 +1335,22 @@ async function doUpdatePackage(source: string): Promise<void> {
 // ── Add a new session window ──────────────────────────
 
 function addSession(context: vscode.ExtensionContext): void {
-  const sw = createSessionWindow(context);
+  const existingDraft = findReusableDraft(sessions);
+  if (existingDraft) {
+    setActiveSession(existingDraft);
+    void existingDraft.webviewPanel.show();
+    return;
+  }
+
+  const sw = createSessionWindow(context, undefined, true);
+  sw.webviewPanel.onBeforePrompt = (text) => {
+    if (!shouldPromoteDraft(text)) { return; }
+    sw.draft = false;
+    sessionTreeProvider?.refresh();
+    void saveOpenSessionPaths();
+  };
   setActiveSession(sw);
   void sw.webviewPanel.show();
-  sessionTreeProvider?.refresh();
   void initSessionInBackground(context, sw, { fresh: true });
 }
 
@@ -1432,8 +1459,8 @@ async function refreshPastSessionsList(): Promise<void> {
   piLog(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
 }
 
-async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string }): Promise<void> {
-  if (sw.closed) { return; }
+async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string }): Promise<boolean> {
+  if (sw.closed) { return false; }
   const fresh = opts?.fresh ?? false;
   const openPath = opts?.openPath;
   // Ensure tree provider exists ASAP so the tree view shows something
@@ -1449,7 +1476,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     : Promise.resolve();
 
   const status = await PiService.checkInstall();
-  if (sw.closed) { return; }
+  if (sw.closed) { return false; }
 
   if (!status.installed) {
     sw.webviewPanel.postMessage({
@@ -1481,7 +1508,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       }
     }
     sessionTreeProvider?.refresh();
-    return;
+    return false;
   }
 
   let result: { success: boolean; error?: string };
@@ -1501,7 +1528,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       }
       await refreshPastSessionsList();
     }
-    return;
+    return false;
   }
 
   if (!result.success) {
@@ -1526,7 +1553,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       }
     }
     sessionTreeProvider?.refresh();
-    return;
+    return false;
   }
 
   sw.initialized = true;
@@ -1576,6 +1603,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       event.type === "compaction-summary-message"
     ) {
       changed = true; // entry count / usage stats changed
+      if (event.type === "chat-message") { void saveOpenSessionPaths(); }
     }
 
     if (changed) { sessionTreeProvider?.refresh(); }
@@ -1608,6 +1636,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   void saveOpenSessionPaths();
 
   piLog(`Session ${sw.id} ready`);
+  return true;
 }
 
 function removeSession(sw: SessionWindow): void {
@@ -1820,7 +1849,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
         `Open Sessions`,
         "open-sessions-header",
         undefined,
-        this.sessions.length > 0
+        this.sessions.some((session) => !session.draft)
           ? vscode.TreeItemCollapsibleState.Expanded
           : vscode.TreeItemCollapsibleState.Collapsed,
       ));
@@ -1864,7 +1893,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
 
     // ── Open sessions ────────────────────────────────────
     if (element.contextValue === "open-sessions-header") {
-      return this.sessions.map((sw) => this.makeSessionItem(sw));
+      return this.sessions.filter((sw) => !sw.draft).map((sw) => this.makeSessionItem(sw));
     }
 
     if (element.contextValue === "session") {
