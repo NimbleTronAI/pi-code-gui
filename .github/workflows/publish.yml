@@ -26,6 +26,10 @@ jobs:
           node-version: '22'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # check:cleanroom scans with ripgrep and HARD-FAILS when it is absent — a missing rg
+      # used to exit 127 and fall through to a silent PASS, so the wall reported OK on a
+      # machine that could not actually scan. The runner image does not ship ripgrep.
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: pnpm run pretest
       - uses: azure/login@v3
         with:

@@ -129,7 +129,10 @@ fi
 # rg MUST exist: a missing rg exited 127 and fell through to the PASS branch below, so the
 # whole scan silently reported ok on a machine that simply lacked ripgrep.
 if ! command -v rg >/dev/null 2>&1; then
-    echo "FAIL: ripgrep (rg) is not installed â the source-path scan cannot run"
+    echo "FAIL: ripgrep (rg) is not installed - the source-path scan cannot run"
+    echo "  install it:  apt install ripgrep   |   brew install ripgrep"
+    echo "  (this check refuses to pass without it: a missing rg once exited 127 and"
+    echo "   fell through to a silent PASS, so the wall reported OK while scanning nothing)"
     echo "check-cleanroom: FAIL (cannot verify)"
     exit 1
 fi

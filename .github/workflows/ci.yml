@@ -25,6 +25,10 @@ jobs:
       # Supply-chain gate: known-compromised versions, IOC filenames/strings/hashes, and
       # install hooks outside the allowlist. Exits non-zero on a CRITICAL finding.
       - run: node scripts/check-currency.mjs
+      # check:cleanroom scans with ripgrep and HARD-FAILS when it is absent — a missing rg
+      # used to exit 127 and fall through to a silent PASS, so the wall reported OK on a
+      # machine that could not actually scan. The runner image does not ship ripgrep.
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
       # The licence wall is a repo invariant, not a local convenience — assert it in CI too.
       - run: pnpm run check:cleanroom
       - run: pnpm run check-types

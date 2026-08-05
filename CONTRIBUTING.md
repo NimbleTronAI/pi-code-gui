@@ -26,6 +26,12 @@ know before opening a PR.
 
 ## Development environment
 
+**Prerequisite: [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`)** —
+`apt install ripgrep` / `brew install ripgrep`. The clean-room check scans with it and
+refuses to pass without it, so `pnpm test` and `pnpm run package` both fail if it is
+missing. (It hard-fails on purpose: a missing `rg` once exited 127 and fell through to a
+silent PASS, so the licence wall reported OK while scanning nothing.)
+
 ```bash
 pnpm install          # Install dev dependencies
 pnpm run compile      # Type-check (tsc --noEmit), lint (eslint), build (esbuild)
