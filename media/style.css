@@ -2674,3 +2674,67 @@ html.pi-viewport-recovering #pi-web-app {
 .tool-status .tool-change-remove {
   color: var(--vscode-testing-iconFailed, #f14c4c);
 }
+
+/* Tool titles preserve complete paths/commands and wrap instead of ellipsizing. */
+.tool-block .tool-header,
+.bash-execution .bash-header {
+  align-items: flex-start;
+  white-space: normal;
+}
+
+.tool-block .tool-path,
+.bash-execution .bash-command {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.bash-execution .bash-command {
+  flex: 1 1 auto;
+}
+
+.tool-block .tool-status,
+.bash-execution .bash-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* Collapsed cards stay compact; expanding reveals the preserved full title. */
+.tool-block.auto-tool-result-collapsed .tool-header,
+.bash-execution.auto-tool-result-collapsed .bash-header {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.tool-block.auto-tool-result-collapsed .tool-path,
+.bash-execution.auto-tool-result-collapsed .bash-command {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Expanded commands collapse source newlines and wrap only at available width. */
+.bash-execution .bash-command {
+  white-space: normal;
+}
+
+.bash-command-copy {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--pi-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.bash-command-copy:hover {
+  border-color: var(--pi-lavender);
+  color: var(--pi-text);
+}
+
+.bash-execution.auto-tool-result-collapsed .bash-command-copy {
+  display: none;
+}

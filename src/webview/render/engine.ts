@@ -170,7 +170,7 @@ export function createToolBlock(toolName: string, toolCallId: string, status: st
         ${isRunning ? "running" : "pending"}
       </span>
     </div>
-    ${argsText ? safe(html`<div class="tool-args"><code>${truncate(argsText, 200)}</code></div>`) : ""}
+    ${argsText ? safe(html`<div class="tool-args"><code>${argsText}</code></div>`) : ""}
     <div class="tool-result"></div>`;
 
   return block;
