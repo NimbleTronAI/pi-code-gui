@@ -19,6 +19,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { piDebug, piWarn } from "./logger.js";
 import { piAiVersionNotice } from "./version-compare.js";
+import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import { humanizeProviderError } from "./extension-errors.js";
@@ -95,8 +96,12 @@ export interface PiAi {
 // only on this runtime), assembled into the SDK's DefaultResourceLoader.
 
 /** Build the VS Code-aware system prompt */
-function buildSystemPrompt(): string {
-  return `You are a coding assistant running inside VS Code through the Pi Code Gui extension.
+function buildSystemPrompt(identity?: { provider: string; id: string } | null): string {
+  // The identity block goes FIRST: it is the one fact a session cannot work out for itself,
+  // and the one a reviewer is most likely to get wrong (see runtime-identity.ts).
+  return `${buildRuntimeIdentityPrompt({ runtime: "typescript", model: identity })}
+
+You are a coding assistant running inside VS Code through the Pi Code Gui extension.
 You have access to VS Code editor state through bridge tools (prefixed with vscode_)
 when they are enabled.
 
@@ -524,7 +529,11 @@ export class SdkService implements PiBackend {
         cwd,
         agentDir: getAgentDir ? getAgentDir() : undefined,
         // Custom system prompt with VS Code context
-        systemPromptOverride: () => buildSystemPrompt(),
+        // Resolved lazily: systemPromptOverride is called per turn, so a model switched
+        // mid-session is reflected without rebuilding the session.
+        systemPromptOverride: () => buildSystemPrompt(
+          this._model?.provider && this._model?.id ? { provider: this._model.provider, id: this._model.id } : null,
+        ),
         // Prevent DefaultResourceLoader from appending default append files
         appendSystemPromptOverride: () => [],
         // Inject virtual context files with project-specific guidelines

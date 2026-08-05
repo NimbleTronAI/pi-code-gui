@@ -988,7 +988,10 @@ export class PiService {
 
   async newSession(): Promise<void> {
     if (!this.session) {
-      piWarn("newSession() called but session not initialized — creating fresh");
+      // No in-process session to quiesce — the normal Rust path (this.session is the SDK's,
+      // always null there), and an SDK session that never initialized.
+      piWarn("newSession(): no in-process session to quiesce — starting fresh");
+      this.emit({ type: "sessionReset" });
       this.dispose();
       await this.initialize({ fresh: true });
       return;
@@ -997,6 +1000,12 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
     await this.session.agent.waitForIdle();
+    // Tell the webview to wipe the old conversation BEFORE the fresh session replays into it.
+    // Without this /new looks like it did nothing: the session really is disposed and recreated,
+    // but the chat DOM, tool cards and bash blocks from the previous session stay on screen, so
+    // there is no visible evidence anything happened. `sessionReset` and its handler (resetChat)
+    // existed and were wired end-to-end in the webview — nothing in the extension ever SENT it.
+    this.emit({ type: "sessionReset" });
     this.dispose();
     await this.initialize({ fresh: true });
   }

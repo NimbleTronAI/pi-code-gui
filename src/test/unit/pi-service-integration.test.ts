@@ -231,3 +231,42 @@ test("/tools' unsupported-runtime notice goes to the chat, not a notification po
   assert.doesNotMatch(guard, /vscode\.window\.show(Information|Warning|Error)Message/,
     "a popup for a command typed in the chat is the thing being fixed");
 });
+
+// ── /new must visibly reset the chat ─────────────────────────────────
+// `sessionReset` was defined in the protocol AND fully handled in the webview (resetChat()
+// clears the DOM, tool blocks, bash blocks and history) — but nothing in the extension ever
+// sent it. So /new disposed and recreated the session correctly while the previous
+// conversation stayed on screen, which is indistinguishable from the command being ignored.
+// Reported from a live Rust session; the SDK path had the identical gap.
+test("newSession() emits sessionReset so the webview actually clears", () => {
+  const src = readFileSync(join(SRC, "pi-service.ts"), "utf-8");
+  const body = src.slice(src.indexOf("async newSession"));
+  const decl = body.slice(0, body.indexOf("\n  }"));
+  const resets = [...decl.matchAll(/emit\(\{\s*type:\s*"sessionReset"/g)].length;
+  assert.equal(resets, 2,
+    "BOTH branches must reset: the no-in-process-session path (Rust) and the SDK path");
+  // The reset has to precede the re-init, or the fresh session's replay is wiped by it.
+  assert.ok(decl.indexOf('"sessionReset"') < decl.indexOf("initialize({ fresh: true })"),
+    "sessionReset must be emitted BEFORE the fresh initialize replays");
+});
+
+test("sessionReset is a real protocol message the webview handles", () => {
+  const proto = readFileSync(join(SRC, "shared", "protocol.ts"), "utf-8");
+  assert.match(proto, /z\.literal\("sessionReset"\)/, "must stay in the outbound union");
+  const handlers = readFileSync(join(SRC, "webview", "handlers", "index.ts"), "utf-8");
+  assert.match(handlers, /case "sessionReset":[^\n]*resetChat\(\)/,
+    "the webview must still clear on it — this is the half that already worked");
+});
+
+test("BOTH backends inject the identity block from the SAME shared builder", () => {
+  // If either path grew its own copy, the two could drift into telling different stories about
+  // the same architecture — the exact confusion this exists to end.
+  const sdk = readFileSync(join(SRC, "sdk-service.ts"), "utf-8");
+  const rust = readFileSync(join(SRC, "rust-service.ts"), "utf-8");
+  for (const [name, src] of [["sdk-service", sdk], ["rust-service", rust]] as const) {
+    assert.match(src, /buildRuntimeIdentityPrompt\(/, `${name} must inject the identity block`);
+    assert.match(src, /from "\.\/runtime-identity\.js"/, `${name} must use the shared builder`);
+  }
+  assert.match(rust, /--append-system-prompt/, "Rust injects via the binary's flag");
+  assert.match(sdk, /systemPromptOverride/, "the SDK injects via its prompt override");
+});

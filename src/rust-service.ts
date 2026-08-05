@@ -20,6 +20,7 @@ import { isRustExtensionConflict } from "./rust-interop.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
 import { thinkingLevelIsLive, clampThinkingLevelForRust } from "./model-catalog.js";
+import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
 import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
@@ -244,6 +245,15 @@ export class RustService implements PiBackend {
       // get_state then syncs the display — so don't force the flag there.
       args.push("--thinking", thinking);
     }
+    // Tell the session what it is running on. A Rust session cannot work this out for itself —
+    // the workspace, session dir and process table look identical to a TypeScript session's, and
+    // a reviewer that guessed from `ps` picked up ANOTHER session's rust-pi and misreported
+    // itself. Same builder as the SDK path, so the two can never tell different stories.
+    args.push("--append-system-prompt", buildRuntimeIdentityPrompt({
+      runtime: "rust",
+      model: provider && modelId ? { provider, id: modelId } : null,
+      backendVersion: status.version?.match(/\d+\.\d+\.\d+/)?.[0],
+    }));
     args.push("--extension-policy", cfg.rustExtensionPolicy?.trim() || "balanced");
 
     // Extension discovery. The Rust binary aborts `--mode rpc` startup when it
