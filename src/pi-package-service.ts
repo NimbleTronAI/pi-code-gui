@@ -1,6 +1,12 @@
 import * as path from "node:path";
-import * as vscode from "vscode";
 import { resolvePiPackagePath } from "./pi-service.js";
+import { resolveWorkspaceCwd } from "./workspace.js";
+import type { Runtime } from "./types.js";
+import { detectRustBinary } from "./rust-resolver.js";
+import { rustListInstalled, rustInstall, rustRemove, rustUpdate, rustActiveSources, rustInfo, rustLoadability, type RustPackageInfo, type RustLoadability } from "./rust-packages.js";
+import { isPiMarketplacePackage } from "./pi-package-filter.js";
+
+export type { RustPackageInfo, RustLoadability } from "./rust-packages.js";
 
 /**
  * Wraps the Pi SDK's DefaultPackageManager for use in the VS Code extension.
@@ -72,27 +78,41 @@ export class PiPackageService {
   private packageManager: any | null = null;
   private sdkRoot: string | null = null;
   private initialized = false;
+  /**
+   * Which backend drives package operations against the (shared) store:
+   * - "sdk"  — the TypeScript SDK's DefaultPackageManager (preferred when present)
+   * - "rust" — the Rust binary CLI, used when the SDK isn't installed
+   * Packages are a single shared ecosystem, so either backend manages the same
+   * `.pi/` packages; the choice only affects HOW operations are executed.
+   */
+  private backendKind: "sdk" | "rust" | "none" = "none";
 
   // Marketplace search debounce + cache
   private lastSearchTime = 0;
   private lastSearchPromise: Promise<MarketplacePackage[]> | null = null;
+  /** Query the in-flight search is for (see the debounce below). */
+  private lastSearchQuery: string | null = null;
   private defaultResults: MarketplacePackage[] | null = null;
 
-  /** Initialize the package manager, loading the SDK dynamically. */
+  // enrichInstalledPackages: name-keyed TTL cache so repeated tree refreshes
+  // don't re-hit the npm registry N times (429-burst guard). null = looked up,
+  // no match (negative-cached too, so a missing package isn't re-fetched every refresh).
+  private enrichCache = new Map<string, { value: MarketplacePackage | null; ts: number }>();
+  private static readonly ENRICH_TTL_MS = 5 * 60 * 1000;
+
+  /**
+   * Initialize the package manager. Prefers the TypeScript SDK's
+   * DefaultPackageManager; if the SDK isn't installed, falls back to the Rust
+   * binary so Rust-only users can still manage the (shared) package store.
+   */
   async initialize(): Promise<{ success: boolean; error?: string }> {
     if (this.initialized) { return { success: true }; }
 
+    let sdkError: string;
     try {
       this.sdkRoot = resolvePiPackagePath();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `SDK not found: ${e.message ?? e}` };
-    }
-
-    try {
- 
       const SDK = (await import(path.join(this.sdkRoot, "dist/index.js")));
-      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const cwd = resolveWorkspaceCwd();
       const SettingsManager = SDK.SettingsManager;
       const DefaultPackageManagerClass = SDK.DefaultPackageManager;
       const settingsManager = SettingsManager.create(cwd);
@@ -103,15 +123,33 @@ export class PiPackageService {
         settingsManager,
       });
       this.initialized = true;
+      this.backendKind = "sdk";
       return { success: true };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
-      return { success: false, error: `Failed to initialize package manager: ${e.message ?? e}` };
+      sdkError = e?.message ?? String(e);
     }
+
+    // SDK unavailable — fall back to the Rust binary against the same store.
+    if (detectRustBinary().installed) {
+      this.initialized = true;
+      this.backendKind = "rust";
+      return { success: true };
+    }
+
+    this.backendKind = "none";
+    return { success: false, error: `No Pi runtime available for package management (SDK: ${sdkError}).` };
   }
 
-  /** List all configured/installed packages. */
-  listInstalled(): InstalledPackage[] {
+  /** Which backend is driving package operations ("sdk" | "rust" | "none"). */
+  get backend(): "sdk" | "rust" | "none" { return this.backendKind; }
+
+  /** List all configured/installed packages from the shared store. */
+  async listInstalled(): Promise<InstalledPackage[]> {
+    if (this.backendKind === "rust") {
+      const pkgs = await rustListInstalled();
+      return pkgs.map((p) => ({ source: p.source, scope: p.scope, filtered: false, installedPath: p.installedPath }));
+    }
     if (!this.packageManager) { return []; }
     try {
       const packages = this.packageManager.listConfiguredPackages();
@@ -127,8 +165,47 @@ export class PiPackageService {
     }
   }
 
+  /**
+   * The sources actually loaded ("active") by a session on `runtime`, given the
+   * installed set. Packages are shared, but a runtime may not load every one:
+   * - typescript — every configured, non-filtered package loads.
+   * - rust       — none when extension discovery is disabled for the workspace
+   *   (`rustExtensions` / `--no-extensions`); otherwise the doctor-compatible
+   *   ones. Installed-but-not-returned = "available, not loaded".
+   */
+  async computeActiveSources(runtime: Runtime, installed: InstalledPackage[]): Promise<Set<string>> {
+    if (runtime === "rust") {
+      const cwd = resolveWorkspaceCwd();
+      return rustActiveSources(cwd, installed);
+    }
+    return new Set(installed.filter((p) => !p.filtered).map((p) => p.source));
+  }
+
+  /**
+   * Provenance / safety signals for a package (`rust-pi info`), or null when the
+   * Rust binary isn't available. Surfaced as badges in the Packages view.
+   */
+  async getSafetyInfo(source: string): Promise<RustPackageInfo | null> {
+    if (!detectRustBinary().installed) { return null; }
+    const name = source.startsWith("npm:") ? source.slice(4) : source;
+    return rustInfo(name);
+  }
+
+  /**
+   * Whether a focused Rust session would load the (installed) package — used to
+   * warn at install time. Resolves the package's on-disk path from the shared
+   * store, then defers to the Rust loadability check.
+   */
+  async checkRustLoadability(source: string): Promise<RustLoadability> {
+    const cwd = resolveWorkspaceCwd();
+    const installed = await this.listInstalled();
+    const pkg = installed.find((p) => p.source === source);
+    return rustLoadability(cwd, pkg?.installedPath);
+  }
+
   /** Install a package by source string (e.g. "npm:pi-subagents", "npm:@scope/pkg"). */
   async install(source: string, scope: "user" | "project" = "user"): Promise<{ success: boolean; error?: string }> {
+    if (this.backendKind === "rust") { return rustInstall(source, scope === "project"); }
     if (!this.packageManager) {
       return { success: false, error: "Package manager not initialized" };
     }
@@ -143,6 +220,7 @@ export class PiPackageService {
 
   /** Uninstall a package by source string. */
   async uninstall(source: string, scope: "user" | "project" = "user"): Promise<{ success: boolean; error?: string }> {
+    if (this.backendKind === "rust") { return rustRemove(source, scope === "project"); }
     if (!this.packageManager) {
       return { success: false, error: "Package manager not initialized" };
     }
@@ -157,6 +235,7 @@ export class PiPackageService {
 
   /** Update all installed packages or a specific one. */
   async update(source?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.backendKind === "rust") { return rustUpdate(source); }
     if (!this.packageManager) {
       return { success: false, error: "Package manager not initialized" };
     }
@@ -171,7 +250,8 @@ export class PiPackageService {
 
   /** Check for available updates across all installed packages. */
   async checkForUpdates(): Promise<Array<{ source: string; displayName: string; type: string; scope: string }>> {
-    if (!this.packageManager) { return []; }
+    // The Rust CLI has no dry-run; skip the per-source update markers under it.
+    if (this.backendKind === "rust" || !this.packageManager) { return []; }
     try {
       return await this.packageManager.checkForAvailableUpdates();
     } catch {
@@ -198,10 +278,14 @@ export class PiPackageService {
 
     // Debounce: minimum 2 s between outgoing requests
     const now = Date.now();
-    if (now - this.lastSearchTime < 2000 && this.lastSearchPromise) {
+    // Reuse the in-flight request only when it is for the SAME query. It used to be returned for
+    // any query inside the window, so typing "web" then "mcp" resolved the second call with the
+    // first call's results — rendering them under the wrong header.
+    if (now - this.lastSearchTime < 2000 && this.lastSearchPromise && this.lastSearchQuery === q) {
       return this.lastSearchPromise;
     }
     this.lastSearchTime = now;
+    this.lastSearchQuery = q;
 
     this.lastSearchPromise = this.doSearchMarketplace(q);
     try {
@@ -260,15 +344,7 @@ export class PiPackageService {
           const keywords: string[] = pkgObj.keywords ?? [];
           const publisher = (pkgObj.publisher?.username ?? "").toLowerCase();
 
-          const isPiPkg =
-            name.startsWith("pi-") ||
-            name.includes("-pi-") ||
-            keywords.some((k: string) => k.toLowerCase().includes("pi")) ||
-            desc.includes("pi coding agent") ||
-            desc.includes("pi agent") ||
-            desc.includes("pi extension");
-
-          if (!isPiPkg) { return false; }
+          if (!isPiMarketplacePackage(pkgObj)) { return false; }
 
           if (qLower) {
             return (
@@ -304,9 +380,9 @@ export class PiPackageService {
     }
   }
 
-  /** Check if the package manager is ready. */
+  /** Check if the package manager is ready (via either backend). */
   get isReady(): boolean {
-    return this.initialized && this.packageManager !== null;
+    return this.initialized && this.backendKind !== "none";
   }
 
   /**
@@ -355,22 +431,36 @@ export class PiPackageService {
     const npmPackages = packages.filter((p) => p.source.startsWith("npm:"));
     if (npmPackages.length === 0) { return enriched; }
 
+    // Serve fresh cache entries; only the misses hit the network (429-burst guard).
+    const now = Date.now();
+    const ttl = PiPackageService.ENRICH_TTL_MS;
+    const toFetch: Array<{ source: string; name: string }> = [];
+    for (const pkg of npmPackages) {
+      const name = pkg.source.slice(4); // remove "npm:"
+      const cached = this.enrichCache.get(name);
+      if (cached && now - cached.ts < ttl) {
+        if (cached.value) { enriched.set(pkg.source, cached.value); }
+        continue;
+      }
+      toFetch.push({ source: pkg.source, name });
+    }
+    if (toFetch.length === 0) { return enriched; }
+
     try {
-      // Batch lookup: fetch each npm package's metadata
       const results = await Promise.allSettled(
-        npmPackages.map(async (pkg) => {
-          const name = pkg.source.slice(4); // remove "npm:"
+        toFetch.map(async ({ name }) => {
           const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(name)}&size=1`;
           const response = await fetch(url, {
             headers: { "Accept": "application/json" },
             signal: AbortSignal.timeout(5000),
           });
           if (!response.ok) { return null; }
- 
+
           const data = (await response.json());
-          const obj = data?.objects?.[0];
-          if (!obj) { return null; }
-          const p = obj.package;
+          const p = data?.objects?.[0]?.package;
+          // Name-equality guard: the search API ranks by relevance, so objects[0]
+          // can be a DIFFERENT package — never attach another package's metadata.
+          if (!p || p.name !== name) { return null; }
           return {
             name: p.name,
             version: p.version,
@@ -379,7 +469,7 @@ export class PiPackageService {
             npmPackage: p.name,
             date: p.date ?? "",
             keywords: p.keywords ?? [],
-            downloads: obj.downloads?.weekly ?? 0,
+            downloads: data?.objects?.[0]?.downloads?.weekly ?? 0,
             homepage: p.links?.homepage ?? p.links?.npm ?? "",
             repository: p.links?.repository ? normalizeRepoUrl(p.links.repository) : "",
             license: p.license ?? "",
@@ -389,9 +479,11 @@ export class PiPackageService {
 
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
-        if (result.status === "fulfilled" && result.value) {
-          enriched.set(npmPackages[i].source, result.value);
-        }
+        const value = result.status === "fulfilled" ? result.value : null;
+        // Cache hits AND misses (negative cache) so a package without a
+        // marketplace match isn't re-fetched on every refresh.
+        this.enrichCache.set(toFetch[i].name, { value, ts: now });
+        if (value) { enriched.set(toFetch[i].source, value); }
       }
     } catch { /* ignore */ }
 

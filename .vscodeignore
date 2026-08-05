@@ -1,31 +1,55 @@
-.vscode/**
-.vscode-test/**
-out/**
-node_modules/**
+# ALLOWLIST. This file used to be a denylist, and a denylist fails OPEN: anything added to the
+# repo later ships by default. That is how the VSIX came to contain dist/dual-runtime-review.md
+# (an internal architecture audit naming the weakest spots with file:lines), tmp/cleanroom-kit/**,
+# .claude/settings.json, .github/workflows/publish.yml, AGENTS.md and .githooks/pre-commit.
+#
+# Everything is excluded by `**`, then the runtime artifacts are added back with `!`. A new
+# top-level file now ships NOTHING until it is explicitly allowed here.
+#
+# Verify after changing this:  pnpm run vsix && unzip -l pi-code-gui-*.vsix
+
+**
+
+# ── the extension itself ──────────────────────────────────────────────
+!dist/extension.js
+!dist/webview.js
+
+# ── webview assets (styles, icons, vendored libs the CSP loads) ───────
+# Enumerated rather than `!media/**` + re-exclusions: vsce's negation re-includes the whole
+# subtree and later patterns do NOT win it back, so the dev-only entry shim, the architecture
+# artifacts and a 590 KB source map all shipped.
+!media/style.css
+!media/bundle.js
+!media/marked.min.js
+!media/lib/**
+# Only the pi-* brand/icon assets. architecture.svg/png are docs — the README links them by
+# absolute GitHub URL, so they must not be packaged.
+!media/pi-*.svg
+!media/pi-*.png
+
+# ── marketplace metadata ──────────────────────────────────────────────
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!LICENSE.md
+!NOTICE
+!NOTICE.md
+!pi-icon-light.png
+!pi-icon-dark.png
+
+# ── belt and braces ───────────────────────────────────────────────────
+# Already excluded by `**`, but named so the intent survives a future edit that loosens the
+# allowlist: never ship internal docs, agent config, CI, hooks, or tooling.
+dist/**/*.md
+tmp/**
+.claude/**
+.github/**
+.githooks/**
+AGENTS.md
+agent-wiki/**
+scripts/**
 src/**
-.gitignore
-.yarnrc
-esbuild.js
-esbuild.webview.js
-vsc-extension-quickstart.md
-**/tsconfig.json
-tsconfig.webview.json
-**/eslint.config.mjs
+out/**
 **/*.map
 **/*.ts
-**/.vscode-test.*
-.pnpm-store/**
-.pnpm-store
-.pnpm-store/**
-.pnpm-store
-.pi/**
-.pi
-pnpm-lock.yaml
-pnpm-workspace.yaml
-env/**
-.npmrc
-.devcontainer/**
-.eslintcache
-media/entry.js
-agent-wiki/**
-WEBVIEW_REWRITE_TODO.md

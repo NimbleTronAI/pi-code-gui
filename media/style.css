@@ -760,10 +760,24 @@
         flex: 1; cursor: default; pointer-events: none;
         &:hover { background: none; }
       }
+
+      /* Read-only reasoning badge (thinking level is a no-op on this transport). */
+      &.sb-readonly {
+        cursor: default;
+        &:hover { background: none; }
+      }
     }
   }
 
   #pi-sb-dot { font-size: 0.9em; flex-shrink: 0; }
+
+  /* Solid-fill runtime pill — blue = TypeScript, tan = Rust.
+     id+class beats `.pi-sb-item:hover`, so the colour holds on hover too. */
+  #pi-sb-runtime { font-weight: 600; border-radius: 4px; flex-shrink: 0; }
+  #pi-sb-runtime.pi-sb-runtime--ts { background: #3178c6; color: #ffffff; }
+  #pi-sb-runtime.pi-sb-runtime--ts:hover { background: #3a86d6; }
+  #pi-sb-runtime.pi-sb-runtime--rust { background: #dea584; color: #1e1e2e; }
+  #pi-sb-runtime.pi-sb-runtime--rust:hover { background: #e7b594; }
 
   /* ═══ Live panel (extension TUI widgets) ══════════════════ */
 
@@ -1071,6 +1085,9 @@
     &.error   { color: var(--vscode-errorForeground); }
     &.muted   { color: var(--vscode-descriptionForeground); }
   }
+
+  /* "Show images" toggle (settings): hide chat-message images when off. */
+  body.pi-hide-images .message-content img { display: none; }
 
   /* ═══ Queue / steer indicator ════════════════════════ */
 

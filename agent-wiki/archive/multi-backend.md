@@ -1,6 +1,10 @@
 # Multi-Backend Architecture
 
-> **Status:** rejected — May 2025  
+> **Status:** superseded — 2026-06-05  
+> **Superseded by:** [architecture/runtime-selection.md](../architecture/runtime-selection.md) and [architecture/runtime-switching-ux.md](../architecture/runtime-switching-ux.md)  
+> The 2025 "rejected" verdict (below) was reversed: dual-runtime support shipped in v0.0.56 with the custom-card incompatibility accepted as a documented markdown fallback. This page is retained for its original design notes (path resolution, RPC, install flow), some of which were refined during implementation (e.g. Rust uses a *separate* session pool, and host-executed bridge tools are NOT possible over RPC).
+>
+> **Original status:** rejected — May 2025  
 > **Last updated:** 2026-05-25 — decision not to proceed; archived for reference
 
 ## Verdict

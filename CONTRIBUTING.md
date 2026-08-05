@@ -26,6 +26,12 @@ know before opening a PR.
 
 ## Development environment
 
+**Prerequisite: [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`)** —
+`apt install ripgrep` / `brew install ripgrep`. The clean-room check scans with it and
+refuses to pass without it, so `pnpm test` and `pnpm run package` both fail if it is
+missing. (It hard-fails on purpose: a missing `rg` once exited 127 and fell through to a
+silent PASS, so the licence wall reported OK while scanning nothing.)
+
 ```bash
 pnpm install          # Install dev dependencies
 pnpm run compile      # Type-check (tsc --noEmit), lint (eslint), build (esbuild)
@@ -129,9 +135,11 @@ git push origin fix/double-scrollbar
    for all DOM strings, component lifecycle for new UI blocks.
 4. **Update the wiki.** If your change affects a documented concept, update the
    relevant `agent-wiki/` page and append to `agent-wiki/log.md`.
-5. **Add a changelog entry.** Append to `CHANGELOG.md` under an `## [Unreleased]`
-   heading (or the next version if one is in flight). Match the existing style:
-   `### Added`, `### Changed`, `### Fixed` sections with one-line-per-bullet.
+5. **Add a changelog entry.** Add it to `CHANGELOG.md` under the version currently
+   in flight — the topmost `## [x.y.z]` heading — since that release has not shipped
+   yet. Only start a new `## [Unreleased]` section if the topmost version has already
+   been published. Match the existing style: `### Added`, `### Changed`, `### Fixed`,
+   one line per bullet, written for someone upgrading from the last release.
 6. **Pass CI.** `pnpm run package` must succeed. Tests must pass.
 7. **Be patient.** This is maintained by a small team. We'll review as soon as we
    can — feel free to give a gentle nudge after a week.

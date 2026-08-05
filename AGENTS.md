@@ -23,6 +23,7 @@ Key concepts:
 - **Extension UI Bridge** (`src/pi-service.ts` bindExtensionUI) — TUI widgets → webview
 - **Webview Frontend** (`media/`) — chat UI, morphdom streaming, marked rendering
 - **Tree Views** (`src/extension.ts` MultiSessionTreeProvider, `src/pi-packages-tree-provider.ts`)
+- **Runtime Selection** (`src/pi-service.ts` `_backendKind`; `src/rust-*.ts`; `src/runtime-detection.ts`) — per-session TypeScript (in-process SDK) or Rust (out-of-process `pi --mode rpc`) Pi; default TypeScript; see `agent-wiki/architecture/runtime-selection.md`
 
 See `agent-wiki/index.md` for the full topic catalog.
 
@@ -48,6 +49,34 @@ Install locally: `code --install-extension pi-code-gui-*.vsix --force`.
 Publishes to VS Code Marketplace (`vsce publish`) and Open VSX (`ovsx publish`).
 Requires the `marketplace` environment with reviewer gates.
 
+## pi clean-room — license law
+
+Do not read, fetch, paste, or reference the source of `pi_agent_rust` and its restricted
+runtime deps `asupersync`, `franken-decision`, `franken-evidence`, `franken-kernel` into
+any agent context — **by any channel**: the Read tool, Bash (`cat`/`grep`/`sed`/`git
+show`/`git log -p` on a checkout), or WebFetch of the repo's source/blob/raw/commit
+pages. That covers local clones (e.g. a `~/pi_agent_rust` checkout), the `~/.cargo`
+checkout/registry copies, and fork diffs (a fork's diff of restricted source is a
+derivative work — same rule). These crates ship under "MIT + OpenAI/Anthropic Rider":
+the Software and derivatives may not be made available to a Restricted Party (OpenAI,
+Anthropic, their affiliates/agents), and Claude Code is an Anthropic surface — content
+read into it is provided to Anthropic.
+
+Work black-box instead: drive `pi --mode rpc` and capture its stdout (wire probes are
+the established pattern), read its version/`--help` output, read its GitHub *issues*
+(prose), and keep our own API notes in `agent-wiki/`. Reading the binary's observable
+behavior is fine; reading its source is not.
+
+`github.com/earendil-works/pi` (plain MIT © 2025 Mario Zechner) is the ancestor
+`pi_agent_rust` was ported from. It carries no rider and MAY be read and fetched freely
+as a clean-room reference. If you port ancestor code verbatim, carry its LICENSE note in
+the module header + a NOTICE entry.
+
+Enforced, not just prose: `permissions.deny` Read()/WebFetch rules + a Bash PreToolUse
+hook in `.claude/settings.json`, and `scripts/check-cleanroom.sh` (+ `-smoke.sh`) at
+pre-commit (`.githooks/`), `pretest`, and `package`. Removing a deny rule fails the
+commit.
+
 ## Tool discipline
 
 Raw bash for dev-loop (build, test, lint). VS Code extension publishing is
@@ -68,7 +97,8 @@ bypass VS Code's buffer tracking and cause dirty-state mismatches.
 - Pi packages: installed to `.pi/npm/node_modules/` (project) or global npm.
   The `.pi/` directory is gitignored.
 - API keys: Pi SDK's `AuthStorage` (system keychain via keytar) or runtime
-  override from `pi-code-gui.anthropicApiKey` / `pi-code-gui.openaiApiKey`.
+  resolved by pi itself (env vars / `~/.pi/agent/auth.json` via `/login`). The extension
+  contributes no API-key settings; legacy values are migrated into SecretStorage.
   Never written to disk as plaintext.
 - Open session paths: `context.workspaceState` (VS Code workspace storage) —
   per-workspace, survives window reloads.
@@ -86,6 +116,11 @@ bypass VS Code's buffer tracking and cause dirty-state mismatches.
    auto-cleaned).
 3. API keys never leave the extension — they're in-memory runtime overrides
    or the system keychain, never written to project files.
+4. **All agent memory is repo-scoped**: AGENTS.md for law/protocol, the wiki
+   for knowledge. Do NOT maintain assistant-private memory layers (Claude
+   auto-memory files, a CLAUDE.md, tool-local notes) — they fork the source of
+   truth, are invisible to other contributors/tools, and don't survive
+   environment changes. Anything worth remembering goes here or in the wiki.
 
 ## Wiki conventions
 
@@ -172,3 +207,4 @@ you name the next action.
 | How TDD works here | `agent-wiki/discipline/tdd.md` |
 | How the wiki is maintained | `agent-wiki/discipline/wiki-maintenance.md` |
 | Wiki change log | `agent-wiki/log.md` |
+| Why rust-pi source is off-limits (license wall) | `AGENTS.md` §"pi clean-room" + `scripts/check-cleanroom.sh` |

@@ -7,7 +7,12 @@ const debugEventLog: Array<{ ts: number; type: string; dataKeys: string[]; callI
 const debugMaxEvents = 500;
 const debugDomLog: Array<{ ts: number; action: string; tag: string; id: string; classes: string; status: string; text: string; parentId: string }> = [];
 const debugMaxDomLog = 200;
-let debugEnabled = true;
+// OFF by default. This was shipped enabled: every non-delta message ran logEvent, which
+// constructs an Error to sample the stack, and a MutationObserver watched the whole chat
+// container slicing textContent for every added/removed node — a permanent tax on every user.
+// The /debug command turns it on (handleDebugCommand), so the diagnostic workflow still works:
+// run /debug, reproduce, run /debug again for the captured trace.
+let debugEnabled = false;
 
 // ── Queue event tracking ─────────────────────────────────────
 const _queueEvents: Array<{ ts: number; steering: number; followUp: number; streaming: boolean }> = [];
@@ -25,7 +30,7 @@ export function logEvent(type: string, data: Record<string, unknown> | undefined
     id: data ? (data.entryId || data.toolCallId || "") as string : "",
     fromMessage: data ? !!data.fromMessage : false,
     toolName: data ? (data.toolName || "") as string : "",
-    stackDepth: (() => { const s = new Error().stack; return s ? s.split("\n").length : 0; })(),
+    stackDepth: ((): number => { const s = new Error().stack; return s ? s.split("\n").length : 0; })(),
   };
   debugEventLog.push(entry);
   if (debugEventLog.length > debugMaxEvents) {debugEventLog.shift();}
@@ -104,7 +109,7 @@ export function dumpChatStructure(): Record<string, unknown> {
   };
 }
 
-export function summary(): Record<string, unknown> {
+export function summary(): PiDebugSummary {
   const s = dumpChatStructure();
   const el = debugEventLog.slice(-30);
   const dl = debugDomLog.slice(-30);
@@ -112,7 +117,7 @@ export function summary(): Record<string, unknown> {
   const bKeys = new Set(Object.keys(state.bashBlocks));
   const tKeys = new Set(Object.keys(state.currentToolBlocks));
   const dupes: string[] = [];
-  bKeys.forEach((k) => { if (tKeys.has(k)) { dupes.push(k); } });
+  bKeys.forEach((k): void => { if (tKeys.has(k)) { dupes.push(k); } });
 
   const realOrphans: string[] = [];
   const container = state.chatContainer;
@@ -137,7 +142,7 @@ export function summary(): Record<string, unknown> {
   }
 
   const orphanBash: string[] = [];
-  bKeys.forEach((k) => { if (!tKeys.has(k)) { orphanBash.push(k); } });
+  bKeys.forEach((k): void => { if (!tKeys.has(k)) { orphanBash.push(k); } });
 
   return {
     chat: s,
@@ -179,12 +184,12 @@ window.__piDebug = {
     return Object.keys(state.currentToolBlocks).map((k) => {
       const e = state.currentToolBlocks[k];
       if (!e) { return { id: k, status: "MISSING", tag: "?", hasRenderer: false }; }
-      const el = "tagName" in e ? e as HTMLElement : e.el;
+      const el = e.el;
       return {
         id: k,
         status: el.getAttribute ? el.getAttribute("data-status") : "?",
         tag: el.tagName,
-        hasRenderer: !("tagName" in e) && !!e.renderer,
+        hasRenderer: !!e.renderer,
       };
     });
   },
@@ -196,9 +201,9 @@ window.__piDebug = {
 
 export function initDebugObserver(): void {
   if (typeof MutationObserver === "undefined") {return;}
-  debugObserver = new MutationObserver((mutations: MutationRecord[]) => {
+  debugObserver = new MutationObserver((mutations: MutationRecord[]): void => {
     if (!debugEnabled) {return;}
-    mutations.forEach((m) => {
+    mutations.forEach((m): void => {
       for (let i = 0; i < m.addedNodes.length; i++) {
         logDom("added", m.addedNodes[i]);
       }

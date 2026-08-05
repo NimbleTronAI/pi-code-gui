@@ -8,7 +8,7 @@
 ## Project overview
 
 Pi Code Gui is a VS Code extension that embeds the Pi coding agent into VS Code's
-native UI. It provides a webview-based chat panel, 17 bridge tools that give the
+native UI. It provides a webview-based chat panel, 16 bridge tools that give the
 AI agent access to VS Code editor state (diagnostics, symbols, hover, definitions,
 references, and workspace edits), a sidebar with session and package tree views,
 multi-session tab support with per-session model/thinking settings, and session
@@ -18,7 +18,7 @@ Key concepts:
 - **SessionWindow** (`src/extension.ts`) — paired PiService + PiWebviewPanel, one per chat tab
 - **PiService** (`src/pi-service.ts`) — SDK lifecycle bridge, event translation, model/settings
 - **PiWebviewPanel** (`src/webview-panel.ts`) — webview creation, bidirectional messaging, rendering
-- **Bridge Tools** (`src/bridge-tools.ts`) — 17 VS Code API tools for the AI agent
+- **Bridge Tools** (`src/bridge-tools.ts`) — 16 VS Code API tools for the AI agent
 - **Event Translation** (`src/pi-service.ts` handleAgentEvent) — SDK events → webview messages
 - **Extension UI Bridge** (`src/pi-service.ts` bindExtensionUI) — TUI widgets → webview
 - **Webview Frontend** (`media/`) — chat UI, morphdom streaming, marked rendering
@@ -68,7 +68,8 @@ bypass VS Code's buffer tracking and cause dirty-state mismatches.
 - Pi packages: installed to `.pi/npm/node_modules/` (project) or global npm.
   The `.pi/` directory is gitignored.
 - API keys: Pi SDK's `AuthStorage` (system keychain via keytar) or runtime
-  override from `pi-code-gui.anthropicApiKey` / `pi-code-gui.openaiApiKey`.
+  resolved by pi itself (env vars / `~/.pi/agent/auth.json` via `/login`). The extension
+  contributes no API-key settings; legacy values are migrated into SecretStorage.
   Never written to disk as plaintext.
 - Open session paths: `context.workspaceState` (VS Code workspace storage) —
   per-workspace, survives window reloads.

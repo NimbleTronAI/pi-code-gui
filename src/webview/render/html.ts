@@ -48,11 +48,7 @@ function isSafeHtml(value: unknown): value is SafeHtml {
  * This is the same approach as engine.ts's escapeHtml() —
  * the browser handles all encoding correctly.
  */
-function escapeText(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
+import { escapeHtml as escapeText } from "../../shared/escape-html.js";
 
 /**
  * Tagged template literal for safe HTML construction.

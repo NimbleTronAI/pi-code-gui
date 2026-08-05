@@ -4,6 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: pi-vscode-gui
+    # Run a real init (tini) as PID 1 so it reaps zombie processes. Without this,
+    # PID 1 is `sleep infinity`, which never wait()s — exited children from the
+    # dev stack (esbuild/tsc watchers, tsserver, git) pile up as zombies, and
+    # rust-pi's session startup (which spawns helper processes) hangs.
+    init: true
     command: sleep infinity
     # To provision API keys into the container, create env/.env with
     # KEY=VALUE lines (e.g. ANTHROPIC_API_KEY=sk-ant-...).

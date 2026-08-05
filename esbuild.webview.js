@@ -37,8 +37,13 @@ async function main() {
     target: "es2020",
     outfile: "media/bundle.js",
     minify: production,
-    sourcemap: !production,
-    sourcesContent: false,
+    // Inline (not external) so the dev source map lives inside bundle.js as a
+    // data URI — no separate bundle.js.map fetch for DevTools to make, which the
+    // webview CSP (default-src 'none', no connect-src) would otherwise block.
+    sourcemap: production ? false : "inline",
+    // Embed original sources in the inline map so DevTools never reaches back
+    // out to fetch *.ts (which CSP would block); dev-only, production has no map.
+    sourcesContent: !production,
     platform: "browser",
     logLevel: "info",
     // marked.min.js uses a UMD pattern that safely falls back to

@@ -125,9 +125,5 @@ export function highlightCode(code: string, lang: string): string {
   }
 }
 
-/** Escape HTML-special characters. Mirrors engine.ts's escapeHtml. */
-function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
+/** Escape HTML-special characters (shared implementation — escapes quotes too). */
+import { escapeHtml } from "../shared/escape-html.js";

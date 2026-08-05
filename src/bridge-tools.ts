@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
+import { resolveWorkspaceCwd } from "./workspace.js";
+import { boundedJson } from "./bridge-limits.js";
 
 /**
  * Creates the VS Code bridge tools that give the AI agent visibility into
@@ -13,31 +15,6 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: any[] = [];
 
-  // Helper: truncate text to reasonable limits
-  const truncateText = (text: string, maxLines = 2000, maxBytes = 50 * 1024): string => {
-    const lines = text.split("\n");
-    let output = lines.length > maxLines ? lines.slice(0, maxLines).join("\n") : text;
-    if (Buffer.byteLength(output, "utf8") > maxBytes) {
-      output = Buffer.from(output, "utf8").subarray(0, maxBytes).toString("utf8");
-    }
-    return output;
-  };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const boundedJson = (value: any): string => {
-    const text = JSON.stringify(value) ?? "null";
-    const lineCount = text.split("\n").length;
-    const byteCount = Buffer.byteLength(text, "utf8");
-    if (lineCount <= 2000 && byteCount <= 50 * 1024) { return text; }
-    return JSON.stringify({
-      truncated: true,
-      message: "Result exceeded output limits.",
-      originalBytes: byteCount,
-      originalLines: lineCount,
-      resultJsonPrefix: truncateText(text),
-    });
-  };
-
   const getWorkspaceFolders = (): Array<{ uri: string; name: string; index: number }> =>
     (vscode.workspace.workspaceFolders ?? []).map((f) => ({
       uri: f.uri.toString(),
@@ -48,7 +25,7 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
   const workspaceRelativePath = (filePath: string): string => {
     if (!filePath) { return ""; }
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const roots = [...folders.map((f) => f.uri.fsPath), process.cwd()].filter(Boolean);
+    const roots = [...folders.map((f) => f.uri.fsPath), resolveWorkspaceCwd()].filter(Boolean);
 
     let best = filePath;
     for (const root of roots) {
@@ -245,7 +222,7 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: async () => {
         return {
-          content: [{ type: "text", text: boundedJson({ folders: getWorkspaceFolders(), cwd: process.cwd() }) }],
+          content: [{ type: "text", text: boundedJson({ folders: getWorkspaceFolders(), cwd: resolveWorkspaceCwd() }) }],
           details: {},
         };
       },
@@ -360,9 +337,11 @@ export function createBridgeTools(defineTool: Function, Type: any): any[] {
         }
         const uri = vscode.Uri.file(resolved);
         const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === uri.fsPath);
-        if (doc && doc.isDirty) { await doc.save(); }
+        // Capture dirtiness before saving — doc.isDirty flips to false once save() resolves.
+        const wasDirty = doc?.isDirty ?? false;
+        if (doc && wasDirty) { await doc.save(); }
         return {
-          content: [{ type: "text", text: boundedJson({ saved: resolved, wasDirty: doc?.isDirty ?? false }) }],
+          content: [{ type: "text", text: boundedJson({ saved: resolved, wasDirty }) }],
           details: {},
         };
       },

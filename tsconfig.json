@@ -9,6 +9,7 @@
     "strict": true,
     "skipLibCheck": true,
     "moduleResolution": "Node16",
+    "resolveJsonModule": true,
 
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
@@ -19,5 +20,5 @@
     "noUncheckedIndexedAccess": false,
     "exactOptionalPropertyTypes": false
   },
-  "exclude": ["agent-wiki", "src/webview"]
+  "exclude": ["agent-wiki", "src/webview", "sample-workspace"]
 }

@@ -4,7 +4,7 @@
   "author": "Jack Noppé",
   "displayName": "Pi Code Gui",
   "description": "Native VS Code editor experience for Pi coding agent",
-  "version": "0.0.55",
+  "version": "0.1.1",
   "license": "MIT",
   "sponsor": {
     "url": "https://github.com/sponsors/NimbleTronAI"
@@ -17,6 +17,7 @@
   "keywords": [
     "pi",
     "coding-agent",
+    "pi-agent-rust",
     "ai",
     "chat",
     "agent",
@@ -33,14 +34,15 @@
   "homepage": "https://github.com/NimbleTronAI/pi-code-gui#readme",
   "type": "module",
   "engines": {
-    "vscode": "^1.118.0"
+    "vscode": "^1.125.0"
   },
   "categories": [
     "AI",
     "Chat"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:pi-code-gui.session"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -72,7 +74,7 @@
       },
       {
         "command": "pi-code-gui.cycleThinkingLevel",
-        "title": "PiGui: Cycle Thinking Level"
+        "title": "PiGui: Toggle Thinking On/Off"
       },
       {
         "command": "pi-code-gui.pickFile",
@@ -121,6 +123,30 @@
           "light": "media/pi-editor-button.svg",
           "dark": "media/pi-editor-dark.svg"
         }
+      },
+      {
+        "command": "pi-code-gui.addSessionWithRuntime",
+        "title": "PiGui: Add Pi Session (Choose Runtime)"
+      },
+      {
+        "command": "pi-code-gui.addSessionTypescript",
+        "title": "PiGui: Add TypeScript Pi Session"
+      },
+      {
+        "command": "pi-code-gui.addSessionRust",
+        "title": "PiGui: Add Rust Pi Session"
+      },
+      {
+        "command": "pi-code-gui.setDefaultRuntime",
+        "title": "PiGui: Set Default Runtime"
+      },
+      {
+        "command": "pi-code-gui.switchRuntime",
+        "title": "PiGui: Switch Runtime (New Session)"
+      },
+      {
+        "command": "pi-code-gui.installRust",
+        "title": "PiGui: Install Rust Pi"
       },
       {
         "command": "pi-code-gui.revealEntry",
@@ -198,6 +224,10 @@
       {
         "command": "pi-code-gui.openPiDevMarketplace",
         "title": "PiGui: Open Pi.dev Marketplace"
+      },
+      {
+        "command": "pi-code-gui.resetRendererPermissions",
+        "title": "PiGui: Reset Custom Renderer Permissions"
       }
     ],
     "viewsContainers": {
@@ -265,16 +295,6 @@
           "default": true,
           "description": "Prompt to install Pi if not found"
         },
-        "pi-code-gui.anthropicApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "Anthropic API key for Claude models (overrides ANTHROPIC_API_KEY env var at runtime)"
-        },
-        "pi-code-gui.openaiApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "OpenAI API key for GPT models (overrides OPENAI_API_KEY env var at runtime)"
-        },
         "pi-code-gui.systemPromptAppend": {
           "type": "string",
           "default": "",
@@ -314,7 +334,8 @@
             "low",
             "medium",
             "high",
-            "xhigh"
+            "xhigh",
+            "max"
           ],
           "description": "Default thinking level for new sessions"
         },
@@ -326,12 +347,97 @@
         "pi-code-gui.sessionDir": {
           "type": "string",
           "default": "",
-          "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir."
+          "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir.",
+          "scope": "machine-overridable"
+        },
+        "pi-code-gui.defaultRuntime": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "rust"
+          ],
+          "default": "typescript",
+          "enumDescriptions": [
+            "TypeScript Pi — runs in-process for the deepest VS Code integration: 16 editor-bridge tools (diagnostics, symbols, types, format, apply-edit), interactive extension cards, and per-session tool control. Needs Node.js + npm.",
+            "Rust Pi — a fast, self-contained binary (no Node.js): ~100 ms startup, low memory, strong built-in safety. Trade-off: no VS Code editor-bridge tools, and extension cards fall back to plain markdown."
+          ],
+          "markdownDescription": "The Pi runtime used for **new** sessions. Resuming a session always reuses the runtime that created it, and if only one runtime is installed that one is used regardless of this setting. Change it anytime via **PiGui: Set Default Runtime** — your choice is remembered."
+        },
+        "pi-code-gui.sessionHistoryScope": {
+          "type": "string",
+          "enum": [
+            "unified",
+            "perRuntime"
+          ],
+          "default": "unified",
+          "enumDescriptions": [
+            "Show sessions from both runtimes in one list, each tagged with a TS or Rust badge.",
+            "Show only sessions created by your current default runtime."
+          ],
+          "markdownDescription": "Which past sessions appear under **Sessions → Past Sessions**. The runtimes store history separately; this only controls what the list shows. Each session is always reopened with the runtime that created it."
+        },
+        "pi-code-gui.rustBinaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual.",
+          "scope": "machine"
+        },
+        "pi-code-gui.rustInstallMethod": {
+          "type": "string",
+          "enum": [
+            "managed",
+            "curl",
+            "manual"
+          ],
+          "default": "managed",
+          "enumDescriptions": [
+            "Download the verified prebuilt binary from GitHub releases into an extension-managed location (falls back to `cargo install` if a Rust toolchain is present). No PATH changes, no remote scripts.",
+            "Run the official `curl | sh` installer in a terminal. Easiest and sets up PATH, but runs a remote script and may rename an existing TypeScript `pi` command to `legacy-pi`.",
+            "Open the install guide; the extension detects the binary after you finish installing it yourself."
+          ],
+          "markdownDescription": "How **PiGui: Install Rust Pi** installs the binary when you opt in. You can still choose at install time; this just pre-selects an option.",
+          "scope": "machine"
+        },
+        "pi-code-gui.rustExtensionPolicy": {
+          "type": "string",
+          "enum": [
+            "safe",
+            "balanced",
+            "permissive"
+          ],
+          "default": "balanced",
+          "enumDescriptions": [
+            "Most restrictive — extensions get minimal capabilities. Best if you run untrusted extensions.",
+            "Recommended — sensible capability limits for everyday use.",
+            "Most open — grants extensions broad capabilities. Choose only for extensions you trust."
+          ],
+          "markdownDescription": "Capability access granted to Rust Pi **extensions** (passed as `--extension-policy`). Governs third-party extension hostcalls (exec/http/file) only — built-in tools and Rust's catastrophic-command blocking are always enforced regardless of this setting."
+        },
+        "pi-code-gui.rustExtensions": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "enabled",
+            "disabled"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Recommended — load extensions unless the workspace has TypeScript-format Pi extensions under .pi/ (which the Rust runtime can't parse). Avoids the startup conflict automatically.",
+            "Always let Rust discover extensions. Use only when your workspace has Rust-compatible extensions; a TypeScript-format .pi/ will prevent Rust sessions from starting.",
+            "Never load extensions under Rust (pure built-in tools). Most robust."
+          ],
+          "markdownDescription": "Whether **Rust** Pi sessions discover and load Pi extensions (controls the `--no-extensions` flag). The Rust runtime aborts startup when it meets the in-process TypeScript SDK's `.pi/` extensions (`missing field 'parameters'`). `auto` disables discovery only when such extensions are detected; `disabled` always disables it; `enabled` never does. Does not affect the TypeScript runtime."
         },
         "pi-code-gui.autoOpenOnStart": {
           "type": "boolean",
           "default": true,
           "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
+        },
+        "pi-code-gui.rustAgentDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`), where the extension writes its managed `models.json` (the bundled Pi model catalog). Empty (default) uses an extension-managed folder so the full-catalog write never clobbers your own `~/.pi/agent`; `auth.json` is seeded from `~/.pi/agent` for OAuth, and API keys resolve from the environment. Set a path to force a specific location. Sessions are unaffected (placed via `--session-dir`).",
+          "scope": "machine-overridable"
         }
       }
     },
@@ -385,6 +491,11 @@
           "group": "3_sessionActions"
         },
         {
+          "command": "pi-code-gui.switchRuntime",
+          "when": "view == pi-code-gui.sessions && viewItem == session && pi-code-gui.bothAvailable",
+          "group": "3_sessionActions"
+        },
+        {
           "command": "pi-code-gui.resumePastSession",
           "when": "view == pi-code-gui.sessions && viewItem == pastSessionEntry",
           "group": "navigation"
@@ -415,6 +526,21 @@
           "command": "pi-code-gui.addSession",
           "when": "view == pi-code-gui.sessions",
           "group": "navigation"
+        },
+        {
+          "command": "pi-code-gui.addSessionRust",
+          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
+          "group": "1_runtime@1"
+        },
+        {
+          "command": "pi-code-gui.addSessionTypescript",
+          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
+          "group": "1_runtime@2"
+        },
+        {
+          "command": "pi-code-gui.setDefaultRuntime",
+          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
+          "group": "1_runtime@3"
         },
         {
           "command": "pi-code-gui.filterPastSessions",
@@ -451,19 +577,32 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:webview": "node esbuild.webview.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production && node esbuild.webview.js --production",
-    "compile-tests": "tsc -p . --outDir out",
+    "check:cleanroom": "bash scripts/check-cleanroom.sh && bash scripts/check-cleanroom-smoke.sh",
+    "package": "pnpm run check:cleanroom && node scripts/check-diagram.mjs && node scripts/check-model-registry.mjs && pnpm run check-types && pnpm run lint && pnpm run test:unit && node esbuild.js --production && node esbuild.webview.js --production",
+    "gen:diagram": "node scripts/gen-diagram.mjs",
+    "check:diagram": "node scripts/check-diagram.mjs",
+    "gen:model-registry": "node scripts/gen-model-registry.mjs",
+    "check:model-registry": "node scripts/check-model-registry.mjs",
+    "check:currency": "node scripts/check-currency.mjs",
+    "check:currency:strict": "node scripts/check-currency.mjs --strict",
+    "compile-tests": "node scripts/clean-out.mjs && tsc -p . --outDir out",
+    "compile-tests:webview": "tsc -p tsconfig.test-webview.json",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
+    "pretest": "pnpm run check:cleanroom && pnpm run compile-tests && pnpm run compile && pnpm run lint",
     "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src",
-    "test": "vscode-test",
+    "test": "pnpm run test:unit",
+    "test:unit": "pnpm run compile-tests && pnpm run compile-tests:webview && node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js",
+    "test:rust-smoke": "node scripts/rust-smoke.mjs",
+    "test:rpc-behavior": "pnpm run compile-tests && node scripts/rpc-behavior.mjs",
     "vsix": "pnpm run package && npx @vscode/vsce package --no-dependencies",
     "wiki:lint": "npx tsx agent-wiki/scripts/wiki-lint.ts",
     "wiki:lint:full": "npx tsx agent-wiki/scripts/wiki-lint.ts --full",
     "publish": "vsce publish --no-yarn --skip-duplicate",
     "un-publish": "vsce unpublish",
-    "vsix:openvsx": "pnpm run package && pnpm exec ovsx publish"
+    "vsix:openvsx": "pnpm run package && pnpm exec ovsx publish",
+    "test:vscode": "vscode-test",
+    "check:supply-chain": "node scripts/check-currency.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -472,24 +611,39 @@
     ]
   },
   "devDependencies": {
-    "@types/node": "~22.19.19",
-    "@types/vscode": "^1.118.0",
-    "@vscode/vsce": "^3.9.1",
-    "esbuild": "^0.27.7",
-    "eslint": "^9.39.4",
-    "npm-run-all": "^4.1.5",
-    "ovsx": "^0.10.12",
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/jsdom": "^28.0.3",
+    "@types/node": "~26.1.2",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.8.0",
+    "jsdom": "^30.0.1",
+    "npm-run-all2": "^9.0.3",
+    "ovsx": "^1.1.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.59.3",
+    "typescript-eslint": "^8.66.0",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@types/mocha": "^10.0.10",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "@types/mocha": "^10.0.10"
   },
   "dependencies": {
-    "highlight.js": "^11.11.1",
-    "morphdom": "^2.7.8"
+    "highlight.js": "^11.11.1"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Pi runs an agent that executes tools and can spawn the Rust Pi binary. In an untrusted workspace the binary path, install method and agent/session directories are ignored from workspace settings.",
+      "restrictedConfigurations": [
+        "pi-code-gui.rustBinaryPath",
+        "pi-code-gui.rustInstallMethod",
+        "pi-code-gui.sessionDir",
+        "pi-code-gui.rustAgentDir"
+      ]
+    }
   }
 }

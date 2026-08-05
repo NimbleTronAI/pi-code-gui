@@ -7,109 +7,31 @@
 // stay private; only the public API is exported.
 
 import { state, type AppState } from "../state.js";
-import { logEvent, logDom } from "../debug.js";
-import { highlightCode } from "../highlight.js";
+import { logEvent } from "../debug.js";
 import { html, safe } from "./html.js";
 import { CodeBlock } from "../components/code-block.js";
 import { ThinkingBlock } from "../components/thinking-block.js";
 
 // ═══ Utilities ══════════════════════════════════════════════
 
-export function formatTokens(count: number): string {
-  if (!count || count === 0) {return "0";}
-  if (count < 1000) {return count.toString();}
-  if (count < 10000) {return (count / 1000).toFixed(1) + "k";}
-  if (count < 100000) {return Math.round(count / 1000) + "k";}
-  if (count < 1000000) {return (count / 1000000).toFixed(1) + "M";}
-  return Math.round(count / 1000000) + "M";
-}
+// DOM-free text/format helpers live in src/shared/webview-format.ts so they can
+// be unit-tested headlessly; re-exported here to keep existing import sites.
+export { formatTokens, getLangFromPath, getCompactReadLabel, formatToolError } from "../../shared/webview-format.js";
+import { isRenderableImageSrc } from "../../shared/webview-format.js";
 
-export function escapeHtml(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
+// Imported for local use AND re-exported so existing call sites keep working; the
+// implementation is the shared, quote-escaping, headlessly-testable one.
+/** Cap on retained full-texts for truncated tool results (see the write site below). */
+const MAX_TRUNCATION_TEXTS = 50;
+
+import { escapeHtml } from "../../shared/escape-html.js";
+export { escapeHtml };
 
 export function truncate(text: string, maxLen: number): string {
   if (!text || text.length <= maxLen) {return text || "";}
   return text.substring(0, maxLen) + "...";
 }
 
-export function shortenPath(filePath: string): string {
-  if (!filePath) {return "";}
-  return filePath;
-}
-
-export function getLangFromPath(filePath: string): string | undefined {
-  if (!filePath) {return undefined;}
-  const ext = filePath.split(".").pop()!.toLowerCase();
-  const extToLang: Record<string, string> = {
-    ts: "typescript", tsx: "typescript",
-    js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-    py: "python", rs: "rust", go: "go", java: "java",
-    c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp",
-    cs: "csharp", sh: "bash", bash: "bash", zsh: "bash",
-    html: "html", htm: "html", css: "css", scss: "scss", less: "less",
-    json: "json", yaml: "yaml", yml: "yaml", toml: "toml",
-    xml: "xml", svg: "svg", md: "markdown", markdown: "markdown",
-    sql: "sql", php: "php", rb: "ruby", swift: "swift",
-    kt: "kotlin", lua: "lua", r: "r", scala: "scala",
-    hs: "haskell", ex: "elixir", exs: "elixir", erl: "erlang",
-    dockerfile: "dockerfile", makefile: "makefile",
-    proto: "protobuf", graphql: "graphql",
-    tf: "hcl", hcl: "hcl", ps1: "powershell",
-  };
-  return extToLang[ext];
-}
-
-export function getCompactReadLabel(filePath: string): { kind: string; label: string } | undefined {
-  if (!filePath) {return undefined;}
-  const name = filePath.split("/").pop() || filePath;
-  if (name === "SKILL.md") {
-    const parts = filePath.split("/");
-    const parent = parts.length >= 2 ? parts[parts.length - 2] : name;
-    return { kind: "skill", label: parent };
-  }
-  if (name === "AGENTS.md" || name === "AGENTS.MD" || name === "CLAUDE.md" || name === "CLAUDE.MD") {
-    return { kind: "resource", label: filePath };
-  }
-  if (name === "README.md" || filePath.indexOf("docs/") !== -1 || filePath.indexOf("examples/") !== -1) {
-    return { kind: "docs", label: filePath };
-  }
-  return undefined;
-}
-
-export function formatToolError(text: string, toolName: string): string {
-  if (!text) {return text;}
-  if (text.indexOf("Validation failed for tool") !== -1) {
-    const issues = [];
-    const missingRe = /must have required propert(?:y|ies) (\w+)/g;
-    let match;
-    while ((match = missingRe.exec(text)) !== null) {
-      issues.push("missing \u201C" + match[1] + "\u201D");
-    }
-    const extraRe = /must not have additional propert(?:y|ies)/g;
-    if (extraRe.test(text)) {
-      const extraMatch = text.match(/additional properties.*?(\w+)/g);
-      if (!extraMatch) {issues.push("unexpected field(s)");}
-    }
-    const hint = issues.length > 0 ? " (" + issues.join(", ") + ")" : "";
-    return "\u26A0 Argument structure mismatch" + hint + " \u2014 the agent will self-correct.";
-  }
-  if (/abort|aborted|cancell?ed/i.test(text)) {
-    return "\u2717 Operation cancelled.";
-  }
-  if (/permission denied|EACCES|not permitted/i.test(text)) {
-    return "\u26D4 Permission denied \u2014 cannot access the file.";
-  }
-  if (/no such file|ENOENT|not found/i.test(text) && text.indexOf("Validation") === -1) {
-    return "\uD83D\uDD0D File not found \u2014 check the path.";
-  }
-  if (/timed?\s*out/i.test(text)) {
-    return "\u23F0 Command timed out.";
-  }
-  return text;
-}
 
 // ═══ Tool Renderer Registry ═════════════════════════════════
 
@@ -173,7 +95,7 @@ export function createToolBlock(toolName: string, toolCallId: string, status: st
   return block;
 }
 
-export function hideWelcome() {
+export function hideWelcome(): void {
   if (state._inBatch) {return;}
   if (state.welcome) {
     state.welcome.remove();
@@ -181,7 +103,7 @@ export function hideWelcome() {
   }
 }
 
-export function resetChat() {
+export function resetChat(): void {
   logEvent("resetChat", {
     bashBlocksN: Object.keys(state.bashBlocks).length,
     toolBlocksN: Object.keys(state.currentToolBlocks).length,
@@ -209,7 +131,7 @@ export function resetChat() {
 
 export function scrollToBottom(): void {
   if (!state.hasScrolledUp) {
-    requestAnimationFrame(function () {
+    requestAnimationFrame(function (): void {
       state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
     });
   }
@@ -221,7 +143,18 @@ export function updateStreamingState(): void {
     state.sendButton.title = "Steer (interrupt current request)";
     state.steerDropdown.classList.remove("hidden");
     state.abortButton.classList.remove("hidden");
+    // Acknowledge a requested abort LOCALLY. Clicking Stop used to change nothing on screen:
+    // it posted a message and waited for the backend to emit a terminal event. Under Rust that
+    // is a fire-and-forget write to a subprocess that may be mid-tool, so the spinner kept
+    // spinning and the button stayed armed — two aborts in the same session could look
+    // completely different depending only on where they landed. The request itself is now
+    // visible immediately, whatever the backend does next.
+    state.abortButton.disabled = state.abortRequested;
+    state.abortButton.textContent = state.abortRequested ? "Stopping…" : "Stop";
   } else {
+    state.abortRequested = false;
+    state.abortButton.disabled = false;
+    state.abortButton.textContent = "Stop";
     state.sendButton.textContent = "\u21B5";
     state.sendButton.title = "Submit (Enter)";
     state.steerDropdown.classList.add("hidden");
@@ -256,7 +189,7 @@ export function renderMarkdownSafe(text: string): string {
 function postProcessMarkedHTML(html: string): string {
   return html.replace(
     /<pre><code(?: class="language-(\w*)")?>([\s\S]*?)<\/code><\/pre>/g,
-    function (m: string, lang: string, code: string) {
+    function (m: string, lang: string, code: string): string {
       const decoded = code
         .replace(/&amp;/g, "&")
         .replace(/&lt;/g, "<")
@@ -323,7 +256,7 @@ export function renderBlock(token: MarkedToken): Node {
       const btokens = token.tokens as MarkedTokens | undefined;
       if (btokens) {
         for (let j = 0; j < btokens.length; j++) {
-          el.appendChild(renderBlock(btokens[j]!));
+          el.appendChild(renderBlock(btokens[j]));
         }
       }
       return el;
@@ -380,7 +313,7 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
   if (!tokens || tokens.length === 0) {return "";}
   let result = "";
   for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]!;
+    const t = tokens[i];
     switch (t.type) {
       case "text":
         result += escapeHtml(t.text as string);
@@ -392,17 +325,26 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
         result += html`<em>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</em>`;
         break;
       case "codespan":
-        result += html`<code>${t.text as string}</code>`;
+        result += html`<code>${t.text}</code>`;
         break;
       case "link":
-        result += html`<a href="${t.href as string}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
+        result += html`<a href="${t.href}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
         break;
       case "del":
         result += html`<del>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</del>`;
         break;
-      case "image":
-        result += html`<img src="${t.href as string}" alt="${t.text as string}">`;
+      case "image": {
+        // Only emit an <img> for a src that can actually load in this webview;
+        // a relative path (e.g. an image referenced in a session message) would
+        // 403 against the webview origin and external http(s) is CSP-blocked, so
+        // fall back to the alt text instead of a broken/noisy image request.
+        const imgHref = (t.href as string) ?? "";
+        const imgAlt = (t.text as string) ?? "";
+        result += isRenderableImageSrc(imgHref)
+          ? html`<img src="${imgHref}" alt="${imgAlt}">`
+          : html`<span class="img-fallback">${imgAlt || imgHref}</span>`;
         break;
+      }
       case "br":
         result += "<br>";
         break;
@@ -468,9 +410,9 @@ export function renderBlockToHTML(token: MarkedToken): string {
 
 // ═══ Code Block Handlers ══════════════════════════════════
 
-export function setupCodeBlockHandlers() {
+export function setupCodeBlockHandlers(): void {
   // ── Click delegation for tool blocks, copy buttons, file paths ──
-  state.chatContainer.addEventListener("click", function (e: MouseEvent) {
+  state.chatContainer.addEventListener("click", function (e: MouseEvent): void {
     const target = e.target as HTMLElement | null;
     // Show-more button for truncated tool results
     const showMoreBtn = target?.closest(".show-more-btn");
@@ -516,13 +458,13 @@ export function setupCodeBlockHandlers() {
     if (!pre) {return;}
     const text = pre.textContent || "";
     navigator.clipboard.writeText(text).then(
-      function () {
+      function (): void {
         btn.textContent = "Copied!";
-        setTimeout(function () { btn.textContent = "Copy"; }, 2000);
+        setTimeout(function (): void { btn.textContent = "Copy"; }, 2000);
       },
-      function () {
+      function (): void {
         btn.textContent = "Failed";
-        setTimeout(function () { btn.textContent = "Copy"; }, 2000);
+        setTimeout(function (): void { btn.textContent = "Copy"; }, 2000);
       },
     );
   });
@@ -605,7 +547,7 @@ export function renderDiffMarkup(diffText: string): string {
 function parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
   const match = line.match(/^([+\-\s])(\s*\d*)\s(.*)$/);
   if (!match) {return null;}
-  return { prefix: match[1]!, lineNum: match[2]!, content: match[3]! };
+  return { prefix: match[1], lineNum: match[2], content: match[3] };
 }
 
 function diffWords(oldStr: string, newStr: string): { removed: string; added: string } {
@@ -677,6 +619,13 @@ export function renderToolResultTruncated(text: string, maxLines = 50): string {
     preview: previewLines.join("\n"),
     full: text,
   };
+  // Bounded: this holds the FULL text of every truncated tool result, and was only ever cleared
+  // by resetChat() — so a long session with large read/bash output accumulated all of it for the
+  // lifetime of the view. Keep the most recent entries (older cards fall back to their preview).
+  const ids = Object.keys(state.truncationTexts);
+  if (ids.length > MAX_TRUNCATION_TEXTS) {
+    for (const old of ids.slice(0, ids.length - MAX_TRUNCATION_TEXTS)) { delete state.truncationTexts[old]; }
+  }
 
   return html`
     <div class="tool-result-truncated" id="${id}" data-hidden="${hiddenCount}" data-expanded="0">

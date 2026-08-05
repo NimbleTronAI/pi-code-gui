@@ -1,13 +1,29 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { PiService } from "./pi-service.js";
+import { resolveWorkspaceCwd } from "./workspace.js";
 import { PiWebviewPanel } from "./webview-panel.js";
 import { PiPackageService } from "./pi-package-service.js";
 import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
-import { initLogger, piLog, piWarn } from "./logger.js";
+import { initLogger, disposeLogger, piLog, piDebug, piWarn, redactSecrets } from "./logger.js";
+import { initSecrets } from "./secrets.js";
+import { initRendererConsent, resetRendererConsent } from "./renderer-consent.js";
+import { initRustModels } from "./rust-models.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
-import type { SessionSummary } from "./types.js";
+import type { SessionSummary, Runtime } from "./types.js";
+import { planPanelRestore } from "./panel-restore.js";
+import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext } from "./runtime-detection.js";
+import { detectRustBinary, rustVersionNoticeKey } from "./rust-resolver.js";
+import { isRustSessionPath, listRustSessions, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
+import { isRustSessionHeader } from "./session-format.js";
+import { installRustInteractive } from "./rust-install.js";
+import pinnedRust from "./rust-pi-version.json";
+// The tree-view label extractor is the SAME operation as the event translator's — import the
+// one implementation instead of a second copy (this file's copy also threw on a null content
+// item and could join `undefined` into the label).
+import { extractMessageText as extractText } from "./agent-events.js";
 
 // ── Session window management ──────────────────────────
 
@@ -19,6 +35,12 @@ interface SessionWindow {
   isStreaming: boolean;
   /** Cached display label derived from session name or tab summary */
   label: string;
+  /** Intended runtime for this window (known before init completes). */
+  runtime: Runtime;
+  /** Per-session subscriptions torn down when the session closes (audit M6: the tree-refresh
+   *  listener was never unsubscribed, so a disposed session's late event still refreshed the
+   *  tree and the closure kept the session alive). */
+  disposables: vscode.Disposable[];
 }
 
 const sessions: SessionWindow[] = [];
@@ -26,26 +48,55 @@ let sessionCounter = 0;
 /** Cached extension context — set once in activate(), used throughout. */
 let extContext: vscode.ExtensionContext | null = null;
 
-/** Persist the set of open session file paths so they can be restored on reload. */
-async function saveOpenSessionPaths(): Promise<void> {
+// NOTE: open-session restore across reload is owned by VS Code's webview panel
+// serializer (see registerWebviewPanelSerializer in activate). The webview persists
+// {sessionFilePath, runtime} via setState on every status-update; VS Code revives the
+// panels and deserializeWebviewPanel re-attaches sessions. The old workspaceState
+// snapshot ("openSessionPaths"/"activeSessionPath") duplicated that and raced it
+// (double-restored windows) — it is intentionally gone. Only the session→runtime
+// origin index below remains in workspaceState (it serves Past Sessions, not reload).
+
+// ── Session ↔ runtime origin tracking ──────────────────
+//
+// Resume-follows-origin: a session is always reopened with the runtime that
+// created it. The authoritative source is a workspaceState index (path →
+// runtime); for sessions created outside the extension we fall back to the
+// storage location (the Rust pool lives in its own directory) and finally to
+// the effective default runtime. Never throws.
+
+const RUNTIME_INDEX_KEY = "pi-code-gui.sessionRuntimeIndex";
+
+async function recordSessionRuntime(p: string, runtime: Runtime): Promise<void> {
   if (!extContext) { return; }
-  const paths: string[] = [];
-  for (const sw of sessions) {
-    const fp = sw.piService.sessionFilePath;
-    if (fp) { paths.push(fp); }
-  }
-  await extContext.workspaceState.update("pi-code-gui.openSessionPaths", paths);
-  await extContext.workspaceState.update("pi-code-gui.sessionCounter", sessionCounter);
-  // Persist which session was active so we can restore focus after reload
-  const activePath = activeSessionWindow?.piService.sessionFilePath ?? null;
-  await extContext.workspaceState.update("pi-code-gui.activeSessionPath", activePath);
+  const map = extContext.workspaceState.get<Record<string, Runtime>>(RUNTIME_INDEX_KEY) ?? {};
+  if (map[p] === runtime) { return; }
+  map[p] = runtime;
+  await extContext.workspaceState.update(RUNTIME_INDEX_KEY, map);
+}
+
+function lookupSessionRuntime(p: string): Runtime {
+  const map = extContext?.workspaceState.get<Record<string, Runtime>>(RUNTIME_INDEX_KEY) ?? {};
+  if (map[p] === "rust" || map[p] === "typescript") { return map[p]; }
+  // Inferred fallback: the Rust pool lives in its own storage directory.
+  if (isRustSessionPath(p)) { return "rust"; }
+  // Last resort: inspect the file header. Catches Rust sessions created via the
+  // CLI, moved, or under a custom sessionDir, where the path prefix no longer
+  // applies (only upgrades to "rust" on a clear header signal — never downgrades).
+  if (isRustSessionHeader(p)) { return "rust"; }
+  return "typescript";
 }
 
 /** The most recently focused (active) session window. */
 let activeSessionWindow: SessionWindow | null = null;
 
+/** Phase 3/4 commands are global; register them once per host lifetime. */
+let phaseCommandsRegistered = false;
+
 function setActiveSession(sw: SessionWindow | null): void {
   activeSessionWindow = sw;
+  // The Packages view reflects the focused session's runtime (available vs active).
+  const rt: Runtime = sw?.runtime ?? primarySession()?.runtime ?? "typescript";
+  void packagesTreeProvider?.setFocusedRuntime(rt);
 }
 let sessionTreeProvider: MultiSessionTreeProvider | null = null;
 let sessionTreeView: vscode.TreeView<SessionTreeItem> | null = null;
@@ -56,12 +107,23 @@ let packagesTreeView: vscode.TreeView<any> | null = null;
 let packageService: PiPackageService | null = null;
 
 /** The primary (first) session — used for status bar and tree provider */
+/** Register the global phase-3/4 commands once per host. Idempotent. */
+function registerPhaseCommands(context: vscode.ExtensionContext): void {
+  if (phaseCommandsRegistered) { return; }
+  phaseCommandsRegistered = true;
+  // Resolve the live target each invocation — binding to one session's service would leave
+  // these pointing at a disposed session after a tab change/close.
+  const resolvePiService = (): PiService | undefined => (activeSessionWindow ?? primarySession())?.piService;
+  registerPhase3Commands(context, resolvePiService);
+  registerPhase4Commands(context, resolvePiService);
+}
+
 function primarySession(): SessionWindow | undefined {
   return sessions[0];
 }
 
 /** Create a new session window pair */
-function createSessionWindow(context: vscode.ExtensionContext): SessionWindow {
+function createSessionWindow(context: vscode.ExtensionContext, runtime: Runtime = "typescript"): SessionWindow {
   const id = `session-${++sessionCounter}`;
   const piService = new PiService();
   const webviewPanel = new PiWebviewPanel(context, piService);
@@ -69,6 +131,8 @@ function createSessionWindow(context: vscode.ExtensionContext): SessionWindow {
     id, piService, webviewPanel,
     initialized: false, isStreaming: false,
     label: getGenericSessionLabel(id),
+    runtime,
+    disposables: [],
   };
 
   // Track when this panel becomes active
@@ -81,6 +145,7 @@ function createSessionWindow(context: vscode.ExtensionContext): SessionWindow {
   webviewPanel.onDispose = handlePanelDispose(sw);
 
   sessions.push(sw);
+  updateHadOpenPanels();
   return sw;
 }
 
@@ -93,58 +158,202 @@ function getGenericSessionLabel(id: string): string {
 /** Build a dispose handler that saves and removes a session when its panel closes. */
 function handlePanelDispose(sw: SessionWindow): (piService: PiService) => void {
   return () => {
+    // Record the session's origin runtime while the path is still readable (dispose
+    // tears the service down) — this is what lets Past Sessions reopen it on the
+    // runtime that created it (resume-follows-origin).
+    const fp = sw.piService.sessionFilePath;
+    if (fp) { void recordSessionRuntime(fp, sw.piService.runtime); }
     // The SessionManager auto-persists entries as they are written during
     // conversation, so the session file already exists on disk.  We just
     // need to clean up and remove it from the open-sessions list so it
     // appears under Past Sessions.
+    for (const d of sw.disposables) { try { d.dispose(); } catch { /* best effort */ } }
+    sw.disposables.length = 0;
     sw.piService.dispose();
     removeSession(sw);
 
     // Refresh past sessions list from disk so the closed session appears
     // under Past Sessions immediately.
     void refreshPastSessionsList();
-    // Persist remaining open sessions for next reload
-    void saveOpenSessionPaths();
   };
+}
+
+/**
+ * True for VS Code's own cancellation rejections (CancellationError / "Canceled"),
+ * which it fires when disposing or terminating the extension host (e.g. during a
+ * remote reconnect). They are benign and not ours — logging them floods the
+ * console with identical stacks.
+ */
+function isBenignCancellation(e: unknown): boolean {
+  const name = (e as { name?: string })?.name;
+  if (name === "Canceled" || name === "CanceledError" || name === "CancellationError") { return true; }
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg === "Canceled" || msg === "Canceled: Canceled" || /^Canceled\b/.test(msg);
+}
+
+/** Warn once if a user-supplied Rust binary differs from the version this
+ *  extension is built/tested against. The managed build (globalStorage/rust-pi)
+ *  is pinned to that version, so it never warns. API keys aside, a mismatched
+ *  binary can drift in event/RPC shape — surface it instead of failing silently. */
+async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promise<void> {
+  const status = cachedRuntimes()?.rustStatus;
+  if (!status?.installed || !status.version || !status.binaryPath) { return; }
+  const detected = status.version.match(/\d+\.\d+\.\d+/)?.[0];
+  const pinnedVersion = pinnedRust.tag.replace(/^v/, "");
+  // Dedup on the (detected, pinned) PAIR — see rustVersionNoticeKey for the two silent bugs
+  // this replaces. One notice per pairing, so a pin bump reaches people already warned about
+  // their binary, without nagging on every launch.
+  const key = rustVersionNoticeKey(status.version, pinnedRust.tag, context.globalState.get<string>("rustVersionWarned"));
+  if (!key) { return; }
+  await context.globalState.update("rustVersionWarned", key);
+
+  // Managed builds are NOT exempt: the pin moves, so a managed binary goes stale too. Being
+  // managed only changes the wording — and it is the case where one click genuinely resolves it.
+  let managed = false;
+  const managedDir = path.resolve(path.join(context.globalStorageUri.fsPath, "rust-pi"));
+  try { managed = path.resolve(status.binaryPath).startsWith(managedDir); } catch { /* ignore */ }
+
+  // Discoverable, but WITHOUT promising an outcome. Automated installs are not reliable on
+  // every platform — a release can ship no asset for a given platform/arch, and a downloaded
+  // binary can still fail to run against an older system libc (both are handled explicitly in
+  // rust-install.ts). So the button opens the install CHOOSER — managed download, official
+  // installer, manual instructions, or detect-existing — rather than claiming it will install
+  // anything. "Show install options" is a promise we can actually keep; "Install 0.1.23" is not.
+  const SHOW = "Show install options";
+  const choice = await vscode.window.showWarningMessage(
+    managed
+      ? `The extension-managed Rust Pi is ${detected}; this build is tested against ${pinnedVersion}.`
+      : `Rust Pi ${detected} is installed; this extension is built and tested against ${pinnedVersion}.`,
+    SHOW, "Not now",
+  );
+  if (choice === SHOW) { await vscode.commands.executeCommand("pi-code-gui.installRust"); }
 }
 
 // ── Activate ───────────────────────────────────────────
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extContext = context;
-  console.log("Pi Code Gui extension activating...");
 
   // Create output channel for diagnostics (View → Output → Pi Code Gui)
   const outputChannel = vscode.window.createOutputChannel("Pi Code Gui", { log: true });
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
-  piLog("Pi Code Gui starting...");
+  initRustModels(context);
+  initRendererConsent(context);
+  // Load API keys from SecretStorage, migrating any still sitting in plaintext settings. Awaited
+  // because the config seam that serves them (SdkDeps/RustDeps.config()) is synchronous; it is a
+  // keychain read, not I/O that can hang on a user prompt.
+  await initSecrets(
+    context.secrets,
+    (setting) => vscode.workspace.getConfiguration("pi-code-gui").get<string>(setting),
+    async (setting) => {
+      const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+      // Clear every scope the value could have been written to before the settings were scoped.
+      await cfg.update(setting, undefined, vscode.ConfigurationTarget.Global);
+      try { await cfg.update(setting, undefined, vscode.ConfigurationTarget.Workspace); } catch { /* no workspace */ }
+    },
+  );
+  piLog(`Pi Code Gui v${context.extension.packageJSON.version} starting... (dev=${context.extensionMode === vscode.ExtensionMode.Development})`);
+
+  // ── Commands FIRST ──────────────────────────────────────────────────────
+  // These must exist before anything that can block. The workspace-folder wait below is up to
+  // 2.5s, and Step 3c's install offer used to be unbounded — registering after them meant
+  // Cmd+/, Cmd+L and the rest were "command not found" for that whole window, which is exactly
+  // what the old "must be registered synchronously so keybindings work immediately" comment was
+  // trying to prevent while sitting AFTER the wait. Neither registration needs a workspace
+  // folder or a runtime: every handler resolves its target at invocation time.
+  registerEarlyCommands(context);
+  registerPhaseCommands(context);
 
   // After extension host restart, workspace folders may not be available yet.
   // Without this guard, we fall back to process.cwd() which on remote servers
   // is the server root, loading sessions from the wrong project.
   if (!vscode.workspace.workspaceFolders?.length) {
-    piLog("Waiting for workspace folders...");
+    piDebug("Waiting for workspace folders...");
     await new Promise<void>((resolve) => {
-      const sub = vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        if (vscode.workspace.workspaceFolders?.length) {
-          sub.dispose();
-          resolve();
-        }
+      let settled = false;
+      let sub: vscode.Disposable | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (settled) { return; }
+        settled = true;
+        sub?.dispose();
+        if (timer) { clearTimeout(timer); }
+        resolve();
+      };
+      sub = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        if (vscode.workspace.workspaceFolders?.length) { finish(); }
       });
+      // Never block activation forever: a window opened WITH a folder doesn't
+      // emit a change event (the folder was there from the start), and a window
+      // with no folder never will. resolveWorkspaceCwd() covers the no-folder
+      // case (home dir + warning), so just proceed after a short grace period.
+      timer = setTimeout(finish, 2500);
+      // Race guard: folders may have populated between the check and this point.
+      if (vscode.workspace.workspaceFolders?.length) { finish(); }
     });
-    piLog(`Workspace ready: ${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ""}`);
+    piDebug(`Workspace ready: ${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "(none — using fallback cwd)"}`);
   }
 
   // Catch unhandled rejections/exceptions so we can see what crashes the
   // extension host before it restarts. VS Code restarts the host on
   // unhandled rejections, which orphans webviews and resets tree providers.
-  process.on("unhandledRejection", (reason: unknown) => {
+  // It also fires its OWN benign cancellations (CancellationError, "Canceled")
+  // when disposing/terminating during a reconnect — those are not ours and not
+  // crashes, so we drop them to avoid flooding the log with hundreds of lines.
+  // These are PROCESS-level handlers on a SHARED extension host, so they affect every other
+  // extension too. Two consequences the original code got wrong:
+  //  - Registering an "uncaughtException" listener SUPPRESSES the default crash. A fatal error
+  //    thrown by any other extension then continued with corrupted state instead of restarting
+  //    the host. We log and re-throw on a later tick so the default behaviour is restored.
+  //  - They were never removed, so a disable/enable cycle installed duplicates. They are now
+  //    disposed with the extension.
+  const onUnhandledRejection = (reason: unknown): void => {
+    if (isBenignCancellation(reason)) { return; }
     piWarn(`UNHANDLED REJECTION: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
-  });
-  process.on("uncaughtException", (err: Error) => {
+  };
+  const onUncaughtException = (err: Error): void => {
+    if (isBenignCancellation(err)) { return; }
     piWarn(`UNCAUGHT EXCEPTION: ${err.stack ?? err.message}`);
+    // Restore the default: crash the host rather than limping on with unknown state. Deferred so
+    // this log line is flushed first.
+    setTimeout(() => { throw err; }, 0);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
+  context.subscriptions.push({
+    dispose: () => {
+      process.off("unhandledRejection", onUnhandledRejection);
+      process.off("uncaughtException", onUncaughtException);
+    },
   });
+
+  // ── Session restore: WebviewPanelSerializer ──────────
+  // VS Code owns open-panel persistence: it revives each pi-code-gui.session panel
+  // across reload (position, order, active tab) and hands us the state the webview
+  // persisted via setState ({sessionFilePath, runtime} — written on every
+  // status-update). We re-attach a live session to the revived panel. This replaces
+  // the old workspaceState-based restore, which duplicated what VS Code already does
+  // and raced it (double-restored windows). Note: VS Code defers deserialization of
+  // a BACKGROUND restored tab until it is first focused — sessions attach lazily.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("pi-code-gui.session", {
+      async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown): Promise<void> {
+        const plan = planPanelRestore(state, (p) => fs.existsSync(p), defaultRuntimeForNewSession());
+        piDebug(`[serializer] revived panel → ${plan.action}${plan.openPath ? ` (${plan.openPath.split("/").pop()})` : ""} on ${plan.runtime}`);
+        if (plan.action === "dispose") {
+          // The session file is gone — closing the shell beats resurrecting an empty one.
+          panel.dispose();
+          return;
+        }
+        const sw = createSessionWindow(context, plan.runtime);
+        sw.webviewPanel.adoptPanel(panel);
+        if (panel.active) { setActiveSession(sw); }
+        void initSessionInBackground(context, sw,
+          plan.action === "open" ? { openPath: plan.openPath, runtime: plan.runtime } : { fresh: true, runtime: plan.runtime });
+      },
+    }),
+  );
 
   // ── Step 1: Register ALL commands immediately ──────────
 
@@ -163,6 +372,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-code-gui.addSession", () => {
       addSession(context);
+    }),
+  );
+
+  // ── Runtime selection commands ──
+  context.subscriptions.push(
+    vscode.commands.registerCommand("pi-code-gui.addSessionTypescript", () => addSession(context, "typescript")),
+    vscode.commands.registerCommand("pi-code-gui.addSessionRust", () => addSession(context, "rust")),
+    vscode.commands.registerCommand("pi-code-gui.addSessionWithRuntime", async () => {
+      const rt = await pickRuntime();
+      if (rt) { addSession(context, rt); }
+    }),
+    vscode.commands.registerCommand("pi-code-gui.setDefaultRuntime", async () => {
+      const rt = await pickRuntime("Set the default runtime for new sessions");
+      if (!rt) { return; }
+      await vscode.workspace.getConfiguration("pi-code-gui").update("defaultRuntime", rt, vscode.ConfigurationTarget.Global);
+      vscode.window.showInformationMessage(`Default runtime for new sessions: ${rt === "rust" ? "Rust Pi" : "TypeScript Pi"}.`);
+    }),
+    vscode.commands.registerCommand("pi-code-gui.switchRuntime", async (sessionId?: string) => {
+      const sw = typeof sessionId === "string" ? sessions.find((s) => s.id === sessionId) : (activeSessionWindow ?? primarySession());
+      if (!sw || !sw.initialized) { vscode.window.showWarningMessage("No active Pi session to switch."); return; }
+      const target: Runtime = sw.piService.runtime === "rust" ? "typescript" : "rust";
+      const targetName = target === "rust" ? "Rust Pi" : "TypeScript Pi";
+      const action = `New session on ${targetName}`;
+      const choice = await vscode.window.showInformationMessage(
+        `Runtimes can't hot-swap a live session. "${action}" opens a NEW ${targetName} session; this one stays open and saved.`,
+        action,
+        "Cancel",
+      );
+      if (choice === action) { addSession(context, target); }
+    }),
+    vscode.commands.registerCommand("pi-code-gui.installRust", async () => {
+      await installRustInteractive(context);
     }),
   );
 
@@ -273,6 +514,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /** Fork at a specific entry within an already-open session. */
   async function doForkFromOpenEntry(sessionId: string, entryId: string): Promise<void> {
     const srcSw = sessions.find((s) => s.id === sessionId);
+    // Fork/branch is a TypeScript-SDK SessionManager operation (getLeafId /
+    // createBranchedSession); the out-of-process Rust runtime doesn't expose it.
+    if (srcSw?.piService.runtime === "rust") {
+      throw new Error("Forking isn't supported for Rust sessions yet.");
+    }
     if (!srcSw || !srcSw.piService.sessionManagerInstance) {
       throw new Error(`Source session not found (id=${sessionId}).`);
     }
@@ -315,12 +561,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       tempPi.dispose();
     }
 
-    piLog(`doForkFromOpenEntry: forked to ${forkedPath}`);
+    piDebug(`doForkFromOpenEntry: forked to ${forkedPath}`);
     await openForkedSession(forkedPath);
   }
 
   /** Fork a past session at its current leaf (opens the session, then forks). */
   async function doForkFromPastSession(sessionPath: string): Promise<void> {
+    // Rust sessions can't be opened by the TS SDK (and fork is a TS-SDK op), so
+    // refuse clearly instead of failing with a cryptic "Cannot open past session".
+    if (lookupSessionRuntime(sessionPath) === "rust") {
+      throw new Error("Forking isn't supported for Rust sessions yet.");
+    }
     // Initialize a new PiService to load the session and get leaf ID
     const tempPi = new PiService();
     const result = await tempPi.initialize({ openPath: sessionPath });
@@ -352,15 +603,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** Create a new session window initialized from a forked session file. */
   async function openForkedSession(forkedPath: string): Promise<void> {
-    const newSw = createSessionWindow(context);
+    const originRuntime = lookupSessionRuntime(forkedPath);
+    const newSw = createSessionWindow(context, originRuntime);
     setActiveSession(newSw);
     void newSw.webviewPanel.show();
     sessionTreeProvider?.refresh();
 
-    await initSessionInBackground(context, newSw, { openPath: forkedPath });
+    await initSessionInBackground(context, newSw, { openPath: forkedPath, runtime: originRuntime });
 
     if (!newSw.initialized) {
-      removeSession(newSw);
+      closeSession(newSw);
       throw new Error("Failed to initialize forked session.");
     }
 
@@ -412,6 +664,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showErrorMessage("Cannot clone: no active Pi session.");
         return;
       }
+      if (sw.piService.runtime === "rust") {
+        vscode.window.showErrorMessage("Cloning isn't supported for Rust sessions yet.");
+        return;
+      }
       const sm = sw.piService.sessionManagerInstance;
       if (!sm) {
         vscode.window.showErrorMessage("Cannot clone: session has no manager.");
@@ -442,7 +698,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         if (sw.piService.isStreaming) { await sw.piService.abort(); }
         vscode.window.showInformationMessage("Compacting context...");
-        await sw.piService.rawSession.compact();
+        // Runtime-aware: there is no in-process session under Rust (RPC `compact` instead).
+        await sw.piService.compact();
         vscode.window.showInformationMessage("Context compacted.");
         sessionTreeProvider?.refresh();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -460,9 +717,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage("No active Pi session.");
         return;
       }
+      // Rust exports via `pi --export`, which needs the session written to disk.
+      if (sw.piService.runtime === "rust" && !sw.piService.sessionFilePath) {
+        vscode.window.showWarningMessage("This Rust session hasn't been saved yet — send a message first, then export.");
+        return;
+      }
       try {
         const defaultPath = vscode.Uri.joinPath(
-          vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
+          vscode.Uri.file(resolveWorkspaceCwd()),
           `pi-session-${sw.id}.html`
         );
         const uri = await vscode.window.showSaveDialog({
@@ -470,7 +732,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           filters: { "HTML": ["html"] },
         });
         if (!uri) { return; }
-        const result = await sw.piService.rawSession.exportToHtml(uri.fsPath);
+        const result = await sw.piService.exportToHtml(uri.fsPath);
         vscode.window.showInformationMessage(`Session exported to: ${result}`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
@@ -488,7 +750,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        await sw.piService.rawSession.reload();
+        // Goes through the PiBackend seam. A runtime with no in-session reload (Rust loads
+        // extensions/skills at startup) reports false rather than exposing a raw session.
+        if (!(await sw.piService.reloadContext())) {
+          vscode.window.showInformationMessage("Reload context is available for TypeScript Pi sessions; start a new Rust session to reload its extensions and skills.");
+          return;
+        }
         await sw.piService.sendInitialMessages();
         // Push updated slash commands after extension reload
         sw.piService.emitSlashCommands();
@@ -525,12 +792,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        // Create a new session tab (like Add Pi Session) and resume into it
-        const sw = createSessionWindow(context);
+        // Already open? Two tabs on one JSONL means two PiServices appending to it, and the
+        // first tab's flush-on-dispose can truncate the second's appends. Focus it instead.
+        const already = findOpenSessionFor(resolved);
+        if (already) {
+          setActiveSession(already);
+          void already.webviewPanel.show();
+          vscode.window.showInformationMessage("That session is already open — focused its tab.");
+          return;
+        }
+        // Create a new session tab (like Add Pi Session) and resume into it,
+        // on the runtime that originally created the session.
+        const originRuntime = lookupSessionRuntime(resolved);
+        const sw = createSessionWindow(context, originRuntime);
         setActiveSession(sw);
         void sw.webviewPanel.show();
         sessionTreeProvider?.refresh();
-        void initSessionInBackground(context, sw, { openPath: resolved });
+        void initSessionInBackground(context, sw, { openPath: resolved, runtime: originRuntime });
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         vscode.window.showErrorMessage(`Resume failed: ${e.message ?? e}`);
@@ -594,11 +872,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (confirm !== "Delete All") { return; }
       try {
+        // Keep going past a failure and report honestly: aborting at the first error left the
+        // user with a partially-deleted list and no idea which ones went.
+        let deleted = 0;
+        const failed: string[] = [];
         for (const s of past) {
-          await PiService.deleteSessionFile(s.path);
+          try { await PiService.deleteSessionFile(s.path); deleted++; }
+          catch (e: unknown) { failed.push(`${s.path}: ${e instanceof Error ? e.message : String(e)}`); }
         }
         await refreshPastSessionsList();
         sessionTreeProvider?.refresh();
+        if (failed.length) {
+          piWarn(`deleteAllPastSessions: ${failed.length} failed\n${failed.join("\n")}`);
+          vscode.window.showWarningMessage(`Deleted ${deleted} of ${past.length} sessions; ${failed.length} could not be removed (see the Pi Code Gui output channel).`);
+        }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         vscode.window.showErrorMessage(`Delete all failed: ${e.message ?? e}`);
@@ -681,18 +968,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // Active-session effort picker
-  context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.pickEffort", async () => {
-      const sw = activeSessionWindow;
-      if (!sw || !sw.initialized) {
-        vscode.window.showWarningMessage("No active Pi session.");
-        return;
-      }
-      void sw.webviewPanel.show();
-      await sw.webviewPanel.triggerEffortPicker();
-    }),
-  );
 
   // Active-session context budget picker
   context.subscriptions.push(
@@ -707,39 +982,55 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // ── Step 3b: Register SDK-independent commands ─────
-  // These must be registered synchronously so keybindings
-  // (Cmd+/, Cmd+L, etc.) work immediately — the async SDK
-  // init chain in initSessionInBackground can take seconds.
-  registerEarlyCommands(context);
+  // ── Step 3b: (command registration now happens at the TOP of activate) ─────
 
-  // ── Step 4: Restore previously open sessions, or create a fresh one ──
-  const savedPaths: string[] = ((context.workspaceState.get("pi-code-gui.openSessionPaths") as string[]) ?? [])
-    .filter((p: string) => fs.existsSync(p));
-  const savedActivePath: string | undefined = context.workspaceState.get("pi-code-gui.activeSessionPath") ?? undefined;
+  // ── Step 3c: Detect installed runtimes and set menu context keys ──
+  // DETACHED, deliberately. This chain ends in offerInitialRuntimeChoice, which awaits a
+  // QuickPick with ignoreFocusOut:true and then an INSTALL — so awaiting it here meant
+  // activate() did not resolve until the user finished installing Pi (or forever, if they
+  // ignored the prompt). Anything awaiting our activation — getExtension(...).activate(), the
+  // packages view, the auto-open session below — hung with it.
+  // Nothing after this point depends on the result: the context keys only drive menu
+  // visibility, and session init re-detects the runtime itself.
+  void (async () => {
+    try {
+      await refreshRuntimeContext(true);
+      const detectedAtStartup = cachedRuntimes();
+      if (detectedAtStartup && !detectedAtStartup.ts && !detectedAtStartup.rust) {
+        await offerInitialRuntimeChoice(context);
+        await refreshRuntimeContext(true);
+      }
+      // Warn (once) if a user-supplied Rust binary differs from the version we test against.
+      // The managed build is pinned to that version, so it never warns.
+      await warnIfUntestedRustBinary(context);
+    } catch (e: unknown) {
+      piWarn(`Runtime detection/install offer failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })();
+
+  // ── Step 4: Create a fresh session only when VS Code has no panels to revive ──
+  // Reopening previous sessions is owned by the WebviewPanelSerializer: VS Code
+  // revives each persisted pi-code-gui.session panel itself (correct column, order,
+  // active tab — including panels in background tabs, which deserialize lazily on
+  // first focus). So activate() must NOT reconstruct them; it only auto-opens a
+  // fresh session for a genuinely session-less window. "Will VS Code revive
+  // panels?" isn't directly queryable, so we keep one workspaceState hint — a
+  // boolean updated whenever the open-panel count changes. A stale hint degrades
+  // gracefully: worst case no auto-open (click the Pi icon), never a duplicate.
+  const hadOpenPanels = context.workspaceState.get<boolean>("pi-code-gui.hadOpenPanels") ?? false;
   const autoOpen = vscode.workspace.getConfiguration("pi-code-gui").get<boolean>("autoOpenOnStart", true);
+  // One-time migration: drop the retired workspaceState-restore keys.
+  void context.workspaceState.update("pi-code-gui.openSessionPaths", undefined);
+  void context.workspaceState.update("pi-code-gui.activeSessionPath", undefined);
+  void context.workspaceState.update("pi-code-gui.sessionCounter", undefined);
 
-  if (savedPaths.length > 0) {
-    // Restore session counter to avoid ID collisions.
-    const savedCounter: number | undefined = context.workspaceState.get("pi-code-gui.sessionCounter");
-    if (savedCounter !== undefined && savedCounter > sessionCounter) {
-      sessionCounter = savedCounter;
-    }
-    // Restore every session that was open, in order.
-    piLog(`Restoring ${savedPaths.length} open sessions...`);
-    for (let i = 0; i < savedPaths.length; i++) {
-      const sw = createSessionWindow(context);
-      if (i === 0) { setActiveSession(sw); }
-      if (autoOpen) { void sw.webviewPanel.show(); }
-      void initSessionInBackground(context, sw, { openPath: savedPaths[i] });
-    }
-    restoreActiveSession(savedActivePath);
-  } else {
-    // No saved sessions — create one fresh session
-    const sw = createSessionWindow(context);
+  if (!hadOpenPanels && sessions.length === 0) {
+    const sw = createSessionWindow(context, defaultRuntimeForNewSession());
     setActiveSession(sw);
     if (autoOpen) { void sw.webviewPanel.show(); }
     void initSessionInBackground(context, sw, { fresh: true });
+  } else {
+    piDebug(`[serializer] activate: hadOpenPanels=${hadOpenPanels}, sessions=${sessions.length} — leaving restore to VS Code's panel revival`);
   }
 
   // ── Step 5: Initialize packages view ────────────────
@@ -781,14 +1072,18 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   context.subscriptions.push(packagesTreeView);
 
   if (!result.success) {
-    console.log(`[pi-gui] Packages view: package service init failed: ${result.error}`);
-    // Show the error in the tree view itself
-    packagesTreeProvider.showError(`Pi SDK not ready: ${result.error}`);
+    piWarn(`Packages view: package service init failed: ${result.error}`);
+    // Show the error in the tree view itself (init only fails when neither
+    // runtime is available — the SDK and the Rust binary are both absent).
+    packagesTreeProvider.showError(result.error ?? "No Pi runtime available for package management.");
     return;
   }
 
   // Initial load
   await packagesTreeProvider.refreshAll();
+  // Reflect the runtime of whatever session is focused on first load.
+  const initialRt: Runtime = activeSessionWindow?.runtime ?? primarySession()?.runtime ?? "typescript";
+  void packagesTreeProvider.setFocusedRuntime(initialRt);
 
   // ── Register package commands ────────────────
 
@@ -882,17 +1177,28 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
   // Update all packages
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-code-gui.updateAllPackages", async () => {
-      const updates = await packageService?.checkForUpdates();
-      if (!updates || updates.length === 0) {
-        vscode.window.showInformationMessage("All packages are up to date.");
-        return;
+      // The Rust CLI has no dry-run, so checkForUpdates() returns [] under it —
+      // reporting "all up to date" would be a lie. Be honest: tell the user we
+      // can't pre-check and offer to update everything anyway.
+      const isRust = packageService?.backend === "rust";
+      if (!isRust) {
+        const updates = await packageService?.checkForUpdates();
+        if (!updates || updates.length === 0) {
+          vscode.window.showInformationMessage("All packages are up to date.");
+          return;
+        }
+        const confirm = await vscode.window.showInformationMessage(
+          `${updates.length} package(s) have updates available. Update all?`,
+          "Update All",
+        );
+        if (confirm !== "Update All") { return; }
+      } else {
+        const confirm = await vscode.window.showInformationMessage(
+          "Rust Pi can't pre-check which packages have updates. Update all installed packages now?",
+          "Update All",
+        );
+        if (confirm !== "Update All") { return; }
       }
-
-      const confirm = await vscode.window.showInformationMessage(
-        `${updates.length} package(s) have updates available. Update all?`,
-        "Update All",
-      );
-      if (confirm !== "Update All") { return; }
 
       try {
         await packageService!.update();
@@ -928,7 +1234,7 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
     }),
   );
 
-  console.log("[pi-gui] Packages view ready");
+  piDebug("Packages view ready");
 }
 
 /** Resolve a tree item from either a direct argument or the tree view selection. */
@@ -966,11 +1272,13 @@ async function doInstallPackage(source: string, scope: "user" | "project" = "use
   if (!packageService) { return; }
 
   const label = source.startsWith("npm:") ? source.slice(4) : source;
+  let installed = false;
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `Installing ${label}...` },
     async () => {
       const result = await packageService!.install(source, scope);
       if (result.success) {
+        installed = true;
         vscode.window.showInformationMessage(`Installed ${label} (${scope})`);
         await packagesTreeProvider?.refreshAll();
       } else {
@@ -978,6 +1286,33 @@ async function doInstallPackage(source: string, scope: "user" | "project" = "use
       }
     },
   );
+  if (installed) { await warnIfRustWontLoad(source, label); }
+}
+
+/**
+ * After installing a package while a Rust session is focused, warn if the Rust
+ * runtime won't actually load it (packages are shared, but a TypeScript-format
+ * extension may be installed yet inert under Rust). Points at `rustExtensions`.
+ */
+async function warnIfRustWontLoad(source: string, label: string): Promise<void> {
+  if (!packageService) { return; }
+  const focusedRt: Runtime = activeSessionWindow?.runtime ?? primarySession()?.runtime ?? "typescript";
+  if (focusedRt !== "rust") { return; }
+  const verdict = await packageService.checkRustLoadability(source);
+  if (verdict.loads) { return; }
+
+  const OPEN = "Open Setting";
+  const LEARN = "Learn More";
+  const msg = verdict.reason === "disabled"
+    ? `${label} is installed, but Rust extension discovery is disabled for this workspace — Rust sessions won't load it.`
+    : `${label} is installed, but the Rust runtime can't load it (incompatible extension format). It still works under TypeScript Pi.`;
+  const actions = verdict.reason === "disabled" ? [OPEN, LEARN] : [LEARN];
+  const action = await vscode.window.showWarningMessage(msg, ...actions);
+  if (action === OPEN) {
+    await vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustExtensions");
+  } else if (action === LEARN) {
+    vscode.env.openExternal(vscode.Uri.parse("https://github.com/Dicklesworthstone/pi_agent_rust"));
+  }
 }
 
 async function doUninstallPackage(source: string, scope: "user" | "project"): Promise<void> {
@@ -1019,12 +1354,56 @@ async function doUpdatePackage(source: string): Promise<void> {
 
 // ── Add a new session window ──────────────────────────
 
-function addSession(context: vscode.ExtensionContext): void {
-  const sw = createSessionWindow(context);
+function addSession(context: vscode.ExtensionContext, runtime?: Runtime): void {
+  const rt = runtime ?? defaultRuntimeForNewSession();
+  const sw = createSessionWindow(context, rt);
   setActiveSession(sw);
   void sw.webviewPanel.show();
   sessionTreeProvider?.refresh();
-  void initSessionInBackground(context, sw, { fresh: true });
+  void initSessionInBackground(context, sw, { fresh: true, runtime: rt });
+}
+
+/** The runtime a new session should use, from the cached detection + persisted default. */
+function defaultRuntimeForNewSession(): Runtime {
+  const detected = cachedRuntimes();
+  if (detected) {
+    const r = resolveEffectiveDefaultRuntime(detected);
+    if (r) { return r; }
+  }
+  return "typescript";
+}
+
+/** Short badge for a runtime, shown in tree items and chips. */
+function runtimeBadge(rt: Runtime): string {
+  return rt === "rust" ? "Rust" : "TS";
+}
+
+/** When neither runtime is installed at startup, let the user choose one to install. */
+async function offerInitialRuntimeChoice(context: vscode.ExtensionContext): Promise<void> {
+  const items: Array<vscode.QuickPickItem & { id: "typescript" | "rust" | "learn" }> = [
+    { label: "$(symbol-method) TypeScript Pi", detail: "In-process. Full editor bridge + interactive cards. Requires Node.js + npm.", id: "typescript" },
+    { label: "$(rocket) Rust Pi", detail: "Out-of-process single binary. Fast, lean, no Node. No VS Code bridge tools; markdown-only cards.", id: "rust" },
+    { label: "$(link-external) Learn More", detail: "Compare the two runtimes", id: "learn" },
+  ];
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: "Pi is not installed. Choose a runtime to install.", ignoreFocusOut: true });
+  if (!pick) { return; }
+  if (pick.id === "learn") { void vscode.env.openExternal(vscode.Uri.parse("https://pi.dev")); return; }
+  if (pick.id === "rust") {
+    const ok = await installRustInteractive(context);
+    if (ok) { await vscode.workspace.getConfiguration("pi-code-gui").update("defaultRuntime", "rust", vscode.ConfigurationTarget.Global); }
+  } else {
+    await installPi();
+  }
+}
+
+/** Quick-pick to choose a runtime. Returns undefined if dismissed. */
+async function pickRuntime(placeHolder = "Choose a runtime for the new Pi session"): Promise<Runtime | undefined> {
+  const items: Array<vscode.QuickPickItem & { runtime: Runtime }> = [
+    { label: "$(symbol-method) TypeScript Pi", description: "In-process · full editor bridge · interactive cards", runtime: "typescript" },
+    { label: "$(rocket) Rust Pi", description: "Out-of-process · fast & lean · markdown-only cards", runtime: "rust" },
+  ];
+  const pick = await vscode.window.showQuickPick(items, { placeHolder });
+  return pick?.runtime;
 }
 
 // ── Early command registration (SDK-independent) ───────
@@ -1036,6 +1415,21 @@ function addSession(context: vscode.ExtensionContext): void {
 // sees the keybinding mapped but the command missing.
 
 function registerEarlyCommands(context: vscode.ExtensionContext): void {
+  // ── installPi ───────────────────────────────────────
+  // Contributed in package.json but never registered, so invoking it from the Command Palette
+  // (or following a notification that names it) failed with "command not found".
+  context.subscriptions.push(
+    vscode.commands.registerCommand("pi-code-gui.installPi", async () => { await installPi(); }),
+  );
+
+  // Revoke the per-type consent granted to pi-extension custom renderers (audit H3).
+  context.subscriptions.push(
+    vscode.commands.registerCommand("pi-code-gui.resetRendererPermissions", async () => {
+      await resetRendererConsent();
+      vscode.window.showInformationMessage("Custom renderer permissions reset — you'll be asked again next time an extension registers one.");
+    }),
+  );
+
   // ── pickCommand (Cmd+/) ─────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("pi-code-gui.pickCommand", async () => {
@@ -1151,23 +1545,28 @@ function ensureTreeProvider(context: vscode.ExtensionContext): void {
  * delete / resume operations that change the pool of saved sessions.
  */
 async function refreshPastSessionsList(): Promise<void> {
-  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  // Must match how sessions are CREATED (PiService.resolveWorkspaceCwd) — under a
+  // no-folder workspace that resolves to the home dir, not process.cwd() (the
+  // extension-host server dir). Using process.cwd() here filtered out Rust
+  // sessions, since listRustSessions drops entries whose recorded cwd != target.
+  const cwd = resolveWorkspaceCwd();
   if (!sessionTreeProvider) {
     piWarn("refreshPastSessionsList: sessionTreeProvider is null, skipping");
     return;
   }
-  piLog(`refreshPastSessionsList: loading past sessions for cwd=${cwd}`);
+  piDebug(`refreshPastSessionsList: loading past sessions for cwd=${cwd}`);
   await sessionTreeProvider.refreshPastSessions(cwd);
-  piLog(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
+  piDebug(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
 }
 
-async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string }): Promise<void> {
+async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<void> {
   const fresh = opts?.fresh ?? false;
   const openPath = opts?.openPath;
+  // Resume-follows-origin: a resumed session uses the runtime that created it.
+  const runtime: Runtime = opts?.runtime ?? (openPath ? lookupSessionRuntime(openPath) : sw.runtime);
+  sw.runtime = runtime;
   // Ensure tree provider exists ASAP so the tree view shows something
   ensureTreeProvider(context);
-
-
 
   // Start loading past sessions immediately — runs in parallel with SDK init.
   // This prevents the tree from showing an empty "Past Sessions" header
@@ -1176,41 +1575,69 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     ? refreshPastSessionsList().catch((e: unknown) => { piWarn(`Early past-session load failed: ${e instanceof Error ? e.message : String(e)}`); })
     : Promise.resolve();
 
-  const status = await PiService.checkInstall();
-
-  if (!status.installed) {
-    sw.webviewPanel.postMessage({
-      type: "status",
-      data: { model: "not installed", thinkingLevel: "off", effort: "auto", ready: false },
-    });
-    sw.webviewPanel.postMessage({
-      type: "error",
-      data: {
-        message:
-          "Pi coding agent SDK is not installed. " +
-          'Click "Install Pi" below or run: npm install -g @earendil-works/pi-coding-agent',
-      },
-    });
-
-    if (!primarySession() || primarySession() === sw) {
-      const action = await vscode.window.showErrorMessage(
-        "Pi coding agent SDK is not installed.",
-        "Install Pi",
-        "Learn More",
-      );
-      if (action === "Install Pi") {
-        await installPi();
-      } else if (action === "Learn More") {
-        vscode.env.openExternal(vscode.Uri.parse("https://pi.dev"));
+  // ── Per-runtime install gate ──
+  if (runtime === "rust") {
+    const rust = detectRustBinary();
+    if (!rust.installed) {
+      sw.webviewPanel.postMessage({
+        type: "status",
+        data: { model: "not installed", thinkingLevel: "off", ready: false, runtime },
+      });
+      sw.webviewPanel.postMessage({
+        type: "error",
+        data: { message: 'Rust Pi is not installed. Run "PiGui: Install Rust Pi" to install it.' },
+      });
+      if (!primarySession() || primarySession() === sw) {
+        const action = await vscode.window.showErrorMessage(
+          "Rust Pi is not installed.",
+          "Install Rust Pi",
+          "Learn More",
+        );
+        if (action === "Install Rust Pi") {
+          await vscode.commands.executeCommand("pi-code-gui.installRust");
+        } else if (action === "Learn More") {
+          vscode.env.openExternal(vscode.Uri.parse("https://github.com/Dicklesworthstone/pi_agent_rust"));
+        }
       }
+      sessionTreeProvider?.refresh();
+      return;
     }
-    sessionTreeProvider?.refresh();
-    return;
+  } else {
+    const status = await PiService.checkInstall();
+    if (!status.installed) {
+      sw.webviewPanel.postMessage({
+        type: "status",
+        data: { model: "not installed", thinkingLevel: "off", ready: false, runtime },
+      });
+      sw.webviewPanel.postMessage({
+        type: "error",
+        data: {
+          message:
+            "Pi coding agent SDK is not installed. " +
+            'Click "Install Pi" below or run: npm install -g @earendil-works/pi-coding-agent',
+        },
+      });
+
+      if (!primarySession() || primarySession() === sw) {
+        const action = await vscode.window.showErrorMessage(
+          "Pi coding agent SDK is not installed.",
+          "Install Pi",
+          "Learn More",
+        );
+        if (action === "Install Pi") {
+          await installPi();
+        } else if (action === "Learn More") {
+          vscode.env.openExternal(vscode.Uri.parse("https://pi.dev"));
+        }
+      }
+      sessionTreeProvider?.refresh();
+      return;
+    }
   }
 
-  let result: { success: boolean; error?: string };
+  let result: { success: boolean; error?: string; errorKind?: string; warning?: string };
   try {
-    result = await sw.piService.initialize(openPath ? { openPath } : { fresh });
+    result = await sw.piService.initialize(openPath ? { openPath, runtime } : { fresh, runtime });
   } catch (e: unknown) {
     result = { success: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -1218,22 +1645,62 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   if (!result.success) {
     sw.webviewPanel.postMessage({
       type: "status",
-      data: { model: "init failed", thinkingLevel: "off", effort: "auto", ready: false },
+      data: { model: "init failed", thinkingLevel: "off", ready: false },
     });
+
+    // Rust + TypeScript-format `.pi/` extensions don't mix: the Rust runtime
+    // can't parse them and aborts startup. Point the user at the one setting
+    // that resolves it (auto-recovery already ran in "auto" mode).
+    if (result.errorKind === "rust-extension-conflict") {
+      const base = "Rust Pi couldn't start: this workspace has TypeScript-format Pi extensions (.pi) the Rust runtime can't load.";
+      sw.webviewPanel.postMessage({
+        type: "error",
+        data: { message: `${base} Set "pi-code-gui.rustExtensions" to "disabled" to run Rust here without them.` },
+      });
+      if (!primarySession() || primarySession() === sw) {
+        const DISABLE = "Disable for Rust";
+        const OPEN = "Open Setting";
+        const LEARN = "Learn More";
+        const action = await vscode.window.showErrorMessage(
+          `${base} Disable extension discovery for Rust sessions in this workspace?`,
+          DISABLE, OPEN, LEARN,
+        );
+        if (action === DISABLE) {
+          await vscode.workspace.getConfiguration("pi-code-gui")
+            .update("rustExtensions", "disabled", vscode.ConfigurationTarget.Workspace);
+          closeSession(sw);
+          addSession(context, runtime);
+        } else if (action === OPEN) {
+          await vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustExtensions");
+        } else if (action === LEARN) {
+          vscode.env.openExternal(vscode.Uri.parse("https://github.com/Dicklesworthstone/pi_agent_rust"));
+        }
+      }
+      sessionTreeProvider?.refresh();
+      return;
+    }
+
     sw.webviewPanel.postMessage({
       type: "error",
-      data: { message: `Pi init failed: ${result.error}` },
+      data: { message: redactSecrets(`Pi init failed: ${result.error}`) },
     });
 
     if (!primarySession() || primarySession() === sw) {
+      // An expired sign-in is the one init failure with a specific, one-click remedy — and the
+      // one most likely to strand the user, since the binary's own advice ("run pi login") names
+      // something they cannot reach from a session that failed to start. Offer it directly.
+      const authExpired = /invalid_grant|token refresh failed|token expired|oauth token/i.test(result.error ?? "");
+      const SIGN_IN = "Sign in";
+      const actions = authExpired ? [SIGN_IN, "Retry"] : ["Retry"];
       const action = await vscode.window.showErrorMessage(
-        `Pi init failed: ${result.error}`,
-        "Retry",
+        redactSecrets(`Pi init failed: ${result.error}`),
+        ...actions,
       );
-      if (action === "Retry") {
-        sw.piService.dispose();
-        removeSession(sw);
-        addSession(context);
+      if (action === SIGN_IN) {
+        await vscode.commands.executeCommand("pi-code-gui.login");
+      } else if (action === "Retry") {
+        closeSession(sw);
+        addSession(context, runtime);
       }
     }
     sessionTreeProvider?.refresh();
@@ -1242,10 +1709,15 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
 
   sw.initialized = true;
 
-  // Primary session gets phase 3/4 commands
-  if (sw === primarySession()) {
-    registerPhase3Commands(context, sw.piService);
-    registerPhase4Commands(context, sw.piService);
+  // "auto" mode self-healed a TypeScript-extension conflict by disabling Rust
+  // extension discovery — tell the user once, and how to change it.
+  if (result.warning === "rust-extensions-auto-disabled" && (!primarySession() || primarySession() === sw)) {
+    void vscode.window.showInformationMessage(
+      'Rust Pi: extensions were disabled for this workspace because its TypeScript-format Pi extensions (.pi) aren\'t compatible with the Rust runtime. Change this via "pi-code-gui.rustExtensions".',
+      "Open Setting",
+    ).then((a) => {
+      if (a === "Open Setting") { void vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustExtensions"); }
+    });
   }
 
   // Ensure tree provider is registered (safe to call multiple times)
@@ -1262,7 +1734,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   // Refresh tree only when something the user can see actually changes.
   // The tree shows session name, model, thinking level, streaming dot, entry
   // count, and usage stats. Most of these change only a few times per session.
-  sw.piService.onEvent((event) => {
+  const unsubscribeTreeRefresh = sw.piService.onEvent((event) => {
     let changed = false;
 
     if (event.type === "agent-start") {
@@ -1284,6 +1756,9 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
 
     if (changed) { sessionTreeProvider?.refresh(); }
   });
+  // Drop the subscription when the session goes away. Without this, a torn-down session's late
+  // event still called sessionTreeProvider.refresh(), and the closure kept `sw` alive.
+  sw.disposables.push({ dispose: unsubscribeTreeRefresh });
 
   // Notify webview that pi is ready
   sw.webviewPanel.postMessage({
@@ -1291,8 +1766,8 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     data: {
       model: sw.piService.model?.id ?? "ready",
       thinkingLevel: sw.piService.thinkingLevel,
-      effort: sw.piService.effort,
       ready: true,
+      runtime: sw.piService.runtime,
     },
   });
 
@@ -1308,10 +1783,46 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   await new Promise((resolve) => setTimeout(resolve, 50));
   sessionTreeProvider!.refreshSession(sw);
 
-  // Persist open session list so this session is restored on reload.
-  void saveOpenSessionPaths();
+  // Record the session's origin runtime as soon as its file path is known, so a
+  // reload mid-conversation still lets Past Sessions resume-follow-origin. (Panel
+  // revival itself is owned by VS Code's webview serializer.)
+  const readyPath = sw.piService.sessionFilePath;
+  if (readyPath) { void recordSessionRuntime(readyPath, sw.piService.runtime); }
 
-  console.log(`Pi Code Gui session ${sw.id} ready`);
+  piDebug(`Pi Code Gui session ${sw.id} ready`);
+}
+
+/**
+ * Close a session AND its tab. removeSession() only unlists it — three callers used it on a
+ * session whose panel was already visible (fork failure, "Disable for Rust", and Retry after an
+ * init failure), leaving a dead "Pi Code Gui" tab that is no longer in `sessions`, still holds
+ * its full webview memory (retainContextWhenHidden: true), and whose eventual close fires
+ * handlePanelDispose on an already-disposed service. Three Retry clicks left three zombies.
+ *
+ * Disposing the panel fires onDidDispose → handlePanelDispose → piService.dispose() +
+ * removeSession(), so this must NOT also dispose the service itself. The trailing guard covers
+ * the case where there was no live panel to fire that callback.
+ */
+/** An already-open session for `sessionFile`, if any. Two tabs on the same JSONL means two
+ *  PiServices appending to it, and the first tab's flush-on-dispose can truncate the second's
+ *  appends. resumePastSession and the panel deserializer both check this. */
+function findOpenSessionFor(sessionFile: string): SessionWindow | undefined {
+  let resolved: string;
+  try { resolved = path.resolve(sessionFile); } catch { return undefined; }
+  return sessions.find((s) => {
+    const fp = s.piService.sessionFilePath;
+    if (!fp) { return false; }
+    try { return path.resolve(fp) === resolved; } catch { return false; }
+  });
+}
+
+function closeSession(sw: SessionWindow): void {
+  sw.webviewPanel.dispose();
+  if (sessions.includes(sw)) {
+    // No onDidDispose fired (panel already gone) — unlist it explicitly.
+    sw.piService.dispose();
+    removeSession(sw);
+  }
 }
 
 function removeSession(sw: SessionWindow): void {
@@ -1319,28 +1830,25 @@ function removeSession(sw: SessionWindow): void {
   if (idx !== -1) {
     sessions.splice(idx, 1);
   }
+  updateHadOpenPanels();
   // If the removed session was the active one, fall back to the latest open session
   if (activeSessionWindow === sw) {
     setActiveSession(sessions.length > 0 ? sessions[sessions.length - 1] : null);
   }
+  // Drop the tree provider's per-session cache entries. These are keyed by the monotonic sw.id
+  // and were only ever ADDED, so a long-lived window accumulated one item (and one expansion
+  // flag) per session opened, forever.
+  sessionTreeProvider?.forgetSession(sw.id);
   // Refresh tree so "Open Sessions (N)" header updates count
   sessionTreeProvider?.refresh();
 }
 
-/**
- * Restore additional sessions that were open when VS Code was last closed.
- * Called after the primary session finishes initializing on activate().
- */
-/** Restore which session was focused before reload. */
-function restoreActiveSession(activePath: string | undefined): void {
-  if (!extContext || !activePath) { return; }
-  for (const sw of sessions) {
-    if (sw.piService.sessionFilePath === activePath) {
-      setActiveSession(sw);
-      void sw.webviewPanel.show();
-      return;
-    }
-  }
+/** Keep the "were any panels open?" hint current. Read once at activate to decide
+ *  whether to auto-open a fresh session (panels being revived by VS Code means no
+ *  auto-open). It is a HINT for that one decision — restore correctness never
+ *  depends on it (VS Code owns panel revival). */
+function updateHadOpenPanels(): void {
+  void extContext?.workspaceState.update("pi-code-gui.hadOpenPanels", sessions.length > 0);
 }
 
 // ── Install helper ──────────────────────────────────────
@@ -1406,6 +1914,12 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
   /** Cache of current session tree items so we can update them in-place. */
   private _sessionItems = new Map<string, SessionTreeItem>();
 
+  /** Forget a closed session's cached tree item + expansion flag (see removeSession). */
+  forgetSession(id: string): void {
+    this._sessionItems.delete(id);
+    this.expandedEntries.delete(id);
+  }
+
   constructor(private sessions: SessionWindow[], private context: vscode.ExtensionContext) {}
 
   /** Called by TreeView expand/collapse events to track entries-header state. */
@@ -1422,8 +1936,23 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
   async refreshPastSessions(cwd: string): Promise<void> {
     this._loadingPast = true;
     try {
-      this._pastSessions = await PiService.listSessions(cwd);
-      piLog(`refreshPastSessions: loaded ${this._pastSessions.length} past sessions`);
+      const scope = vscode.workspace.getConfiguration("pi-code-gui").get<string>("sessionHistoryScope") ?? "unified";
+      const defaultRt = defaultRuntimeForNewSession();
+
+      // TypeScript sessions come from the SDK (returns [] if the SDK is absent);
+      // Rust sessions are read directly from the Rust storage dir.
+      const tsSessions: SessionSummary[] = (await PiService.listSessions(cwd)).map((s: SessionSummary) => ({ ...s, runtime: "typescript" }));
+      const rustSessions = listRustSessions(cwd);
+
+      let merged: SessionSummary[];
+      if (scope === "perRuntime") {
+        merged = defaultRt === "rust" ? rustSessions : tsSessions;
+      } else {
+        merged = [...tsSessions, ...rustSessions];
+      }
+      merged.sort((a, b) => (b.modified ?? b.created ?? 0) - (a.modified ?? a.created ?? 0));
+      this._pastSessions = merged;
+      piDebug(`refreshPastSessions: ${tsSessions.length} TS + ${rustSessions.length} Rust (scope=${scope})`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       piWarn(`refreshPastSessions failed: ${e.message ?? e}`);
@@ -1572,9 +2101,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       item.id = newId;
       item.label = label;
       item.collapsibleState = collapsible;
-      item.description = sw.initialized ? (sw.piService.model?.id ?? "...") : "initializing";
+      item.description = sw.initialized ? `${runtimeBadge(sw.runtime)} · ${sw.piService.model?.id ?? "..."}` : "initializing";
       item.tooltip = new vscode.MarkdownString(
-        `**${sw.id}**\n\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
+        `**${sw.id}**\n\nRuntime: ${sw.runtime === "rust" ? "Rust Pi" : "TypeScript Pi"}\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
       );
     } else {
       item = new SessionTreeItem(
@@ -1589,9 +2118,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       );
       item.id = `${sw.id}-${sw.initialized ? "rdy" : "init"}`;
       item.sessionId = sw.id;
-      item.description = sw.initialized ? (sw.piService.model?.id ?? "...") : "initializing";
+      item.description = sw.initialized ? `${runtimeBadge(sw.runtime)} · ${sw.piService.model?.id ?? "..."}` : "initializing";
       item.tooltip = new vscode.MarkdownString(
-        `**${sw.id}**\n\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
+        `**${sw.id}**\n\nRuntime: ${sw.runtime === "rust" ? "Rust Pi" : "TypeScript Pi"}\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
       );
       this._sessionItems.set(sw.id, item);
     }
@@ -1652,8 +2181,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     }
 
     // Entries
-    const sm = ps.sessionManagerInstance;
-    const entries = sm ? sm.getEntries() : [];
+    const entries = ps.getDisplayEntries();
     if (entries && entries.length > 0) {
       const alreadyExpanded = this.expandedEntries.has(sw.id);
       const entriesHeader = new SessionTreeItem(
@@ -1674,10 +2202,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
 
   private getEntryChildren(element: SessionTreeItem): SessionTreeItem[] {
     const sw = this.sessions.find((s) => s.id === element.sessionId);
-    if (!sw || !sw.piService.sessionManagerInstance) { return []; }
+    if (!sw) { return []; }
 
-    const sm = sw.piService.sessionManagerInstance;
-    const entries = sm.getEntries();
+    const entries = sw.piService.getDisplayEntries();
     if (!entries || entries.length === 0) { return []; }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1729,7 +2256,8 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       ? formatRelativeTime(new Date(s.modified))
       : "";
     const msgCount = s.messageCount ?? 0;
-    const desc = `${msgCount} msg${msgCount === 1 ? "" : "s"}${dateStr ? " · " + dateStr : ""}`;
+    const rt: Runtime = s.runtime === "rust" ? "rust" : "typescript";
+    const desc = `${runtimeBadge(rt)} · ${msgCount} msg${msgCount === 1 ? "" : "s"}${dateStr ? " · " + dateStr : ""}`;
 
     const item = new SessionTreeItem(
       label,
@@ -1741,9 +2269,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       },
     );
     item.description = desc;
-    item.iconPath = new vscode.ThemeIcon("archive");
+    item.iconPath = new vscode.ThemeIcon(rt === "rust" ? "server-process" : "archive");
     item.tooltip = new vscode.MarkdownString(
-      `**${s.name || "Session"}**\n\nPath: \`${s.path}\`\nMessages: ${msgCount}\nCreated: ${s.created ? new Date(s.created).toLocaleString() : "-"}\nModified: ${s.modified ? new Date(s.modified).toLocaleString() : "-"}`,
+      `**${s.name || "Session"}**\n\nRuntime: ${rt === "rust" ? "Rust Pi" : "TypeScript Pi"}\nPath: \`${s.path}\`\nMessages: ${msgCount}\nCreated: ${s.created ? new Date(s.created).toLocaleString() : "-"}\nModified: ${s.modified ? new Date(s.modified).toLocaleString() : "-"}`,
     );
     item.contextValue = "pastSessionEntry";
     return item;
@@ -1817,33 +2345,22 @@ function formatEntryLabel(entry: any): { label: string; tooltip: string; type: s
   if (entry.type === "label") {
     return { label: `[label: ${entry.label ?? "(cleared)"}]`, tooltip: "", type: "label", fullText: "" };
   }
-  if (entry.type === "session_info") {
+  if (entry.type === RUST_SESSION_NAME_ENTRY || entry.type === "session_info") {
     return { label: `[title: ${entry.name ?? "(empty)"}]`, tooltip: "", type: "session_info", fullText: "" };
   }
 
   // Fallback for unknown entry types
-  return { label: `[${entry.type}]`, tooltip: JSON.stringify(entry, null, 2), type: entry.type, fullText: "" };
+  // Unrecognised entry: show the type and a BOUNDED preview. This used to stringify the whole
+  // entry — a large tool result or replayed message could be megabytes, built on every render.
+  const raw = JSON.stringify(entry, null, 2) ?? "";
+  const tooltip = raw.length > 2000 ? `${raw.slice(0, 2000)}\n… (${raw.length - 2000} more characters)` : raw;
+  return { label: `[${entry.type}]`, tooltip, type: entry.type, fullText: "" };
 }
 
 function getEntryCount(sw: SessionWindow): number {
-  return sw.piService.sessionManagerInstance
-    ? sw.piService.sessionManagerInstance.getEntries()?.length ?? 0
-    : 0;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractText(content: any): string {
-  if (!content) { return ""; }
-  if (typeof content === "string") { return content; }
-  if (Array.isArray(content)) {
-    return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((c: any) => c.type === "text")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((c: any) => c.text)
-      .join("\n");
-  }
-  return "";
+  // Runtime-agnostic: TS reads its SessionManager, Rust reads its get_messages
+  // cache. Using the unified accessor keeps Rust sessions expandable like TS.
+  return sw.piService.getDisplayEntries()?.length ?? 0;
 }
 
 function truncate(s: string, max: number): string {
@@ -1902,18 +2419,30 @@ class SessionTreeItem extends vscode.TreeItem {
       : type === "custom_message" ? "pencil"
       : type === "custom" ? "symbol-property"
       : type === "label" ? "tag"
-      : type === "session_info" ? "info"
+      : type === RUST_SESSION_NAME_ENTRY || type === "session_info" ? "info"
       : "play",
     );
   }
 }
 
 export async function deactivate(): Promise<void> {
-  // Persist open sessions before disposing so we can restore on next activate
-  await saveOpenSessionPaths();
+  // Panel restore is VS Code's (webview serializer); here we only record each open
+  // session's origin runtime so Past Sessions can resume-follow-origin after reload.
   for (const sw of sessions) {
+    const fp = sw.piService.sessionFilePath;
+    if (fp) { await recordSessionRuntime(fp, sw.piService.runtime); }
+  }
+  // Iterate a SNAPSHOT: webviewPanel.dispose() fires onDidDispose → handlePanelDispose →
+  // removeSession → sessions.splice(), so disposing while iterating the live array skipped
+  // every other session — orphaning its Rust subprocess and, for a TypeScript session, never
+  // running the unflushed _rewriteFile() (losing conversation entries) on an ordinary window
+  // close with more than one tab open. The panel callback already disposes the service, so
+  // calling piService.dispose() here too would double-dispose the ones that DID get cleaned up.
+  for (const sw of [...sessions]) {
     sw.webviewPanel.dispose();
-    sw.piService.dispose();
   }
   sessions.length = 0;
+  // Stop output-channel writes last, so a late log during teardown can't throw
+  // "Channel has been closed" from the global unhandledRejection handler.
+  disposeLogger();
 }

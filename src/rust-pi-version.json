@@ -1,0 +1,6 @@
+{
+  "_comment": "External dependency: the pi_agent_rust GitHub release this extension is built and tested against. `tag` is the SINGLE pinned value — bump only it to move the supported floor. The managed download (src/rust-install.ts) fetches this tag; the README 'Rust Pi (tested)' badge reads it; a user-supplied binary of a different version gets a one-time warning (src/extension.ts). Dependabot can't track GitHub releases natively (tracking is future/aspirational) — but `datasource` + `repo` + `tag` below are exactly what a Renovate customManager or a scheduled bump action needs to identify and update it.",
+  "datasource": "github-releases",
+  "repo": "Dicklesworthstone/pi_agent_rust",
+  "tag": "v0.1.23"
+}

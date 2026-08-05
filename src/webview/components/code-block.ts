@@ -13,7 +13,7 @@
 //   showCopy  — show the copy button
 
 import type { Component } from "./types.js";
-import { html, safe } from "../render/html.js";
+import { escapeHtml as sharedEscapeHtml } from "../../shared/escape-html.js";
 import { highlightCode } from "../highlight.js";
 
 export interface CodeBlockProps {
@@ -125,15 +125,11 @@ export class CodeBlock implements Component<CodeBlockProps> {
     const highlighted = highlightCode(code, lang);
     const lines = highlighted.split("\n");
     return lines
-      .map((line) => `<span class="code-ln"></span>${line}`)
+      .map((line): string => `<span class="code-ln"></span>${line}`)
       .join("\n");
   }
 
-  private escapeHtml(text: string): string {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-  }
+  private escapeHtml(text: string): string { return sharedEscapeHtml(text); }
 
   private cacheRefs(): void {
     this.preEl = this.el.querySelector(".code-block") || this.preEl;
@@ -143,18 +139,18 @@ export class CodeBlock implements Component<CodeBlockProps> {
 
   private wireCopyBtn(): void {
     if (!this.copyBtn) { return; }
-    this.copyBtn.addEventListener("click", () => {
+    this.copyBtn.addEventListener("click", (): void => {
       const text = this.preEl?.textContent || "";
       navigator.clipboard.writeText(text).then(
-        () => {
+        (): void => {
           if (this.copyBtn) { this.copyBtn.textContent = "Copied!"; }
-          this._copyTimeout = setTimeout(() => {
+          this._copyTimeout = setTimeout((): void => {
             if (this.copyBtn) { this.copyBtn.textContent = "Copy"; }
           }, 2000);
         },
-        () => {
+        (): void => {
           if (this.copyBtn) { this.copyBtn.textContent = "Failed"; }
-          this._copyTimeout = setTimeout(() => {
+          this._copyTimeout = setTimeout((): void => {
             if (this.copyBtn) { this.copyBtn.textContent = "Copy"; }
           }, 2000);
         },

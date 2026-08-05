@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
-import { validateExtensionToWebview, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
+import { validateExtensionToWebview, validateWebviewToExtension, isExtensionToWebviewType, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
+import { piWarn } from "./logger.js";
+import { safeExternalUrlString, safeWorkspaceFilePath } from "./shared/webview-nav-guard.js";
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
@@ -40,12 +42,12 @@ export class PiWebviewPanel {
       return;
     }
 
-    // Use a unique viewType per webview to prevent VS Code from restoring
-    // stale webviews that reference old extension versions. The randomId is
-    // regenerated on every createWebviewPanel call.
-    var randomId = Math.random().toString(36).slice(2, 8);
-    this.panel = vscode.window.createWebviewPanel(
-      "pi-chat-" + randomId,
+    // STABLE viewType: VS Code persists panels by viewType and revives them across
+    // reload via the WebviewPanelSerializer registered in extension.ts (a random
+    // viewType would opt out of restoration). Stale-HTML across extension upgrades
+    // is a non-issue: attach() regenerates the HTML on every create AND revive.
+    const panel = vscode.window.createWebviewPanel(
+      "pi-code-gui.session",
       "Pi Code Gui",
       vscode.ViewColumn.Two,
       {
@@ -56,23 +58,48 @@ export class PiWebviewPanel {
         ],
       }
     );
+    this.attach(panel);
+  }
 
-    this.panel.iconPath = {
+  /** Adopt a panel VS Code revived through the WebviewPanelSerializer. The panel
+   *  already exists (VS Code re-created it in its saved column/order); we only wire
+   *  it up exactly like a freshly created one. */
+  adoptPanel(panel: vscode.WebviewPanel): void {
+    if (this.panel) {
+      piWarn("adoptPanel called but a panel is already attached — disposing the revived duplicate");
+      panel.dispose();
+      return;
+    }
+    // Re-assert webview options: revival restores what was serialized, but scripts +
+    // media access must hold regardless of which extension version created the panel.
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+    };
+    this.attach(panel);
+  }
+
+  /** Shared wiring for created AND revived panels: icon, fresh HTML, message and
+   *  lifecycle handlers. Regenerating the HTML here is what makes restoration safe
+   *  across extension upgrades — a revived panel never runs stale markup. */
+  private attach(panel: vscode.WebviewPanel): void {
+    this.panel = panel;
+    panel.iconPath = {
       light: vscode.Uri.joinPath(this.context.extensionUri, "media", "pi-icon-light.svg"),
       dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "pi-icon-dark.svg"),
     };
 
-    this.panel.webview.html = this.getWebviewContent(this.panel.webview);
+    panel.webview.html = this.getWebviewContent(panel.webview);
     this.setupWebviewHandlers();
     this.setupServiceHandlers();
 
-    this.panel.onDidChangeViewState((e) => {
+    panel.onDidChangeViewState((e) => {
       if (e.webviewPanel.active && this._onActivateCb) {
         this._onActivateCb();
       }
     });
 
-    this.panel.onDidDispose(() => {
+    panel.onDidDispose(() => {
       // Notify the owner (extension.ts) so it can save and remove from open sessions
       if (this._onDispose) {
         this._onDispose(this.piService);
@@ -84,9 +111,22 @@ export class PiWebviewPanel {
     });
   }
 
+  /** Allowlisted external URL → Uri, or null when blocked. See shared/webview-nav-guard.ts. */
+  private safeExternalUrl(raw: unknown): vscode.Uri | null {
+    const ok = safeExternalUrlString(raw);
+    return ok ? vscode.Uri.parse(ok) : null;
+  }
+
+  /** Workspace-confined file → Uri, or null when the path escapes every root. */
+  private safeWorkspaceFile(raw: unknown): vscode.Uri | null {
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const abs = safeWorkspaceFilePath(raw, roots);
+    return abs ? vscode.Uri.file(abs) : null;
+  }
+
   private setupWebviewHandlers(): void {
     if (!this.panel) {
-      console.error("[pi-gui] setupWebviewHandlers called with no panel — webview messages will be lost");
+      piWarn("setupWebviewHandlers called with no panel — webview messages will be lost");
       return;
     }
 
@@ -94,6 +134,12 @@ export class PiWebviewPanel {
     // This avoids the webview-to-extension 'ready' handshake entirely
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let statusInterval: any = null;
+    let statusPolls = 0;
+    // Bound the initial-status poll: it normally stops as soon as the model
+    // resolves, but if a session never reports a model (e.g. a Rust session that
+    // failed to authenticate), an unbounded 500ms poll would spam status forever.
+    // Status is also pushed event-driven via reportStatus(), so giving up here is safe.
+    const MAX_STATUS_POLLS = 40; // ~20s
     const startPolling = (): void => {
       if (statusInterval) {return;}
       statusInterval = setInterval(() => {
@@ -103,11 +149,11 @@ export class PiWebviewPanel {
           data: {
             model: model?.id ?? "loading...",
             thinkingLevel: this.piService.thinkingLevel,
-            effort: this.piService.effort,
             ready: model !== null,
+            runtime: this.piService.runtime,
           },
         });
-        if (model !== null && statusInterval) {
+        if ((model !== null || ++statusPolls >= MAX_STATUS_POLLS) && statusInterval) {
           clearInterval(statusInterval);
           statusInterval = null;
           this._tabInitialized = true;
@@ -120,6 +166,14 @@ export class PiWebviewPanel {
 
     this.panel.webview.onDidReceiveMessage(
       async (message) => {
+        // BLOCKING inbound validation. This used to warn and dispatch anyway, which made the
+        // Zod schema decorative: a malformed or forged message reached the handlers regardless,
+        // and openUrl/openFile below act on webview-supplied strings. Drop what doesn't validate.
+        const inbound = validateWebviewToExtension(message);
+        if (!inbound.success) {
+          piWarn(`webview→extension message REJECTED (type "${(message as { type?: unknown })?.type}"): ${inbound.error}`);
+          return;
+        }
         switch (message.type) {
           case "prompt": {
  
@@ -139,18 +193,6 @@ export class PiWebviewPanel {
             await this.piService.abort();
             break;
 
-          case "cycleModel":
-            await this.piService.cycleModel();
-            break;
-
-          case "setThinkingLevel":
-            await this.piService.setThinkingLevel(message.level);
-            break;
-
-          case "setEffort":
-            await this.piService.setEffort(message.effort);
-            break;
-
           case "pickModel":
             void this.triggerModelPicker();
             break;
@@ -159,17 +201,35 @@ export class PiWebviewPanel {
             void this.triggerThinkingPicker();
             break;
 
-          case "pickEffort":
-            void this.triggerEffortPicker();
+          case "switchRuntime":
+            void vscode.commands.executeCommand("pi-code-gui.switchRuntime");
             break;
 
-          case "openUrl":
-            vscode.env.openExternal(vscode.Uri.parse(message.url));
+          case "openUrl": {
+            // The sender is a blanket handler over MODEL-RENDERED content: handlers/index.ts
+            // posts openUrl for any <a href> in the transcript. Without an allowlist a markdown
+            // link to e.g. vscode://<publisher>.<ext>/… reached openExternal on one user click.
+            const url = this.safeExternalUrl(message.url);
+            if (!url) {
+              piWarn(`Blocked openUrl with a disallowed scheme: ${String(message.url).slice(0, 120)}`);
+              break;
+            }
+            void vscode.env.openExternal(url);
             break;
+          }
 
-          case "openFile":
-            vscode.window.showTextDocument(vscode.Uri.file(message.path));
+          case "openFile": {
+            // Same exposure: render/engine.ts posts openFile for any element carrying data-path,
+            // and that attribute is model-authored. Confine it to the workspace so an injected
+            // data-path="/home/<user>/.ssh/id_rsa" can't open arbitrary files.
+            const file = this.safeWorkspaceFile(message.path);
+            if (!file) {
+              piWarn(`Blocked openFile outside the workspace: ${String(message.path).slice(0, 200)}`);
+              break;
+            }
+            void vscode.window.showTextDocument(file);
             break;
+          }
 
           // Slash commands intercepted locally (not sent to LLM)
           case "slashCommand":
@@ -189,18 +249,9 @@ export class PiWebviewPanel {
             await this.piService.toggleShowImages();
             break;
 
-          // Request user messages list (#2)
-          case "getUserMessages":
-            this.postMessage({
-              type: "user-messages-list",
-              data: { messages: this.piService.userMessages.slice(-20) },
-            });
-            break;
-
           // Request settings state (#3)
           case "getSettings":
             this.piService.emitSettings();
-            this.piService.emitScopedModels();
             break;
 
           // Context budget picker
@@ -330,20 +381,20 @@ export class PiWebviewPanel {
 
   postMessage(message: ExtensionToWebview | WebviewToExtension): void {
     // ── Layer 1: Validate extension→webview messages before posting ──
-    // Webview-to-extension messages are validated on receipt by the extension host.
-    // For extension→webview, we validate here to catch malformed events early.
-    // We check if "type" is an extension→webview type (has data or is command).
+    // The reverse direction (webview→extension) is validated warn-only on receipt
+    // in onDidReceiveMessage. Here we validate extension→webview to catch malformed
+    // events early, skipping the webview→extension command types that also flow
+    // through this typed method but belong to the other schema.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const msgType = (message as any).type;
-    if (msgType && msgType !== "prompt" && msgType !== "abort" && msgType !== "slashCommand" &&
-        msgType !== "pickModel" && msgType !== "pickThinkingLevel" && msgType !== "pickEffort" &&
-        msgType !== "pickContextBudget" && msgType !== "getSettings" && msgType !== "toggleAutoCompaction" &&
-        msgType !== "toggleAutoRetry" && msgType !== "toggleShowImages" && msgType !== "openUrl" &&
-        msgType !== "openFile" && msgType !== "promoteToSteer" && msgType !== "clearQueue" &&
-        msgType !== "resendUserMessage") {
+    // Validate only what this schema actually covers, decided BY the schema rather than by a
+    // hand-maintained list of 15 literals that drifted the moment a message type was added.
+    // Warn-only on purpose: EventBus is the authoritative gate and already surfaces a diagnostic
+    // card, so raising a second one here would double-report a single drift.
+    if (isExtensionToWebviewType(msgType)) {
       const result = validateExtensionToWebview(message);
       if (!result.success) {
-        console.error(`[pi-gui] postMessage validation failed for type "${msgType}": ${result.error}`);
+        piWarn(`postMessage validation failed for type "${msgType}": ${result.error}`);
       }
     }
     this.panel?.webview.postMessage(message);
@@ -375,7 +426,21 @@ export class PiWebviewPanel {
       case "settings":
         await this.triggerSettingsPicker();
         break;
+      case "tools":
+        // Extension-serviced (SDK only). pickActiveTools opens the picker on TS and shows the
+        // honest "not available on Rust" message on Rust — instead of the raw /tools text
+        // leaking to the Rust binary as a prompt.
+        await this.piService.pickActiveTools();
+        break;
       default:
+        // The TypeScript SDK parses slash commands out of forwarded prompt text
+        // (and extension command handlers like /tldr respond), so the path below
+        // is correct for TypeScript and is intentionally left UNCHANGED. The Rust
+        // RPC does NOT parse slash commands — "/compact" would just be sent to the
+        // model — so route Rust's built-in session commands to real actions first.
+        if (this.piService.runtime === "rust" && await this.handleRustSlashCommand(command)) {
+          break;
+        }
         // Forward to pi session so extension command handlers (e.g. /tldr) can respond
         try {
           await this.piService.sendPrompt(`/${command}`);
@@ -387,6 +452,31 @@ export class PiWebviewPanel {
           });
         }
         break;
+    }
+  }
+
+  /**
+   * Route built-in session commands to real actions under the **Rust** runtime,
+   * whose RPC `prompt` does not parse slash commands. Returns true if handled.
+   * Only invoked for Rust sessions — the TypeScript dispatch is untouched.
+   * Commands not listed here fall through to the normal forward (e.g. a Rust
+   * extension command). GUI-only actions (resume/fork/export) aren't offered to
+   * Rust in the first place (see PiService.getAllSlashCommands).
+   */
+  private async handleRustSlashCommand(command: string): Promise<boolean> {
+    switch (command) {
+      case "new":
+      case "clear":
+        await this.piService.newSession();
+        return true;
+      case "compact":
+        await this.piService.compact();
+        return true;
+      case "export":
+        await this.piService.exportSessionInteractive();
+        return true;
+      default:
+        return false;
     }
   }
 
@@ -439,9 +529,9 @@ export class PiWebviewPanel {
 
   <div id="pi-status-bar">
     <span id="pi-sb-dot" style="flex-shrink:0; font-weight:700;">○</span>
+    <div class="pi-sb-item pi-sb-runtime--ts" id="pi-sb-runtime" title="Runtime for this session — click to start a session on the other runtime">π TS</div>
     <div class="pi-sb-item" id="pi-sb-model" title="Click to change model">π Pi</div>
-    <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking level">thinking: off</div>
-    <div class="pi-sb-item" id="pi-sb-effort" title="Click to change effort">effort: auto</div>
+    <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking &amp; reasoning">thinking: off</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
     <div class="pi-sb-item spacer"></div>
     <div class="pi-sb-item" id="pi-sb-usage" title="Click to set context budget">0%</div>
@@ -494,26 +584,6 @@ export class PiWebviewPanel {
         ? "Context budget: model default. Restart session to apply."
         : `Context budget set to ${formatBudget(picked.value)}. Restart session to apply.`,
     );
-  }
-
-  /** Open VS Code quick pick to pick effort */
-  async triggerEffortPicker(): Promise<void> {
-    const ps = this.piService;
-    const levels = [
-      { label: "auto", description: "Let the model decide" },
-      { label: "none", description: "No effort" },
-      { label: "low", description: "Low effort" },
-      { label: "medium", description: "Medium effort" },
-      { label: "high", description: "High effort" },
-    ];
-    const currentEffort = ps.effort || "auto";
-    const items = levels.map((l) => ({
-      label: `${l.label === currentEffort ? "$(check) " : ""}${l.label}`,
-      description: l.description,
-    }));
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select effort level" });
-    if (!picked) { return; }
-    await ps.setEffort(picked.label);
   }
 
   /** Open VS Code quick pick for settings */

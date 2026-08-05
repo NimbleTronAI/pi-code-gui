@@ -1,5 +1,50 @@
 # Change Log
 
+## [0.1.1]
+
+The first release with the **Rust runtime**. Sessions now run on either the
+in-process TypeScript Pi SDK or the out-of-process Rust Pi binary, chosen per session.
+
+### Added
+- **Rust runtime.** Each session runs on the TypeScript SDK or the Rust binary (`pi --mode rpc`). New sessions default to TypeScript; the choice is per-session and a resumed session always reopens on its origin runtime.
+- Runtime commands: **Add TypeScript/Rust Pi Session**, **Add Pi Session (Choose Runtime)**, **Set Default Runtime**, **Switch Runtime (New Session)**. A runtime chip in the status bar and a `TS`/`Rust` badge in the Sessions tree.
+- **On-demand Rust install** — managed binary download (checksum-verified), the official `curl | sh` installer, manual guidance, or detect an existing binary. Each option states plainly whether it touches your `PATH` or an existing `pi` command.
+- Rust Pi's `find`/`grep` tools need `fd` and `ripgrep` on `PATH`; the extension now detects their absence and links their install guides.
+- Unified Past Sessions across both runtimes, badged by origin.
+- **Runtime-aware Packages view** — one shared catalog, marking each package *active* (loaded by the focused session's runtime) or *available*, with provenance from the Rust catalog.
+- **`max` thinking level.** Some models put their top tier behind `max` rather than `xhigh` (Kimi K3 has no `xhigh`; DeepSeek V4 Pro likewise), making those tiers unreachable before. Offered only for models that map it, and only on backends that accept it — Rust needs v0.1.23+.
+- `autoOpenOnStart` — disable auto-opening a Pi tab on window start. (Thanks @oleg-deezus, #63)
+- New settings: `defaultRuntime`, `sessionHistoryScope`, `rustBinaryPath`, `rustInstallMethod`, `rustExtensionPolicy`, `rustExtensions`, `rustAgentDir`.
+
+### Changed
+- **Minimum VS Code is now 1.125** (was 1.118).
+- **API keys moved to VS Code SecretStorage.** The `anthropicApiKey`/`openaiApiKey` settings are **removed** — settings are plaintext, sync across machines, and are readable by any other installed extension. Use `/login` (shares `~/.pi/agent/auth.json` with the pi CLI) or `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`. Existing keys migrate automatically on first reload; nothing needs re-entering.
+- Secrets are redacted from the output channel and from error text shown in chat.
+- Extension-supplied custom message renderers (arbitrary JS in the webview) now require explicit per-type consent.
+- `sessionDir` is `machine-overridable`, and settings that execute code or redirect writes are disabled in untrusted workspaces.
+- Unknown model pricing shows `$??` rather than `$0.00`, so a missing rate can't read as free.
+- Provider auth failures surface as actionable messages instead of raw SDK errors.
+- All logging goes to the **Pi Code Gui** output channel; nothing is written to the shared developer console.
+- Migrated to the pi-coding-agent 0.80+ `ModelRuntime` API, with a prompt to update an SDK older than this build targets.
+
+### Fixed
+- **Closing a window with more than one session open lost conversation data** — teardown skipped every other session, so their unflushed history was never written.
+- Closing a session from the Sessions tree left its tab open and unusable.
+- The **Auto-retry** toggle did nothing on the TypeScript runtime — it flipped the UI but never reached the session, so retries continued after being switched off.
+- Startup could block for seconds, or indefinitely, before any command worked; commands are now registered immediately.
+- Several commands (including *Install Pi*) were never registered and failed with "command not found".
+- The chat lost its pinned-to-bottom position whenever tool blocks resized on completion.
+- Large writes froze the webview while streaming tool arguments.
+- Quotes were not escaped in five webview render paths.
+- Links and file paths from tool output are validated before opening.
+- Images that fail to load degrade to alt text instead of retrying and logging errors.
+- Duplicate sessions could be created for the same session file.
+- The Open Sessions sweep re-read the entire session history on every refresh.
+- The packaged extension no longer ships internal development files.
+
+### Known limitations
+- Under the Rust runtime: the VS Code editor-bridge tools and the `/tools` picker are unavailable, custom-card extensions fall back to markdown, session history is stored separately, and a workspace's TypeScript-format `.pi/` extensions don't load (see `rustExtensions`).
+
 ## [0.0.55]
 
 ### Fixed

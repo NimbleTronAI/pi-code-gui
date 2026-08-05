@@ -43,6 +43,20 @@ During assistant message streaming, `handleAgentEvent` in pi-service.ts scans
 The webview renderers (write/edit) parse JSON args to display file paths and
 edit previews as the model writes them.
 
+### Tool-arg preview throttle (200ms)
+
+A large `write`/`edit` streams its arguments as a flood of incremental
+`toolcall_delta` events. Emitting a `tool-update` for every one forced the
+webview to re-parse and re-render a growing JSON blob on each delta, which froze
+the webview on large writes. The Rust path now throttles these previews to one
+update per **`TOOL_PREVIEW_THROTTLE_MS = 200`** (`src/rust-events.ts:152`), gated
+by `shouldEmitToolPreviewUpdate(lastEmit, now)` (rust-events.ts:164). This drops
+only intermediate *preview* frames — the **final, complete arguments still arrive
+separately via `tool_execution_start`**, so no argument data is ever lost; only
+the mid-stream preview cadence is capped. Introduced in commit `8322a4d`. **Do
+not remove this without restoring an equivalent cap** — it is the fix for the
+large-write freeze, not an optimization.
+
 ## Batch replay
 
 On session load, `handleBatchStart` sets `_inBatch = true` and adds `.no-animate`
@@ -74,4 +88,5 @@ rendering at 1 FPS. This is a platform limitation, not a bug.
 - [Tool Block Rendering](tool-block-rendering.md) — tool call arguments
   rendered during streaming
 
-> **Last updated:** 2026-05-27 — added progressive replay section
+> **Last updated:** 2026-06-24 — documented the 200ms tool-arg preview throttle (`TOOL_PREVIEW_THROTTLE_MS`, commit 8322a4d) that fixes the large-write webview freeze
+> **Earlier:** 2026-05-27 — added progressive replay section

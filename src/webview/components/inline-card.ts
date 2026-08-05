@@ -16,8 +16,8 @@ import { html } from "../render/html.js";
 export interface InlineCardProps {
   customType: string;
   content: string; // trusted HTML
-  renderer?: (data: any, container: HTMLElement, escapeHtml: (s: string) => string) => void;
-  rawData?: any; // passed to renderer
+  renderer?: (data: unknown, container: HTMLElement, escapeHtml: (s: string) => string) => void;
+  rawData?: unknown; // passed to renderer
   escapeHtmlFn?: (s: string) => string;
 }
 
@@ -40,13 +40,13 @@ export class InlineCard implements Component<InlineCardProps> {
     this.bodyEl = this.el.querySelector(".custom-message-body")!;
 
     // Wire action buttons: data-command sends slash command
-    this.el.addEventListener("click", (e) => {
+    this.el.addEventListener("click", (e): void => {
       const btn = (e.target as HTMLElement).closest("[data-command]");
       if (btn) {
         e.preventDefault();
         const cmd = btn.getAttribute("data-command");
-        if (cmd && (window as any).__vscode) {
-          (window as any).__vscode.postMessage({
+        if (cmd && window.__vscode) {
+          window.__vscode.postMessage({
             type: "slashCommand",
             command: cmd,
           });
@@ -80,8 +80,4 @@ export class InlineCard implements Component<InlineCardProps> {
   }
 }
 
-function escapeHtmlPolyfill(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
+import { escapeHtml as escapeHtmlPolyfill } from "../../shared/escape-html.js";

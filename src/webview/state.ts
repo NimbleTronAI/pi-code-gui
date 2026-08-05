@@ -1,3 +1,5 @@
+import type { ToolBlockEntry, ToolRenderer } from "./tools/types.js";
+
 // ── Shared application state ────────────────────────────────
 //
 // Single source of truth for all mutable state in the webview.
@@ -9,6 +11,14 @@
 export interface AppState {
   // ── Boolean flags
   isStreaming: boolean;
+  /** The backend failed to start (or isn't installed), so prompts can't be sent — but the
+   *  extension-serviced slash commands still can. Drives the limited-input mode rather than
+   *  disabling the box outright. */
+  sessionUnavailable: boolean;
+  /** An abort has been requested but the turn hasn't ended yet. Purely local: it acknowledges
+   *  the click immediately instead of waiting for the backend, which on Rust is a
+   *  fire-and-forget write to a busy subprocess. Cleared by whatever terminal event arrives. */
+  abortRequested: boolean;
   isCompacting: boolean;
   isRetrying: boolean;
   _inBatch: boolean;
@@ -18,7 +28,7 @@ export interface AppState {
   currentThinkingEl: HTMLElement | null;
 
   // ── Tool execution tracking
-  currentToolBlocks: Record<string, { el: HTMLElement; renderer?: unknown } | HTMLElement | undefined>;
+  currentToolBlocks: Record<string, ToolBlockEntry | undefined>;
   assistantToolCallIds: Record<string, boolean>;
   /** Last tool/batch block inserted after the current assistant message.
    *  Subsequent tools insert after this one to preserve call order. */
@@ -40,7 +50,7 @@ export interface AppState {
   }>;
 
   // ── Bash execution blocks
-  bashBlocks: Record<string, HTMLElement>;
+  bashBlocks: Record<string, HTMLElement | undefined>;
   bashOutputs: Record<string, string>;
 
   // ── Truncation text store
@@ -52,7 +62,6 @@ export interface AppState {
   settingsOpen: boolean;
 
   // ── Scoped models
-  scopedModels: unknown[];
 
   // ── Overlay state
   userMsgSelectorOpen: boolean;
@@ -62,11 +71,7 @@ export interface AppState {
   slashSelectedIdx: number;
 
   // ── Tool renderer registry
-  toolRenderers: Record<string, {
-    create: (data: Record<string, unknown>) => HTMLElement;
-    update: (el: HTMLElement, partialResult: Record<string, unknown>) => void;
-    finalize: (el: HTMLElement, result: Record<string, unknown>, isError: boolean, entryId?: string) => void;
-  }>;
+  toolRenderers: Record<string, ToolRenderer>;
 
   // ── Stream rendering (RAF-batched)
   _streamRafId: number | null;
@@ -108,15 +113,12 @@ export interface AppState {
   settingsOverlay: HTMLElement;
   slashAutocomplete: HTMLElement;
   livePanel: HTMLElement;
-  sbDot: HTMLElement;
-  sbModel: HTMLElement;
-  sbThinking: HTMLElement;
-  sbEffort: HTMLElement;
-  sbUsage: HTMLElement;
 }
 
 export const state: AppState = {
   isStreaming: false,
+  sessionUnavailable: false,
+  abortRequested: false,
   isCompacting: false,
   isRetrying: false,
   _inBatch: false,
@@ -143,7 +145,6 @@ export const state: AppState = {
   settingsState: { autoCompaction: true, autoRetry: true, showImages: true },
   settingsOpen: false,
 
-  scopedModels: [],
 
   userMsgSelectorOpen: false,
   userMsgSelectedIdx: 0,
@@ -187,6 +188,19 @@ export const state: AppState = {
   extensionSlashCommands: [],
   localSlashCommands: [
     "/login", "/logout", "/debug", "/model", "/thinking", "/sessions", "/settings",
+    // /tools is extension-serviced (SDK only). It must be intercepted here too, or under
+    // Rust it slips past every handler and gets forwarded raw to the binary, which doesn't
+    // parse it. Intercepted → pickActiveTools, which shows the honest "not on Rust" guard.
+    "/tools",
+    // Extension-serviced on BOTH runtimes (PiBackend.exportToHtml). Without interception the
+    // Rust RPC would forward "/export" to the model as a literal prompt — a billed turn that
+    // answers a question about the word rather than exporting anything.
+    "/export",
+    // Session ops the extension services itself — must be intercepted here so they
+    // reach handleSlashCommand → the runtime-aware router, instead of being sent to
+    // the model as a prompt. (TypeScript's SDK parses such prompts; the Rust RPC
+    // does NOT, so /compact, /new etc. otherwise just talk to the model under Rust.)
+    "/new", "/clear", "/compact",
   ],
 
   chatContainer: null!,
@@ -200,11 +214,6 @@ export const state: AppState = {
   settingsOverlay: null!,
   slashAutocomplete: null!,
   livePanel: null!,
-  sbDot: null!,
-  sbModel: null!,
-  sbThinking: null!,
-  sbEffort: null!,
-  sbUsage: null!,
 };
 
 /** Populate DOM refs from document. Call once on startup. */
@@ -220,11 +229,6 @@ export function initState(doc: Document): void {
   state.settingsOverlay = doc.getElementById("settings-overlay")!;
   state.slashAutocomplete = doc.getElementById("slash-autocomplete")!;
   state.livePanel = doc.getElementById("live-panel")!;
-  state.sbDot = doc.getElementById("pi-sb-dot")!;
-  state.sbModel = doc.getElementById("pi-sb-model")!;
-  state.sbThinking = doc.getElementById("pi-sb-thinking")!;
-  state.sbEffort = doc.getElementById("pi-sb-effort")!;
-  state.sbUsage = doc.getElementById("pi-sb-usage")!;
 
   if (typeof marked !== "undefined") {
     state._markedAvailable = true;

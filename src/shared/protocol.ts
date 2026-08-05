@@ -175,12 +175,19 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       .object({
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
-        effort: z.string().optional(),
+        thinkingDisplay: z.string().optional(),
+        thinkingClickable: z.boolean().optional(),
+        // Whether the active transport actually transmits the thinking level
+        // (false → webview shows a read-only "reasoning: on/off" badge instead of
+        // a graded "thinking: <level>"). `reasoning` is the model's fixed flag.
+        thinkingLive: z.boolean().optional(),
+        reasoning: z.boolean().optional(),
         usage: z
           .object({
             input: z.number(),
             output: z.number(),
             cost: z.number(),
+            costKnown: z.boolean().optional(),
             contextPercent: z.number().nullable(),
           })
           .optional(),
@@ -188,7 +195,11 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         ready: z.boolean().optional(),
         reset: z.boolean().optional(),
         sessionId: z.string().optional(),
+        // On-disk session file; the webview persists it (with runtime) into VS Code's
+        // webview state so the panel serializer can re-attach the session on reload.
+        sessionFile: z.string().optional(),
         contextBudget: z.number().optional(),
+        runtime: z.enum(["typescript", "rust"]).optional(),
       }),
   }),
   z.object({
@@ -197,8 +208,12 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       .object({
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
-        effort: z.string().optional(),
+        thinkingDisplay: z.string().optional(),
+        thinkingClickable: z.boolean().optional(),
+        thinkingLive: z.boolean().optional(),
+        reasoning: z.boolean().optional(),
         ready: z.boolean().optional(),
+        runtime: z.enum(["typescript", "rust"]).optional(),
       })
       .optional(),
   }),
@@ -293,14 +308,6 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
     }),
   }),
 
-  // Scoped models
-  z.object({
-    type: z.literal("scoped-models-update"),
-    data: z.object({
-      models: z.array(z.object({ provider: z.string(), id: z.string(), thinkingLevel: z.string() })),
-    }),
-  }),
-
   // Settings
   z.object({
     type: z.literal("settings-update"),
@@ -376,12 +383,12 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("slashCommand"), command: z.string() }),
   z.object({ type: z.literal("pickModel") }),
   z.object({ type: z.literal("pickThinkingLevel") }),
-  z.object({ type: z.literal("pickEffort") }),
   z.object({ type: z.literal("pickContextBudget") }),
   z.object({ type: z.literal("getSettings") }),
   z.object({ type: z.literal("toggleAutoCompaction") }),
   z.object({ type: z.literal("toggleAutoRetry") }),
   z.object({ type: z.literal("toggleShowImages") }),
+  z.object({ type: z.literal("switchRuntime") }),
   z.object({ type: z.literal("openUrl"), url: z.string() }),
   z.object({ type: z.literal("openFile"), path: z.string() }),
   z.object({ type: z.literal("promoteToSteer"), text: z.string() }),
@@ -420,6 +427,20 @@ export interface ValidationError {
  * Returns the parsed message or an error string.
  * Unknown fields are stripped (zod strips by default in v4).
  */
+/** The set of message types the EXTENSION→WEBVIEW schema knows, derived from the schema itself.
+ *  postMessage() is typed for that direction but is also used for a handful of webview-shaped
+ *  messages, so it needs to know which types are actually validatable. That used to be a
+ *  hand-maintained list of 15 string literals in webview-panel.ts — guaranteed to drift the
+ *  moment a message was added. */
+const EXTENSION_TO_WEBVIEW_TYPES: ReadonlySet<string> = new Set(
+  ExtensionToWebviewSchema.options.map((o) => (o.shape.type as { value: string }).value),
+);
+
+/** True when `type` belongs to the extension→webview schema (and so can be validated). */
+export function isExtensionToWebviewType(type: unknown): boolean {
+  return typeof type === "string" && EXTENSION_TO_WEBVIEW_TYPES.has(type);
+}
+
 export function validateExtensionToWebview(
   msg: unknown,
 ): ValidationResult<ExtensionToWebview> | ValidationError {

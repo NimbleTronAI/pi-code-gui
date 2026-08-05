@@ -1,0 +1,15 @@
+// Compiles the webview (src/webview + src/shared) into out/ as Node16 ESM so the
+// headless dispatch smoke test (src/test/unit/dispatch.test.ts) can dynamically
+// import the real handlers under jsdom. The app/bundle build still uses
+// tsconfig.webview.json + esbuild; this config is test-only.
+{
+  "extends": "./tsconfig.webview.json",
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "outDir": "out",
+    "rootDir": "src",
+    "noEmit": false
+  },
+  "include": ["src/webview/**/*.ts", "src/shared/**/*.ts"]
+}

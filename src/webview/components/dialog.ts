@@ -78,14 +78,14 @@ export class Dialog implements Component<DialogProps> {
     this.cancelBtn = this.el.querySelector(".pi-dialog-cancel")!;
 
     // Wire events
-    this.confirmBtn.addEventListener("click", () => this.submit());
-    this.cancelBtn.addEventListener("click", () => this.cancel());
+    this.confirmBtn.addEventListener("click", (): void => this.submit());
+    this.cancelBtn.addEventListener("click", (): void => this.cancel());
 
     // Keyboard handling
-    this.el.addEventListener("keydown", (e) => this.handleKey(e));
+    this.el.addEventListener("keydown", (e): void => this.handleKey(e));
 
     // Close on overlay click (click outside dialog box)
-    this.el.addEventListener("click", (e) => {
+    this.el.addEventListener("click", (e): void => {
       if (e.target === this.el) { this.cancel(); }
     });
   }
@@ -94,7 +94,7 @@ export class Dialog implements Component<DialogProps> {
     container.appendChild(this.el);
     // Focus the input if present
     if (this.inputEl) {
-      setTimeout(() => this.inputEl!.focus(), 50);
+      setTimeout((): void => this.inputEl!.focus(), 50);
     }
   }
 
@@ -165,8 +165,8 @@ export class Dialog implements Component<DialogProps> {
   }
 
   private postResponse(value: unknown): void {
-    if (typeof (window as any).__vscode !== "undefined") {
-      (window as any).__vscode.postMessage({
+    if (typeof window.__vscode !== "undefined") {
+      window.__vscode.postMessage({
         type: "extension_ui_response",
         id: this.props.id,
         value: value,

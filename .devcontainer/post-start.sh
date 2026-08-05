@@ -46,11 +46,31 @@ else
 fi
 
 # ── pi packages ──────────────────────────────────────
-# Update project-local pi packages to latest on every start.
+# Update project-local pi packages to latest on every start. `--approve` trusts
+# the project's .pi/ files for this command so the install runs non-interactively;
+# without it, pi stops to ask "Trust project folder?" and blocks container start.
 echo "==> pi packages (latest)"
 if command -v pi &>/dev/null; then
-    pi install npm:pi-web-access -l
+    pi install npm:pi-web-access -l --approve
     echo "    pi packages updated"
 else
     echo "    warn: pi not found — skipping package updates"
+fi
+
+# ── rust-pi (TEMPORARY local build) ──────────────────
+# The extension resolves rust-pi at ~/.local/bin/rust-pi, which lives on the
+# container layer and is WIPED on every rebuild. We're temporarily running a
+# locally-built rust-pi (pi_agent_rust 87b70f74 — gh #114 DeepSeek thinking,
+# #116 Anthropic adaptive effort, #117 authoritative catalog, #118 typed
+# transient-retry, #121 cache-read vs input usage accounting, + ~/.pi/agent
+# lockfile/OAuth interop; ahead of the upstream release). It's stashed in the
+# persistent ~/.pi volume; restore it here so the extension survives rebuilds.
+# REVERT once upstream pi_agent_rust ships these: delete this block, remove
+# /home/node/.pi/rust-pi-87b70f74, and install the published rust-pi.
+if [ -x /home/node/.pi/rust-pi-87b70f74 ]; then
+    echo "==> rust-pi (local 87b70f74)"
+    mkdir -p /home/node/.local/bin
+    rm -f /home/node/.local/bin/rust-pi
+    cp /home/node/.pi/rust-pi-87b70f74 /home/node/.local/bin/rust-pi
+    echo "    restored $(/home/node/.local/bin/rust-pi --version 2>/dev/null | head -1)"
 fi

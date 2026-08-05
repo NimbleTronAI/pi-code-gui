@@ -1,0 +1,10 @@
+{
+  // Model config for the Extension Development Host (this folder is what F5 opens).
+  // The extension bundles Pi's model catalog and writes it into the Rust agent's
+  // models.json, so deepseek-v4-pro (pricing, 1M context, reasoning/thinking) is
+  // already known on Rust — no per-model config needed. Just select it as the
+  // default; requires DEEPSEEK_API_KEY in the environment.
+  "pi-code-gui.defaultModelProvider": "deepseek",
+  "pi-code-gui.defaultModelId": "deepseek-v4-pro",
+  "pi-code-gui.defaultThinkingLevel": "off"
+}

@@ -40,7 +40,7 @@ interface Window {
     domLog(n?: number): unknown[];
     bashBlocks(): unknown[];
     toolBlocks(): unknown[];
-    summary(): Record<string, unknown>;
+    summary(): PiDebugSummary;
     _queueEvents?: unknown[];
   };
   __piRegisterToolRenderer?: (name: string, renderer: unknown) => void;
@@ -50,6 +50,49 @@ interface Window {
   ) => void;
   __vscode: ReturnType<typeof acquireVsCodeApi>;
   morphdom: typeof morphdom;
+}
+
+/** One part of a content array. The `.filter(c => c.type === "text").map(c => c.text)` idiom
+ *  appears in half a dozen places and annotated its callbacks `any` in every one of them. */
+interface TextPart {
+  type: string;
+  text: string;
+}
+
+/** Renderer state hung off a write/read tool card. Named so the readers can stop declaring their
+ *  locals `any` just because the `|| {}` fallback doesn't fit a required-field shape. */
+interface WriteToolState {
+  content: string;
+  lang?: string;
+  rawPath?: unknown;
+}
+interface ReadToolState {
+  rawPath?: unknown;
+  lang?: string;
+  compact?: unknown;
+  offset?: unknown;
+}
+
+/** What __piDebug.summary() returns. Declared here, not in debug.ts, so global.d.ts can name it
+ *  without a top-level import (which would stop this file being a global augmentation). */
+interface PiDebugSummary {
+  chat: Record<string, unknown>;
+  dupes: string[];
+  orphanBash: string[];
+  orphanTool: string[];
+  lastEvents: Array<{ ts: number; type: string; dataKeys: string[]; callId: string; id: string; fromMessage: boolean; toolName: string; stackDepth: number }>;
+  lastDomChanges: Array<{ ts: number; action: string; tag: string; id: string; classes: string; status: string; text: string; parentId: string }>;
+}
+
+/** An extension-authored custom message. Everything is optional and `content` is deliberately
+ *  `unknown` rather than a union: it arrives either as a string or as a content array, and both
+ *  readers already branch on typeof / Array.isArray before touching it. The index signature keeps
+ *  the whole object forwardable to a third-party renderer as `rawData`. */
+interface CustomMessageData {
+  customType?: string;
+  content?: unknown;
+  display?: boolean;
+  [key: string]: unknown;
 }
 
 // Event data shape (from extension host to webview)
@@ -122,13 +165,21 @@ interface WebviewEventData {
 interface HTMLElement {
   _component?: unknown;
   _rawText?: string;
-  _toolBlock?: unknown;
-  _writeState?: { content: string; lang?: string; rawPath?: string };
-  _writePending?: string;
-  _writeRafId?: number;
-  _editEdits?: unknown[];
+  // Corrected to match what the renderers actually store. These were only ever reached through
+  // `(el as any)._x`, so the declarations drifted from reality unchecked: the code assigns null
+  // to the rAF/pending slots (declared non-nullable), stores an unknown-typed rawPath (declared
+  // string), and calls .update()/.getResultEl() on _toolBlock (declared unknown).
+  // Inline import() keeps this file a GLOBAL augmentation (a top-level import would turn it
+  // into a module and silently drop every declaration here), so consistent-type-imports has to
+  // be waived on exactly this line — there is no top-level-import form that preserves the file.
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  _toolBlock?: import("./components/tool-block.js").ToolBlock;
+  _writeState?: WriteToolState;
+  _writePending?: string | null;
+  _writeRafId?: number | null;
+  _editEdits?: Array<{ oldText: string; newText: string }>;
   _editLang?: string;
-  _readState?: { rawPath: string; lang?: string; compact?: unknown; offset?: number };
+  _readState?: ReadToolState;
   _readCollapseState?: {
     previewText: string;
     fullText: string;

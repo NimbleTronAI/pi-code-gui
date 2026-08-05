@@ -1,62 +1,39 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as vscode from "vscode";
+
+import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
+import { piDebug, piWarn, registerSecret } from "./logger.js";
+import { getApiKey } from "./secrets.js";
+import { confirmRendererConsent } from "./renderer-consent.js";
+
+import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
+import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
+import { setupRustModels, reseedRustAuth } from "./rust-models.js";
+import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
+import { rustExportHtml } from "./rust-packages.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
+import { computeUsageStats, type UsageStats } from "./usage-stats.js";
+import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
+import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
+import { EventBus } from "./event-bus.js";
+import bundledRegistry from "./model-registry.generated.json";
+import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
+
+
+import { resolveWorkspaceCwd } from "./workspace.js";
+import { translateAgentEvent, extractMessageText } from "./agent-events.js";
+import { replaySessionEntries, indexEntries } from "./session-replay.js";
+import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
-import { type PiServiceEvent, validateExtensionToWebview } from "./types.js";
-import { piLog, piWarn } from "./logger.js";
-
-/** Find the last element matching predicate (ES2023 findLast polyfill). */
-function reverseFind<T>(arr: T[], pred: (el: T) => boolean): T | undefined {
-  for (let i = arr.length - 1; i >= 0; i--) {
-    if (pred(arr[i])) { return arr[i]; }
-  }
-  return undefined;
-}
-
-/**
- * Dynamic import with retry — handles the race where npm is still populating
- * node_modules when the extension host first activates.
- */
-async function importWithRetry(
-  modulePath: string,
-  maxAttempts: number,
-  delayMs: number,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await import(modulePath);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      if (attempt === maxAttempts) { throw e; }
-      piWarn(`importWithRetry: attempt ${attempt}/${maxAttempts} failed for ${modulePath}: ${e.message}`);
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-}
-
-// ── Types for the dynamically loaded SDK ──────────────────
-
-/* eslint-disable @typescript-eslint/no-explicit-any -- dynamically imported SDK; types unavailable at compile time */
-interface PiSdk {
-  createAgentSession: Function;
-  SessionManager: any;
-  SettingsManager: any;
-  AuthStorage: any;
-  ModelRegistry: any;
-  createCodingTools: Function;
-  createReadOnlyTools: Function;
-  DefaultResourceLoader: any;
-  defineTool: Function;
-  getAgentDir: Function;
-  createSyntheticSourceInfo: Function;
-}
-
-interface PiAi {
-  getModel: Function;
-  getProviders: Function;
-  complete: Function;
-}
+import { detectMissingRustTools } from "./rust-deps.js";
+import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
+import { backendCapabilityDefaults, flipsStateEagerly, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
+import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
+import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
+import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
+import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
+import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, type ModelChoice } from "./model-picker.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -65,66 +42,35 @@ export interface InstallStatus {
   error?: string;
 }
 
-/* eslint-enable @typescript-eslint/no-explicit-any */
 type EventListener = (event: PiServiceEvent) => void;
 
 // ── SDK Resolution ───────────────────────────────────────
 
 export function resolvePiPackagePath(): string {
-  const pkgSuffix = path.join("node_modules", "@earendil-works", "pi-coding-agent");
-  const candidates: Set<string> = new Set();
-
-  // 1. Project-local install
-  candidates.add(path.resolve(path.join(".pi", "npm", pkgSuffix)));
-
-  // 2. Universal PATH scan — derive npm global prefixes from $PATH entries
-  const pathEnv = process.env.PATH || "";
-  const separator = process.platform === "win32" ? ";" : ":";
-  const seenPrefixes = new Set<string>();
-  for (const binDir of pathEnv.split(separator)) {
-    if (!binDir) { continue; }
-    let normBin = path.normalize(binDir);
-    if (normBin.endsWith(path.sep)) { normBin = normBin.slice(0, -1); }
-    const prefix = path.dirname(normBin);
-    if (seenPrefixes.has(normBin)) { continue; }
-    seenPrefixes.add(normBin);
-    candidates.add(path.join(prefix, "lib", pkgSuffix));
-    if (process.platform === "win32") {
-      candidates.add(path.join(prefix, pkgSuffix));
-    }
-  }
-
-
-  // 3. Windows AppData (npm default on Windows)
-  const appData = process.env.APPDATA || "";
-  if (appData) {
-    candidates.add(path.join(appData, "npm", pkgSuffix));
-  }
-
-
-  // 4. Legacy hardcoded fallbacks (for GUI-launched VS Code with incomplete $PATH)
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  if (home) {
-    candidates.add(path.join(home, ".npm-global", "lib", pkgSuffix));
-    candidates.add(path.join(home, ".local", "lib", pkgSuffix));
-  }
-  if (process.env.NVM_DIR) {
+  // List the NVM node versions (the only fs read needed to build candidates);
+  // ordering/dedup/priority live in the pure, tested buildPiPackageCandidates.
+  let nvmVersions: string[] = [];
+  const nvmDir = process.env.NVM_DIR;
+  if (nvmDir) {
     try {
-      const versionsDir = path.join(process.env.NVM_DIR, "versions", "node");
-      if (fs.existsSync(versionsDir)) {
-        for (const version of fs.readdirSync(versionsDir)) {
-          candidates.add(path.join(versionsDir, version, "lib", pkgSuffix));
-        }
-      }
+      const versionsDir = path.join(nvmDir, "versions", "node");
+      if (fs.existsSync(versionsDir)) { nvmVersions = fs.readdirSync(versionsDir); }
     } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
   }
 
-  for (const candidate of candidates) {
-    try {
-      const pkgPath = path.join(candidate, "package.json");
-      if (fs.existsSync(pkgPath)) { return candidate; }
-    } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
-  }
+  const candidates = buildPiPackageCandidates({
+    platform: process.platform,
+    pathEnv: process.env.PATH || "",
+    appData: process.env.APPDATA,
+    home: process.env.HOME || process.env.USERPROFILE,
+    nvmDir,
+    nvmVersions,
+  });
+
+  const found = pickPiPackagePath(candidates, (pkgJson) => {
+    try { return fs.existsSync(pkgJson); } catch { return false; }
+  });
+  if (found) { return found; }
 
   throw new Error(
     "Pi coding agent SDK not found. Please install it:\n" +
@@ -132,203 +78,113 @@ export function resolvePiPackagePath(): string {
   );
 }
 
-// ── System Prompt ────────────────────────────────────────
-
-/** Build the VS Code-aware system prompt */
-function buildSystemPrompt(): string {
-  return `You are a coding assistant running inside VS Code through the Pi Code Gui extension.
-You have access to VS Code editor state through bridge tools (prefixed with vscode_)
-when they are enabled.
-
-Key information about your environment:
-- You are embedded in VS Code as an extension with a webview chat UI.
-- When bridge tools are active, you can inspect editor state, diagnostics, symbols,
-  hover info, definitions, references, and apply edits through VS Code.
-- For reading files, use the read tool (supports offset/limit for large files).
-- For editing files, use the edit or write tool.
-
-When the user asks you to fix something:
-1. Check diagnostics first if the diagnostics bridge tool is available.
-2. Look at the relevant code.
-3. Make edits.
-
-Be concise and helpful. Prefer editing existing files over creating new ones.`;
-}
-
-// ── Context Files ────────────────────────────────────────
-
-/** Build virtual context files (project guidelines for VS Code context) */
-function buildContextFiles(cwd: string): Array<{ path: string; content: string }> {
-  const files: Array<{ path: string; content: string }> = [];
-
-  // Check if project has a package.json to infer project type
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let pkgJson: any = null;
-  try {
-    const pkgPath = path.join(cwd, "package.json");
-    if (fs.existsSync(pkgPath)) {
-      pkgJson = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-    }
-  } catch (e: unknown) { piWarn(`Non-critical failure: ${e instanceof Error ? e.message : String(e)}`); }
-
-  // Check for common config files
-  const hasTypeScript = fs.existsSync(path.join(cwd, "tsconfig.json"));
-  const hasVite = fs.existsSync(path.join(cwd, "vite.config.ts")) || fs.existsSync(path.join(cwd, "vite.config.js"));
-  const hasNextJS = pkgJson?.dependencies?.next || pkgJson?.devDependencies?.next;
-  const hasReact = pkgJson?.dependencies?.react || pkgJson?.devDependencies?.react;
-  const hasNodeBackend = pkgJson?.dependencies?.express || pkgJson?.dependencies?.fastify || pkgJson?.dependencies?.hono;
-
-  files.push({
-    path: "/virtual/vscode-guidelines.md",
-    content: `# VS Code Extension Guidelines
-
-## Running in Pi Code Gui
-- You are an AI coding assistant inside VS Code.
-- The user interacts with you through a chat webview.
-- You have access to VS Code editor state through bridge tools when they are enabled.
-- Bridge tools (prefixed vscode_) let you inspect open editors, diagnostics, symbols, and more.
-
-## Interaction Tips
-- Before making changes, check for diagnostics if the diagnostics tool is available.
-- If the user mentions a file, verify it exists and check its content.
-- When editing, use the edit or write tool.`,
-  });
-
-  if (hasTypeScript) {
-    files.push({
-      path: "/virtual/project-stack-typescript.md",
-      content: `# Project Stack
-
-This project uses TypeScript. Follow these conventions:
-- Use strict typing, avoid 'any'.
-- Import using ES module syntax.
-- Use const over let where possible.
-- Prefer async/await over raw promises.`,
-    });
-  }
-
-  if (hasReact || hasNextJS || hasVite) {
-    files.push({
-      path: "/virtual/project-stack-frontend.md",
-      content: `# Frontend Project Guidelines
-
-This is a ${hasNextJS ? "Next.js" : hasVite ? "Vite-based" : "React"} project.
-- Use functional components with hooks.
-- Keep components focused and single-responsibility.
-- Use proper TypeScript types for props.`,
-    });
-  }
-
-  if (hasNodeBackend) {
-    files.push({
-      path: "/virtual/project-stack-backend.md",
-      content: `# Backend Project Guidelines
-
-This is a Node.js backend project.
-- Handle errors gracefully with proper status codes.
-- Validate inputs.
-- Use async/await for async operations.`,
-    });
-  }
-
-  return files;
-}
-
-// ── Prompt Templates ─────────────────────────────────────
-
-/** Build custom slash commands */
-function buildPromptTemplates(
-  createSyntheticSourceInfo: Function,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Array<{ name: string; description: string; filePath: string; sourceInfo: any; content: string }> {
-  const syn = (p: string): unknown => createSyntheticSourceInfo(p, { source: "vscode-gui" });
-
-  return [
-    {
-      name: "fix-diagnostics",
-      description: "Fix all diagnostics in open file",
-      filePath: "/virtual/prompts/fix-diagnostics.md",
-      sourceInfo: syn("/virtual/prompts/fix-diagnostics.md"),
-      content: `# Fix Diagnostics
-
-Check the currently open file for diagnostics using vscode_get_diagnostics.
-For each diagnostic, analyze the root cause and apply a fix.
-Explain what you're fixing and why.`,
-    },
-    {
-      name: "explain-code",
-      description: "Explain the code at current cursor position",
-      filePath: "/virtual/prompts/explain-code.md",
-      sourceInfo: syn("/virtual/prompts/explain-code.md"),
-      content: `# Explain Code
-
-Use vscode_get_editor_state to find what file and selection the user has open.
-Read the relevant code section and explain what it does, its purpose, and how it works.
-If the selection is empty, explain the function/module at the cursor position (use vscode_get_hover for additional context).`,
-    },
-    {
-      name: "refactor",
-      description: "Refactor the selected code",
-      filePath: "/virtual/prompts/refactor.md",
-      sourceInfo: syn("/virtual/prompts/refactor.md"),
-      content: `# Refactor
-
-Get the current selection with vscode_get_selection.
-Analyze the code and suggest/apply refactoring improvements:
-- Extract repeated logic into functions
-- Simplify complex expressions
-- Improve variable naming
-- Add missing type annotations
-- Reduce nesting
-
-Apply your changes using edit tools.`,
-    },
-  ];
-}
-
 // ── PiService ────────────────────────────────────────────
 
+/** Register a configured secret with the logger and hand it back, so the config object is built
+ *  and the redaction list is populated in one expression. */
+function registerAndReturnSecret(value: string | undefined): string | undefined {
+  registerSecret(value);
+  return value;
+}
+
+/** Bridge an AbortSignal to a vscode CancellationToken so an already-open QuickPick/InputBox
+ *  can be dismissed. Returns undefined when there is no signal, which keeps the plain
+ *  (untokened) overload for callers that don't need it. */
+function tokenFor(signal?: AbortSignal): vscode.CancellationToken | undefined {
+  if (!signal) { return undefined; }
+  const src = new vscode.CancellationTokenSource();
+  if (signal.aborted) { src.cancel(); }
+  else { signal.addEventListener("abort", () => src.cancel(), { once: true }); }
+  return src.token;
+}
+
+/** How long to give an abort before telling the user it hasn't taken effect. Long enough that a
+ *  normal stop never trips it, short enough that a stuck runtime doesn't look like a hang. */
+const ABORT_GRACE_MS = 5000;
+
 export class PiService {
+  /** The TypeScript SDK runtime (module loading, auth, registry, session manager,
+   *  agent session) — the TS-path counterpart of `_rust`. The legacy field names
+   *  (session, SDK, AI, …) are kept as thin getters over this service so the
+   *  class's many read sites stay unchanged and runtime-agnostic. */
+  private _sdk: SdkService | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private session: any = null;
+  private get session(): any { return this._sdk?.session ?? null; }
   private unsubscribe: (() => void) | null = null;
-  private listeners: EventListener[] = [];
-  private _model: { id?: string; name?: string; provider?: string } | null = null;
-  private _thinkingLevel = "off";
-  private _effort = "auto";
-  private _isStreaming = false;
+  /** The webview event bus (validate → dispatch, listener-error isolation). See event-bus.ts. */
+  private readonly _bus = new EventBus(validateExtensionToWebview, piWarn);
+  /** The active model identity — now OWNED by the active backend (SdkService/RustService)
+   *  and read through the seam, not stored here. Kept as a getter so the ~38 read-sites
+   *  are unchanged; the backends update it on init / setModel / applyState. */
+  private get _model(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null {
+    return this.backend?.getModel() ?? null;
+  }
+  /** The active thinking level — now OWNED by the active backend and read through the
+   *  seam (getter, so the ~10 read-sites are unchanged). Backends update it on init /
+   *  setThinkingLevel / applyThinkingLevel. */
+  private get _thinkingLevel(): string { return this.backend?.getThinkingLevel() ?? "off"; }
+  /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
+   *  user's prior Reasoning level (falls back to the model's highest). */
+  private _lastReasoningLevel: string | undefined;
+  // The run/streaming flags are OWNED by the active backend now (see PiBackend); PiService reads
+  // them via `this.backend` and applies the event-stream mutations through its setters. The
+  // agent_end double-emit dedupe (which the run flag guards) lives in RustService.handleEvent.
+  /** Event types already logged as unhandled, so upstream protocol drift is
+   *  surfaced once in the output channel rather than flooding it per event. */
+  private _warnedUnknownEvents = new Set<string>();
   private sessionId: string | null = null;
 
-  // SDK root path (for re-importing individual modules)
-  private _piRoot: string | null = null;
+  // ── Runtime selection: in-process TypeScript SDK vs out-of-process Rust ──
+  private _backendKind: Runtime = "typescript";
+  /** The out-of-process Rust runtime (process lifecycle, RPC handshake, event
+   *  translation, synthetic queue, usage/entries). Non-null only for a Rust
+   *  session; PiService delegates the Rust branch of each backend-aware method
+   *  here. See src/rust-service.ts (and the RustHost contract it consumes). */
+  private _rust: RustService | null = null;
 
-  // SDK instances (loaded at init time)
+  /** The active runtime as a PiBackend (in-process SDK or out-of-process Rust), or
+   *  null before init / after a failed init. PiService delegates the primitive,
+   *  runtime-divergent operations (sendPrompt, abort, compact, setModel, …) here
+   *  instead of branching on `_backendKind` at each call site. Orchestration and UI
+   *  (pickers, slash dispatch, status/cost formatting) stay in PiService. */
+  private get backend(): PiBackend | null {
+    // Exhaustive on Runtime: a third runtime becomes a compile error here (and at the other
+    // _backendKind branch points) rather than silently routing to the SDK.
+    switch (this._backendKind) {
+      case "rust": return this._rust;
+      case "typescript": return this._sdk;
+      default: return assertNever(this._backendKind, "runtime");
+    }
+  }
+
+  // SDK state — owned by SdkService; exposed under the legacy names as getters.
+  private get _piRoot(): string | null { return this._sdk?.piRoot ?? null; }
   /* eslint-disable @typescript-eslint/no-explicit-any -- SDK objects are dynamically typed */
-  private SDK: PiSdk | null = null;
-  private AI: PiAi | null = null;
-  private authStorage: any = null;
-  private modelRegistry: any = null;
-  private settingsManager: any = null;
-  private sessionManager: any = null;
-  private resourceLoader: any = null;
+  private get SDK(): PiSdk | null { return this._sdk?.SDK ?? null; }
+  private get AI(): PiAi | null { return this._sdk?.AI ?? null; }
+  /** Unified auth+model facade (pi-coding-agent >= 0.80.8), owned by SdkService. */
+  private get modelRuntime(): any { return this._sdk?.modelRuntime ?? null; }
+  private get settingsManager(): any { return this._sdk?.settingsManager ?? null; }
+  private get sessionManager(): any { return this._sdk?.sessionManager ?? null; }
+  private get resourceLoader(): any { return this._sdk?.resourceLoader ?? null; }
 
   // Model cycling state (populated dynamically from registry)
-  private cycleModels: Array<{ provider: string; id: string }> = [];
+  private cycleModels: Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }> = [];
   private cycleIndex = 0;
 
   // Track current assistant message content (for toolCall stubs during message_update)
-  private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any }> = new Map();
+  private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any; lastPreviewEmit?: number }> = new Map();
 
   // Widget activity timer (cleared on dispose to prevent leaks)
-  private _widgetTimer: ReturnType<typeof setInterval> | null = null;
+  /** The extension UIContext bridge (widget sweep + dialog routing), created on
+   *  bindExtensionUI. Its dispose() stops the idle-widget timer. */
+  private _uiBridge: ExtensionUIBridge | null = null;
 
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   // Pending interactive dialogs (select/confirm/input).  Maps dialog ID → Promise resolve.
   private _pendingDialogs = new Map<string, { resolve: (v: unknown) => void }>();
 
-  // Turn tracking (like AgentSession._turnIndex in the SDK)
-  private turnIndex = 0;
 
   // User message history for the resend/reuse feature (#2)
   private _userMessages: Array<{ id: string; text: string; timestamp?: number }> = [];
@@ -343,48 +199,15 @@ export class PiService {
   // ── Public API ─────────────────────────────────────────
 
   onEvent(listener: EventListener): () => void {
-    this.listeners.push(listener);
-    return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
-    };
+    return this._bus.subscribe(listener);
   }
 
-  private emit(event: PiServiceEvent): void {
-    // ── Layer 1: Runtime protocol validation ───────────────
-    // Validates every outgoing message against the Zod schema.
-    // If validation fails, we STILL emit to avoid breaking existing
-    // functionality, but log the error and show a diagnostic notification.
-    const result = validateExtensionToWebview(event);
-    if (!result.success) {
-      piWarn(`[protocol] emit validation failed for type "${(event as Record<string, unknown>).type}": ${result.error}`);
-      // Emit a visible diagnostic so the user (and us) can see the issue
-      this.emitSafe({
-        type: "custom-message",
-        data: {
-          customType: "pi-gui-diagnostic",
-          content: `Protocol validation error (type: ${(event as Record<string, unknown>).type}): ${result.error.substring(0, 200)}`,
-          display: false,
-        },
-      });
-    }
-    // Dispatch to listeners (always, even on validation failures for backward compat)
-    for (const l of this.listeners) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      try { l(event); } catch (e: any) {
-        piWarn(`emit listener threw for type "${(event as Record<string, unknown>).type}": ${e?.message ?? e}`);
-      }
-    }
-  }
+  /** Validate-then-dispatch a webview event (validation failure logs + pushes a diagnostic but
+   *  still emits). See event-bus.ts. */
+  private emit(event: PiServiceEvent): void { this._bus.emit(event); }
 
   /** Emit without validation (used internally to avoid recursive validation on diagnostics). */
-  private emitSafe(event: PiServiceEvent): void {
-    for (const l of this.listeners) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      try { l(event); } catch (e: any) {
-        piWarn(`emitSafe listener threw for type "${(event as Record<string, unknown>).type}": ${e?.message ?? e}`);
-      }
-    }
-  }
+  private emitSafe(event: PiServiceEvent): void { this._bus.emitSafe(event); }
 
   static async checkInstall(): Promise<InstallStatus> {
     try {
@@ -437,7 +260,7 @@ export class PiService {
       const cfg = vscode.workspace.getConfiguration("pi-code-gui");
       const sessionDir = cfg.get<string>("sessionDir")?.trim() || undefined;
       const sessions = await SDK.SessionManager.list(cwd, sessionDir);
-      piLog(`listSessions: found ${sessions.length} past sessions in ${cwd}`);
+      piDebug(`listSessions: found ${sessions.length} past sessions in ${cwd}`);
       return sessions;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -454,330 +277,61 @@ export class PiService {
     await fs.promises.unlink(filePath);
   }
 
-  async initialize(opts?: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string }> {
+  async initialize(opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     const fresh = opts?.fresh ?? false;
     const openPath = opts?.openPath ?? null;
-    // ── Step 1: Resolve SDK ────────────────────────────
-    try {
-      this._piRoot = resolvePiPackagePath();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `SDK not found: ${e.message ?? e}` };
+
+    // ── Runtime branch: Rust runs out-of-process via the RPC subprocess ──
+    const runtime = opts?.runtime ?? this._backendKind;
+    if (runtime === "rust") {
+      return this.initializeRust({ fresh, openPath: openPath ?? undefined });
+    }
+    if (runtime !== "typescript") { assertNever(runtime, "runtime"); }
+    this._backendKind = "typescript";
+    // Re-init replaces any prior session: drop the stale reference NOW so a failed
+    // init reports `initialized === false` instead of pointing at the abandoned
+    // session (the getter can't otherwise distinguish "init succeeded" from
+    // "stale leftover"). A live Rust runtime here is unexpected (runtimes never
+    // hot-swap within a session window) — dispose it rather than leak the subprocess.
+    // Re-init replaces any prior runtime state. A live Rust runtime here is
+    // unexpected (runtimes never hot-swap within a session window) — dispose it
+    // rather than leak the subprocess. Constructing a fresh SdkService below drops
+    // any stale session reference, so a failed init reports `initialized === false`
+    // instead of pointing at the abandoned session.
+    if (this._rust) {
+      piWarn("TypeScript init found a live Rust runtime on this service (unexpected) — disposing it");
+      this._rust.dispose();
+      this._rust = null;
     }
 
-    // ── Step 2: Load SDK modules ───────────────────────
-    try {
-      this.SDK = (await importWithRetry(
-        path.join(this._piRoot, "dist/index.js"), 5, 500
-      )) as PiSdk;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `Failed to load pi-coding-agent: ${e.message ?? e}` };
+    // ── SDK plumbing (former init Steps 1–9) — owned by SdkService ──
+    // Resolves/loads the SDK, adapts pi-ai ≥0.80, sets up auth/registry/settings,
+    // picks the model (default override + session resume + capability reconcile +
+    // thinking clamp), builds the ResourceLoader and tools, opens the
+    // SessionManager, and creates the agent session. PiService applies the
+    // returned shared state and wires the session to the UI below (Steps 10–12).
+    this._sdk = new SdkService({
+      emit: (e) => this.emit(e),
+      resolvePiRoot: () => resolvePiPackagePath(),
+    }, this.makeSdkDeps());
+    const init = await this._sdk.initialize({ fresh, openPath });
+    if (!init.success || !this.session) {
+      return { success: false, error: init.error ?? "SDK initialization produced no session.", errorKind: init.errorKind, warning: init.warning };
     }
-
-    try {
-      this.AI = (await importWithRetry(
-        path.join(this._piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"), 5, 500
-      )) as PiAi;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      const msg = e.message ?? String(e);
-      // Detect common missing-dependency patterns caused by broken npm global
-      // installs and give a specific fix instruction.
-      const openaiMatch = msg.match(/openai\/index\.js/);
-      const anthroMatch = msg.match(/@anthropic-ai\/sdk/);
-      if (openaiMatch || anthroMatch) {
-        return {
-          success: false,
-          error:
-            `Missing dependency (${openaiMatch ? "openai" : "@anthropic-ai/sdk"}). ` +
-            `This is usually caused by a broken npm global install. ` +
-            `Fix: npm uninstall -g @earendil-works/pi-coding-agent && npm install -g @earendil-works/pi-coding-agent`,
-        };
-      }
-      return { success: false, error: `Failed to load pi-ai: ${msg}` };
-    }
-    // Load typebox for defineTool usage (with retry — npm install may still
-    // be populating node_modules when the extension host first activates).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let Type: any;
-    try {
-      const Typebox = await importWithRetry(
-        path.join(this._piRoot, "node_modules/typebox/build/index.mjs"),
-        5,  // max attempts
-        500 // delay ms between attempts
-      );
-      Type = Typebox.Type ?? Typebox;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `Failed to load typebox: ${e.message ?? e}` };
-    }
-
-    const SDK = this.SDK;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-
-    // ── Step 3: Auth & model registry ──────────────────
-    try {
-      this.authStorage = SDK.AuthStorage.create();
-
-      // Runtime API key override from VS Code secrets or env
-      const config = vscode.workspace.getConfiguration("pi-code-gui");
-      const anthropicKey = config.get<string>("anthropicApiKey");
-      if (anthropicKey) {
-        this.authStorage.setRuntimeApiKey("anthropic", anthropicKey);
-      }
-      const openaiKey = config.get<string>("openaiApiKey");
-      if (openaiKey) {
-        this.authStorage.setRuntimeApiKey("openai", openaiKey);
-      }
-
-      this.modelRegistry = SDK.ModelRegistry.create(this.authStorage);
-      this.settingsManager = SDK.SettingsManager.create(cwd);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `Auth/registry setup failed: ${e.message ?? e}` };
-    }
-
-    // ── Step 4: Pick a model (dynamic from registry) ──
-    const AI = this.AI;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let model: any = null;
-    try {
-      // Try registry first (respects API keys)
-      const available = await this.modelRegistry.getAvailable();
-      if (available.length > 0) {
-        model = available[0];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.cycleModels = available.map((m: any) => ({ provider: m.provider, id: m.id }));
-      } else {
-        // Fallback: try built-in models via modelRegistry.find() and getModel()
-        this.cycleModels = [];
-        for (const candidate of [
-          ["anthropic", "claude-sonnet-4-5"],
-          ["anthropic", "claude-haiku-4-5"],
-          ["openai", "gpt-4o"],
-        ]) {
-          const found = this.modelRegistry.find(candidate[0], candidate[1]);
-          if (found) {
-            this.cycleModels.push({ provider: candidate[0], id: candidate[1] });
-            if (!model) { model = found; }
-          }
-        }
-        // Try getModel for models not in registry but built-in
-        if (!model) {
-          for (const candidate of [
-            ["anthropic", "claude-sonnet-4-5"],
-            ["anthropic", "claude-haiku-4-5"],
-            ["openai", "gpt-4o"],
-          ]) {
-            const m = AI.getModel(candidate[0], candidate[1]);
-            if (m) { model = m; break; }
-          }
-        }
-      }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `Model lookup failed: ${e.message ?? e}` };
-    }
-
-    if (!model) {
-      return {
-        success: false,
-        error: "No model available. Set an API key (e.g. ANTHROPIC_API_KEY) and restart.",
-      };
-    }
-
-    // ── Override with user's default model from VS Code settings ──
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    const defProvider = cfg.get<string>("defaultModelProvider");
-    const defModelId = cfg.get<string>("defaultModelId");
-    if (defProvider && defModelId) {
-      const defModel = this.modelRegistry.find(defProvider, defModelId) ?? AI.getModel(defProvider, defModelId);
-      if (defModel) { model = defModel; }
-    }
-
-    // ── Override context budget from VS Code settings ──
-    const contextBudget = cfg.get<number>("contextBudget") ?? 0;
-    if (contextBudget > 0) {
-      model = { ...model, contextWindow: contextBudget };
-    }
-
-    this._model = { id: model.id, name: model.name, provider: model.provider };
-
-    // ── Step 5: ResourceLoader ─────────────────────────
-    // Builds custom system prompt, skills, context files, and prompt templates
-    try {
-      const DefaultResourceLoader = SDK.DefaultResourceLoader;
-      const getAgentDir = SDK.getAgentDir;
-
-      const contextFiles = buildContextFiles(cwd);
-      const templates = buildPromptTemplates(SDK.createSyntheticSourceInfo);
-
-      this.resourceLoader = new DefaultResourceLoader({
-        cwd,
-        agentDir: getAgentDir ? getAgentDir() : undefined,
-        // Custom system prompt with VS Code context
-        systemPromptOverride: () => buildSystemPrompt(),
-        // Prevent DefaultResourceLoader from appending default append files
-        appendSystemPromptOverride: () => [],
-        // Inject virtual context files with project-specific guidelines
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        agentsFilesOverride: (current: any) => ({
-          agentsFiles: [...current.agentsFiles, ...contextFiles],
-        }),
-        // Inject custom slash commands
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        promptsOverride: (current: any) => ({
-          prompts: [...current.prompts, ...templates],
-          diagnostics: current.diagnostics,
-        }),
-      });
-      await this.resourceLoader.reload();
-
-      // Report discovered resources
-      const { skills: discoveredSkills } = this.resourceLoader.getSkills();
-      piLog(`Extensions: ${discoveredSkills.map((s: Record<string, unknown>) => s.name).join(", ") || "none"}`);
-    } catch (e: unknown) {
-      piWarn(`ResourceLoader setup warning: ${e instanceof Error ? e.message : String(e)}`);
-      // Non-fatal: ResourceLoader is optional, session can work without it
-    }
-
-    // ── Step 6: Session tools ──────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let tools: any[];
-    try {
-      tools = [
-        ...SDK.createCodingTools(cwd),
-        ...createBridgeTools(SDK.defineTool, Type),
-      ];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `Tool setup failed: ${e.message ?? e}` };
-    }
-
-    // ── Step 7: Session manager ─────────────────────
-    try {
-      const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-      const sessionDir = cfg.get<string>("sessionDir")?.trim() || undefined;
-      if (openPath) {
-        this.sessionManager = SDK.SessionManager.open(openPath, sessionDir);
-      } else if (fresh) {
-        this.sessionManager = SDK.SessionManager.create(cwd, sessionDir);
-      } else {
-        try {
-          this.sessionManager = await SDK.SessionManager.continueRecent(cwd);
-        } catch {
-          this.sessionManager = SDK.SessionManager.create(cwd, sessionDir);
-        }
-      }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `Session manager failed: ${e.message ?? e}` };
-    }
-
-    // ── Step 8: Restore model & thinking from session file (if resuming) ──
-    //        Applies to both openPath (resume from Past Sessions) and
-    //        continueRecent (restoring after VS Code restart).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let resumeModel: any = model;
-    let resumeThinkingLevel = cfg.get<string>("defaultThinkingLevel") ?? "off";
-    let foundSessionModel = false;
-    let foundSessionThinking = false;
-    const isResuming = !fresh && this.sessionManager;
-    if (isResuming) {
-      const entries = this.sessionManager.getEntries?.();
-      if (Array.isArray(entries)) {
-        piLog(`Restoring model/thinking from session: ${entries.length} entries`);
-        // Walk entries in reverse to find the last model_change and thinking_level_change
-        for (let i = entries.length - 1; i >= 0; i--) {
-          const e = entries[i];
-          if (!foundSessionModel && e.type === "model_change" && e.provider && e.modelId) {
-            // Try to resolve the model from the registry
-            const found = this.modelRegistry.find(e.provider, e.modelId);
-            if (found) {
-              resumeModel = found;
-              foundSessionModel = true;
-              piLog(`Restored model from session: ${e.provider}/${e.modelId}`);
-            } else {
-              // Fallback: try getModel
-              const m = AI.getModel(e.provider, e.modelId);
-              if (m) {
-                resumeModel = m;
-                foundSessionModel = true;
-                piLog(`Restored model from session (fallback): ${e.provider}/${e.modelId}`);
-              } else {
-                piWarn(`Could not resolve session model: ${e.provider}/${e.modelId}`);
-              }
-            }
-          }
-          if (!foundSessionThinking && e.type === "thinking_level_change" && e.thinkingLevel) {
-            resumeThinkingLevel = e.thinkingLevel;
-            foundSessionThinking = true;
-            piLog(`Restored thinking from session: ${e.thinkingLevel}`);
-          }
-          // Stop early once both are resolved
-          if (foundSessionModel && foundSessionThinking) { break; }
-        }
-        if (!foundSessionModel) { piLog("No model_change entry found in session"); }
-        if (!foundSessionThinking) { piLog("No thinking_level_change entry found in session"); }
-      }
-    } else {
-      piLog(`Skipping session restore (fresh=${fresh}, hasSessionManager=${!!this.sessionManager})`);
-    }
-
-    // ── Step 9: Create agent session ───────────────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let result: any;
-    try {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const opts: any = {
-        model: resumeModel,
-        thinkingLevel: resumeThinkingLevel,
-        authStorage: this.authStorage,
-        modelRegistry: this.modelRegistry,
-        settingsManager: this.settingsManager,
-        sessionManager: this.sessionManager,
-        customTools: tools,
-        cwd,
-      };
-
-      // Scoped models from registry (dynamic)
-      if (this.cycleModels.length > 0) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        opts.scopedModels = this.cycleModels.map((m: any) => ({
-          model: AI.getModel(m.provider, m.id),
-          thinkingLevel: "off",
-        }));
-      }
-
-      // ResourceLoader with custom system prompt, context files, templates
-      if (this.resourceLoader) {
-        opts.resourceLoader = this.resourceLoader;
-      }
-
-      // Inject before extensions load (SDK may load them during createAgentSession)
-      (globalThis as Record<string, unknown>).__piRegisterMessageRenderer = (customType: string, sourceCode: string) => {
-        this.emit({ type: "registerMessageRenderer", data: { customType, sourceCode } });
-      };
-
-      result = await SDK.createAgentSession(opts);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      return { success: false, error: `createAgentSession failed: ${e.message ?? e}` };
-    }
-
-    this.session = result.session;
-    this._thinkingLevel = resumeThinkingLevel;
+    // _model is owned by SdkService now (set during initialize); PiService reads it via
+    // the getter. cycleModels remains PiService orchestration; _thinkingLevel is owned by
+    // SdkService (set during initialize) and read via the getter.
+    this.cycleModels = init.cycleModels ?? [];
+    // Seed the off→on toggle memory from the restored level (restore sets
+    // _thinkingLevel directly, bypassing setThinkingLevel/rememberReasoning), so a
+    // session reopened at e.g. "high" toggles back to "high" rather than the model's
+    // highest. Only a real reasoning level is worth remembering.
+    this.rememberReasoning();
     this.sessionId = this.session.sessionId;
 
     // Restore active tools from session file (if resuming)
-    if (isResuming) {
+    if (init.isResuming) {
       this._restoreActiveToolsFromSession();
-    }
-
-    // Update cached model if resume overrode it
-    if (resumeModel !== model) {
-      this._model = { id: resumeModel.id, name: resumeModel.name, provider: resumeModel.provider };
     }
 
     // ── Step 10: Subscribe to events ───────────────────
@@ -795,9 +349,17 @@ export class PiService {
     await this.sendInitialMessages();
     this.emit({ type: "batch-end", data: { hasEntries } });
 
+    // Seed the settings toggles from the SESSION's real state before advertising them. They
+    // used to be hardcoded `true` and never read back, so a resumed session whose settings
+    // differed showed a UI that disagreed with its own behaviour — and, until setAutoRetry was
+    // wired, a retry toggle that had never done anything anyway. The Rust path never had this
+    // gap (applyState syncs both from get_state). Absent values keep the current default.
+    const sessionSettings = this._sdk?.readSessionSettings() ?? {};
+    if (typeof sessionSettings.autoCompaction === "boolean") { this._autoCompactionEnabled = sessionSettings.autoCompaction; }
+    if (typeof sessionSettings.autoRetry === "boolean") { this._autoRetryEnabled = sessionSettings.autoRetry; }
+
     this.reportStatus();
     try {
-      this.emitScopedModels();
       this.emitSettings();
       this.emitSlashCommands();
     } catch (e: unknown) {
@@ -805,6 +367,162 @@ export class PiService {
     }
 
     return { success: true };
+  }
+
+  // ── Rust runtime (out-of-process RPC) ──────────────────
+
+  /**
+   * Initialize a session backed by the Rust Pi binary (`pi --mode rpc`).
+   * The subprocess owns persistence and tool execution; we drive it over the
+   * line-delimited JSON RPC protocol and route its events through the existing
+   * handleAgentEvent path (the event shapes mirror the TS SDK's).
+   */
+  private async initializeRust(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
+    this._backendKind = "rust";
+    // Dispose any prior runtime before overwriting the handle. Every caller currently
+    // disposes first, so this is a no-op today — but without it, a future caller that
+    // doesn't would orphan a live subprocess (the same leak fixed in RustService's
+    // spawn-failure paths). Cheap invariant, not a behavior change.
+    this._rust?.dispose();
+    this._rust = new RustService(this.makeRustHost(), this.makeRustDeps());
+    const result = await this._rust.initialize(opts);
+    // Mirror the pre-extraction contract: a failed init nulls the live runtime
+    // (the old code nulled `this.rust`), so `initialized` reports false.
+    // INVARIANT: `_backendKind` deliberately STAYS "rust" on failure (not reset to
+    // "typescript") so a retry — e.g. the user reopening the session — re-enters
+    // this Rust path rather than silently switching the session to the TS SDK.
+    if (!result.success) { this._rust = null; }
+    return result;
+  }
+
+  /** Real (vscode-backed) implementations of RustService's environment deps.
+   *  RustService itself is vscode-free so its init/handshake sequence can be
+   *  driven headlessly in unit tests with stubbed deps (see rust-service.test.ts). */
+  private makeRustDeps(): RustDeps {
+    return {
+      detectBinary: () => detectRustBinary(),
+      shouldDisableExtensions: (cwd) => shouldDisableRustExtensions(cwd),
+      extensionsMode: () => rustExtensionsMode(),
+      setupModels: () => setupRustModels(),
+      sessionDir: () => resolveRustSessionDir(),
+      workspaceCwd: () => resolveWorkspaceCwd(),
+      config: () => {
+        const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+        return {
+          defaultModelProvider: cfg.get<string>("defaultModelProvider"),
+          defaultModelId: cfg.get<string>("defaultModelId"),
+          defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel")?.trim() || "off",
+          rustExtensionPolicy: cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced",
+          // Register before use: the logger scrubs these exact values from every log line and
+          // from the error text that reaches the webview (a custom/self-hosted key matches no
+          // vendor prefix, so pattern-matching alone would miss it).
+          // SecretStorage is the source of truth (settings are migrated + cleared at activation);
+          // the settings read remains as a fallback for a value written after startup.
+          anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
+          openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
+          contextBudget: cfg.get<number>("contextBudget") ?? 0,
+        };
+      },
+      showError: (message) => { void vscode.window.showErrorMessage(message); },
+      exportHtml: (sessionFile, outputPath) => rustExportHtml(sessionFile, outputPath),
+      detectMissingTools: async () => {
+        const missing = await detectMissingRustTools();
+        if (missing.length === 0) { return null; }
+        return missing.map((m) => ({ name: m.cmds[0], docs: m.docs }));
+      },
+      offerReopen: (sessionFile) => {
+        // The session JSONL persists on disk; offer one-click recovery into a fresh
+        // window via the existing resume flow — avoids in-place re-init (which would
+        // replay history into the dead tab) and crash-loops (user-initiated).
+        void vscode.window
+          .showWarningMessage("Rust Pi exited unexpectedly.", "Reopen session")
+          .then((choice) => {
+            if (choice === "Reopen session") {
+              void vscode.commands.executeCommand("pi-code-gui.resumePastSession", sessionFile);
+            }
+          });
+      },
+    };
+  }
+
+  /** Real (vscode-backed) implementations of SdkService's environment deps.
+   *  SdkService is vscode-free so its resolve→load→session init sequence can be
+   *  driven headlessly in unit tests with stubbed deps (see sdk-service.test.ts). */
+  private makeSdkDeps(): SdkDeps {
+    return {
+      workspaceCwd: () => resolveWorkspaceCwd(),
+      config: () => {
+        const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+        return {
+          // Register before use: the logger scrubs these exact values from every log line and
+          // from the error text that reaches the webview (a custom/self-hosted key matches no
+          // vendor prefix, so pattern-matching alone would miss it).
+          // SecretStorage is the source of truth (settings are migrated + cleared at activation);
+          // the settings read remains as a fallback for a value written after startup.
+          anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
+          openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
+          defaultModelProvider: cfg.get<string>("defaultModelProvider"),
+          defaultModelId: cfg.get<string>("defaultModelId"),
+          defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
+          contextBudget: cfg.get<number>("contextBudget") ?? 0,
+          sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
+        };
+      },
+      importModule: (absPath) => importWithRetry(absPath, 5, 500),
+      fileExists: (p) => fs.existsSync(p),
+      readFileUtf8: (p) => fs.promises.readFile(p, "utf-8"),
+      buildBridgeTools: (defineTool, typebox) => createBridgeTools(defineTool, typebox),
+      catalogProviders: () => this.bundledProviders,
+      // Arbitrary JS in the webview — ask once per custom type and remember the answer.
+      confirmRendererConsent: (customType) => confirmRendererConsent(customType),
+      notifyOutdatedPiAi: (installed, supported, belowFloor) => {
+        const UPDATE = "Update";
+        // Below the floor is a compatibility problem (we drop to a legacy code path); merely
+        // behind this build's target is a nudge. Same one-click offer either way, different
+        // severity and wording, so a routine "newer version exists" doesn't read as breakage.
+        const message = belowFloor
+          ? `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${supported}+. It still works via a legacy path, but update for full compatibility.`
+          : `A newer Pi (TypeScript) SDK is available: you have pi-ai ${installed}, this extension is built against ${supported}. Updating keeps model support and pricing in step.`;
+        const show = belowFloor ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+        void show(message, UPDATE).then((choice) => {
+          if (choice === UPDATE) {
+            const term = vscode.window.createTerminal("Update Pi SDK");
+            term.show();
+            // Typed, NOT executed — the user reviews and runs it, because this mutates global
+            // npm state and automated installs are not reliable on every platform.
+            term.sendText("npm install -g @earendil-works/pi-coding-agent", false);
+          }
+        });
+      },
+    };
+  }
+
+  /** Build the RustHost callback surface RustService writes through — the explicit
+   *  contract for the shared PiService state and capabilities the Rust subsystem
+   *  needs (see src/rust-service.ts). Created fresh per Rust session. */
+  private makeRustHost(): RustHost {
+    return {
+      emit: (e) => this.emit(e),
+      handleAgentEvent: (e) => this.handleAgentEvent(e),
+      reportStatus: () => this.reportStatus(),
+      sendInitialMessages: (entries) => this.sendInitialMessages(entries),
+      emitPostInitState: () => { this.emitSettings(); this.emitSlashCommands(); },
+      showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
+      rememberReasoning: () => { this.rememberReasoning(); },
+      setSessionId: (id) => { this.sessionId = id; },
+      getCycleModels: () => this.cycleModels,
+      setCycleModels: (list) => { this.cycleModels = list; },
+      setAutoCompactionEnabled: (v) => { this._autoCompactionEnabled = v; },
+      setAutoRetryEnabled: (v) => { this._autoRetryEnabled = v; },
+    };
+  }
+
+  /** Runtime-agnostic session entries for the Open Sessions tree. The TS SDK
+   *  exposes them via sessionManager.getEntries(); the out-of-process Rust
+   *  runtime supplies them through the cached get_messages reply. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getDisplayEntries(): any[] {
+    return this.backend?.getEntries() ?? [];
   }
 
   // ── Extension UI Bridge ────────────────────────────
@@ -819,151 +537,14 @@ export class PiService {
       return;
     }
 
-    const emit = (event: PiServiceEvent): void => this.emit(event);
-
-    // Active widgets keyed by widget key (rendered text per widget)
-    const widgetTexts = new Map<string, string>();
-    const widgetLastUpdate = new Map<string, number>();
-    // Periodically check for stale widgets (not updated in 30s) and clear them.
-    // This prevents orphaned animations from running forever when extensions
-    // forget to call stopWidgetAnimation (e.g. pi-subagents async jobs).
-    const MAX_WIDGET_IDLE_MS = 30_000;
-    this._widgetTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [key, lastUpdate] of widgetLastUpdate) {
-        if (now - lastUpdate > MAX_WIDGET_IDLE_MS) {
-          widgetTexts.delete(key);
-          widgetLastUpdate.delete(key);
-          emit({ type: "widget-update", data: { key, content: null } });
-        }
-      }
-    }, 10_000);
-    if (this._widgetTimer.unref) { this._widgetTimer.unref(); }
-
-    // Base uiContext with the methods we explicitly support.
-    // Wrapped in a Proxy so any unknown method calls (e.g. from TUI-only
-    // extensions) silently no-op instead of throwing "is not a function".
-    const baseUIContext = {
-      notify: (message: string, level: "info" | "error") => {
-        if (level === "error") {
-          piWarn(`ui.notify(error): ${message.substring(0, 120)}`);
-        }
-        emit({
-          type: "custom-message",
-          data: {
-            customType: level === "error" ? "error" : "extension-notify",
-            content: message,
-            timestamp: Date.now(),
-          },
-        });
-      },
-      setWidget: (key: string, factory: unknown) => {
-        if (factory === undefined || factory === null) {
-          // Clear widget
-          widgetTexts.delete(key);
-          widgetLastUpdate.delete(key);
-          emit({
-            type: "widget-update",
-            data: { key, content: null },
-          });
-          return;
-        }
-
-        if (typeof factory !== "function") {
-          piWarn(`setWidget("${key}"): factory is not a function (got ${typeof factory})`);
-          return;
-        }
-
-        try {
-          // Minimal Theme stub: fg returns text without ANSI codes.
-          // Widgets render in an HTML webview so ANSI colors are unnecessary.
-          const theme = {
-            fg: (_role: string, text: string) => text,
-          };
-          // Minimal TUI stub — extensions that need tui methods won't work,
-          // but pi-tldr and similar widgets only use theme.
-          const tui = {};
-
-          const component = (factory)(tui, theme) as {
-            render?: (width: number) => string[];
-          };
-          if (!component || typeof component.render !== "function") {
-            piWarn(`setWidget("${key}"): component.render is not a function`);
-            return;
-          }
-
-          const lines = component.render(80);
-          if (!Array.isArray(lines)) {
-            piWarn(`setWidget("${key}"): render() did not return an array`);
-            return;
-          }
-
-          // Strip any remaining ANSI escape codes (just in case)
-          const ansiRegex = /\x1b\[[0-9;]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[_][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-          const cleanLines = lines.map((l: string) => l.replace(ansiRegex, ""));
-          const content = cleanLines.join("\n");
-
-          // Skip if unchanged
-          if (widgetTexts.get(key) === content) { return; }
-          widgetTexts.set(key, content);
-          widgetLastUpdate.set(key, Date.now());
-
-          emit({
-            type: "widget-update",
-            data: { key, content },
-          });
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } catch (e: any) {
-          // Widget rendering is best-effort; don't crash the session.
-          piWarn(`setWidget("${key}"): render error: ${e?.message ?? e}`);
-        }
-      },
-      // Interactive methods — return Promises that resolve when the user
-      // dismisses the dialog in the webview.  Falls back to undefined if
-      // no webview panel is active (e.g. during tests).
-      select: (prompt: string, options: string[]) => {
-        return this._showDialog("select", prompt, { options });
-      },
-      confirm: (prompt: string) => {
-        return this._showDialog("confirm", prompt, {});
-      },
-      input: (prompt: string, defaultValue?: string) => {
-        return this._showDialog("input", prompt, { defaultValue });
-      },
-      custom: () => undefined,
-
-      // TUI compatibility stubs discovered via the Proxy at runtime
-      setToolsExpanded: (_expanded: boolean) => { /* stub — TUI widget expand/collapse */ },
-      getToolsExpanded: () => false,
-      requestRender: () => { /* stub — TUI repaint, not needed in webview */ },
-      onTerminalInput: (_handler: unknown) => { /* stub */ },
-      setStatus: (key: string, status: string | null) => {
-        // Show as a widget card so status is visible in VS Code
-        if (status === null || status === undefined) {
-          widgetTexts.delete(`status-${key}`);
-          emit({ type: "widget-update", data: { key: `status-${key}`, content: null } });
-        } else {
-          const content = `**${key}** ${status}`;
-          widgetTexts.set(`status-${key}`, content);
-          emit({ type: "widget-update", data: { key: `status-${key}`, content } });
-        }
-      },
-    };
-
-    // Proxy: log unknown method calls so we can see what TUI methods
-    // extensions expect, then no-op gracefully instead of crashing.
-    const uiContext = new Proxy(baseUIContext, {
-      get(target, prop) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (prop in target) { return (target as any)[prop]; }
-        if (typeof prop === "string" && !prop.startsWith("_")) {
-          return (...args: unknown[]) => {
-            piWarn(`ui.${prop}() called by extension but not implemented — args: ${JSON.stringify(args).substring(0, 200)}`);
-          };
-        }
-        return undefined;
-      },
+    // The UIContext (widget sweep, notify, interactive dialogs, TUI-stub Proxy) is built
+    // by the extracted, headlessly-tested extension-ui-bridge; PiService supplies its two
+    // effects (emit, showDialog) and keeps the handle to dispose the widget timer.
+    this._uiBridge = createExtensionUIBridge({
+      emit: (event) => this.emit(event),
+      showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
     });
+    const uiContext = this._uiBridge.uiContext;
 
     try {
       await this.session.bindExtensions({
@@ -972,11 +553,11 @@ export class PiService {
           piWarn(`Extension error [${extensionPath}]: ${error?.message ?? error}`);
         },
       });
-      piLog("Extension UI context bound");
+      piDebug("Extension UI context bound");
       // Log which extensions have handlers registered
       if (this.session?._extensionRunner) {
         const paths = this.session._extensionRunner.getExtensionPaths?.() ?? [];
-        piLog(`Loaded extensions: ${paths.length > 0 ? paths.join(", ") : "none"}`);
+        piDebug(`Loaded extensions: ${paths.length > 0 ? paths.join(", ") : "none"}`);
       }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -992,55 +573,14 @@ export class PiService {
    *  and builtin prompt templates.  Each entry carries a `source`
    *  field so the UI can group or label them. */
   getAllSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
-    const result: Array<{ cmd: string; desc: string; source: string }> = [];
-
-    // ── Extension commands ──────────────────────────
-    try {
- 
-      const rawSession = (this.session);
-      const runner = rawSession?._extensionRunner;
-      if (runner && typeof runner.getRegisteredCommands === "function") {
-        const commands = runner.getRegisteredCommands();
-        if (commands && commands.length > 0) {
-          for (const c of commands) {
-            const source = c?.sourceInfo?.source
-              ? `extension (${c.sourceInfo.source})`
-              : "extension";
-            result.push({
-              cmd: `/${c.invocationName}`,
-              desc: c.description ?? "",
-              source,
-            });
-          }
-        }
-      }
-    } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
-
-    // ── Builtin prompt templates ────────────────────
-    result.push(
-      { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
-      { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
-      { cmd: "/refactor", desc: "Refactor the selected code", source: "builtin" },
-    );
-
-    // ── Builtin SDK commands ────────────────────────
-    result.push(
-      { cmd: "/model", desc: "Switch model", source: "builtin" },
-      { cmd: "/new", desc: "Start new session", source: "builtin" },
-      { cmd: "/resume", desc: "Resume a previous session", source: "builtin" },
-      { cmd: "/fork", desc: "Fork session from message", source: "builtin" },
-      { cmd: "/compact", desc: "Compact context", source: "builtin" },
-      { cmd: "/export", desc: "Export session to HTML", source: "builtin" },
-      { cmd: "/settings", desc: "Open settings", source: "builtin" },
-      { cmd: "/login", desc: "Configure provider authentication", source: "builtin" },
-      { cmd: "/logout", desc: "Remove provider authentication", source: "builtin" },
-      { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
-      { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
-    );
-
-    return result;
+    // Assembly is pure + tested (buildSlashCommandList): the active backend's agent commands
+    // (Rust reports its extensions/templates/skills over RPC; the SDK introspects its
+    // extension runner + builtin templates) + the GUI/session commands + the capability-gated
+    // ones. No runtime branch here.
+    return buildSlashCommandList(this.backend?.getSlashCommands() ?? [], this.capabilities);
   }
 
+  /** Map a Rust `get_commands` reply into slash-command entries (tolerant of field naming). */
   /** Emit all registered slash commands to the webview for autocomplete. */
   emitSlashCommands(): void {
     const all = this.getAllSlashCommands();
@@ -1050,404 +590,192 @@ export class PiService {
     });
   }
 
-  /** Send existing session messages to the webview on initial load (or after reload). */
-  async sendInitialMessages(): Promise<void> {
-    // Build session context from the session manager
+  /** Send existing session messages to the webview on initial load (or after reload). The
+   *  replay decision (which events reproduce the session) is the pure, unit-tested
+   *  replaySessionEntries (src/session-replay.ts); this shell owns the side effects: appending
+   *  to the capped user-message history, then emitting each entry's group and yielding to the
+   *  event loop so the webview paints top-down (oldest first) without a synchronous DOM flood
+   *  that would crash the extension host on large sessions. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async sendInitialMessages(providedEntries?: any[]): Promise<void> {
+    // Build session context from the session manager, or from caller-provided
+    // entries (the Rust runtime supplies these from its `get_messages` reply).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let entries: any[];
-    try {
-      entries = this.sessionManager.getEntries();
-      piLog(`sendInitialMessages: ${entries?.length ?? 0} entries`);
+    if (providedEntries) {
+      entries = providedEntries;
+      piDebug(`sendInitialMessages: ${entries.length} provided entries`);
+    } else {
+      try {
+        entries = this.sessionManager.getEntries();
+        piDebug(`sendInitialMessages: ${entries?.length ?? 0} entries`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      piWarn(`sendInitialMessages: getEntries failed: ${e.message}`);
-      return;
+      } catch (e: any) {
+        piWarn(`sendInitialMessages: getEntries failed: ${e.message}`);
+        return;
+      }
     }
     if (!entries || entries.length === 0) { return; }
 
-    // Pre-index tool results by call ID (O(n) instead of O(n²) .find() per entry)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toolResultsById = new Map<string, any>();
-    for (const e of entries) {
-      if (e.type === "message" && e.message?.role === "toolResult") {
-        toolResultsById.set(e.message.toolCallId, e);
-      }
+    const { groups, userMessages } = replaySessionEntries(entries, { now: Date.now() });
+    for (const m of userMessages) {
+      this._userMessages.push(m);
+      if (this._userMessages.length > 50) { this._userMessages.shift(); }
     }
 
-    // Replay entries top-down (oldest first), yielding to the event loop
-    // between each entry.  This guarantees correct visual order (oldest at
-    // top, newest at bottom) and prevents the synchronous DOM flood that
-    // would crash the extension host on large sessions.
     const yieldTick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
-
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (entry.type === "message" && entry.message) {
-        const msg = entry.message;
-        if (msg.role === "user") {
-          const text = this.extractTextFromContent(msg.content);
-          if (text) {
-            this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry.id } });
-          }
-        } else if (msg.role === "assistant") {
-          const text = this.extractTextFromContent(msg.content);
-          const thinking = this.extractThinkingFromContent(msg.content);
-          const toolCalls = this.extractToolCallsFromContent(msg.content);
-          
-
-          // Always emit assistant messages — even tool-only ones with no text.
-          // Skipping them makes tool executions invisible on reload/resume.
-          this.emit({ type: "assistant-start", data: { messageId: msg.id, entryId: entry.id } });
-          // Emit thinking content first, then text
-          if (thinking) {
-            this.emit({ type: "thinking-delta", data: { delta: thinking } });
-            this.emit({ type: "thinking-delta", data: { delta: "", done: true } });
-          }
-          if (text) {
-            this.emit({ type: "stream-delta", data: { delta: text } });
-          }
-          this.emit({
-            type: "assistant-end",
-            data: {
-              stopReason: msg.stopReason,
-              errorMessage: msg.errorMessage,
-              toolCalls: toolCalls.map((tc) => tc.id),
-            },
-          });
-
-          for (const tc of toolCalls) {
-            const toolResultEntry = toolResultsById.get(tc.id);
-            if (tc.name === "bash" || tc.name === "exec") {
-              this.emit({ type: "bash-start", data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", entryId: toolResultEntry?.id } });
-              const outputText = toolResultEntry?.message
-                ? this.extractTextFromContent(toolResultEntry.message.content)
-                : "";
-              this.emit({
-                type: "bash-end",
-                data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", exitCode: 0, cancelled: false, output: outputText, isError: false, entryId: toolResultEntry?.id },
-              });
-            } else {
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments, fromMessage: true, entryId: toolResultEntry?.id } });
-              if (toolResultEntry?.message) {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: toolResultEntry.message, isError: false, entryId: toolResultEntry?.id } });
-              } else {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: { content: [{ type: "text", text: "(completed)" }] }, isError: false, entryId: toolResultEntry?.id } });
-              }
-            }
-          }
-        } else if (msg.role === "custom") {
-          this.emit({ type: "custom-message", data: { customType: msg.customType, content: msg.content, display: msg.display, details: msg.details, timestamp: msg.timestamp, entryId: entry.id } });
-        } else if (msg.role === "bashExecution") {
-          const bashEntryId = entry.id ?? `bash-${Date.now()}`;
-          this.emit({ type: "bash-start", data: { toolCallId: bashEntryId, command: msg.command ?? "", entryId: entry.id } });
-          this.emit({ type: "bash-end", data: { toolCallId: bashEntryId, command: msg.command ?? "", exitCode: msg.exitCode, cancelled: msg.cancelled, output: msg.output ?? "", isError: msg.exitCode !== 0 && msg.exitCode !== null, entryId: entry.id } });
-        }
-      } else if (entry.type === "compaction") {
-        this.emit({
-          type: "compaction-summary-message",
-          data: { summary: entry.summary ?? "", tokensBefore: entry.tokensBefore ?? 0, timestamp: this._toTimestamp(entry.timestamp), entryId: entry.id },
-        });
-      }
-
-      // Yield after every entry so the webview paints incrementally.
-      await yieldTick();
+    for (const group of groups) {
+      for (const ev of group) { this.emit(ev); }
+      await yieldTick(); // paint incrementally
     }
   }
 
   // ── Agent event → PiServiceEvent translation ────────────
 
-  /** SDK entries store timestamps as ISO strings; protocol expects numbers. */
-  private _toTimestamp(ts: unknown): number {
-    if (typeof ts === "number") { return ts; }
-    if (ts) { return Date.parse(String(ts)); }
-    return Date.now();
-  }
-
-  /** Extract plain text from a message content (string or array) */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private extractTextFromContent(content: any): string {
-    if (!content) { return ""; }
-    if (typeof content === "string") { return content; }
-    if (Array.isArray(content)) {
-      return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((c: any) => c.type === "text")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((c: any) => c.text)
-        .join("\n");
-    }
-    return "";
-  }
-
-  /** Extract thinking content blocks from an assistant message content array */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private extractThinkingFromContent(content: any): string {
-    if (!content) { return ""; }
-    if (Array.isArray(content)) {
-      return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .filter((c: any) => c.type === "thinking")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((c: any) => c.thinking)
-        .join("\n");
-    }
-    return "";
-  }
-
-  /** Extract tool call content blocks from an assistant message */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private extractToolCallsFromContent(content: any[]): Array<{ name: string; id: string; arguments: any }> {
-    if (!content) { return []; }
-    return content
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((c: any) => c.type === "toolCall")
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((c: any) => ({ name: c.name, id: c.id, arguments: c.arguments }));
-  }
-
-  /** Get entries once per event, plus pre-built lookups to avoid O(n²) scans. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private getEntriesWithLookups(): { entries: any[]; byMessageId: Map<string, any>; byToolCallId: Map<string, any> } {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const entries: any[] = this.sessionManager?.getEntries?.() ?? [];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const byMessageId = new Map<string, any>();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const byToolCallId = new Map<string, any>();
-    for (const e of entries) {
-      if (e.type === "message") {
-        if (e.message?.id) { byMessageId.set(e.message.id, e); }
-        if (e.message?.role === "toolResult" && e.message?.toolCallId) {
-          byToolCallId.set(e.message.toolCallId, e);
-        }
-      }
-    }
-    return { entries, byMessageId, byToolCallId };
-  }
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handleAgentEvent(event: any): void {
-    switch (event.type) {
-      case "agent_start":
-        this._isStreaming = true;
-        this.currentAssistantToolCalls.clear();
-        this.turnIndex = 0;
-        this.emit({ type: "agent-start" });
-        break;
+    // The decision logic lives in the pure, unit-tested translateAgentEvent
+    // (src/agent-events.ts). This shell builds the state snapshot, applies the
+    // returned mutations, emits the events, then runs the trailing effects in
+    // the original order: Rust subprocess effects before the data emits
+    // (rust queue-clear emits its own queue-update first; captureContext feeds
+    // the % reportStatus emits), and reportStatus after, reflecting post-event state.
+    const r = translateAgentEvent(event, {
+      backendKind: this._backendKind,
+      agentRunActive: this.backend?.getAgentRunActive() ?? false,
+      lookups: indexEntries(this.sessionManager?.getEntries?.() ?? []),
+      userMessages: this._userMessages,
+      toolCalls: this.currentAssistantToolCalls,
+      now: Date.now(),
+      prepareArgs: (toolName, args) => this._prepareToolArgs(toolName, args),
+    });
 
-      case "agent_end":
-        this._isStreaming = false;
-        this.currentAssistantToolCalls.clear();
-        this.turnIndex = 0;
-        this.emit({ type: "agent-end", data: { messages: event.messages } });
-        this.reportStatus();
-        break;
+    // The run/streaming flags are owned by the backend now — apply the event-stream mutations
+    // through it (RustService reads its own copy directly in its event loop).
+    if (r.setAgentRunActive !== undefined) { this.backend?.setAgentRunActive(r.setAgentRunActive); }
+    // A run just ended → the binary is idle again, so a title deferred mid-turn can land now.
+    if (r.setAgentRunActive === false) { this._flushRustSessionInfo(); }
+    if (r.setStreaming !== undefined) { this.backend?.setStreaming(r.setStreaming); }
+    if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
+    if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
 
-      case "turn_start":
-        this.emit({ type: "turn-start" });
-        break;
+    if (r.effects.rustClearQueue) { this._rust?.clearQueueIfAny(); }
+    if (r.effects.captureContext) { this._rust?.captureContext(r.effects.captureUsage); }
 
-      case "turn_end":
-        this.emit({ type: "turn-end", data: { message: event.message, toolResults: event.toolResults } });
-        this.turnIndex++;
-        break;
+    for (const ev of r.events) { this.emit(ev); }
 
-      case "message_start": {
-        const { byMessageId } = this.getEntriesWithLookups();
-        if (event.message?.role === "user") {
-          const text = this.extractTextFromContent(event.message.content);
-          if (text) {
-            this._userMessages.push({ id: event.message.id ?? `user-${Date.now()}`, text, timestamp: event.message.timestamp ?? Date.now() });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            const entry = byMessageId.get(event.message.id);
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry?.id ?? event.message.id } });
-          }
-        } else if (event.message?.role === "assistant") {
-          this.currentAssistantToolCalls.clear();
-          const entry = byMessageId.get(event.message.id);
-          this.emit({ type: "assistant-start", data: { messageId: event.message.id, entryId: entry?.id ?? event.message.id } });
-        }
-        break;
-      }
-
-      case "message_update": {
-        const d = event.assistantMessageEvent;
-        switch (d?.type) {
-          case "text_delta":
-            this.emit({ type: "stream-delta", data: { delta: d.delta } });
-            break;
-          case "thinking_delta":
-            this.emit({ type: "thinking-delta", data: { delta: d.delta } });
-            break;
-          case "thinking_end":
-            this.emit({ type: "thinking-delta", data: { delta: "", done: true } });
-            break;
-          case "error":
-            this.emit({ type: "error", data: { message: d.error ?? "Unknown error" } });
-            break;
-        }
-
-        if (event.message?.role === "assistant" && event.message?.content) {
-          const toolCalls = this.extractToolCallsFromContent(event.message.content);
-          for (const tc of toolCalls) {
-            // Skip bash/exec tools — they have their own rendering path
-            // (bash-start/bash-output/bash-end) and don't need generic
-            // tool-start/tool-update events that would leak JSON args into
-            // the bash output div as {}{}{}{} artifacts.
-            if (tc.name === "bash" || tc.name === "exec") { continue; }
-            if (!this.currentAssistantToolCalls.has(tc.id)) {
-              this.currentAssistantToolCalls.set(tc.id, { toolName: tc.name, toolCallId: tc.id, args: tc.arguments });
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments, fromMessage: true } });
-            } else {
-              const existing = this.currentAssistantToolCalls.get(tc.id);
-              if (existing) {
-                existing.args = tc.arguments;
-                this.emit({ type: "tool-update", data: { toolCallId: tc.id, toolName: tc.name, partialResult: { content: [{ type: "text", text: JSON.stringify(tc.arguments, null, 2) }] } } });
-              }
-            }
-          }
-        }
-        break;
-      }
-
-      case "message_end":
-        if (event.message?.role === "user") { break; }
-        if (event.message?.role === "assistant") {
-          const toolCalls = this.extractToolCallsFromContent(event.message.content);
-          this.emit({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
-          this.reportStatus();
-        } else if (event.message?.role === "custom") {
-          const { entries } = this.getEntriesWithLookups();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const custEntry = reverseFind(entries, (e: any) => e.type === "message" && e.message?.role === "custom");
-          this.emit({ type: "custom-message", data: { customType: event.message.customType, content: event.message.content, display: event.message.display, details: event.message.details, timestamp: event.message.timestamp, entryId: custEntry?.id ?? event.message.id } });
-        }
-        break;
-
-      case "tool_execution_start": {
-        const { byToolCallId } = this.getEntriesWithLookups();
-        const tcEntry = byToolCallId.get(event.toolCallId);
-        const tcEntryId = tcEntry?.id ?? event.toolCallId;
-
-        // Apply the tool's prepareArguments hook so the webview receives
-        // validated/transformed args (e.g. legacy oldText/newText → edits[]
-        // for the edit tool).  The SDK runs prepareArguments internally but
-        // only after emitting this event, so raw LLM args leak through.
-        let args = event.args;
-        try {
-          const tools = this.session?.agent?.state?.tools;
-          if (tools) {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const toolDef = (tools as any[]).find((t: any) => t.name === event.toolName);
-            if (toolDef?.prepareArguments) {
-              args = toolDef.prepareArguments(args);
-            }
-          }
-        } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
-
-        if (event.toolName === "bash" || event.toolName === "exec") {
-          this.emit({ type: "bash-start", data: { toolCallId: event.toolCallId, command: args?.command ?? "", entryId: tcEntryId } });
-        } else {
-          this.emit({ type: "tool-start", data: { toolCallId: event.toolCallId, toolName: event.toolName, args: args, fromMessage: false, entryId: tcEntryId } });
-        }
-        break;
-      }
-
-      case "tool_execution_update":
-        if (event.toolName === "bash" || event.toolName === "exec") {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const text = event.partialResult?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-          this.emit({ type: "bash-output", data: { toolCallId: event.toolCallId, output: text ?? "" } });
-        } else {
-          this.emit({ type: "tool-update", data: { toolCallId: event.toolCallId, toolName: event.toolName, partialResult: event.partialResult } });
-        }
-        break;
-
-      case "tool_execution_end": {
-        const { byToolCallId } = this.getEntriesWithLookups();
-        const tcEntry = byToolCallId.get(event.toolCallId);
-        const tcEntryId = tcEntry?.id ?? event.toolCallId;
-
-        if (event.toolName === "bash" || event.toolName === "exec") {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const text = event.result?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-          this.emit({ type: "bash-end", data: { toolCallId: event.toolCallId, command: event.args?.command ?? "", exitCode: event.isError ? 1 : 0, cancelled: false, output: text ?? "", isError: event.isError, entryId: tcEntryId } });
-        } else {
-          this.emit({ type: "tool-end", data: { toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: event.isError, entryId: tcEntryId } });
-        }
-        break;
-      }
-
-      case "session_info_changed":
-        this.reportStatus();
-        break;
-
-      case "thinking_level_changed":
-        this._thinkingLevel = event.level;
-        this.emit({ type: "thinking-level-changed", data: { level: event.level } });
-        this.reportStatus();
-        break;
-
-      case "queue_update":
-        piLog(`queue_update: steering=${event.steering?.length ?? 0}, followUp=${event.followUp?.length ?? 0}`);
-        this.emit({ type: "queue-update", data: { steering: Array.from(event.steering ?? []), followUp: Array.from(event.followUp ?? []) } });
-        break;
-
-      case "compaction_start":
-        this.emit({ type: "compaction-start", data: { reason: event.reason } });
-        break;
-
-      case "compaction_end":
-        this.emit({ type: "compaction-end", data: { reason: event.reason, aborted: event.aborted, willRetry: event.willRetry, result: event.result, errorMessage: event.errorMessage } });
-        if (event.result) {
-          const { entries } = this.getEntriesWithLookups();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const compactEntry = reverseFind(entries, (e: any) => e.type === "compaction");
-          this.emit({ type: "compaction-summary-message", data: { summary: event.result.summary, tokensBefore: event.result.tokensBefore, timestamp: Date.now(), entryId: compactEntry?.id } });
-        }
-        break;
-
-      case "auto_retry_start":
-        this.emit({ type: "auto-retry-start", data: { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage } });
-        break;
-
-      case "auto_retry_end":
-        this.emit({ type: "auto-retry-end", data: { success: event.success, attempt: event.attempt, finalError: event.finalError } });
-        break;
-
-      default:
-        // Surface unknown SDK events as visible notifications so they
-        // aren't silently lost.  Add a case above once handled.
-        this.emit({
-          type: "custom-message",
-          data: {
-            customType: "pi-gui-diagnostic",
-            display: false,
-            content: `Unhandled agent event: ${event.type}`,
-            timestamp: Date.now(),
-          },
-        });
-        piWarn(`Unhandled agent event type: ${event.type}`);
-        break;
+    if (r.effects.reportStatus) { this.reportStatus(); }
+    if (r.effects.unknownType && !this._warnedUnknownEvents.has(r.effects.unknownType)) {
+      this._warnedUnknownEvents.add(r.effects.unknownType);
+      piWarn(`Unhandled agent event "${r.effects.unknownType}" — possible upstream protocol drift (logged once).`);
     }
+  }
+
+  /**
+   * Apply a tool's prepareArguments hook so the webview receives
+   * validated/transformed args (e.g. the edit tool's legacy oldText/newText →
+   * edits[]). The SDK runs prepareArguments internally but only AFTER emitting
+   * tool_execution_start, so raw LLM args would otherwise leak through. Returns
+   * args unchanged when there is no matching tool def (e.g. under Rust).
+   */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _prepareToolArgs(toolName: string, args: any): any {
+    try {
+      const tools = this.session?.agent?.state?.tools;
+      if (tools) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const toolDef = (tools as any[]).find((t: any) => t.name === toolName);
+        if (toolDef?.prepareArguments) { return toolDef.prepareArguments(args); }
+      }
+    } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
+    return args;
+  }
+
+  /** The thinking level actually in effect for the current model — the stored level
+   *  snapped to what the model honors. The status bar and pickers read this so the
+   *  UI never claims a level the model will silently ignore (e.g. it shows "high"
+   *  after switching to DeepSeek with a stored "low"). Falls back to the stored
+   *  level when the model can't be resolved (no metadata to clamp by). */
+  private realThinkingLevel(): string {
+    const full = this.currentFullModel();
+    return full ? clampThinkingLevel(full, this._thinkingLevel) : this._thinkingLevel;
+  }
+
+  /** The composed Thinking/Reasoning status for the single status-bar chip, and
+   *  whether it's an actionable (clickable) control. Thinking and Reasoning are two
+   *  axes of ONE dial: "off" disables thinking; any other level enables it at that
+   *  reasoning effort (mirrors the wire's `thinking.type` + `reasoning_effort`/`effort`
+   *  fields). A Rust transport that can't transmit the level degrades to a read-only
+   *  "reasoning: on/off" badge — the only real axis there. */
+  thinkingStatus(): { text: string; clickable: boolean } {
+    // Chip composition is pure + tested (composeThinkingStatus). thinkingLevelLive() is always
+    // true for the SDK, so the read-only reasoning badge only appears under Rust — as before.
+    return composeThinkingStatus({
+      live: this.capabilities.thinkingLevelLive(),
+      reasoningOn: !!this._model?.reasoning,
+      level: this.realThinkingLevel(),
+    });
+  }
+
+  /** Remember the active reasoning level so toggling Thinking off→on can restore it. */
+  private rememberReasoning(): void {
+    if (this._thinkingLevel !== "off") { this._lastReasoningLevel = this._thinkingLevel; }
+  }
+
+  /** The reasoning level to apply when Thinking is turned on with no explicit choice:
+   *  the last one used, else the model's highest supported level. */
+  private defaultReasoningLevel(): string {
+    return pickDefaultReasoningLevel(this.supportedThinkingLevels(), this._lastReasoningLevel);
+  }
+
+  /** Toggle Thinking on/off (the Thinking axis of the one dial). Off→on restores the
+   *  last reasoning level (defaultReasoningLevel); on→off goes to "off". Returns false
+   *  (after an honest notice) when there is nothing to toggle — a non-reasoning model
+   *  or a Rust transport that can't transmit the level — so callers don't claim success. */
+  async toggleThinking(): Promise<boolean> {
+    const onLevels = this.supportedThinkingLevels().filter((l) => l !== "off");
+    if (onLevels.length === 0) {
+      vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to toggle.`);
+      return false;
+    }
+    if (!this.capabilities.thinkingLevelLive()) {
+      const on = this._model?.reasoning ?? false;
+      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — reasoning depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
+      return false;
+    }
+    await this.setThinkingLevel(toggleThinkingTarget(this.realThinkingLevel(), this.defaultReasoningLevel()));
+    return true;
   }
 
   private reportStatus(): void {
     const stats = this.getUsageStats();
     const cfg = vscode.workspace.getConfiguration("pi-code-gui");
     const budget = cfg.get<number>("contextBudget") ?? 0;
+    const thinking = this.thinkingStatus();
     this.emit({
       type: "status-update",
       data: {
         model: this._model?.id ?? this._model?.name ?? "pi",
-        thinkingLevel: this._thinkingLevel,
-        effort: this._effort,
-        isStreaming: this._isStreaming,
+        thinkingLevel: this.realThinkingLevel(),
+        // Composed Thinking/Reasoning chip text + whether it's clickable (a no-op
+        // Rust transport renders a read-only reasoning on/off badge). See thinkingStatus.
+        thinkingDisplay: thinking.text,
+        thinkingClickable: thinking.clickable,
+        // Whether the active transport actually transmits the thinking level. Under
+        // Rust this depends on the provider api (openai-completions = no-op); the TS
+        // SDK handles thinking per-provider in-process, so it's always "live" there.
+        // Both are expressed by the backend's capability flag.
+        thinkingLive: this.capabilities.thinkingLevelLive(),
+        reasoning: this._model?.reasoning,
+        isStreaming: this.backend?.isStreaming() ?? false,
         sessionId: this.sessionId ?? undefined,
+        // On-disk session file (null until the first write). The webview persists this
+        // into VS Code's webview state so deserializeWebviewPanel can re-attach the
+        // session after a window reload.
+        sessionFile: this.sessionFilePath ?? undefined,
         usage: stats,
         contextBudget: budget,
+        runtime: this._backendKind,
       },
     });
   }
@@ -1456,80 +784,63 @@ export class PiService {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
-    if (!this.session) { throw new Error("Pi session not initialized"); }
+    if (!this.backend) { throw new Error(this._backendKind === "rust" ? "Rust Pi session not initialized" : "Pi session not initialized"); }
 
-    // Handle slash commands at the PiService level before forwarding to
-    // session.prompt(). Builtin commands (from the SDK's BUILTIN_SLASH_COMMANDS
-    // list) map to PiService methods.
-    //
-    // IMPORTANT: unhandled slash commands (extension commands like /tldr,
-    // and unknown commands) MUST go through session.prompt() even during
-    // streaming.  The SDK executes extension commands immediately regardless
-    // of agent state, while steer()/followUp() explicitly reject them
+    // Dispatch trace (debug-level): mode + the streaming state the decision keys off.
+    // Enable the "Pi Code Gui" output channel's Debug level to capture this — it's how
+    // we pin the trigger of a preempting dispatch (see prompt-guard.ts).
+    const agentRunActive = this.backend?.getAgentRunActive() ?? false;
+    piDebug(`sendPrompt runtime=${this._backendKind} mode=${mode ?? "prompt"} agentRunActive=${agentRunActive} streaming=${this.backend?.isStreaming() ?? false} len=${text.length}`);
+
+    // Never let a mode-less conversational prompt preempt an in-flight turn: a real
+    // mid-stream follow-up arrives as steer/queue, so this is a stale/duplicate dispatch
+    // that on Rust forks the session from root and orphans + double-bills the live run.
+    // Drop it and log the call site so the (still-unconfirmed) trigger is captured.
+    if (shouldDropPreemptingPrompt(mode, agentRunActive, text)) {
+      piWarn(`Dropped a fresh prompt that would preempt an in-flight turn (runtime=${this._backendKind}, streaming=${this.backend?.isStreaming() ?? false}). A mid-stream follow-up should arrive as steer/queue — a mode-less prompt here is a stale/duplicate dispatch. Text: ${JSON.stringify(text.slice(0, 80))}`);
+      piDebug(`Preempting-prompt call site:\n${new Error("preempting-prompt dispatch").stack}`);
+      this.emit({ type: "custom-message", data: { customType: "info", content: "Ignored a duplicate prompt that arrived while the current turn was still running.", timestamp: Date.now() } });
+      return;
+    }
+
+    // Runtimes that own their own slash handling (Rust: capabilities.interceptSlashCommands
+    // = false) take the raw turn — no interception, no vision auto-switch; the binary
+    // manages both. The steer/queue/prompt wire send is the backend primitive.
+    if (!this.capabilities.interceptSlashCommands) {
+      return this.backend.sendPrompt(text, images, mode);
+    }
+
+    // TS path: intercept builtin slash commands before sending. Builtin commands map
+    // to PiService methods; unhandled slash commands (extension commands like /tldr,
+    // and unknown ones) MUST go through the plain prompt path even while streaming —
+    // the SDK runs them immediately, whereas steer()/followUp() reject them
     // ("extension commands cannot be queued").
     if (text.startsWith("/")) {
       const handled = await this.tryHandleCommand(text);
       if (handled) { return; }
-      // Extension command or unknown slash — execute immediately via prompt(),
-      // bypassing the steer/queue path below.
-      await this.session.prompt(text);
-      return;
+      return this.backend.sendPrompt(text, undefined, undefined);
     }
 
+    // Steer / queue: the primitive enforces the no-image-mid-stream rule and surfaces
+    // steer/followUp rejections as an error card (via the shared emit).
     if (mode === "steer" || mode === "queue") {
-      if (images && images.length > 0) {
-        throw new Error("Cannot attach images while agent is streaming");
-      }
-      try {
-        if (mode === "queue") {
-          await this.session.followUp(text);
-        } else {
-          await this.session.steer(text);
-        }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (e: any) {
-        // steer/followUp reject extension commands and prompt templates
-        // during streaming — surface the error rather than swallowing it.
-        const msg = e?.message ?? String(e);
-        piWarn(`sendPrompt ${mode} failed: ${msg}`);
-        this.emit({
-          type: "custom-message",
-          data: {
-            customType: "error",
-            content: `${mode === "steer" ? "Steer" : "Queue"} failed: ${msg}`,
-            timestamp: Date.now(),
-          },
-        });
-      }
-    } else {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const opts: any = {};
-      if (images && images.length > 0) {
-        // Check if current model supports images; if not, try to auto-switch
-        if (!this.activeModelSupportsImages()) {
-          const visionModel = this.findVisionModel();
-          if (visionModel) {
-            // Auto-switch to a vision-capable model
-            await this.setModel(visionModel.provider, visionModel.id);
-            this.emit({
-              type: "custom-message",
-              data: {
-                customType: "info",
-                content: `Auto-switched to ${visionModel.id} (vision-capable) for image support.`,
-                timestamp: Date.now(),
-              },
-            });
-          } else {
-            throw new Error(
-              `Cannot send images: no vision-capable model available. ` +
-              "Add an API key for Claude, GPT-4o, or Gemini to use images."
-            );
-          }
-        }
-        opts.images = images;
-      }
-      await this.session.prompt(text, opts);
+      return this.backend.sendPrompt(text, images, mode);
     }
+
+    // Default turn: vision auto-switch is PiService orchestration (it needs setModel +
+    // the cycle list). Do it here, then hand the turn to the primitive.
+    if (images && images.length > 0 && !this.activeModelSupportsImages()) {
+      const visionModel = this.findVisionModel();
+      if (!visionModel) {
+        throw new Error(
+          `Cannot send images: no vision-capable model available. ` +
+          "Add an API key for Claude, GPT-4o, or Gemini to use images.",
+        );
+      }
+      await this.setModel(visionModel.provider, visionModel.id);
+      this.emit({ type: "custom-message", data: { customType: "info", content: `Auto-switched to ${visionModel.id} (vision-capable) for image support.`, timestamp: Date.now() } });
+    }
+    await this.backend.sendPrompt(text, images, undefined);
   }
 
   /** Check whether the active model's input capabilities include images. */
@@ -1556,8 +867,7 @@ export class PiService {
   /** Try to handle a slash command locally. Returns true if handled,
    *  false if the caller should forward to session.prompt(). */
   private async tryHandleCommand(text: string): Promise<boolean> {
-    const spaceIndex = text.indexOf(" ");
-    const cmdName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+    const { cmd: cmdName, arg } = parseSlashCommand(text);
 
     switch (cmdName) {
       // Builtin commands with PiService handlers
@@ -1571,8 +881,7 @@ export class PiService {
       // the webview's localSlashCommands and handled via handleSlashCommand.
 
       case "name": {
-        const name = text.slice(6).trim();
-        if (name) { this.session.setSessionName(name); }
+        if (arg) { this.session.setSessionName(arg); }
         return true;
       }
 
@@ -1581,25 +890,16 @@ export class PiService {
         return true;
 
       case "compact": {
-        const compactArgs = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
-        await this.session.compact(compactArgs);
+        await this.session.compact(arg || undefined);
         return true;
       }
 
-      case "export": {
-        // Parse optional output path from text
-        const exportArgs = text.startsWith("/export ") ? text.slice(8).trim() : undefined;
-        const outputPath = exportArgs || vscode.Uri.joinPath(
-          vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
-          `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`
-        ).fsPath;
-        const result = await this.session.exportToHtml(outputPath);
-        vscode.window.showInformationMessage(`Session exported to: ${result}`);
+      case "export":
+        await this.exportSessionInteractive(arg);
         return true;
-      }
 
       case "reload": {
-        await this.session.reload();
+        await this.backend?.reloadContext();
         // Re-send initial messages so the webview reflects updated extensions/skills
         await this.sendInitialMessages();
         this.emitSlashCommands();
@@ -1630,17 +930,68 @@ export class PiService {
   }
 
   async abort(): Promise<void> {
-    if (!this.session) {
-      piWarn("abort() called but session not initialized — nothing to abort");
-      return;
+    // Both backends kill any running bash before stopping the LLM turn (agent.abort
+    // alone would orphan child processes). See SdkService.abort / RustService.abort.
+    // Both impls are synchronous (send / local calls); the union return is voided.
+    const backend = this.backend;
+    void backend?.abort();
+
+    // Watchdog. RustService.abort() is two fire-and-forget writes down a pipe: nothing
+    // correlates them, nothing confirms them, and a subprocess busy inside a tool call may not
+    // read stdin for a while. So a Stop that never lands is indistinguishable from one still in
+    // flight — the user gets a silent, permanently "stopping" turn. If the run is still active
+    // after the grace period, say so rather than leave them guessing. (The SDK aborts in-process
+    // and effectively always lands, so this only ever fires for Rust in practice.)
+    if (!backend) { return; }
+    setTimeout(() => {
+      // Only complain about the run we actually tried to stop — not a later one, and not a
+      // session that has since been disposed or replaced.
+      if (this.backend !== backend || !backend.getAgentRunActive()) { return; }
+      this.emit({ type: "custom-message", data: { customType: "error", content: `Stop was sent ${Math.round(ABORT_GRACE_MS / 1000)}s ago but the turn is still running. The runtime may be stuck inside a tool call — you can wait, or run /new to start a fresh session.`, timestamp: Date.now() } });
+    }, ABORT_GRACE_MS);
+  }
+
+  /**
+   * Compact the conversation context. Delegated to the active backend: the Rust RPC
+   * has an explicit `compact` command (with the auto-compaction-gate explanation);
+   * the SDK path calls the in-process session (same call as the command-palette
+   * `pi-code-gui.compact`). PiService no longer branches.
+   */
+  async compact(): Promise<void> {
+    piDebug(`compact() invoked (backend=${this._backendKind})`);
+    await this.backend?.compact();
+  }
+
+  /**
+   * Export the conversation to HTML at `outputPath`. Runtime-aware: the
+   * TypeScript SDK session exports directly; Rust shells out to `pi --export`
+   * (there is no in-process session under Rust). Returns the written path.
+   */
+  /** `/export` from the chat, on EITHER runtime: resolve a default path when none was given,
+   *  export through the PiBackend seam, and report where it landed. Shared by the TypeScript
+   *  slash handler and the Rust slash router so the two cannot diverge — reaching for
+   *  `this.session` here was the only reason the command had to be TypeScript-only. */
+  async exportSessionInteractive(arg?: string): Promise<void> {
+    const outputPath = arg || vscode.Uri.joinPath(
+      vscode.Uri.file(resolveWorkspaceCwd()),
+      `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`,
+    ).fsPath;
+    try {
+      const result = await this.exportToHtml(outputPath);
+      vscode.window.showInformationMessage(`Session exported to: ${result}`);
+    } catch (e: unknown) {
+      // Rust refuses to export a session with no file yet ("send a message first"). That is a
+      // real, actionable answer — put it in the chat rather than swallowing it.
+      const msg = e instanceof Error ? e.message : String(e);
+      this.emit({ type: "custom-message", data: { customType: "error", content: `Export failed: ${msg}`, timestamp: Date.now() } });
     }
-    // Kill running bash processes first — agent.abort() only stops the LLM call,
-    // not child processes.  Without this, long-running commands (npm install,
-    // test suites, etc.) become orphaned/zombie processes on the system.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    try { this.session.agent.abort(); } catch (e: any) { piWarn(`abort() failed: ${e?.message ?? e}`); }
+  }
+
+  async exportToHtml(outputPath: string): Promise<string> {
+    // Delegated to the active backend (PiBackend.exportToHtml): Rust shells out to
+    // `pi --export`, the SDK exports the in-process session — PiService no longer branches.
+    if (!this.backend) { throw new Error("No active session to export."); }
+    return this.backend.exportToHtml(outputPath);
   }
 
   /** Resolve a pending interactive dialog (called from webview-panel.ts). */
@@ -1662,7 +1013,7 @@ export class PiService {
     prompt: string,
     extras: { options?: string[]; defaultValue?: string },
   ): Promise<unknown> | undefined {
-    if (this.listeners.length === 0) {
+    if (this._bus.listenerCount === 0) {
       // No webview attached — SDK will fall back to text prompts
       return undefined;
     }
@@ -1685,7 +1036,10 @@ export class PiService {
 
   async newSession(): Promise<void> {
     if (!this.session) {
-      piWarn("newSession() called but session not initialized — creating fresh");
+      // No in-process session to quiesce — the normal Rust path (this.session is the SDK's,
+      // always null there), and an SDK session that never initialized.
+      piWarn("newSession(): no in-process session to quiesce — starting fresh");
+      this.emit({ type: "sessionReset" });
       this.dispose();
       await this.initialize({ fresh: true });
       return;
@@ -1694,6 +1048,12 @@ export class PiService {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     try { this.session.abortBash?.(); } catch (e: any) { piWarn(`abortBash() failed: ${e?.message ?? e}`); }
     await this.session.agent.waitForIdle();
+    // Tell the webview to wipe the old conversation BEFORE the fresh session replays into it.
+    // Without this /new looks like it did nothing: the session really is disposed and recreated,
+    // but the chat DOM, tool cards and bash blocks from the previous session stay on screen, so
+    // there is no visible evidence anything happened. `sessionReset` and its handler (resetChat)
+    // existed and were wired end-to-end in the webview — nothing in the extension ever SENT it.
+    this.emit({ type: "sessionReset" });
     this.dispose();
     await this.initialize({ fresh: true });
   }
@@ -1709,84 +1069,21 @@ export class PiService {
     return this.initialize({ openPath: filePath });
   }
 
-  /** After a branch/fork operation, re-emit the branched entries to the webview */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  replayBranchEntries(path: any[]): void {
-    this._userMessages = [];
-
-    // Pre-index tool results by call ID
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toolResultsById = new Map<string, any>();
-    for (const e of path) {
-      if (e.type === "message" && e.message?.role === "toolResult") {
-        toolResultsById.set(e.message.toolCallId, e);
-      }
-    }
-
-    for (const entry of path) {
-      if (entry.type === "message" && entry.message) {
-        const msg = entry.message;
-        if (msg.role === "user") {
-          const text = this.extractTextFromContent(msg.content);
-          if (text) {
-            this._userMessages.push({ id: msg.id ?? `user-${Date.now()}`, text, timestamp: msg.timestamp });
-            if (this._userMessages.length > 50) { this._userMessages.shift(); }
-            this.emit({ type: "chat-message", data: { role: "user", content: text, entryId: entry.id } });
-          }
-        } else if (msg.role === "assistant") {
-          const text = this.extractTextFromContent(msg.content);
-          const thinking = this.extractThinkingFromContent(msg.content);
-          const toolCalls = this.extractToolCallsFromContent(msg.content);
-
-          // Always emit assistant messages — even tool-only ones with no text.
-          // Skipping them makes tool executions invisible on reload/resume.
-          this.emit({ type: "assistant-start", data: { messageId: msg.id, entryId: entry.id } });
-          // Emit thinking content first, then text
-          if (thinking) {
-            this.emit({ type: "thinking-delta", data: { delta: thinking } });
-            this.emit({ type: "thinking-delta", data: { delta: "", done: true } });
-          }
-          if (text) {
-            this.emit({ type: "stream-delta", data: { delta: text } });
-          }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this.emit({ type: "assistant-end", data: { stopReason: msg.stopReason, errorMessage: msg.errorMessage, toolCalls: toolCalls.map((tc: any) => tc.id) } });
-
-          for (const tc of toolCalls) {
-            const toolResultEntry = toolResultsById.get(tc.id);
-            if (tc.name === "bash" || tc.name === "exec") {
-              this.emit({ type: "bash-start", data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", entryId: toolResultEntry?.id } });
-              const outputText = toolResultEntry?.message ? this.extractTextFromContent(toolResultEntry.message.content) : "";
-              this.emit({ type: "bash-end", data: { toolCallId: tc.id, command: tc.arguments?.command ?? "", exitCode: 0, cancelled: false, output: outputText, isError: false, entryId: toolResultEntry?.id } });
-            } else {
-              this.emit({ type: "tool-start", data: { toolCallId: tc.id, toolName: tc.name, args: tc.arguments, fromMessage: true, entryId: toolResultEntry?.id } });
-              if (toolResultEntry?.message) {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: toolResultEntry.message, isError: false, entryId: toolResultEntry?.id } });
-              } else {
-                this.emit({ type: "tool-end", data: { toolCallId: tc.id, toolName: tc.name, result: { content: [{ type: "text", text: "(forked)" }] }, isError: false, entryId: toolResultEntry?.id } });
-              }
-            }
-          }
-        } else if (msg.role === "custom") {
-          this.emit({ type: "custom-message", data: { customType: msg.customType, content: msg.content, display: msg.display, details: msg.details, timestamp: msg.timestamp, entryId: entry.id } });
-        } else if (msg.role === "bashExecution") {
-          const bashEntryId = entry.id ?? `bash-${Date.now()}`;
-          this.emit({ type: "bash-start", data: { toolCallId: bashEntryId, command: msg.command ?? "", entryId: entry.id } });
-          this.emit({ type: "bash-end", data: { toolCallId: bashEntryId, command: msg.command ?? "", exitCode: msg.exitCode, cancelled: msg.cancelled, output: msg.output ?? "", isError: msg.exitCode !== 0 && msg.exitCode !== null, entryId: entry.id } });
-        }
-      } else if (entry.type === "compaction") {
-        this.emit({ type: "compaction-summary-message", data: { summary: entry.summary ?? "", tokensBefore: entry.tokensBefore ?? 0, timestamp: this._toTimestamp(entry.timestamp), entryId: entry.id } });
-      }
-    }
-
-    this.reportStatus();
-  }
-
   /** Write a session entry directly to the session file, bypassing SDK _persist quirks. */
   private _forcePersistEntry(entry: Record<string, unknown>): void {
     const sf = this.sessionManager?.getSessionFile?.();
     if (!sf) {
       piWarn("_forcePersistEntry: no session file");
+      return;
+    }
+    // Append ONLY to a file the SDK has already created. The SDK defers session
+    // writes — it buffers entries in memory and flushes them with the session
+    // header via an EXCLUSIVE create (openSync wx) on the first assistant message
+    // (session-manager.js). If we appendFileSync first we'd (a) create the file
+    // early, so the SDK's wx open throws EEXIST and the turn fails, and (b) leave a
+    // headerless, malformed file. So never create it here — skip until it exists.
+    if (!fs.existsSync(sf)) {
+      piDebug(`_forcePersistEntry: session file not yet created by SDK; skipping ${String(entry.type)}`);
       return;
     }
     try {
@@ -1798,78 +1095,93 @@ export class PiService {
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
-    if (!this.session || !this.AI) {
-      piWarn(`setModel("${provider}/${modelId}") ignored: session not initialized`);
-      return;
-    }
-    // Try registry first, then fall back to getModel
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let model: any = null;
-    if (this.modelRegistry) {
-      model = this.modelRegistry.find(provider, modelId);
-    }
-    if (!model) {
-      model = this.AI.getModel(provider, modelId);
-    }
-    if (model) {
-      await this.session.setModel(model);
-      this._model = { id: modelId, provider };
-      this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
-      if (this.cycleIndex === -1) { this.cycleIndex = 0; }
-      // Force-persist the model change so it survives session close/reopen
-      this._forcePersistEntry({
-        type: "model_change",
-        id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        parentId: null,
-        timestamp: new Date().toISOString(),
-        provider,
-        modelId,
-      });
-      this.reportStatus();
-    }
+    // The backend applies the switch on the wire (Rust: RPC + applyState so the budget
+    // clamp / context-% reflect the new model immediately; SDK: registry/catalog resolve
+    // + session.setModel) and returns the applied identity, or null when it couldn't
+    // (the Rust path already surfaced the error; the SDK path no-op'd). PiService owns
+    // the shared post-step: active model, cycle index, status.
+    const applied = await this.backend?.setModel(provider, modelId);
+    if (!applied) { return; }
+    // The backend already stored the applied identity (getModel()); PiService just owns
+    // the cycle index + status refresh.
+    this.cycleIndex = this.cycleModels.findIndex((m) => m.provider === provider && m.id === modelId);
+    if (this.cycleIndex === -1) { this.cycleIndex = 0; }
+    this.reportStatus();
   }
 
   async cycleModel(): Promise<void> {
-    if (!this.session || !this.AI) {
-      vscode.window.showWarningMessage("Pi session not ready yet.");
-      return;
-    }
     if (this.cycleModels.length === 0) {
       vscode.window.showWarningMessage("No models available. Configure an API key first.");
       return;
     }
+    if (!this.backend) {
+      vscode.window.showWarningMessage("Pi session not ready yet.");
+      return;
+    }
     this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
     const next = this.cycleModels[this.cycleIndex];
-    const model = this.AI.getModel(next.provider, next.id);
-    if (model) {
-      const prevId = this._model?.id ?? "?";
-      await this.session.setModel(model);
-      this._model = { id: next.id, provider: next.provider };
-      if (this.cycleModels.length <= 1) {
-        vscode.window.showInformationMessage(`Only ${next.id} configured. Click the model name in the status bar to add more.`);
-      } else {
-        vscode.window.showInformationMessage(`Model: ${prevId} → ${next.id}`);
-      }
-      this.reportStatus();
+    const prevId = this._model?.id ?? "?";
+    // Delegated to the backend primitive (same wire switch as setModel); PiService
+    // owns the shared post-step + the cycle notice, now uniform across runtimes
+    // (previously Rust showed only "Model: <id>" — it now shows prev → next too).
+    const applied = await this.backend.setModel(next.provider, next.id);
+    if (!applied) { return; }
+    // Backend owns the applied identity (getModel()); PiService owns the notice + status.
+    if (this.cycleModels.length <= 1) {
+      vscode.window.showInformationMessage(`Only ${next.id} configured. Click the model name in the status bar to add more.`);
+    } else {
+      vscode.window.showInformationMessage(`Model: ${prevId} → ${next.id}`);
     }
+    this.reportStatus();
   }
 
   async setThinkingLevel(level: string): Promise<void> {
-    if (!this.session) {
+    // A transport that can't serialize the level (some Rust provider apis —
+    // mistral-conversations and any unverified/unknown api) makes this a silent no-op
+    // the binary still reports as success. Don't pretend: reasoning is then a fixed
+    // on/off model property, not an adjustable depth. capabilities.thinkingLevelLive()
+    // is true for the SDK (handled per-provider in-process) and, under Rust, tracks
+    // thinkingLevelIsLive(model.api) — so openai-completions/DeepSeek still pass.
+    if (!this.capabilities.thinkingLevelLive()) {
+      const on = this._model?.reasoning ?? false;
+      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
+      return;
+    }
+    if (!this.backend) {
       piWarn(`setThinkingLevel("${level}") ignored: session not initialized`);
       return;
     }
-    this.session.setThinkingLevel(level);
-    this._thinkingLevel = level;
+    // Clamp centrally rather than per-caller. The picker is gated, but it is not the only way
+    // in: the off<->on toggle derives its target from the SAVED DEFAULT, which is user-editable,
+    // persisted, and shared with the TypeScript runtime where `max` is legitimately offered. On
+    // a pre-#139 binary that reaches the wire as a rejected request; clamping here means every
+    // caller — picker, toggle, or any future one — is covered by construction.
+    if (this.capabilities.kind === "rust") {
+      let rustVersion: string | undefined;
+      try { rustVersion = detectRustBinary().version; } catch { /* unknown → clamp fails closed */ }
+      const clamped = clampThinkingLevelForRust(level, rustVersion);
+      if (clamped !== level) {
+        piWarn(`Thinking level "${level}" isn't supported by the installed Rust Pi — using "${clamped}".`);
+        level = clamped;
+      }
+    }
+    // The backend sets it on the wire and returns the EFFECTIVE level after its own
+    // clamp (Rust re-reads get_state; the SDK records the clamped level itself and
+    // echoes the request). No force-persist here — both runtimes record the change
+    // via their deferred append path (a direct write would duplicate it and create
+    // the file early, EEXIST on first prompt).
+    const effective = await this.backend.setThinkingLevel(level);
+    // The backend stored the effective level (getThinkingLevel()); PiService keeps the
+    // off→on toggle memory + status.
+    this.rememberReasoning();
     this.reportStatus();
-    // Force-persist the thinking change so it survives session close/reopen
-    this._forcePersistEntry({
-      type: "thinking_level_change",
-      id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      parentId: null,
-      timestamp: new Date().toISOString(),
-      thinkingLevel: level,
-    });
+    // A clamp means the model genuinely doesn't support the requested level (we
+    // override Rust's model list with the Pi catalog's correct reasoning flags), so
+    // say so rather than leaving the switch a silent no-op. The SDK always echoes the
+    // request, so this only fires under Rust.
+    if (effective !== level) {
+      vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${effective}".`);
+    }
   }
 
   // ── Default model / thinking persistence ──────────────
@@ -1923,83 +1235,31 @@ export class PiService {
   get showImages(): boolean { return this._showImages; }
   get userMessages(): Array<{ id: string; text: string; timestamp?: number }> { return this._userMessages; }
 
-  /** Get available models from the model registry (for dynamic model pickers). */
+  /** Get available models from the model runtime (for dynamic model pickers). */
   async getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>> {
-    if (!this.modelRegistry) { return []; }
-    try {
-      const available = await this.modelRegistry.getAvailable();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return available.map((m: any) => ({
-        provider: m.provider,
-        id: m.id,
-        name: m.name,
-        cost: m.cost ? { input: m.cost.input, output: m.cost.output } : undefined,
-        contextWindow: m.contextWindow ?? undefined,
-      }));
-    } catch {
-      return [];
-    }
+    // Delegated to the active backend (SDK: ModelRuntime.getAvailable; Rust: its cached
+    // get_available_models catalog) — works for BOTH runtimes now, not just the SDK.
+    return (await this.backend?.getAvailableModels()) ?? [];
   }
 
-  /** Format model specs (pricing + context window) for QuickPick detail. Returns empty string if no data. */
-  static formatModelDetail(cost?: { input: number; output: number }, contextWindow?: number): string {
-    const parts: string[] = [];
-    if (cost) {
-      parts.push(`$${cost.input}/$${cost.output} per M tokens`);
-    }
-    if (contextWindow) {
-      parts.push(`${Math.round(contextWindow / 1000)}K context`);
-    }
-    return parts.join(" · ");
-  }
-
-  /** Open a QuickPick to choose a model, set it on this session, and optionally save as default. */
+  /** Open a QuickPick to choose a model, set it on this session, and optionally save as default.
+   *  The choice list + item labelling is pure + tested (model-picker.ts); this owns the vscode
+   *  glue and the setModel/save-default side effects. */
   async pickModel(): Promise<boolean> {
-    interface ModelItem { label: string; provider: string; modelId: string; cost?: { input: number; output: number }; contextWindow?: number }
-    let models: ModelItem[] = [];
-
+    // One data source for both runtimes: getAvailableModels() delegates to the backend
+    // (Rust's own catalog — including custom models.json — or the SDK's ModelRuntime).
+    // No runtime branch here; the picker doesn't know which backend it's talking to.
+    let models: ModelChoice[] = [];
     try {
       const available = await this.getAvailableModels();
-      if (available.length > 0) {
-        models = available.map((m) => ({
-          label: m.name || m.id,
-          provider: m.provider,
-          modelId: m.id,
-          cost: m.cost,
-          contextWindow: m.contextWindow,
-        }));
-      }
+      if (available.length > 0) { models = toModelChoices(available); }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
     }
+    if (models.length === 0) { models = FALLBACK_MODELS; }
 
-    // Fallback: static list of common models (no pricing — only SDK-reported pricing is shown)
-    if (models.length === 0) {
-      models = [
-        { label: "Claude Sonnet 4.5", provider: "anthropic", modelId: "claude-sonnet-4-5" },
-        { label: "Claude Haiku 4.5", provider: "anthropic", modelId: "claude-haiku-4-5" },
-        { label: "Claude Opus 4.5", provider: "anthropic", modelId: "claude-opus-4-5" },
-        { label: "GPT 4o", provider: "openai", modelId: "gpt-4o" },
-        { label: "Gemini 2.5 Pro", provider: "google", modelId: "gemini-2.5-pro" },
-        { label: "DeepSeek V3", provider: "deepseek", modelId: "deepseek-chat" },
-      ];
-    }
-
-    const currentId = this.model?.id;
-    const defModel = this.getDefaultModel();
-    const items = models.map((m) => {
-      const isDefault = defModel && m.provider === defModel.provider && m.modelId === defModel.id;
-      return {
-        label: `${m.label}${m.modelId === currentId ? " $(check)" : ""}${isDefault ? " \u2605" : ""}`,
-        description: m.provider,
-        detail: PiService.formatModelDetail(m.cost, m.contextWindow),
-        provider: m.provider,
-        modelId: m.modelId,
-        isDefault,
-      };
-    });
-
+    const items = buildModelPickerItems(models, this.model?.id, this.getDefaultModel());
     const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select model (\u2605 = default)", matchOnDetail: true });
     if (!picked) { return false; }
 
@@ -2017,30 +1277,92 @@ export class PiService {
     return true;
   }
 
+  /** The full pi-ai model object for the active model (carries reasoning +
+   *  thinkingLevelMap), or null when it can't be resolved from the registry. */
+  /** The bundled pi-ai catalog providers map — the authoritative capability source of
+   *  record (each model owner's published spec; e.g. DeepSeek documents reasoning_effort
+   *  = high|max with low/medium→high and xhigh→max, encoded as a model's thinkingLevelMap). */
+  private get bundledProviders(): Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> | undefined {
+    return (bundledRegistry as { providers?: Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> }).providers;
+  }
+
+  private currentFullModel(): ThinkingModel | null {
+    const id = this._model?.id; const provider = this._model?.provider;
+    if (!id || !provider) { return null; }
+    // TS SDK path: resolve the live pi-ai model from the registry, then reconcile it
+    // against the bundled catalog so a custom ~/.pi/agent/models.json that omits
+    // `reasoning` can't downgrade a known-reasoning model (shared with the init clamp).
+    if (this.modelRuntime) {
+      try {
+        const m = this.modelRuntime.getModel(provider, id) as ThinkingModel | undefined;
+        if (m) { return reconcileThinkingCapability(this.bundledProviders, provider, id, m); }
+      } catch { /* fall through to the bundled catalog */ }
+    }
+    // Rust path (no SDK ModelRegistry — see initializeRust) or registry miss: use the
+    // bundled catalog. NOT rust-pi's get_state.reasoning, which is only the executor's
+    // heuristic and has classified models wrongly before.
+    const bundled = findCatalogThinkingModel(this.bundledProviders, provider, id);
+    if (bundled) { return bundled; }
+    // Absent from the bundled catalog: last resort, rust-pi's reported reasoning flag —
+    // only to avoid offering a graded picker the runtime would no-op. A fallback
+    // heuristic, not an authoritative capability source.
+    if (this._model?.reasoning === undefined) { return null; }
+    return { reasoning: this._model.reasoning };
+  }
+
+  /** Thinking levels meaningful for the active model (per pi-ai metadata), lowest→
+   *  highest. Falls back to the full graded range when the model isn't resolvable,
+   *  so we only ever narrow the choices when we have real metadata to narrow by. */
+  supportedThinkingLevels(): string[] {
+    const full = this.currentFullModel();
+    // When the model is fully unknown, offer the graded range speculatively — but NOT `max`:
+    // an unresolved model gives us no evidence the backend supports it (getSupportedThinkingLevels
+    // surfaces max only from an explicit per-model mapping, which this fallback has none of).
+    const levels = full ? getSupportedThinkingLevels(full) : THINKING_LEVELS.filter((l) => l !== "max");
+    return this.backendHonorsMax() ? levels : levels.filter((l) => l !== "max");
+  }
+
+  /** Whether the ACTIVE backend accepts `max`. The bundled catalog maps `max` for 131 models,
+   *  but a mapping only says the MODEL has the tier — the backend still has to accept it:
+   *  a pre-#139 rust-pi rejects `set_thinking_level("max")` as a validation error, so offering
+   *  it there turns a picker entry into a hard failure. TS goes through the in-process SDK,
+   *  which carries its own post-#139 pi-ai and clamps rather than rejecting. */
+  private backendHonorsMax(): boolean {
+    if (this.capabilities.kind !== "rust") { return true; }
+    try { return rustHonorsMaxThinkingLevel(detectRustBinary().version); }
+    catch { return false; }   // fail closed — never offer a level we can't confirm
+  }
+
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
   async pickThinkingLevel(): Promise<boolean> {
-    const levels = [
-      { label: "off", description: "No thinking" },
-      { label: "minimal", description: "Minimal thinking" },
-      { label: "low", description: "Brief thinking" },
-      { label: "medium", description: "Balanced thinking" },
-      { label: "high", description: "Extended thinking" },
-      { label: "xhigh", description: "Maximum thinking" },
-    ];
-    const current = this.thinkingLevel;
-    const defLevel = this.getDefaultThinking();
-    const items = levels.map((l) => {
-      const isDefault = l.label === defLevel;
-      return {
-        label: `${l.label === current ? "$(check) " : ""}${l.label}${isDefault ? " \u2605" : ""}`,
-        description: l.description,
-        level: l.label,
-        isDefault,
-      };
-    });
+    // On a transport that doesn't transmit the level (some Rust provider apis), a
+    // graded picker would be a no-op — surface the honest reasoning on/off state
+    // instead. Always live for the SDK, so this only fires under Rust.
+    if (!this.capabilities.thinkingLevelLive()) {
+      const on = this._model?.reasoning ?? false;
+      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
+      return false;
+    }
+    // off + the reasoning tiers this model honors, from the authoritative catalog
+    // (currentFullModel) — e.g. DeepSeek collapses to off/high/xhigh.
+    const supported = this.supportedThinkingLevels();
+    const onLevels = supported.filter((l) => l !== "off");
+    if (onLevels.length === 0) {
+      // Genuinely non-reasoning per the catalog — there's no reasoning to adjust.
+      vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to adjust.`);
+      return false;
+    }
+    // Row assembly (Off + separator + supported levels, with marks) is pure + tested
+    // (buildThinkingPickerRows); map its neutral rows to vscode QuickPick items here.
+    type Item = vscode.QuickPickItem & { level?: string; isDefault?: boolean };
+    const items: Item[] = buildThinkingPickerRows(onLevels, this.thinkingLevel, this.getDefaultThinking()).map((r) =>
+      r.separator
+        ? { label: r.label, kind: vscode.QuickPickItemKind.Separator }
+        : { label: r.label, description: r.description, level: r.level, isDefault: r.isDefault },
+    );
 
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select thinking level (\u2605 = default)" });
-    if (!picked) { return false; }
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Thinking & reasoning (\u2605 = default)" });
+    if (!picked || picked.level === undefined) { return false; }
 
     await this.setThinkingLevel(picked.level);
 
@@ -2057,20 +1379,6 @@ export class PiService {
   }
 
   /** Get scoped models from the session */
-  getScopedModels(): Array<{ provider: string; id: string; thinkingLevel: string }> {
-    if (!this.session || !this.session.scopedModels) { return []; }
-    return this.session.scopedModels
-      .filter((s: Record<string, unknown>) => s.model !== null && s.model !== undefined)
-      .map((s: Record<string, unknown>) => ({
-        provider: (s.model as Record<string, unknown>).provider as string,
-        id: (s.model as Record<string, unknown>).id as string,
-        thinkingLevel: (s.thinkingLevel as string) ?? "off",
-      }));
-  }
-
-  emitScopedModels(): void {
-    this.emit({ type: "scoped-models-update", data: { models: this.getScopedModels() } });
-  }
 
   emitSettings(): void {
     this.emit({
@@ -2080,18 +1388,23 @@ export class PiService {
   }
 
   async toggleAutoCompaction(): Promise<boolean> {
-    if (!this.session) { return this._autoCompactionEnabled; }
-    this._autoCompactionEnabled = !this._autoCompactionEnabled;
-    if (typeof this.session.setAutoCompactionEnabled === "function") {
-      await this.session.setAutoCompactionEnabled(this._autoCompactionEnabled);
-    }
+    const next = !this._autoCompactionEnabled;
+    // State-flip policy is the one genuine divergence: the Rust RPC flips PiService
+    // state via the RustHost callback only on success (optimistic-safe); the SDK
+    // flips eagerly then pushes to the session. The wire call itself is now the
+    // backend primitive (setAutoCompaction), not inline RPC/session plumbing.
+    if (flipsStateEagerly(this._backendKind)) { this._autoCompactionEnabled = next; }
+    await this.backend?.setAutoCompaction(next);
     this.emitSettings();
     return this._autoCompactionEnabled;
   }
 
   async toggleAutoRetry(): Promise<boolean> {
-    if (!this.session) { return this._autoRetryEnabled; }
-    this._autoRetryEnabled = !this._autoRetryEnabled;
+    const next = !this._autoRetryEnabled;
+    // Same flip policy as auto-compaction. setAutoRetry is a no-op on the SDK (no
+    // session toggle); Rust applies it over RPC and echoes state via the host callback.
+    if (flipsStateEagerly(this._backendKind)) { this._autoRetryEnabled = next; }
+    await this.backend?.setAutoRetry(next);
     this.emitSettings();
     return this._autoRetryEnabled;
   }
@@ -2102,150 +1415,218 @@ export class PiService {
     return this._showImages;
   }
 
-  async setEffort(effort: string): Promise<void> {
-    this._effort = effort;
-    if (this.session && typeof this.session.setEffort === "function") {
-      await this.session.setEffort(effort);
-    }
-    this.reportStatus();
-  }
 
   /** Generate a short 3-word tab title summary for the first user input in a session. */
-  async generateTabSummary(userInput: string): Promise<string | null> {
-    if (!this.AI || !this._model) { return null; }
-
+  /** A ModelRuntime for the tab-summary side-call: the SDK session's own on the TS runtime,
+   *  or a lazily-created one on Rust (which has no in-process SdkService). Cached. Null when
+   *  the TS SDK can't be resolved (a Rust-only box with no npm SDK), so the caller falls
+   *  back to the raw first message. ModelRuntime.create() resolves auth from env/auth.json
+   *  itself, so no key plumbing is needed. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _sharedRuntime: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async sharedModelRuntime(): Promise<any> {
+    if (this.modelRuntime) { return this.modelRuntime; }      // TS: reuse the session's runtime
+    if (this._sharedRuntime) { return this._sharedRuntime; }  // Rust: cached lazy one
     try {
-      const model = this.AI.getModel(this._model.provider, this._model.id);
-      if (!model) { return null; }
-
-      const apiKey = this.authStorage
-        ? await this.authStorage.getApiKey(this._model.provider!)
-        : undefined;
-
-      const context = {
-        systemPrompt: "Generate a concise 3-word summary of the following user request. Respond with ONLY the three words, lowercase, no punctuation, no quotes, no explanation.",
-        messages: [
-          { role: "user", content: userInput, timestamp: Date.now() },
-        ],
-      };
-
-      const result = await this.AI.complete(model, context, {
-        maxTokens: 20,
-        apiKey,
-      });
-
-      const text = this.extractTextFromContent(result.content);
-      if (text) {
-        // Clean up: take first line, trim, limit to ~40 chars
-        return text.split("\n")[0].trim().replace(/^["']|["']$/g, "").slice(0, 40);
-      }
-      return null;
-    } catch {
+      const SDK = await importWithRetry(path.join(resolvePiPackagePath(), "dist/index.js"), 2, 300);
+      this._sharedRuntime = await SDK.ModelRuntime.create();
+      return this._sharedRuntime;
+    } catch (e: unknown) {
+      piWarn(`Tab summary: no ModelRuntime available (${e instanceof Error ? e.message : String(e)}) — keeping the raw first message.`);
       return null;
     }
   }
 
-  /** Set a runtime API key (not persisted to disk) */
-  setRuntimeApiKey(provider: string, key: string): void {
-    if (this.authStorage && typeof this.authStorage.setRuntimeApiKey === "function") {
-      this.authStorage.setRuntimeApiKey(provider, key);
+  /** Generate a short 3-word tab-title summary for the first user input. Works on BOTH
+   *  runtimes: the Rust binary exposes no summarize RPC, so the extension makes this
+   *  lightweight side-call itself via a ModelRuntime (the same model the session uses),
+   *  giving Rust the same nice tab title TS already gets instead of the raw first command. */
+  async generateTabSummary(userInput: string): Promise<string | null> {
+    if (!this._model) { return null; }
+    try {
+      const rt = await this.sharedModelRuntime();
+      if (!rt) { return null; }
+      const model = rt.getModel(this._model.provider, this._model.id);
+      if (!model) { return null; }
+
+      // maxTokens caps output so a reasoning model can't burn tokens on a 3-word title;
+      // completeSimple resolves auth from the runtime (no explicit key). Prompt/context build
+      // + the reply cleaning are pure + tested (tab-summary.ts).
+      const result = await rt.completeSimple(model, buildSummaryContext(userInput, Date.now()), { maxTokens: 20 });
+      return cleanTabSummary(extractMessageText(result.content));
+    } catch (e: unknown) {
+      piWarn(`Tab summary generation failed: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
+  /** Set a runtime API key (not persisted to disk). Async on the new SDK. */
+  async setRuntimeApiKey(provider: string, key: string): Promise<void> {
+    if (this.modelRuntime && typeof this.modelRuntime.setRuntimeApiKey === "function") {
+      await this.modelRuntime.setRuntimeApiKey(provider, key);
     }
   }
 
   // ── Usage / token stats ──────────────────────────────
 
-  getUsageStats(): {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-    contextPercent: number | null;
-    contextWindow: number;
-  } {
-    if (!this.sessionManager) {
-      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-    }
+  /** Per-million-token cost rates for the active model, from the bundled catalog, or
+   *  null when we have no rate info (→ the status bar shows "$??" rather than $0). */
+  private activeCostRates(): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
+    const p = this._model?.provider; const id = this._model?.id;
+    return (p && id) ? findCatalogModelCost(this.bundledProviders, p, id) : null;
+  }
 
-    const entries = this.sessionManager.getEntries();
-    let totalInput = 0;
-    let totalOutput = 0;
-    let totalCacheRead = 0;
-    let totalCacheWrite = 0;
-    let totalCost = 0;
-
-    for (const entry of entries) {
-      if (entry.type === "message" && entry.message?.role === "assistant") {
-        const usage = entry.message.usage;
-        if (usage) {
-          totalInput += usage.input ?? 0;
-          totalOutput += usage.output ?? 0;
-          totalCacheRead += usage.cacheRead ?? 0;
-          totalCacheWrite += usage.cacheWrite ?? 0;
-          totalCost += usage.cost?.total ?? 0;
-        }
-      }
-    }
-
-    let contextPercent: number | null = null;
-    let contextWindow = 0;
-    try {
-      const contextUsage = this.session?.getContextUsage?.();
-      if (contextUsage) {
-        contextPercent = contextUsage.percent;
-        contextWindow = contextUsage.contextWindow;
-      }
-    } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
-
-    return { input: totalInput, output: totalOutput, cacheRead: totalCacheRead, cacheWrite: totalCacheWrite, cost: totalCost, contextPercent, contextWindow };
+  getUsageStats(): UsageStats {
+    // Raw token counts + context come from the active backend primitive (SdkService sums its
+    // session entries; RustService caches get_session_stats). The cost policy — the genuine
+    // runtime divergence — is the pure, tested computeUsageStats (src/usage-stats.ts).
+    const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+    return computeUsageStats(u, this.activeCostRates(), this._backendKind);
   }
 
   // ── Getters ────────────────────────────────────────────
 
-  get isStreaming(): boolean { return this._isStreaming; }
+  get isStreaming(): boolean { return this.backend?.isStreaming() ?? false; }
   get model(): { id?: string; name?: string; provider?: string } | null { return this._model; }
-  get thinkingLevel(): string { return this._thinkingLevel; }
+  /** The effective thinking level for the current model (stored level clamped to
+   *  what the model honors) — so the status bar, picker, and cycle all show what's
+   *  real, not a level the model silently ignores. */
+  get thinkingLevel(): string { return this.realThinkingLevel(); }
+  /** Which runtime backs this session: "typescript" (in-process SDK) or "rust" (RPC subprocess). */
+  get runtime(): Runtime { return this._backendKind; }
 
-  /** Promote a follow-up message to a steering message. */
+  /** The active backend's capability flags — the data-driven replacement for scattered
+   *  `_backendKind === "rust"` feature gates. Falls back to a runtime-appropriate default
+   *  when the service isn't live yet (e.g. mid-init or after a failed init). */
+  get capabilities(): BackendCapabilities {
+    const active = this._backendKind === "rust" ? this._rust : this._sdk;
+    if (active) { return active.capabilities; }
+    // No live service (mid-init / failed init): the shared runtime default. Same source the
+    // backends derive from, so this fallback can't drift from the real thing.
+    return backendCapabilityDefaults(this._backendKind);
+  }
+
+  /** Promote a follow-up message to a steering message. Delegated to the backend:
+   *  the SDK re-queues its steers then appends; Rust moves it in the synthetic queue
+   *  and re-sends over the steer channel (it auto-processes steers). */
   async promoteToSteer(text: string): Promise<void> {
-    if (!this.session) { return; }
-    var existingSteer = this.session.getSteeringMessages ? [...this.session.getSteeringMessages()] : [];
-    this.session.clearQueue();
-    for (var i = 0; i < existingSteer.length; i++) {
-      this.session.steer(existingSteer[i]);
-    }
-    this.session.steer(text);
+    this.backend?.promoteToSteer(text);
   }
 
-  /** Clear all queued messages. */
+  /** Clear all queued messages. The SDK clears the session queue; Rust clears only
+   *  its local pending indicator (rust-pi has already accepted/auto-processed them). */
   async clearQueue(): Promise<void> {
-    if (!this.session) { return; }
-    this.session.clearQueue();
+    await this.backend?.clearQueue();
   }
-  get effort(): string { return this._effort; }
   get sdkRoot(): string | null { return this._piRoot; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get sessionManagerInstance(): any { return this.sessionManager; }
   /** The file path of the session file on disk (for persistence across reloads). */
   get sessionFilePath(): string | null {
-    return this.sessionManager?.getSessionFile?.() ?? null;
+    return this.sessionManager?.getSessionFile?.() ?? this._rust?.getSessionPath() ?? null;
   }
   get sessionIdValue(): string | null { return this.sessionId; }
-  get initialized(): boolean { return this.session !== null; }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  get rawSession(): any { return this.session; }
-  /** Expose the model registry for dynamic model pickers in the webview */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  get modelRegistryInstance(): any { return this.modelRegistry; }
+  get initialized(): boolean { return this.session !== null || this._rust !== null; }
 
-  /** Get the session display name from the session manager, if set. */
+  /** Reload context files / extensions / skills in-session. False when the active runtime has no
+   *  in-session reload (Rust), so callers can explain instead of reaching for a raw session.
+   *  Replaces the former `rawSession: any` getter that let extension.ts call .reload() straight
+   *  through the PiBackend seam. */
+  async reloadContext(): Promise<boolean> {
+    if (!this.capabilities.reloadContext) { return false; }
+    return (await this.backend?.reloadContext()) ?? false;
+  }
+  /** Expose the model runtime for dynamic model pickers in the webview */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  get modelRuntimeInstance(): any { return this.modelRuntime; }
+
+  /** Cached Rust session name (rust-pi tracks none — we persist/read a `session_info`
+   *  entry in its JSONL ourselves, the same entry type the SDK writes). */
+  private _rustSessionName: string | undefined;
+  private _rustSessionNameRead = false;
+  /** A name set but not yet written to the Rust JSONL (we only write while the binary is
+   *  idle — see _flushRustSessionInfo). */
+  private _rustSessionNamePending = false;
+
+  /** Get the session display name. TS: the SDK's SessionManager. Rust: the last
+   *  `session_info` entry we persisted to the JSONL (read once, then cached) — so a
+   *  reopened Rust session shows its title just like TS. */
   get sessionName(): string | undefined {
+    if (this._backendKind === "rust") {
+      if (!this._rustSessionNameRead) { this._rustSessionName = this._readRustSessionName(); this._rustSessionNameRead = true; }
+      return this._rustSessionName;
+    }
     return this.sessionManager?.getSessionName?.();
   }
 
-  /** Persist a display name to the session file so it survives tab close. */
+  /** Persist a display name so it survives tab close AND shows in the Past Sessions tree
+   *  (summarizeSessionFile reads the `session_info` name for both runtimes). TS: the SDK
+   *  writes the entry. Rust: rust-pi exposes no name RPC and doesn't track a name, so the
+   *  extension appends the SAME `session_info` entry to its JSONL directly — "use the
+   *  title entry appropriately" so both runtimes benefit from the one reader. */
   setSessionName(name: string): void {
+    if (this._backendKind === "rust") {
+      this._rustSessionName = name;
+      this._rustSessionNameRead = true;
+      this._rustSessionNamePending = true;
+      // Only write while the binary is idle — see _flushRustSessionInfo. If a turn is in
+      // flight the entry stays pending and is flushed when the run ends (or at dispose).
+      this._flushRustSessionInfo();
+      return;
+    }
     this.session?.setSessionName?.(name);
+  }
+
+  /** Read the last `session_info` name from the Rust session JSONL, or undefined. */
+  private _readRustSessionName(): string | undefined {
+    const sf = this._rust?.getSessionPath();
+    if (!sf) { return undefined; }
+    try {
+      const lines = fs.readFileSync(sf, "utf-8").trim().split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        // Accept the legacy `session_info` too: sessions titled before the entry type changed
+        // still carry their name that way, and reading it costs nothing.
+        try { const e = JSON.parse(lines[i]); if ((e?.type === RUST_SESSION_NAME_ENTRY || e?.type === "session_info") && typeof e.name === "string") { return e.name; } }
+        catch { /* skip a malformed line */ }
+      }
+    } catch { /* no file yet (fresh session pre-first-turn) */ }
+    return undefined;
+  }
+
+  /** Append a `session_info` name entry to the Rust session JSONL (best-effort; the file
+   *  only exists after the binary writes its first turn, so a very-early name is carried
+   *  live via the webview and flushed at dispose if it never got persisted). */
+  /** Flush a pending `session_info` name, but ONLY while the binary is idle. rust-pi owns this
+   *  JSONL and appends to it as a turn progresses; our append is O_APPEND (atomic w.r.t. its own
+   *  offset), but if the binary writes via a tracked offset rather than O_APPEND, an interleaved
+   *  write could clobber ours. We can't see its source (clean-room), so we simply never write
+   *  while a turn is in flight — the entry stays pending and lands at the next run-end or at
+   *  dispose (after the child is gone). No-op when nothing is pending. */
+  private _flushRustSessionInfo(): void {
+    if (!this._rustSessionNamePending || !this._rustSessionName) { return; }
+    if (this.backend?.getAgentRunActive()) { return; } // mid-turn: stay pending
+    this._persistRustSessionInfo(this._rustSessionName);
+    this._rustSessionNamePending = false;
+  }
+
+  private _persistRustSessionInfo(name: string): void {
+    this._appendRustSessionInfo(this._rust?.getSessionPath() ?? null, name);
+  }
+
+  /** The actual append. Takes the session file explicitly so dispose() can pass a path it
+   *  captured BEFORE tearing the runtime down (getSessionPath() is gone afterwards). */
+  private _appendRustSessionInfo(sf: string | null, name: string): void {
+    if (!sf || !fs.existsSync(sf)) { return; }
+    try {
+      // No id/parentId: this entry is deliberately OUTSIDE rust-pi's tree (see
+      // RUST_SESSION_NAME_ENTRY). Supplying tree fields is exactly what broke the loader before.
+      fs.appendFileSync(sf, JSON.stringify({
+        type: RUST_SESSION_NAME_ENTRY,
+        timestamp: new Date().toISOString(),
+        name,
+      }) + "\n");
+    } catch (e: unknown) { piWarn(`Rust session_info persist failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
   // ── Tools ───────────────────────────────────────────────
@@ -2253,12 +1634,7 @@ export class PiService {
   /** Get all configured tools available for selection. */
   getAllTools(): Array<{ name: string; description: string; source: string }> {
     if (!this.session || typeof this.session.getAllTools !== "function") { return []; }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return this.session.getAllTools().map((t: any) => ({
-      name: t.name,
-      description: t.description ?? "",
-      source: t.sourceInfo?.source ?? "sdk",
-    }));
+    return mapSessionTools(this.session.getAllTools());
   }
 
   /** Get names of currently active tools. */
@@ -2276,7 +1652,7 @@ export class PiService {
     this.session.setActiveToolsByName(toolNames);
     // Verify the update took effect
     const actualNames = this.session.getActiveToolNames();
-    piLog(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
+    piDebug(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
     // Force-persist the tool selection so it survives session close/reopen
     this._forcePersistEntry({
       type: "tools_active_change",
@@ -2285,25 +1661,26 @@ export class PiService {
       timestamp: new Date().toISOString(),
       toolNames,
     });
-    piLog(`setActiveTools: ${toolNames.length} tools active`);
+    piDebug(`setActiveTools: ${toolNames.length} tools active`);
   }
 
   /** Walk session entries in reverse to find and apply the last tools_active_change. */
   private _restoreActiveToolsFromSession(): void {
-    const entries = this.sessionManager?.getEntries?.() ?? [];
-    if (!entries.length) { return; }
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i];
-      if (e.type === "tools_active_change" && Array.isArray(e.toolNames) && e.toolNames.length > 0) {
-        this.session.setActiveToolsByName(e.toolNames);
-        piLog(`Restored active tools from session: ${e.toolNames.join(", ")}`);
-        return;
-      }
+    const toolNames = findLastActiveTools(this.sessionManager?.getEntries?.() ?? []);
+    if (toolNames) {
+      this.session.setActiveToolsByName(toolNames);
+      piDebug(`Restored active tools from session: ${toolNames.join(", ")}`);
     }
   }
 
   /** Open a QuickPick to select which tools are active for this session. */
   async pickActiveTools(): Promise<boolean> {
+    if (!this.capabilities.toolsPicker) {
+      // In the chat, not a notification popup: /tools is typed in the chat, so the answer
+      // belongs where the question was asked.
+      this.emit({ type: "custom-message", data: { customType: "info", content: "Per-session tool selection isn't available for Rust sessions — Rust uses its full built-in tool set.", timestamp: Date.now() } });
+      return false;
+    }
     if (!this.session) {
       vscode.window.showWarningMessage("Pi session not ready yet.");
       return false;
@@ -2316,32 +1693,15 @@ export class PiService {
     }
 
     const activeNames = new Set(this.getActiveToolNames());
-    piLog(`pickActiveTools: ${activeNames.size} active tools — ${[...activeNames].join(", ") || "(none)"}`);
+    piDebug(`pickActiveTools: ${activeNames.size} active tools — ${[...activeNames].join(", ") || "(none)"}`);
 
-    // Group by source for a cleaner pick list
-    const builtinTools = allTools.filter((t) => t.source === "builtin");
-    const bridgeTools = allTools.filter((t) => t.source === "sdk" && t.name.startsWith("vscode_"));
-    const extensionTools = allTools.filter((t) => t.source !== "builtin" && !t.name.startsWith("vscode_"));
-
-    const items: vscode.QuickPickItem[] = [];
-
-    const addGroup = (label: string, tools: typeof allTools): void => {
-      if (tools.length === 0) { return; }
-      const icon = label === "Built-in" ? "tools" : label === "VS Code Bridge" ? "extensions" : "symbol-misc";
-      items.push({ label: `$(${icon}) ${label}`, kind: vscode.QuickPickItemKind.Separator });
-      for (const t of tools) {
-        items.push({
-          label: t.name,
-          description: t.description,
-          detail: t.source,
-          picked: activeNames.has(t.name),
-        });
-      }
-    };
-
-    addGroup("Built-in", builtinTools);
-    addGroup("VS Code Bridge", bridgeTools);
-    addGroup("Extension", extensionTools);
+    // Grouping / picked-state is pure + tested (buildToolPickerRows); map its neutral rows to
+    // vscode QuickPick items here.
+    const items: vscode.QuickPickItem[] = buildToolPickerRows(allTools, activeNames).map((r) =>
+      r.separator
+        ? { label: `$(${r.icon}) ${r.label}`, kind: vscode.QuickPickItemKind.Separator }
+        : { label: r.name, description: r.description, detail: r.source, picked: r.picked },
+    );
 
     const picked = await vscode.window.showQuickPick(items, {
       canPickMany: true,
@@ -2356,15 +1716,7 @@ export class PiService {
       .map((p) => p.label);
 
     this.setActiveTools(selectedNames);
-
-    const added = selectedNames.filter((n) => !activeNames.has(n)).length;
-    const removed = activeNames.size - selectedNames.filter((n) => activeNames.has(n)).length;
-    const parts: string[] = [];
-    if (added > 0) { parts.push(`+${added}`); }
-    if (removed > 0) { parts.push(`-${removed}`); }
-    vscode.window.showInformationMessage(
-      `Tools updated: ${selectedNames.length} active${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`,
-    );
+    vscode.window.showInformationMessage(summarizeToolSelection(activeNames, selectedNames).summary);
 
     return true;
   }
@@ -2372,336 +1724,139 @@ export class PiService {
   // ── Login / Logout ─────────────────────────────────────
 
   /**
-   * Show the login flow for a provider.
-   * Mirrors the pi CLI's /login command:
-   * 1. Select auth type (subscription/OAuth vs API key)
-   * 2. Select provider
-   * 3. For OAuth: open browser and complete OAuth flow
-   * 4. For API key: prompt for key and save it
+   * Provider login (pi-coding-agent >= 0.80.8). The provider-owned flow is driven by
+   * `ModelRuntime.login(providerId, "api_key"|"oauth", interaction)`, where `interaction`
+   * is a pi-ai `AuthInteraction` — a unified `{ prompt, notify }` pair serving both the
+   * API-key and OAuth flows. We adapt those callbacks to VS Code UI (input boxes / quick
+   * picks / browser-open) via makeAuthInteraction. Replaces the removed AuthStorage flow.
    */
-  async login(): Promise<void> {
-    if (!this.authStorage || !this.modelRegistry) {
-      throw new Error("Pi session not initialized");
-    }
+  async login(): Promise<void> { return runLogin(await this.makeAuthFlowDeps()); }
 
-    // ── Step 1: Auth type selector ─────────────────────
-    const authType = await this.pickAuthType();
-    if (!authType) { return; } // cancelled
+  /** Provider logout. Lists stored credentials and removes the chosen one; env vars /
+   *  models.json config are untouched. See auth-flow.ts. */
+  async logout(): Promise<void> { return runLogout(await this.makeAuthFlowDeps()); }
 
-    // ── Step 2: Provider selector ───────────────────────
-    const providerChoice = await this.pickLoginProvider(authType);
-    if (!providerChoice) { return; } // cancelled
+  /** After a credential is stored. On Rust the binary reads auth.json from its own agent dir,
+   *  so re-seed it — and say plainly that a RUNNING session won't pick the credential up, since
+   *  rust-pi reads auth at startup. Silent on TS, where the session already holds the runtime. */
+  private afterLoginForRuntime(providerName: string): void {
+    if (this.capabilities.kind !== "rust") { return; }
+    const warning = reseedRustAuth();
+    if (warning) { piWarn(`Rust auth re-seed after login: ${warning}`); }
 
-    // ── Step 3: Execute login ───────────────────────────
-    if (providerChoice.authType === "oauth") {
-      await this.doOAuthLogin(providerChoice.id, providerChoice.name);
-    } else if (providerChoice.id === "amazon-bedrock") {
-      await this.showInfoMessage(
-        "Amazon Bedrock uses AWS credentials. Configure an AWS profile, IAM keys, or role-based credentials.",
-      );
-    } else {
-      await this.doApiKeyLogin(providerChoice.id, providerChoice.name);
-    }
-  }
-
-  /** Show the auth type picker: Subscription (OAuth) vs API Key */
-  private async pickAuthType(): Promise<"oauth" | "api_key" | undefined> {
-    const ITEMS = [
-      { label: "Use a subscription", authType: "oauth" as const, description: "OAuth login for Anthropic, GitHub Copilot, OpenAI Codex" },
-      { label: "Use an API key", authType: "api_key" as const, description: "Enter an API key for any provider" },
-    ];
-    const pick = await this.showQuickPick(ITEMS, "Select authentication method:");
-    return pick?.authType;
-  }
-
-  /** Show provider picker for a given auth type */
-  private async pickLoginProvider(
-    authType: "oauth" | "api_key",
-  ): Promise<{ id: string; name: string; authType: string } | undefined> {
-    const options = this.getLoginProviderOptions(authType);
-    if (options.length === 0) {
-      const label = authType === "oauth" ? "No subscription providers available." : "No API key providers available.";
-      await this.showInfoMessage(label);
-      return undefined;
-    }
-    const pick = await this.showQuickPick(options, `Select ${authType === "oauth" ? "subscription" : "API key"} provider:`);
-    return pick;
-  }
-
-  /** Build the list of provider options for login */
-  private getLoginProviderOptions(
-    authType: "oauth" | "api_key",
-  ): Array<{ id: string; name: string; authType: string; label: string; description: string }> {
-    const oauthProviders = this.authStorage.getOAuthProviders();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const oauthProviderIds = new Set(oauthProviders.map((p: any) => p.id));
-    const options: Array<{ id: string; name: string; authType: string; label: string; description: string }> = [];
-
-    if (authType === "oauth") {
-      // OAuth providers
-      for (const provider of oauthProviders) {
-        const authStatus = this.modelRegistry.getProviderAuthStatus(provider.id);
-        options.push({
-          id: provider.id,
-          name: provider.name,
-          authType: "oauth",
-          label: provider.name,
-          description: authStatus?.configured ? "$(check) Already configured" : "",
-        });
-      }
-    } else {
-      // API key providers — all model providers that aren't OAuth-only
-      const allModels = this.modelRegistry.getAll();
-      const seenProviders = new Set<string>();
-      for (const model of allModels) {
-        const providerId = model.provider;
-        if (seenProviders.has(providerId)) { continue; }
-        seenProviders.add(providerId);
-        // Skip providers that only support OAuth
-        if (oauthProviderIds.has(providerId)) { continue; }
-        const displayName = this.modelRegistry.getProviderDisplayName(providerId);
-        const authStatus = this.modelRegistry.getProviderAuthStatus(providerId);
-        options.push({
-          id: providerId,
-          name: displayName,
-          authType: "api_key",
-          label: displayName,
-          description: authStatus?.configured
-            ? `$(check) Already configured (${authStatus.source})`
-            : "",
-        });
-      }
-    }
-
-    return options.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  /** Show a VS Code quick pick (wraps showQuickPick since it's async and returns proper type) */
-  private async showQuickPick<T extends { label: string; description?: string }>(
-    items: T[],
-    placeHolder: string,
-  ): Promise<T | undefined> {
-    const vscode = await import("vscode");
-    const picked = await vscode.window.showQuickPick(items, { placeHolder, matchOnDescription: true });
-    return picked;
-  }
-
-  /** Show an info message */
-  private async showInfoMessage(message: string): Promise<void> {
-    const vscode = await import("vscode");
-    await vscode.window.showInformationMessage(message);
-  }
-
-  /** Show an error message */
-  private async showErrorMessage(message: string): Promise<void> {
-    const vscode = await import("vscode");
-    await vscode.window.showErrorMessage(message);
-  }
-
-  /**
-   * Execute OAuth login flow for a provider.
-   * Opens the browser, handles callbacks, and waits for completion.
-   */
-  private async doOAuthLogin(providerId: string, providerName: string): Promise<void> {
-    const vscode = await import("vscode");
-    const previousModel = this._model;
-
-    try {
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Logging in to ${providerName}...`,
-          cancellable: true,
-        },
-        async (progress, token) => {
-          const abortController = new AbortController();
-          token.onCancellationRequested(() => abortController.abort());
-
-          await this.authStorage.login(providerId, {
-            onAuth: (info: { url: string; instructions?: string }) => {
-              // Open the URL in the browser
-              vscode.env.openExternal(vscode.Uri.parse(info.url));
-              if (info.instructions) {
-                progress.report({ message: info.instructions });
-              }
-            },
-            onPrompt: async (prompt: { message: string; placeholder?: string }) => {
-              // Show an input box for the response
-              return vscode.window.showInputBox({
-                prompt: prompt.message,
-                placeHolder: prompt.placeholder,
-                password: true,
-                ignoreFocusOut: true,
-              }) ?? "";
-            },
-            onProgress: (message: string) => {
-              progress.report({ message });
-            },
-            onManualCodeInput: () => {
-              // For callback-server providers, prompt for manual paste
-              return new Promise<string>((resolve, reject) => {
-                token.onCancellationRequested(() => reject(new Error("Login cancelled")));
-                vscode.window
-                  .showInputBox({
-                    prompt: "Paste redirect URL below, or complete login in browser:",
-                    ignoreFocusOut: true,
-                  })
-                  .then((value) => {
-                    if (value) { resolve(value); }
-                    else { reject(new Error("Login cancelled")); }
-                  });
-              });
-            },
-            signal: abortController.signal,
-          });
-
-          progress.report({ message: "Login successful!" });
-        },
-      );
-
-      // Refresh model registry and try to select a model for the provider
-      this.modelRegistry.refresh();
-      await this.completeLogin(providerId, providerName, "oauth", previousModel);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-      if (error.message !== "Login cancelled") {
-        await this.showErrorMessage(`Failed to login to ${providerName}: ${error.message ?? error}`);
-      }
-    }
-  }
-
-  /**
-   * Execute API key login flow for a provider.
-   */
-  private async doApiKeyLogin(providerId: string, providerName: string): Promise<void> {
-    const vscode = await import("vscode");
-    const previousModel = this._model;
-
-    try {
-      const apiKey = await vscode.window.showInputBox({
-        prompt: `Enter API key for ${providerName}:`,
-        password: true,
-        placeHolder: "sk-...",
-        validateInput: (value) => (value.trim() ? undefined : "API key required"),
-        ignoreFocusOut: true,
-      });
-
-      if (!apiKey || !apiKey.trim()) {
-        return; // cancelled
-      }
-
-      this.authStorage.set(providerId, { type: "api_key", key: apiKey.trim() });
-      this.modelRegistry.refresh();
-      await this.completeLogin(providerId, providerName, "api_key", previousModel);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-      if (error.message !== "Login cancelled") {
-        await this.showErrorMessage(`Failed to save API key for ${providerName}: ${error.message ?? error}`);
-      }
-    }
-  }
-
-  /** After login, try to select a default model for the provider */
-  private async completeLogin(
-    providerId: string,
-    providerName: string,
-    authType: string,
-    previousModel: { id?: string; provider?: string } | null,
-  ): Promise<void> {
-    const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
-
-    // Try to select a default model for the provider if the current model is "unknown"
-    if (this.AI && (!previousModel || previousModel.provider === "unknown")) {
-      const availableModels = this.modelRegistry.getAvailable();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const providerModels = availableModels.filter((m: any) => m.provider === providerId);
-      if (providerModels.length > 0) {
-        try {
-          await this.setModel(providerId, providerModels[0].id);
-          await this.showInfoMessage(`${actionLabel}. Selected ${providerModels[0].id}.`);
-        } catch {
-          await this.showInfoMessage(`${actionLabel}.`);
+    // If the session never started — the usual reason someone reaches for /login — the new
+    // credential is exactly what it was missing, so restart it here. Telling the user to "start
+    // a new session" left them stranded in a tab that answered every prompt with "this session
+    // isn't running", when the fix was already in hand. rust-pi only reads auth at startup, so a
+    // restart is genuinely required; it just shouldn't be the user's manual chore.
+    if (!this.initialized) {
+      this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Restarting this session with the new credential…`, timestamp: Date.now() } });
+      void (async (): Promise<void> => {
+        this.emit({ type: "sessionReset" });
+        this.dispose();
+        const r = await this.initialize({ fresh: true });
+        if (!r.success) {
+          this.emit({ type: "custom-message", data: { customType: "error", content: `Still couldn't start after logging in: ${r.error ?? "unknown error"}`, timestamp: Date.now() } });
         }
-        return;
-      }
-    }
-
-    await this.showInfoMessage(`${actionLabel}.`);
-  }
-
-  /**
-   * Show the logout flow for a provider.
-   * Mirrors the pi CLI's /logout command.
-   */
-  async logout(): Promise<void> {
-    if (!this.authStorage || !this.modelRegistry) {
-      throw new Error("Pi session not initialized");
-    }
-
-    // Build list of providers that have credentials saved
-    const options: Array<{ id: string; name: string; label: string; description: string }> = [];
-    for (const providerId of this.authStorage.list()) {
-      const credential = this.authStorage.get(providerId);
-      if (!credential) { continue; }
-      const displayName = this.modelRegistry.getProviderDisplayName(providerId);
-      options.push({
-        id: providerId,
-        name: displayName,
-        label: displayName,
-        description: credential.type === "oauth" ? "OAuth subscription" : "API key",
-      });
-    }
-
-    if (options.length === 0) {
-      await this.showInfoMessage(
-        "No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
-      );
+      })();
       return;
     }
+    // A LIVE session can't adopt the credential in place — the binary read auth at startup.
+    this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Rust reads credentials at startup, so run /new for it to take effect.`, timestamp: Date.now() } });
+  }
 
-    const pick = await this.showQuickPick(
-      options.sort((a, b) => a.name.localeCompare(b.name)),
-      "Select provider to logout:",
-    );
-    if (!pick) { return; }
-
-    try {
-      this.authStorage.logout(pick.id);
-      this.modelRegistry.refresh();
-      const message =
-        pick.description === "OAuth subscription"
-          ? `Logged out of ${pick.name}`
-          : `Removed stored API key for ${pick.name}. Environment variables and models.json config are unchanged.`;
-      await this.showInfoMessage(message);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-      await this.showErrorMessage(`Logout failed: ${error.message ?? error}`);
-    }
+  /** Real (vscode-backed) deps for the extracted, headlessly-tested login/logout flow. */
+  private async makeAuthFlowDeps(): Promise<AuthFlowDeps> {
+    return {
+      // NOT this.modelRuntime — that is the SDK session's runtime and is null on Rust, so
+      // runLogin threw "Pi session not initialized" before showing a single prompt and the
+      // whole command looked like it did nothing. sharedModelRuntime() is the same lazily
+      // built runtime that already gives Rust its tab titles.
+      modelRuntime: await this.sharedModelRuntime(),
+      afterLogin: (providerName) => this.afterLoginForRuntime(providerName),
+      getActiveModel: () => this._model,
+      setModel: (provider, id) => this.setModel(provider, id),
+      ui: {
+        // The AbortSignal becomes a CancellationToken so a prompt left open when the flow
+        // finishes by another route is actually dismissed (see AuthUI).
+        quickPick: (items, opts, signal) => Promise.resolve(vscode.window.showQuickPick(items, opts, tokenFor(signal))),
+        inputBox: (opts, signal) => Promise.resolve(vscode.window.showInputBox(opts, tokenFor(signal))),
+        withProgress: (title, task) => Promise.resolve(vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+          async (progress, token) => {
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+            try {
+              await task((message) => progress.report({ message }), controller.signal);
+            } finally {
+              // Abort on SUCCESS too, not just cancellation: that is what closes a prompt the
+              // flow never consumed (e.g. the manual-code box when the browser callback won).
+              controller.abort();
+            }
+          },
+        )),
+        openExternal: (url) => { void vscode.env.openExternal(vscode.Uri.parse(url)); },
+        info: (message) => { void vscode.window.showInformationMessage(message); },
+        error: (message) => { void vscode.window.showErrorMessage(message); },
+      },
+    };
   }
 
   // ── Cleanup ────────────────────────────────────────────
 
   dispose(): void {
+    // Resolve any in-flight interactive dialogs with undefined so awaiting SDK
+    // coroutines unblock and fall back to text prompts instead of hanging forever.
+    for (const { resolve } of this._pendingDialogs.values()) {
+      try { resolve(undefined); } catch { /* listener already gone */ }
+    }
+    this._pendingDialogs.clear();
+
+    // Rust runtime: tear down the subprocess (it owns its own persistence).
+    if (this._backendKind === "rust") {
+      // Capture the session file BEFORE teardown (getSessionPath() is unavailable once the
+      // service is gone), then tear the subprocess down, and only THEN append the session-name
+      // entry — so we are never writing into the JSONL while the binary still owns it. Covers
+      // the case where a title was set before the binary had written the file at all (fresh
+      // session), and any title deferred mid-turn. Re-appending an identical name is harmless:
+      // the tree reader takes the LAST session_info entry.
+      const rustSessionFile = this._rust?.getSessionPath() ?? null;
+      this._uiBridge?.dispose(); this._uiBridge = null;
+      this._rust?.dispose();
+      this._rust = null;
+      if (this._rustSessionName) { this._appendRustSessionInfo(rustSessionFile, this._rustSessionName); }
+      this._rustSessionNamePending = false;
+      return;
+    }
+    // Exhaustive: the SDK teardown below is the "typescript" path. A third runtime added to
+    // Runtime becomes a compile error here (this._backendKind narrows to it) until it declares
+    // its own teardown above. Dead/no-op today.
+    if (this._backendKind !== "typescript") { assertNever(this._backendKind, "runtime"); }
+
     // Force-flush the session file to disk before tearing down.
     // The SDK defers all disk writes until the first assistant message
     // arrives, so if the model is slow or the user closes the tab early,
     // entries (including session_info with the tab name) exist only in
     // memory and would be lost.  _rewriteFile bypasses the deferral.
- 
+
     const sm = this.sessionManager;
     if (sm && !sm.flushed && typeof sm._rewriteFile === "function") {
       try { sm._rewriteFile(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
+    } else if (sm && !sm.flushed) {
+      // _rewriteFile is a private SDK member reached through an `any` cast. If it's
+      // gone, the SDK internals changed under us — warn loudly (a rename canary),
+      // since an unflushed session may then silently fail to persist on dispose.
+      piWarn("SessionManager._rewriteFile is missing — the private Pi SDK API may have changed; unflushed session entries could be lost on dispose.");
     }
     // Kill any running bash processes before tearing down the session.
     // Without this, processes orphaned by session close survive as zombies.
     try { this.session?.abortBash?.(); } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
-    if (this._widgetTimer) { clearInterval(this._widgetTimer); this._widgetTimer = null; }
+    this._uiBridge?.dispose(); this._uiBridge = null;
     this.unsubscribe?.();
     this.session?.dispose();
-    this.session = null;
     this.unsubscribe = null;
-    this.SDK = null;
-    this.AI = null;
-    this.resourceLoader = null;
+    // Drop all SDK references (session, managers, modules) in one place.
+    this._sdk?.dispose();
+    this._sdk = null;
   }
 }

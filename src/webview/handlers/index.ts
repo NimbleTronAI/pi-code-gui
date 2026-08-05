@@ -1,26 +1,39 @@
-import { state } from "../state.js";
-import { logEvent, logDom, summary as debugSummary, debugEventLog } from "../debug.js";
+import { state, type AppState } from "../state.js";
+import { logEvent } from "../debug.js";
 import {
-  renderMarkdown, renderBlock, renderInline, patchBlockList,
+  renderMarkdown, renderBlock, patchBlockList,
   escapeHtml, createMessageEl, createThinkingBlock, morphRender,
-  truncate, formatTokens, renderToolResult, renderFileContent,
-  renderDiffMarkup, formatToolError, getLangFromPath,
-  getCompactReadLabel, registerToolRenderer, getToolRenderer,
-  hideWelcome, resetChat, scrollToBottom, updateStreamingState,
-  renderToolResultTruncated, renderBlockToHTML,
-  shortenPath, renderCodeBlockHTML,
+  formatTokens, hideWelcome, resetChat, scrollToBottom, updateStreamingState,
   setupCodeBlockHandlers,
 } from "../render/engine.js";
-import { validateExtensionToWebview } from "../../shared/protocol.js";
+import { validateExtensionToWebview, type ExtensionToWebview } from "../../shared/protocol.js";
+
+/** The `data` payload of a given extension→webview message, derived FROM THE SCHEMA.
+ *
+ *  These handlers all took `data: any`, so the Zod validator was the only thing checking the
+ *  shape — at runtime, warn-only. Deriving the type here moves that check to compile time: a
+ *  handler that reads a field the schema doesn't define, or treats an optional field as
+ *  required, is now a build error. */
+type MsgData<T extends ExtensionToWebview["type"]> =
+  Extract<ExtensionToWebview, { type: T }> extends { data?: infer D } ? D : never;
+import { linkifyPlain } from "../../shared/linkify.js";
 import { html, safe } from "../render/html.js";
 import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
+import type { ThinkingBlock } from "../components/thinking-block.js";
+
+/** What `HTMLElement._component` holds on a thinking block. The global declaration has to say
+ *  `unknown` because different elements hold different components — but every site below knows
+ *  which one it has, so it narrows here rather than reaching for `any`.
+ *
+ *  `_rawText` is accumulated on the COMPONENT, not the element: handleThinkingDelta appends each
+ *  delta to `tb._rawText` and the RAF flush reads it back. That is why it is declared on this
+ *  handle and not alongside the element expandos in global.d.ts. */
+type ThinkingComponent = ThinkingBlock & { _rawText?: string };
 import { Dialog } from "../components/dialog.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
-  writeToolRenderer, editToolRenderer, readToolRenderer,
-  bashToolRenderer, defaultToolRenderer,
-  insertToolBlock,
+  bashToolRenderer, insertToolBlock,
 } from "../tools/index.js";
 
 
@@ -38,11 +51,11 @@ import {
   // renderers that produce DOM for the live panel.
 
 
-export function registerMessageRenderer(customType: string, rendererFn: (data: any, container: HTMLElement, ...args: any[]) => void) {
+export function registerMessageRenderer(customType: string, rendererFn: AppState["messageRenderers"][string]): void {
     state.messageRenderers[customType] = rendererFn;
   }
 
-export function getMessageRenderer(customType: string) {
+export function getMessageRenderer(customType: string): AppState["messageRenderers"][string] | undefined {
     return state.messageRenderers[customType];
   }
 
@@ -52,15 +65,15 @@ export function getMessageRenderer(customType: string) {
   // Default message renderer: creates a collapsible live-panel card.
   // Each invocation creates a NEW card — notifications and custom messages
   // stack rather than silently replacing each other.
-export function defaultMessageRenderer(data: any) {
+export function defaultMessageRenderer(data: CustomMessageData): HTMLElement {
     var customType = data.customType || "custom";
     var content = "";
     if (typeof data.content === "string") {
       content = data.content;
     } else if (Array.isArray(data.content)) {
       content = data.content
-        .filter(function (c: any) { return c.type === "text"; })
-        .map(function (c: any) { return c.text; })
+        .filter(function (c: TextPart): boolean { return c.type === "text"; })
+        .map(function (c: TextPart): string { return c.text; })
         .join("\n");
     }
 
@@ -78,7 +91,7 @@ export function defaultMessageRenderer(data: any) {
   /** Create a collapsible live-panel card. Returns the card element.
    *  @param key Unique key for storage and dismissal.
    *  Backward compat: if called with 3 args (old signature), auto-generates key. */
-export function createLiveCard(key: string, customType: string, label: string, content: string) {
+export function createLiveCard(key: string, customType: string, label: string, content: string): HTMLElement {
     // Backward compat: old 3-arg call createLiveCard(customType, label, content)
     if (content === undefined) {
       content = label;
@@ -90,11 +103,11 @@ export function createLiveCard(key: string, customType: string, label: string, c
       cardType: customType,
       label: label,
       content: renderMarkdown(content),
-      onDismiss: function () { dismissLiveCard(key); },
+      onDismiss: function (): void { dismissLiveCard(key); },
     });
     lc.el._component = lc; // attach for later updating
     state.livePanel.appendChild(lc.el);
-    state.liveCards[key as string] = lc.el;
+    state.liveCards[key] = lc.el;
     state.livePanel.classList.add("visible");
     return lc.el;
   }
@@ -102,7 +115,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
   // ═══ Event Router ═══════════════════════════════════════
   // ═══ Event Router ═══════════════════════════════════════
 
-  window.addEventListener("message", function (event) {
+  window.addEventListener("message", function (event): void {
     var msg = event.data;
 
     // ── Layer 1: Runtime protocol validation ───────────────
@@ -114,13 +127,10 @@ export function createLiveCard(key: string, customType: string, label: string, c
     if (!skipValidation) {
       var vr = validateExtensionToWebview(msg);
       if (!vr.success) {
+        // Log only. The extension side (EventBus) is the authoritative gate and already shows a
+        // diagnostic card for a failed message, so raising a second card here meant ONE schema
+        // drift produced TWO user-visible errors — while still rendering the payload either way.
         console.warn("[pi-gui] Webview message validation failed:", vr.error, "msg:", JSON.stringify(msg).substring(0, 300));
-        // Show a visible diagnostic notification
-        var diagKey = "pi-gui-diagnostic-" + Date.now();
-        var diag = createLiveCard(diagKey, "pi-gui-diagnostic", "Protocol Error",
-          "Message validation error for type `" + (msg.type || "unknown") + "`:\n```\n" +
-          vr.error.substring(0, 500) + "\n```");
-        // Don't block — fall through to existing handler for backward compat
       }
     }
 
@@ -168,7 +178,6 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "bash-end":           handleBashEnd(msg.data); break;
       case "custom-message":     handleCustomMessage(msg.data); break;
       case "user-messages-list": handleUserMessagesList(msg.data); break;
-      case "scoped-models-update": handleScopedModelsUpdate(msg.data); break;
       case "settings-update":    handleSettingsUpdate(msg.data); break;
       case "revealEntry":        handleRevealEntry(msg.entryId, msg.toolCallId); break;
 
@@ -176,7 +185,10 @@ export function createLiveCard(key: string, customType: string, label: string, c
       case "error":               handleError(msg.data); break;
 
       // UI commands from extension host
-      case "sessionReset":        resetChat(); break;
+      // Clear the indicators' setInterval timers BEFORE resetChat() wipes the
+      // DOM — otherwise the working/compaction/retry spinners keep firing against
+      // removed elements (engine.ts can't reach these helpers: circular dep).
+      case "sessionReset":        removeWorkingIndicator(); removeCompactionIndicator(); removeRetryIndicator(); resetChat(); break;
       case "insertCommand":       handleInsertCommand(msg.command); break;
 
       // Slash commands from installed extensions
@@ -203,7 +215,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
   // ═══ Agent Lifecycle ═══════════════════════════════════
   // ═══ Agent Lifecycle ═══════════════════════════════════
 
-export function handleAgentStart() {
+export function handleAgentStart(): void {
     logEvent("agent-start", { bashBlocksN: Object.keys(state.bashBlocks).length, toolBlocksN: Object.keys(state.currentToolBlocks).length });
     state.isStreaming = true;
     state.queueMode = "steer";  // reset to default on new stream
@@ -217,11 +229,11 @@ export function handleAgentStart() {
     setSbDot("streaming");
   }
 
-export function handleAgentEnd() {
+export function handleAgentEnd(): void {
     setSbDot("idle");
     // Stop thinking spinner (safety net) — use component API if available
     if (state.currentThinkingEl) {
-      var tb = state.currentThinkingEl._component as any;
+      var tb = state.currentThinkingEl._component as ThinkingComponent | undefined;
       if (tb) {
         tb.update({ content: tb._rawText || "", done: true });
       } else {
@@ -274,9 +286,9 @@ export function handleAgentEnd() {
     }
 
     // Finalize any pending tool blocks
-    Object.keys(state.currentToolBlocks).forEach(function (id) {
+    Object.keys(state.currentToolBlocks).forEach(function (id): void {
       var entry = state.currentToolBlocks[id];
-      var block = (entry as any).el || entry;
+      var block = entry?.el;
       if (block && block.getAttribute("data-status") === "running") {
         var statusEl = block.querySelector(".tool-status");
         if (statusEl) {
@@ -289,14 +301,14 @@ export function handleAgentEnd() {
     state.currentToolBlocks = {};
 
     // Also finalize any dangling bash blocks that were never closed
-    Object.keys(state.bashBlocks).forEach(function (id) {
-      var block = state.bashBlocks[id as string];
+    Object.keys(state.bashBlocks).forEach(function (id): void {
+      var block = state.bashBlocks[id];
       if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
         logEvent("agent-end:ORPHAN-BASH", { toolCallId: id, inDOM: !!block.parentElement });
         block.setAttribute("data-status", "done");
         var footer = block.querySelector(".bash-footer");
         if (footer) { footer.innerHTML = '<span class="exit-code">exit: -</span> <span>(ended)</span>'; }
-        delete state.bashBlocks[id as string];
+        delete state.bashBlocks[id];
         delete state.bashOutputs[id];
       }
     });
@@ -307,11 +319,11 @@ export function handleAgentEnd() {
   // ═══ Turn Lifecycle ════════════════════════════════════
   // ═══ Turn Lifecycle ════════════════════════════════════
 
-export function handleTurnStart(data: any) {
+export function handleTurnStart(_data: MsgData<"turn-start">): void {
     hideWelcome();
   }
 
-export function handleTurnEnd(data: any) {
+export function handleTurnEnd(data: MsgData<"turn-end">): void {
     if (data && data.message && data.message.role === "assistant" && data.message.errorMessage) {
       if (state.currentAssistantEl) {
         addErrorToElement(state.currentAssistantEl, data.message.errorMessage);
@@ -322,7 +334,7 @@ export function handleTurnEnd(data: any) {
   // ═══ Message Lifecycle ═════════════════════════════════
   // ═══ Message Lifecycle ═════════════════════════════════
 
-export function handleChatMessage(data: any) {
+export function handleChatMessage(data: MsgData<"chat-message">): void {
     // Dedup: skip if same role+content as last user message
     if (data.role === "user" && data.content === state.lastUserMessageContent) {return;}
     if (data.role === "user") {
@@ -357,7 +369,7 @@ export function handleChatMessage(data: any) {
     scrollToBottom();
   }
 
-export function handleAssistantStart(data: any) {
+export function handleAssistantStart(data: MsgData<"assistant-start">): void {
     hideWelcome();
     removeWorkingIndicator();
 
@@ -373,7 +385,7 @@ export function handleAssistantStart(data: any) {
     scrollToBottom();
   }
 
-export function handleAssistantEnd(data: any) {
+export function handleAssistantEnd(data: MsgData<"assistant-end">): void {
     // Finalize the assistant message
     if (state.currentAssistantEl) {
       // Flush any pending batched renders before finalizing
@@ -420,9 +432,9 @@ export function handleAssistantEnd(data: any) {
           addErrorToElement(state.currentAssistantEl, data.errorMessage || "Operation aborted");
           // Mark any pending tool blocks as errored
           if (data.toolCalls) {
-            data.toolCalls.forEach(function (tcId: string) {
-              var entry = state.currentToolBlocks[tcId as string];
-              var block = entry ? ((entry as any).el || entry) : null;
+            data.toolCalls.forEach(function (tcId: string): void {
+              var entry = state.currentToolBlocks[tcId];
+              var block = entry ? entry.el : null;
               if (block) {
                 var statusEl = block.querySelector(".tool-status");
                 if (statusEl) {
@@ -430,7 +442,7 @@ export function handleAssistantEnd(data: any) {
                   statusEl.className = "tool-status error";
                 }
                 block.setAttribute("data-status", "error");
-                delete state.currentToolBlocks[tcId as string];
+                delete state.currentToolBlocks[tcId];
               }
             });
           }
@@ -451,10 +463,10 @@ export function handleAssistantEnd(data: any) {
   // all prior completed blocks are untouched. This avoids O(n²)
   // full-content re-renders during streaming.
 
-export function _scheduleStreamRender(contentEl: HTMLElement) {
+export function _scheduleStreamRender(contentEl: HTMLElement): void {
     if (state._streamRafId) {return;}
     state._streamContentEl = contentEl;
-    state._streamRafId = requestAnimationFrame(function () {
+    state._streamRafId = requestAnimationFrame(function (): void {
       state._streamRafId = null;
       if (!state._streamContentEl) {return;}
       var el = state._streamContentEl;
@@ -488,7 +500,7 @@ export function _scheduleStreamRender(contentEl: HTMLElement) {
   }
 
   /** Flush any pending rAF render immediately (called before finalize). */
-export function _flushStreamRender() {
+export function _flushStreamRender(): void {
     // Flush thinking text first so it's visible in the final render
     _flushThinkingRender();
     if (state._streamRafId) {
@@ -523,7 +535,7 @@ export function _flushStreamRender() {
     }
   }
 
-export function handleStreamDelta(data: any) {
+export function handleStreamDelta(data: MsgData<"stream-delta">): void {
     hideWelcome();
     if (!state.currentAssistantEl) {
       // Safety: create container if assistant-start was missed
@@ -550,15 +562,15 @@ export function handleStreamDelta(data: any) {
   // Uses textContent (no HTML parse) for efficiency, batched
   // per animation frame like stream deltas.
 
-export function _scheduleThinkingRender(el: HTMLElement) {
+export function _scheduleThinkingRender(el: HTMLElement): void {
     if (state._thinkingRafId) {return;}
     state._thinkingEl = el;
-    state._thinkingRafId = requestAnimationFrame(function () {
+    state._thinkingRafId = requestAnimationFrame(function (): void {
       state._thinkingRafId = null;
       if (!state._thinkingEl) {return;}
       var el = state._thinkingEl;
       state._thinkingEl = null;
-      var tb = el._component as any;
+      var tb = el._component as ThinkingComponent | undefined;
       if (tb) {
         tb.update({ content: tb._rawText || "" });
         tb.scrollToBottom();
@@ -567,14 +579,14 @@ export function _scheduleThinkingRender(el: HTMLElement) {
     });
   }
 
-export function _flushThinkingRender() {
+export function _flushThinkingRender(): void {
     if (state._thinkingRafId) {
       cancelAnimationFrame(state._thinkingRafId);
       state._thinkingRafId = null;
       if (state._thinkingEl) {
         var el = state._thinkingEl;
         state._thinkingEl = null;
-        var tb = el._component as any;
+        var tb = el._component as ThinkingComponent | undefined;
         if (tb) {
           tb.update({ content: tb._rawText || "" });
         }
@@ -582,12 +594,12 @@ export function _flushThinkingRender() {
     }
   }
 
-export function handleThinkingDelta(data: any) {
+export function handleThinkingDelta(data: MsgData<"thinking-delta">): void {
     if (data.done) {
       _flushThinkingRender();
       // Finalize: update component with done=true (removes spinner, sets button)
       if (state.currentThinkingEl && state.currentThinkingEl._component) {
-        var tb = state.currentThinkingEl._component as any;
+        var tb = state.currentThinkingEl._component as ThinkingComponent;
         tb.update({ content: tb._rawText || "", done: true });
       }
       return;
@@ -602,7 +614,7 @@ export function handleThinkingDelta(data: any) {
     var el = state.currentThinkingEl;
     if (el && el._component) {
       // Accumulate raw text, render once per frame via the component
-      var tb = el._component as any;
+      var tb = el._component as ThinkingComponent;
       tb._rawText = (tb._rawText || "") + data.delta;
       _scheduleThinkingRender(el);
     }
@@ -614,17 +626,51 @@ export function handleThinkingDelta(data: any) {
   // ═══ In-webview status bar ═══════════════════════════
 
 let sbDot = document.getElementById("pi-sb-dot");
+let sbRuntime = document.getElementById("pi-sb-runtime");
 let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
-let sbEffort = document.getElementById("pi-sb-effort");
 let sbUsage = document.getElementById("pi-sb-usage");
 
-export function setSbDot(state: string) {
+function setSbRuntime(runtime: string | undefined): void {
+    if (!sbRuntime || !runtime) {return;}
+    const isRust = runtime === "rust";
+    sbRuntime.textContent = isRust ? "π Rust" : "π TS";
+    // Solid-fill runtime pill: blue for TypeScript, tan for Rust (see style.css).
+    sbRuntime.classList.toggle("pi-sb-runtime--rust", isRust);
+    sbRuntime.classList.toggle("pi-sb-runtime--ts", !isRust);
+  }
+
+export function setSbDot(state: string): void {
     if (!sbDot) {return;}
     sbDot.textContent = state === "streaming" ? "\u25CF" : "\u25CB";
   }
 
-export function sbModelText(modelId: string) {
+// Render the thinking indicator. On transports that actually transmit the level
+// (thinkingLive !== false) it's the graded, clickable "thinking: <level>", showing
+// the level actually in effect for the model (clamped \u2014 see realThinkingLevel).
+// When the level is a no-op on the active transport (thinkingLive === false, e.g.
+// mistral-conversations or an unverified transport under Rust) it becomes a
+// read-only "reasoning: on/off" badge \u2014 the only real axis there. (DeepSeek /
+// openai-completions IS live since pi_agent_rust 6c5f43b3.) Undefined thinkingLive
+// (e.g. the init "status" event) keeps the graded form; status-update corrects it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderThinkingBadge(data: any): void {
+    if (!sbThinking) {return;}
+    // The backend composes the single Thinking/Reasoning chip (pi-service thinkingStatus):
+    // "thinking: off", "thinking: on · reasoning: <level>", or a read-only
+    // "reasoning: on/off" badge on a transport that can't transmit the level. Fall back
+    // to thinkingLevel for older/placeholder payloads that omit the composed form.
+    const text = data.thinkingDisplay
+      || (data.thinkingLive === false
+            ? "reasoning: " + (data.reasoning ? "on" : "off")
+            : "thinking: " + (data.thinkingLevel || "off"));
+    const clickable = data.thinkingClickable !== false && data.thinkingLive !== false;
+    sbThinking.textContent = text;
+    if (clickable) { sbThinking.classList.remove("sb-readonly"); }
+    else { sbThinking.classList.add("sb-readonly"); }
+  }
+
+export function sbModelText(modelId: string): string {
     var short = modelId || "Pi";
     // Shorten known prefixes for compact display
     if (short.startsWith("anthropic/")) {short = short.slice(10);}
@@ -634,32 +680,45 @@ export function sbModelText(modelId: string) {
     return "\u03C0 " + short;
   }
 
-export function handleStatusUpdate(data: any) {
+export function handleStatusUpdate(data: MsgData<"status-update">): void {
     if (data.reset) {return;}
 
+    // Persist the session identity into VS Code's webview state store. On reload,
+    // VS Code revives this panel and hands the blob to deserializeWebviewPanel
+    // (extension.ts), which re-attaches a live session from it. Merge instead of
+    // overwrite: early status-updates may not carry sessionFile yet (TS sessions
+    // write their file on the first assistant message; Rust reports it via get_state).
+    try {
+      var prev = (window.__vscode.getState() || {}) as { sessionFilePath?: string; runtime?: string };
+      window.__vscode.setState({
+        sessionFilePath: data.sessionFile || prev.sessionFilePath,
+        runtime: data.runtime || prev.runtime,
+      });
+    } catch { /* state persistence is best-effort; the session itself is unaffected */ }
+
+    setSbRuntime(data.runtime);
     if (sbModel && data.model) {
       sbModel.textContent = sbModelText(data.model);
     }
-    if (sbThinking) {
-      sbThinking.textContent = "thinking: " + (data.thinkingLevel || "off");
-    }
-    if (sbEffort) {
-      sbEffort.textContent = "effort: " + (data.effort || "auto");
-    }
+    renderThinkingBadge(data);
     if (sbUsage && data.usage) {
       var parts = [];
       var u = data.usage;
       if (u.input > 0) {parts.push("\u2191" + formatTokens(u.input));}
       if (u.output > 0) {parts.push("\u2193" + formatTokens(u.output));}
-      if (u.cost > 0) {parts.push("$" + u.cost.toFixed(2));}
-      if (u.contextPercent !== undefined) {parts.push(u.contextPercent.toFixed(0) + "%");}
+      // Once a turn has run, ALWAYS show cost: the real figure when we hold the model's
+      // rates, or "$??" when we don't \u2014 so an unknown cost is visible, never hidden.
+      if (u.input > 0 || u.output > 0) {parts.push(u.costKnown ? "$" + u.cost.toFixed(2) : "$??");}
+      if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }
-    setSbDot(data.state.isStreaming ? "streaming" : "idle");
+    setSbDot(data.isStreaming ? "streaming" : "idle");
   }
 
-export function handleStatus(data: any) {
+export function handleStatus(data: MsgData<"status">): void {
+    setSbRuntime(data.runtime);
     if (data.ready) {
+      state.sessionUnavailable = false;
       state.promptInput.disabled = false;
       state.sendButton.disabled = false;
       state.promptInput.placeholder = "Ask pi to do something...";
@@ -667,36 +726,38 @@ export function handleStatus(data: any) {
       if (sbModel && data.model) {
         sbModel.textContent = sbModelText(data.model);
       }
-      if (sbThinking) {
-        sbThinking.textContent = "thinking: " + (data.thinkingLevel || "off");
-      }
-      if (sbEffort) {
-        sbEffort.textContent = "effort: " + (data.effort || "auto");
-      }
+      renderThinkingBadge(data);
       setSbDot("idle");
     } else if (data.model === "not installed" || data.model === "init failed") {
-      state.promptInput.disabled = true;
-      state.sendButton.disabled = true;
+      // Keep the box USABLE. Disabling it created a catch-22: the failure message tells you to
+      // run /login, and the only place to type that was the box we had just disabled — leaving
+      // no way out of a failed session from inside the tab. The extension services /login,
+      // /new, /model and friends itself (sendPrompt intercepts them before any backend call),
+      // so they work perfectly well with a dead backend. Only free-form prompts are refused.
+      state.sessionUnavailable = true;
+      state.promptInput.disabled = false;
+      state.sendButton.disabled = false;
+      state.promptInput.placeholder = "Session not started — /login, /new and /model still work";
     }
   }
 
-export function handleBatchStart(data: any) {
+export function handleBatchStart(data: MsgData<"batch-start">): void {
     state._inBatch = true;
     // If restoring history, hide state.welcome immediately — no flash
     if (data.hasEntries) { hideWelcome(); }
     document.body.classList.add("no-animate");
   }
 
-export function handleBatchEnd(data: any) {
+export function handleBatchEnd(_data: MsgData<"batch-end">): void {
     state._inBatch = false;
     document.body.classList.remove("no-animate");
     // Force-scroll to bottom after batch replay.  Triple-rAF ensures
     // layout has settled (highlight.js code blocks, syntax spans, etc.)
     // before we read scrollHeight.  Falls back to scrollIntoView which
     // triggers a layout pass if needed.
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        requestAnimationFrame(function () {
+    requestAnimationFrame(function (): void {
+      requestAnimationFrame(function (): void {
+        requestAnimationFrame(function (): void {
           var container = state.chatContainer;
           if (container.lastElementChild) {
             container.lastElementChild.scrollIntoView({ block: "end", behavior: "instant" });
@@ -708,7 +769,7 @@ export function handleBatchEnd(data: any) {
     });
   }
 
-export function handleQueueUpdate(data: any) {
+export function handleQueueUpdate(data: MsgData<"queue-update">): void {
     // Track for /debug inspection
     (window.__piDebug._queueEvents = window.__piDebug._queueEvents || []).push({
       ts: Date.now(),
@@ -732,14 +793,14 @@ export function handleQueueUpdate(data: any) {
     var result = "";
 
     // Steering messages — already interrupting, show with label
-    steering.forEach(function (m: any) {
+    steering.forEach(function (m): void {
       result += html`<div class="queue-row">
         <span class="queue-label">Steer:</span>
         <span class="queue-text">${m}</span></div>`;
     });
 
     // Follow-up messages — queued, with promote button
-    followUp.forEach(function (m: any, i: number) {
+    followUp.forEach(function (m, i: number): void {
       result += html`<div class="queue-row">
         <span class="queue-label">Queue:</span>
         <span class="queue-text">${m}</span>
@@ -755,8 +816,8 @@ export function handleQueueUpdate(data: any) {
     el.innerHTML = result;
 
     // Wire promote buttons
-    el.querySelectorAll(".queue-promote-btn").forEach(function (btn) {
-      btn.addEventListener("click", function () {
+    el.querySelectorAll(".queue-promote-btn").forEach(function (btn): void {
+      btn.addEventListener("click", function (): void {
         var idx = parseInt(btn.getAttribute("data-idx") || "0", 10);
         var msg = (data.followUp || [])[idx];
         if (msg) {
@@ -769,7 +830,7 @@ export function handleQueueUpdate(data: any) {
     // Wire clear button
     var clearBtn = el.querySelector(".queue-clear-btn");
     if (clearBtn) {
-      clearBtn.addEventListener("click", function () {
+      clearBtn.addEventListener("click", function (): void {
         window.__vscode.postMessage({ type: "clearQueue" });
       });
     }
@@ -780,14 +841,14 @@ export function handleQueueUpdate(data: any) {
     }
   }
 
-export function handleCompactionStart(data: any) {
+export function handleCompactionStart(data: MsgData<"compaction-start">): void {
     state.isCompacting = true;
     removeCompactionIndicator();
     addCompactionIndicator(data.reason === "manual" ? "Compacting..." : "Auto-compacting...");
     updateStreamingState();
   }
 
-export function handleCompactionEnd(data: any) {
+export function handleCompactionEnd(data: MsgData<"compaction-end">): void {
     state.isCompacting = false;
     removeCompactionIndicator();
     if (data.aborted) {
@@ -800,14 +861,47 @@ export function handleCompactionEnd(data: any) {
     updateStreamingState();
   }
 
-export function handleAutoRetryStart(data: any) {
+export function handleAutoRetryStart(data: MsgData<"auto-retry-start">): void {
     state.isRetrying = true;
+    // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. Finalize the
+    // FAILED attempt's still-running tool/bash blocks (muted "retried" — not success, not
+    // error) and drop them from the live maps, so the re-run's tool calls create FRESH blocks
+    // instead of reconciling against a stale entry (a wrong/partial file path from the aborted
+    // attempt sticking on screen). Mirrors the translate-side clearToolCalls on auto_retry_start
+    // so both sides reset in lockstep. Rendered blocks stay as muted history.
+    finalizeInFlightBlocksForRetry();
     removeRetryIndicator();
     addRetryIndicator(data.attempt, data.maxAttempts, data.delayMs);
     updateStreamingState();
   }
 
-export function handleAutoRetryEnd(data: any) {
+/** Mark the failed attempt's running tool/bash blocks as "retried" (muted) and clear the live
+ *  correlation maps so the re-run starts fresh. Used on auto-retry-start. */
+function finalizeInFlightBlocksForRetry(): void {
+    Object.keys(state.currentToolBlocks).forEach(function (id): void {
+      var entry = state.currentToolBlocks[id];
+      var block = entry?.el;
+      if (block && block.getAttribute && block.getAttribute("data-status") === "running") {
+        var statusEl = block.querySelector(".tool-status");
+        if (statusEl) { statusEl.textContent = "retried"; statusEl.className = "tool-status pending"; }
+        block.setAttribute("data-status", "done"); // so agent-end doesn't re-finalize it as "done"
+      }
+    });
+    state.currentToolBlocks = {};
+
+    Object.keys(state.bashBlocks).forEach(function (id): void {
+      var bash = state.bashBlocks[id];
+      if (bash && bash.getAttribute && bash.getAttribute("data-status") === "running") {
+        bash.setAttribute("data-status", "done");
+        var footer = bash.querySelector(".bash-footer");
+        if (footer) { footer.innerHTML = '<span class="exit-code">exit: -</span> <span>(retried)</span>'; }
+        delete state.bashBlocks[id];
+        delete state.bashOutputs[id];
+      }
+    });
+  }
+
+export function handleAutoRetryEnd(data: MsgData<"auto-retry-end">): void {
     state.isRetrying = false;
     removeRetryIndicator();
     if (!data.success) {
@@ -816,15 +910,17 @@ export function handleAutoRetryEnd(data: any) {
     updateStreamingState();
   }
 
-export function handleThinkingLevelChanged(data: any) {
-    if (sbThinking && data.level) {
-      sbThinking.textContent = "thinking: " + data.level;
-    }
+export function handleThinkingLevelChanged(data: MsgData<"thinking-level-changed">): void {
+    // The single Thinking/Reasoning chip is owned by status-update (renderThinkingBadge,
+    // backend-composed). A thinking-level-changed event is always followed by a
+    // reportStatus, so writing the chip here would only flash the deprecated uncomposed
+    // "thinking: <level>" form and skip clickability/clamping. Intentionally a no-op.
+    void data;
   }
 
   // ═══ Error Handling ════════════════════════════════════
 
-export function handleError(data: any) {
+export function handleError(data: MsgData<"error">): void {
     hideWelcome();
     removeWorkingIndicator();
     removeCompactionIndicator();
@@ -859,7 +955,7 @@ export function addWorkingIndicator(): void {
     // Animate spinner
     var frames = ["○", "◔", "◐", "◓"];
     var frame = 0;
-    el._spinnerInterval = setInterval(function () {
+    el._spinnerInterval = setInterval(function (): void {
       frame = (frame + 1) % frames.length;
       var s = el.querySelector(".working-spinner");
       if (s) {s.textContent = frames[frame];}
@@ -874,7 +970,7 @@ export function removeWorkingIndicator(): void {
     }
   }
 
-export function addCompactionIndicator(message: string) {
+export function addCompactionIndicator(message: string): void {
     var existing = document.getElementById("compaction-indicator");
     if (existing) {existing.remove();}
     var el = document.createElement("div");
@@ -889,14 +985,14 @@ export function addCompactionIndicator(message: string) {
 
     var frames = ["◇", "◆", "◇", "◆"];
     var frame = 0;
-    el._spinnerInterval = setInterval(function () {
+    el._spinnerInterval = setInterval(function (): void {
       frame = (frame + 1) % frames.length;
       var s = el.querySelector(".working-spinner");
       if (s) {s.textContent = frames[frame];}
     }, 400);
   }
 
-export function removeCompactionIndicator() {
+export function removeCompactionIndicator(): void {
     var el = document.getElementById("compaction-indicator");
     if (el) {
       if (el._spinnerInterval) {clearInterval(el._spinnerInterval);}
@@ -904,7 +1000,7 @@ export function removeCompactionIndicator() {
     }
   }
 
-export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs: number) {
+export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs: number): void {
     var existing = document.getElementById("retry-indicator");
     if (existing) {existing.remove();}
     var el = document.createElement("div");
@@ -919,14 +1015,13 @@ export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs:
 
     // Countdown
     var remaining = delayMs;
-    el._countdownInterval = setInterval(function () {
+    el._countdownInterval = setInterval(function (): void {
       remaining -= 1000;
       if (remaining <= 0) {
         var span = el.querySelector(".retry-countdown");
         if (span) {span.textContent = "0s";}
         clearInterval(el._countdownInterval);
       } else {
-        var spans = el.querySelectorAll("span");
         var textNode = el.querySelector(".message-content");
         if (textNode) {
           textNode.innerHTML =
@@ -937,7 +1032,7 @@ export function addRetryIndicator(attempt: number, maxAttempts: number, delayMs:
     }, 1000);
   }
 
-export function removeRetryIndicator() {
+export function removeRetryIndicator(): void {
     var el = document.getElementById("retry-indicator");
     if (el) {
       if (el._countdownInterval) {clearInterval(el._countdownInterval);}
@@ -948,7 +1043,7 @@ export function removeRetryIndicator() {
   // ═══ UI Helpers — Chat additions ═══════════════════════
   // ═══ UI Helpers — Chat additions ═══════════════════════
 
-export function addStatusMessage(message: string) {
+export function addStatusMessage(message: string): void {
     var el = document.createElement("div");
     el.className = "message assistant";
     el.innerHTML = html`<div class="message-content muted">${message}</div>`;
@@ -956,7 +1051,7 @@ export function addStatusMessage(message: string) {
     scrollToBottom();
   }
 
-export function showQuickstartGuide() {
+export function showQuickstartGuide(): void {
     // Remove any previous guide
     var existing = document.getElementById("quickstart-guide");
     if (existing) {existing.remove();}
@@ -1002,7 +1097,7 @@ export function showQuickstartGuide() {
     state.chatContainer.appendChild(el);
   }
 
-export function addErrorMessage(message: string) {
+export function addErrorMessage(message: string): void {
     var el = document.createElement("div");
     el.className = "message assistant";
 
@@ -1012,7 +1107,15 @@ export function addErrorMessage(message: string) {
     var msg = message || "";
     var isApiKeyError = false;
 
-    if (/api.?key/i.test(msg)) {
+    // Expired/invalid OAuth is checked FIRST, because the backend's own advice text mentions
+    // "API key" as an alternative ("Or set API key directly via environment variable") and would
+    // otherwise match the api-key branch below — sending a user whose subscription token merely
+    // expired off to configure an API key they don't need. The fix is to log in again.
+    if (/invalid_grant|token refresh failed|token expired|oauth token/i.test(msg)) {
+      heading = "<strong>Sign-in expired</strong>";
+      help = '<small>Your provider sign-in is no longer valid. Run <code>/login</code> in the chat ' +
+             '(or <strong>PiGui: Set Up API Key / Login</strong> from the command palette) to re-authenticate.</small>';
+    } else if (/api.?key/i.test(msg)) {
       heading = "<strong>API key required</strong>";
       help = '<small>Run <strong>PiGui: Set Up API Key / Login</strong> from the command palette ' +
              '(<code>Ctrl+Shift+P</code>), or set <code>ANTHROPIC_API_KEY</code> / ' +
@@ -1042,7 +1145,7 @@ export function addErrorMessage(message: string) {
     scrollToBottom();
   }
 
-export function addErrorToElement(parentEl: HTMLElement, message: string) {
+export function addErrorToElement(parentEl: HTMLElement, message: string): void {
     if (!parentEl) {return;}
     var errorEl = document.createElement("div");
     errorEl.className = 'message-content error'; errorEl.style.cssText = 'margin-top: 8px; padding: 4px 0;';
@@ -1055,21 +1158,21 @@ export function addErrorToElement(parentEl: HTMLElement, message: string) {
 
   // ═══ Attachment Handling ═══════════════════════════════
 
-export function generateAttId() {
+export function generateAttId(): string {
     return "att_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
   }
 
-export function clearAttachments() {
+export function clearAttachments(): void {
     // Revoke blob URLs to free memory
-    state.attachments.forEach(function (a) {
+    state.attachments.forEach(function (a): void {
       if (a.blobUrl) {URL.revokeObjectURL(a.blobUrl);}
     });
     state.attachments = [];
     renderAttachments();
   }
 
-export function removeAttachment(id: string) {
-    var idx = state.attachments.findIndex(function (a) { return a.id === id; });
+export function removeAttachment(id: string): void {
+    var idx = state.attachments.findIndex(function (a): boolean { return a.id === id; });
     if (idx === -1) {return;}
     var att = state.attachments[idx];
     if (att.blobUrl) {URL.revokeObjectURL(att.blobUrl);}
@@ -1113,8 +1216,8 @@ export function renderAttachments(): void {
     state.attachmentBar.innerHTML = result;
 
     // Delegate click events for remove buttons
-    state.attachmentBar.querySelectorAll(".att-remove").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
+    state.attachmentBar.querySelectorAll(".att-remove").forEach(function (btn): void {
+      btn.addEventListener("click", function (e): void {
         var id = (e.target as HTMLElement).getAttribute("data-att-id");
         if (id) {removeAttachment(id);}
       });
@@ -1123,7 +1226,7 @@ export function renderAttachments(): void {
 
   // ── Paste handler ──────────────────────────────────────
 
-  state.promptInput.addEventListener("paste", function (e) {
+  state.promptInput.addEventListener("paste", function (e): void {
     var items = e.clipboardData?.items;
     if (!items) {return;}
     if (!items) {return;}
@@ -1148,7 +1251,7 @@ export function renderAttachments(): void {
 
     // Process image items
     for (var j = 0; j < imageItems.length; j++) {
-      (function (item) {
+      (function (item): void {
         var file = item.getAsFile();
         if (!file) {return;}
 
@@ -1164,8 +1267,8 @@ export function renderAttachments(): void {
           blobUrl: blobUrl, // immediate preview
         });
 
-        var reader = new FileReader(); reader.onload = function () { var result = reader.result as string; // "data:image/png;base64,..."
-          var att = state.attachments.find(function (a) { return a.id === attId; });
+        var reader = new FileReader(); reader.onload = function (): void { var result = reader.result as string; // "data:image/png;base64,..."
+          var att = state.attachments.find(function (a): boolean { return a.id === attId; });
           if (att) {
             att.data = result.split(",")[1]; // just the base64 payload
           }
@@ -1179,7 +1282,7 @@ export function renderAttachments(): void {
 
     // Process file items
     for (var k = 0; k < fileItems.length; k++) {
-      (function (item) {
+      (function (item): void {
         var file = item.getAsFile();
         if (!file) {return;}
 
@@ -1197,8 +1300,8 @@ export function renderAttachments(): void {
         // Read text files; mark binary files
         if (item.type.startsWith("text/") || !item.type) {
           var reader = new FileReader();
-          reader.onload = function () {
-            var att = state.attachments.find(function (a) { return a.id === attId; });
+          reader.onload = function (): void {
+            var att = state.attachments.find(function (a): boolean { return a.id === attId; });
             if (att) {
               att.data = reader.result as string;
             }
@@ -1206,7 +1309,7 @@ export function renderAttachments(): void {
           };
           reader.readAsText(file);
         } else {
-          var att = state.attachments.find(function (a) { return a.id === attId; });
+          var att = state.attachments.find(function (a): boolean { return a.id === attId; });
           if (att) {
             att.data = "[Binary file: " + file.name + "]";
           }
@@ -1231,15 +1334,22 @@ export function renderAttachments(): void {
   // ── Send prompt ───────────────────────────────────────
 
 export function sendPrompt(): void {
-    console.log("[pi-gui] sendPrompt called");
     var text = state.promptInput.value.trim();
     if (!text && state.attachments.length === 0) {return;}
 
     // Reset scroll tracking — user clearly wants to follow the new response
     state.hasScrolledUp = false;
 
+    var isLocalCommand = !!text && state.localSlashCommands.indexOf(text) !== -1;
+    // With no live backend, a free-form prompt has nowhere to go — say so instead of swallowing
+    // it. The extension-serviced commands below are still allowed through.
+    if (state.sessionUnavailable && !isLocalCommand) {
+      addErrorMessage("This session isn't running, so prompts can't be sent. Try **/login** to re-authenticate, or **/new** to start a fresh session.");
+      return;
+    }
+
     // Intercept local slash commands before sending to LLM
-    if (text && state.localSlashCommands.indexOf(text) !== -1) {
+    if (isLocalCommand) {
       var cmd = text.slice(1); // strip leading "/"
 
       // /debug: dump webview state as a structured message in chat, plus
@@ -1293,12 +1403,15 @@ export function sendPrompt(): void {
 
   state.sendButton.addEventListener("click", sendPrompt);
 
-  state.abortButton.addEventListener("click", function () {
+  state.abortButton.addEventListener("click", function (): void {
+    if (state.abortRequested) { return; }   // one request per turn; the button is disabled anyway
+    state.abortRequested = true;
+    updateStreamingState();                 // reflect it NOW, not when the backend replies
     window.__vscode.postMessage({ type: "abort" });
   });
 
   // Steer dropdown — toggles between Steer and Queue mode
-  state.steerDropdown.addEventListener("click", function () {
+  state.steerDropdown.addEventListener("click", function (): void {
     state.queueMode = state.queueMode === "steer" ? "queue" : "steer";
     if (state.queueMode === "queue") {
       state.sendButton.textContent = "Queue";
@@ -1312,29 +1425,31 @@ export function sendPrompt(): void {
   });
 
   // ── In-webview status bar click handlers ─────────────
+  if (sbRuntime) {
+    sbRuntime.addEventListener("click", function (): void {
+      window.__vscode.postMessage({ type: "switchRuntime" });
+    });
+  }
   if (sbModel) {
-    sbModel.addEventListener("click", function () {
+    sbModel.addEventListener("click", function (): void {
       window.__vscode.postMessage({ type: "pickModel" });
     });
   }
   if (sbThinking) {
-    sbThinking.addEventListener("click", function () {
+    sbThinking.addEventListener("click", function (): void {
+      // Read-only reasoning badge (no-op transport): not clickable.
+      if (sbThinking && sbThinking.classList.contains("sb-readonly")) {return;}
       window.__vscode.postMessage({ type: "pickThinkingLevel" });
     });
   }
-  if (sbEffort) {
-    sbEffort.addEventListener("click", function () {
-      window.__vscode.postMessage({ type: "pickEffort" });
-    });
-  }
   if (sbUsage) {
-    sbUsage.addEventListener("click", function () {
+    sbUsage.addEventListener("click", function (): void {
       window.__vscode.postMessage({ type: "pickContextBudget" });
     });
   }
 let sbSettings = document.getElementById("pi-sb-settings");
   if (sbSettings) {
-    sbSettings.addEventListener("click", function () {
+    sbSettings.addEventListener("click", function (): void {
       toggleSettingsPanel();
     });
   }
@@ -1343,7 +1458,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
   setupCodeBlockHandlers();
 
   // Handle external links and close overlays on outside clicks
-  document.addEventListener("click", function (e) {
+  document.addEventListener("click", function (e): void {
     var target = e.target as HTMLElement;
     if (target && target.tagName === "A" && (target as HTMLAnchorElement).href) {
       e.preventDefault();
@@ -1361,7 +1476,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
   });
 
-  state.promptInput.addEventListener("keydown", function (e) {
+  state.promptInput.addEventListener("keydown", function (e): void {
     // #8: Tab to accept slash autocomplete
     if (state.slashAutocompleteOpen && e.key === "Tab") {
       e.preventDefault();
@@ -1440,7 +1555,7 @@ let sbSettings = document.getElementById("pi-sb-settings");
     }
   });
 
-  state.promptInput.addEventListener("input", function () {
+  state.promptInput.addEventListener("input", function (): void {
     // Save cursor position before height recalculation — setting
     // height:auto then height:Npx can reset selection in VS Code's
     // Chromium, causing garbled text when typing mid-input after
@@ -1486,7 +1601,7 @@ export function resizePromptInput(): void {
     state.promptInput.style.overflowY = state.promptInput.scrollHeight > maxHeight ? "auto" : "hidden";
   }
 
-export function handleInsertCommand(command: string) {
+export function handleInsertCommand(command: string): void {
     state.promptInput.value = command + " ";
     state.promptInput.focus();
     resizePromptInput();
@@ -1495,7 +1610,7 @@ export function handleInsertCommand(command: string) {
   // ═══ #1: Compaction Summary Message ═══════════════════════
   // ═══ #1: Compaction Summary Message ═══════════════════════
 
-export function handleCompactionSummaryMessage(data: any) {
+export function handleCompactionSummaryMessage(data: MsgData<"compaction-summary-message">): void {
     hideWelcome();
     var el = document.createElement("div");
     el.className = "compaction-summary";
@@ -1512,7 +1627,7 @@ export function handleCompactionSummaryMessage(data: any) {
     var toggle = document.getElementById(summaryId + "-toggle");
     var contentEl2 = document.getElementById(summaryId + "-content");
     if (toggle && contentEl2) {
-      toggle.addEventListener("click", function () {
+      toggle.addEventListener("click", function (): void {
       var visible = contentEl2 && contentEl2.style.display !== "none";
       if (contentEl2) { contentEl2.style.display = visible ? "none" : "block"; }
       if (toggle) { toggle.textContent = visible ? "Compacted from " + tokenStr + " tokens (click to expand)" : "Compacted from " + tokenStr + " tokens"; }
@@ -1523,11 +1638,11 @@ export function handleCompactionSummaryMessage(data: any) {
 
   // ═══ #2: User Message Selector ════════════════════════════
 
-export function handleUserMessagesList(data: any) {
+export function handleUserMessagesList(data: MsgData<"user-messages-list">): void {
     state.userMessageHistory = (data.messages || []).reverse();
   }
 
-export function showUserMessageSelector() {
+export function showUserMessageSelector(): void {
     if (state.userMessageHistory.length === 0) {return;}
     closeAllOverlays();
     state.userMsgSelectorOpen = true;
@@ -1544,8 +1659,8 @@ export function showUserMessageSelector() {
 
     // Click handlers
     var items = state.userMsgOverlay.querySelectorAll(".user-msg-item");
-    items.forEach(function (item) {
-      item.addEventListener("click", function (this: HTMLElement) {
+    items.forEach(function (item): void {
+      item.addEventListener("click", function (this: HTMLElement): void {
         var idx = parseInt(this.getAttribute("data-idx") || "0", 10);
         if (idx >= 0 && idx < state.userMessageHistory.length) {
           var text = state.userMessageHistory[idx].text;
@@ -1558,9 +1673,9 @@ export function showUserMessageSelector() {
     });
   }
 
-export function highlightUserMsgItem() {
+export function highlightUserMsgItem(): void {
     var items = state.userMsgOverlay.querySelectorAll(".user-msg-item");
-    items.forEach(function (item: any, i: number) {
+    items.forEach(function (item, i: number): void {
       if (i === state.userMsgSelectedIdx) {
         item.classList.add("selected");
         item.scrollIntoView({ block: "nearest" });
@@ -1570,7 +1685,7 @@ export function highlightUserMsgItem() {
     });
   }
 
-export function closeUserMsgSelector() {
+export function closeUserMsgSelector(): void {
     state.userMsgSelectorOpen = false;
     state.userMsgSelectedIdx = 0;
     state.userMsgOverlay.classList.remove("visible");
@@ -1578,26 +1693,19 @@ export function closeUserMsgSelector() {
 
   // ═══ #3: Settings Panel ═══════════════════════════════════
 
-export function handleSettingsUpdate(data: any) {
+export function handleSettingsUpdate(data: MsgData<"settings-update">): void {
     if (data) {
       state.settingsState = data;
+      // Consume the showImages toggle at render time: hide chat-message images
+      // via a body class (CSS in media/style.css). Without this the toggle was
+      // wired end-to-end but never affected what the user saw.
+      document.body.classList.toggle("pi-hide-images", data.showImages === false);
       renderSettingsPanel();
     }
   }
 
-export function handleScopedModelsUpdate(data: any) {
-    if (data && data.models) {
-      state.scopedModels = data.models;
-      renderScopedModels();
-      renderSettingsPanel();
-    }
-  }
 
-export function renderScopedModels() {
-    // Scoped models removed from UI
-  }
-
-export function renderSettingsPanel() {
+export function renderSettingsPanel(): void {
     if (!state.settingsOverlay || !state.settingsOpen) {return;}
     var result = '<div class="settings-title">Settings</div>';
 
@@ -1621,8 +1729,8 @@ export function renderSettingsPanel() {
 
     // Wire toggle clicks
     var togglesEls = state.settingsOverlay.querySelectorAll(".settings-toggle");
-    togglesEls.forEach(function (el) {
-      el.addEventListener("click", function (e) {
+    togglesEls.forEach(function (el): void {
+      el.addEventListener("click", function (e): void {
         e.stopPropagation();
         var key = el.getAttribute("data-key");
         if (key === "autoCompaction") { window.__vscode.postMessage({ type: "toggleAutoCompaction" }); }
@@ -1632,7 +1740,7 @@ export function renderSettingsPanel() {
     });
   }
 
-export function toggleSettingsPanel() {
+export function toggleSettingsPanel(): void {
     if (state.settingsOpen) {
       closeAllOverlays();
     } else {
@@ -1643,7 +1751,7 @@ export function toggleSettingsPanel() {
     }
   }
 
-export function closeAllOverlays() {
+export function closeAllOverlays(): void {
     state.settingsOpen = false;
     state.userMsgSelectorOpen = false;
     state.slashAutocompleteOpen = false;
@@ -1662,18 +1770,18 @@ export function closeAllOverlays() {
  * cards in-place when the same customType reappears (polling).
  * Action buttons with data-command execute slash commands.
  */
-export function renderInlineCustomMessage(data: any) {
+export function renderInlineCustomMessage(data: CustomMessageData): void {
     var customType = data.customType || "custom";
     var content = typeof data.content === "string"
       ? data.content
-      : (Array.isArray(data.content) ? data.content.filter(function (c: any) { return c.type === "text"; }).map(function (c: any) { return c.text; }).join("\n") : "");
+      : (Array.isArray(data.content) ? data.content.filter(function (c: TextPart): boolean { return c.type === "text"; }).map(function (c: TextPart): string { return c.text; }).join("\n") : "");
 
     // Check for existing card to update in-place (polling refresh)
     var existing = state.chatContainer.querySelector('[data-custom-type="' + customType + '"]');
     var renderer = getMessageRenderer(customType);
 
     if (existing) {
-      var existingIc = existing._component as any;
+      var existingIc = existing._component as InlineCard | undefined;
       if (existingIc) {
         existingIc.update({
           customType: customType,
@@ -1683,7 +1791,6 @@ export function renderInlineCustomMessage(data: any) {
           escapeHtmlFn: escapeHtml,
         });
       } else if (renderer) {
-        var body = existing.querySelector(".custom-message-body");
         var bodyEl = existing.querySelector(".custom-message-body") as HTMLElement;
         if (bodyEl) { bodyEl.innerHTML = ""; renderer(data, bodyEl, escapeHtml); }
       } else {
@@ -1702,11 +1809,11 @@ export function renderInlineCustomMessage(data: any) {
     });
     ic.el._component = ic; // attach for later updating
 
-    state.chatContainer.appendChild(ic.el as HTMLElement);
+    state.chatContainer.appendChild(ic.el);
     scrollToBottom();
   }
 
-export function handleCustomMessage(data: any) {
+export function handleCustomMessage(data: MsgData<"custom-message">): void {
     hideWelcome();
     var customType = data.customType || "custom";
 
@@ -1722,12 +1829,17 @@ export function handleCustomMessage(data: any) {
       if (typeof data.content === "string") {
         infoContent = data.content;
       } else if (Array.isArray(data.content)) {
-        infoContent = data.content.filter(function (c: any) { return c.type === "text"; }).map(function (c: any) { return c.text; }).join("\n");
+        infoContent = data.content.filter(function (c: TextPart): boolean { return c.type === "text"; }).map(function (c: TextPart): string { return c.text; }).join("\n");
       }
       if (infoContent) {
         var infoEl = document.createElement("div");
         infoEl.className = "message assistant";
-        infoEl.innerHTML = html`<div class="message-content muted">${infoContent}</div>`;
+        // linkifyPlain keeps the content literal (unlike a full markdown render, which
+        // would reformat other info messages) but turns explicit [label](url) links —
+        // e.g. the fd/ripgrep install guides — into clickable anchors. It escapes first,
+        // so this is safe to assign as innerHTML directly (the html`` template would
+        // otherwise re-escape the anchors back into literal text).
+        infoEl.innerHTML = "<div class=\"message-content muted\">" + linkifyPlain(infoContent) + "</div>";
         state.chatContainer.appendChild(infoEl);
         scrollToBottom();
       }
@@ -1745,11 +1857,11 @@ export function handleCustomMessage(data: any) {
     defaultMessageRenderer(data);
   }
 
-export function dismissLiveCard(key: string) {
-    var card = state.liveCards[key as string];
+export function dismissLiveCard(key: string): void {
+    var card = state.liveCards[key];
     if (card) {
       card.remove();
-      delete state.liveCards[key as string];
+      delete state.liveCards[key];
     }
     var widgetCard = state.widgetCards[key];
     if (widgetCard) {
@@ -1763,40 +1875,17 @@ export function dismissLiveCard(key: string) {
     }
   }
 
-export function clearLivePanel(): void {
-    // Only clear transient cards (non-widget cards).
-    // Widget cards persist until the extension explicitly clears them.
-    var toRemove = [];
-    for (var key in state.liveCards) {
-      if (state.liveCards.hasOwnProperty(key)) {
-        var card = state.liveCards[key as string];
-        if (card && card.getAttribute("data-widget") !== "true") {
-          toRemove.push(key);
-        }
-      }
-    }
-    for (var i = 0; i < toRemove.length; i++) {
-      var c = state.liveCards[toRemove[i]];
-      if (c) {c.remove();}
-      delete state.liveCards[toRemove[i]];
-    }
-    // Hide the panel if nothing remains
-    var remaining = state.livePanel.querySelectorAll(".live-card");
-    if (remaining.length === 0) {
-      state.livePanel.classList.remove("visible");
-    }
-  }
 
   // ── Widget Bridge ─────────────────────────────────────
   // ── Widget Bridge ─────────────────────────────────────
 
 
 /** Bridge: extension host registers a renderer by source code. */
-export function handleRegisterMessageRenderer(data: any) {
+export function handleRegisterMessageRenderer(data: MsgData<"registerMessageRenderer">): void {
     if (!data.customType || !data.sourceCode) {return;}
     try {
       // CSP blocks eval().  Inject a <script nonce> tag instead.
-      var nonce = (document.querySelector("script[nonce]") as HTMLScriptElement | null)?.getAttribute("nonce");
+      var nonce = (document.querySelector("script[nonce]"))?.getAttribute("nonce");
       if (!nonce) {
         console.warn("[pi-gui] Cannot register renderer: no CSP nonce found");
         return;
@@ -1807,10 +1896,15 @@ export function handleRegisterMessageRenderer(data: any) {
       script.textContent =
         "window['" + fnName + "'] = function(data, containerEl, escapeHtml) { " + data.sourceCode + " }";
       document.head.appendChild(script);
-      var renderer = (window as any)[fnName];
+      // The <script> injected two lines up defines window[fnName] at runtime, so this read is
+      // genuinely dynamic. The cast states the contract that same script literally writes
+      // (`function(data, containerEl, escapeHtml)`), and the typeof check below still verifies it
+      // at runtime — the `!` is only because narrowing doesn't survive into the closure.
+      type InjectedRenderer = (d: unknown, el: HTMLElement, esc: (s: string) => string) => void;
+      var renderer = (window as unknown as Record<string, unknown>)[fnName] as InjectedRenderer | undefined;
       if (typeof renderer === "function") {
-        var boundRenderer = function(d: any, el: HTMLElement) {
-          renderer(d, el, escapeHtml);
+        var boundRenderer = function(d: unknown, el: HTMLElement): void {
+          renderer!(d, el, escapeHtml);
         };
         registerMessageRenderer(data.customType, boundRenderer);
       }
@@ -1819,7 +1913,15 @@ export function handleRegisterMessageRenderer(data: any) {
     }
   }
 
-export function handleWidgetUpdate(data: any) {
+/** Build a [data-status-key=…] selector safely. The key comes from an extension, and a `"` in it
+ *  made the concatenated selector invalid — querySelector then THROWS a DOMException rather than
+ *  returning null, taking out the whole widget update. CSS.escape handles the quoting. */
+function statusKeySelector(key: string): string {
+  const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(key) : key.replace(/["\\]/g, "\\$&");
+  return `[data-status-key="${esc}"]`;
+}
+
+export function handleWidgetUpdate(data: MsgData<"widget-update">): void {
     if (!data || !data.key) {return;}
 
     var key = data.key;
@@ -1839,7 +1941,7 @@ export function handleWidgetUpdate(data: any) {
         delete state.widgetCards[key];
       }
       // Also remove from state.liveCards
-      delete state.liveCards[key as string];
+      delete state.liveCards[key];
       // Hide panel if empty
       var remaining = state.livePanel.querySelectorAll(".live-card");
       if (remaining.length === 0) {
@@ -1851,7 +1953,7 @@ export function handleWidgetUpdate(data: any) {
     // Create or update widget card
     var card = state.widgetCards[key];
     if (card) {
-      (card as HTMLElement).querySelector(".live-card-content")!.innerHTML = renderMarkdown(content);
+      (card).querySelector(".live-card-content")!.innerHTML = renderMarkdown(content);
     } else {
       card = document.createElement("div");
       card.className = "live-card";
@@ -1861,39 +1963,38 @@ export function handleWidgetUpdate(data: any) {
         <div class="live-card-label">${key}</div>
         <button class="live-card-close" title="Dismiss">&times;</button>
         <div class="live-card-content">${safe(renderMarkdown(content))}</div>`;
-      (card as HTMLElement).querySelector(".live-card-close")!.addEventListener("click", function () {
+      (card).querySelector(".live-card-close")!.addEventListener("click", function (): void {
         dismissLiveCard(key);
       });
       state.livePanel.appendChild(card);
       state.widgetCards[key] = card;
-      state.liveCards[key as string] = card;
+      state.liveCards[key] = card;
     }
     state.livePanel.classList.add("visible");
   }
 
 /** Render a status-* widget as an inline indicator in the status bar. */
-export function handleStatusWidget(key: string, content: string | null) {
+export function handleStatusWidget(key: string, content: string | null): void {
     var statusBar = document.getElementById("pi-extension-status");
     if (!statusBar) {return;}
 
     if (content === null || content === undefined) {
       // Remove status indicator
-      var existingStatus = statusBar.querySelector('[data-status-key="' + key + '"]');
-      if (existingStatus) {(existingStatus as HTMLElement).remove();}
+      var existingStatus = statusBar.querySelector(statusKeySelector(key));
+      if (existingStatus) {(existingStatus).remove();}
       // Also clean up any legacy live-card
       var legacy = state.widgetCards[key];
-      if (legacy) {(legacy as HTMLElement).remove(); delete state.widgetCards[key];}
-      delete state.liveCards[key as string];
+      if (legacy) {(legacy).remove(); delete state.widgetCards[key];}
+      delete state.liveCards[key];
       return;
     }
 
     // Parse markdown content: **key** value → bold key + value
-    var displayText = content;
     var match = content.match(/^\*\*(.+?)\*\*\s*(.*)/);
     var label = match ? match[1] : key;
     var value = match ? match[2] : content;
 
-    var existingEl = statusBar.querySelector('[data-status-key="' + key + '"]');
+    var existingEl = statusBar.querySelector(statusKeySelector(key));
     if (existingEl) {
       existingEl.textContent = label + ": " + value;
     } else {
@@ -1906,22 +2007,14 @@ export function handleStatusWidget(key: string, content: string | null) {
 
     // Clean up any legacy live-card
     var legacy = state.widgetCards[key];
-    if (legacy) {(legacy as HTMLElement).remove(); delete state.widgetCards[key];}
-    delete state.liveCards[key as string];
+    if (legacy) {(legacy).remove(); delete state.widgetCards[key];}
+    delete state.liveCards[key];
   }
 
-export function clearWidgetCards() {
-    for (var key in state.widgetCards) {
-      if (state.widgetCards.hasOwnProperty(key)) {
-        state.widgetCards[key].remove();
-      }
-    }
-    state.widgetCards = {};
-  }
 
   // ═══ Interactive Dialog Bridge ═══════════════════════════
 
-export function handleShowDialog(data: any) {
+export function handleShowDialog(data: MsgData<"show_dialog">): void {
     if (!data || !data.id) {return;}
     var dlg = new Dialog({
       dialogType: data.dialogType || "confirm",
@@ -1948,7 +2041,7 @@ export function handleShowDialog(data: any) {
   // Dynamic slash commands populated from installed extensions (e.g. /tldr)
 
   // Full slash command list (builtins + extensions, with extensions first for dedup)
-export function getSlashCommands() {
+export function getSlashCommands(): Array<{ cmd: string; desc: string }> {
     // When the extension host has pushed a complete slash-command list
     // (extension + builtin + prompt templates), use it directly.
     if (state.extensionSlashCommands.length > 0) {
@@ -1960,7 +2053,7 @@ export function getSlashCommands() {
 
   // Slash commands that should be handled locally (not sent to LLM)
 
-export function handleSlashCommandsUpdate(data: any) {
+export function handleSlashCommandsUpdate(data: MsgData<"slash-commands-update">): void {
     if (data && data.commands && Array.isArray(data.commands)) {
       state.extensionSlashCommands = data.commands;
       // Re-filter autocomplete if it's currently open
@@ -1970,14 +2063,14 @@ export function handleSlashCommandsUpdate(data: any) {
     }
   }
 
-export function updateSlashAutocomplete(filter: string) {
+export function updateSlashAutocomplete(filter: string): void {
     if (!filter || filter.length === 0) {
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
       return;
     }
     var f = filter.toLowerCase();
-    var matches = getSlashCommands().filter(function (sc) { return sc.cmd.toLowerCase().indexOf(f) === 0; });
+    var matches = getSlashCommands().filter(function (sc): boolean { return sc.cmd.toLowerCase().indexOf(f) === 0; });
     if (matches.length === 0) {
       state.slashAutocomplete.classList.remove("visible");
       state.slashAutocompleteOpen = false;
@@ -2000,8 +2093,8 @@ export function updateSlashAutocomplete(filter: string) {
 
     // Wire click handlers
     var items = state.slashAutocomplete.querySelectorAll(".slash-item");
-    items.forEach(function (item) {
-      item.addEventListener("click", function (this: HTMLElement) {
+    items.forEach(function (item): void {
+      item.addEventListener("click", function (this: HTMLElement): void {
         var cmd = item.getAttribute("data-cmd");
         if (cmd) {
           state.promptInput.value = cmd + " ";
@@ -2017,7 +2110,7 @@ export function updateSlashAutocomplete(filter: string) {
   // ═══ #9: Scroll-to-entry ═══════════════════════════════════
   // ═══ #9: Scroll-to-entry ═══════════════════════════════════
 
-export function handleRevealEntry(entryId: string, toolCallId: string) {
+export function handleRevealEntry(entryId: string, toolCallId: string): void {
     if (!entryId && !toolCallId) {return;}
     var el: HTMLElement | null = null;
 
@@ -2060,12 +2153,12 @@ export function handleRevealEntry(entryId: string, toolCallId: string) {
 
     if (!el) {return;}
 
-    (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
-    (el as HTMLElement).style.transition = "background 0.2s, box-shadow 0.2s";
-    (el as HTMLElement).style.background = "var(--vscode-list-hoverBackground)";
-    (el as HTMLElement).style.boxShadow = "0 0 0 2px var(--vscode-focusBorder)";
-    (el as HTMLElement).style.borderRadius = "4px";
-    setTimeout(function () {
+    (el).scrollIntoView({ behavior: "smooth", block: "center" });
+    (el).style.transition = "background 0.2s, box-shadow 0.2s";
+    (el).style.background = "var(--vscode-list-hoverBackground)";
+    (el).style.boxShadow = "0 0 0 2px var(--vscode-focusBorder)";
+    (el).style.borderRadius = "4px";
+    setTimeout(function (): void {
       (el as HTMLElement).style.background = "";
       (el as HTMLElement).style.boxShadow = "";
       (el as HTMLElement).style.borderRadius = "";
@@ -2079,10 +2172,10 @@ export function handleRevealEntry(entryId: string, toolCallId: string) {
   // with the extension host's bash-* event stream.  They delegate
   // to the bash tool renderer registered in the tool renderer registry.
 
-export function handleBashStart(data: Record<string, unknown>) {
+export function handleBashStart(data: Record<string, unknown>): void {
     // Stop thinking spinner — bash execution means thinking is done
     if (state.currentThinkingEl) {
-      var _tb3 = state.currentThinkingEl._component as any;
+      var _tb3 = state.currentThinkingEl._component as ThinkingComponent | undefined;
       if (_tb3) {
         _tb3.update({ content: _tb3._rawText || "", done: true });
       } else {
@@ -2094,9 +2187,9 @@ export function handleBashStart(data: Record<string, unknown>) {
     var callId = data.toolCallId;
 
     // DEDUP: If tool-start already created a block for this callId, don't create a second.
-    if (state.currentToolBlocks[callId as string]) {
-      var entry = state.currentToolBlocks[callId as string];
-      state.bashBlocks[callId as string] = (entry as any).el || entry;
+    var dedupEntry = state.currentToolBlocks[callId as string];
+    if (dedupEntry) {
+      state.bashBlocks[callId as string] = dedupEntry.el;
       state.bashOutputs[callId as string] = state.bashOutputs[callId as string] || "";
       return;
     }
@@ -2109,19 +2202,19 @@ export function handleBashStart(data: Record<string, unknown>) {
       entryId: data.entryId as string,
       fromMessage: false,
     });
-    insertToolBlock(block as HTMLElement);
+    insertToolBlock(block);
     state.bashBlocks[callId as string] = block;
     state.bashOutputs[callId as string] = "";
     state.chatContainer.scrollTop = state.chatContainer.scrollHeight;
     scrollToBottom();
   }
 
-export function handleBashOutput(data: Record<string, unknown>) {
+export function handleBashOutput(data: Record<string, unknown>): void {
     var callId = data.toolCallId;
     var block = state.bashBlocks[callId as string];
     if (!block) {
       var entry = state.currentToolBlocks[callId as string];
-      block = entry ? ((entry as any).el || entry) : null;
+      block = entry ? entry.el : undefined;
       if (!block) {return;}
     }
     state.bashOutputs[callId as string] = (state.bashOutputs[callId as string] || "") + (data.output || "");
@@ -2133,19 +2226,19 @@ export function handleBashOutput(data: Record<string, unknown>) {
     scrollToBottom();
   }
 
-export function handleBashEnd(data: Record<string, unknown>) {
+export function handleBashEnd(data: Record<string, unknown>): void {
     var callId = data.toolCallId;
     var block = state.bashBlocks[callId as string];
     if (!block) {
       var entry = state.currentToolBlocks[callId as string];
-      block = entry ? ((entry as any).el || entry) : null;
+      block = entry ? entry.el : undefined;
       if (!block) {return;}
     }
     var result = {
-      content: data.output ? [{ type: "text", text: data.output }] : [],
+      content: data.output ? [{ type: "text", text: data.output as string }] : [],
       details: { exitCode: data.exitCode, cancelled: data.cancelled },
     };
-    bashToolRenderer.finalize(block as any, result as any, data.isError as boolean, data.entryId as any);
+    bashToolRenderer.finalize(block, result, data.isError as boolean, data.entryId as string | undefined);
     delete state.currentToolBlocks[callId as string];
     delete state.bashBlocks[callId as string];
     delete state.bashOutputs[callId as string];
@@ -2168,11 +2261,18 @@ export function handleBashEnd(data: Record<string, unknown>) {
 
 export function handleDebugCommand(): void {
     hideWelcome();
-    var summary = window.__piDebug.summary() as { chat: any; dupes: string[]; orphanBash: string[]; orphanTool: string[]; lastEvents: any[]; lastDomChanges: any[] };
+    // Collection is OFF by default (it constructs an Error per event to sample the stack and runs
+    // a MutationObserver over the whole chat container — too expensive to ship always-on). Turn
+    // it on here so /debug remains the way in: this dump shows whatever was captured since the
+    // last /debug, so run it once, reproduce the issue, then run it again for a full trace.
+    var alreadyOn = window.__piDebug.enabled(true);
+    void alreadyOn;
+    var summary = window.__piDebug.summary();
 
     // Build full text for clipboard copy + console dump
     var copyText = "Pi Code GUI — Debug Dump\n" +
-      "==========================\n\n" +
+      "==========================\n" +
+      "(event/DOM capture is now ON; re-run /debug after reproducing for a full trace)\n\n" +
       "Chat Container:\n" + JSON.stringify(summary.chat, null, 2) + "\n\n" +
       "Tracker State:\n" +
       "state.bashBlocks: " + JSON.stringify(Object.keys(state.bashBlocks)) + "\n" +
@@ -2248,15 +2348,15 @@ export function handleDebugCommand(): void {
     // Wire Copy All button
     var copyBtn = el.querySelector(".debug-copy-all-btn");
     if (copyBtn!) {
-      copyBtn.addEventListener("click", function (e) {
+      copyBtn.addEventListener("click", function (e): void {
         e.preventDefault();
         e.stopPropagation(); // don't toggle the details element
-        navigator.clipboard.writeText(copyText).then(function () {
+        navigator.clipboard.writeText(copyText).then(function (): void {
           copyBtn!.textContent = "✓ Copied!";
-          setTimeout(function () { copyBtn!.textContent = "📋 Copy All"; }, 2000);
-        }, function () {
+          setTimeout(function (): void { copyBtn!.textContent = "📋 Copy All"; }, 2000);
+        }, function (): void {
           copyBtn!.textContent = "✗ Failed";
-          setTimeout(function () { copyBtn!.textContent = "📋 Copy All"; }, 2000);
+          setTimeout(function (): void { copyBtn!.textContent = "📋 Copy All"; }, 2000);
         });
       });
     }
