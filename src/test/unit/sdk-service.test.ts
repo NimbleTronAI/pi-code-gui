@@ -232,7 +232,9 @@ test("promoteToSteer re-queues then appends the promoted text", () => {
 test("happy path → success, model + cycleModels + clamped thinking level", async () => {
   const { host, deps } = makeEnv();
   const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
-  assert.equal(out.success, true, out.error);
+  // @types/node 26 narrowed assert's message parameter: it must be a DEFINITE string here,
+  // so fall back to a sentence rather than passing `string | undefined`.
+  assert.ok(out.success, out.error ?? "initialize() reported failure with no error message");
   assert.equal(out.model?.id, "claude-opus-4-8");
   assert.deepEqual(out.cycleModels, [{ provider: "anthropic", id: "claude-opus-4-8" }]);
   assert.equal(typeof out.thinkingLevel, "string");
@@ -318,7 +320,9 @@ test("runtime API keys from config are applied to the model runtime", async () =
     },
   });
   const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
-  assert.equal(out.success, true, out.error);
+  // @types/node 26 narrowed assert's message parameter: it must be a DEFINITE string here,
+  // so fall back to a sentence rather than passing `string | undefined`.
+  assert.ok(out.success, out.error ?? "initialize() reported failure with no error message");
   assert.deepEqual(applied, [["anthropic", "sk-ant"], ["openai", "sk-oai"]]);
 });
 
