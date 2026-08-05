@@ -15,6 +15,10 @@ export interface AppState {
    *  extension-serviced slash commands still can. Drives the limited-input mode rather than
    *  disabling the box outright. */
   sessionUnavailable: boolean;
+  /** An abort has been requested but the turn hasn't ended yet. Purely local: it acknowledges
+   *  the click immediately instead of waiting for the backend, which on Rust is a
+   *  fire-and-forget write to a busy subprocess. Cleared by whatever terminal event arrives. */
+  abortRequested: boolean;
   isCompacting: boolean;
   isRetrying: boolean;
   _inBatch: boolean;
@@ -114,6 +118,7 @@ export interface AppState {
 export const state: AppState = {
   isStreaming: false,
   sessionUnavailable: false,
+  abortRequested: false,
   isCompacting: false,
   isRetrying: false,
   _inBatch: false,

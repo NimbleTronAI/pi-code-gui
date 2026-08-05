@@ -1404,6 +1404,9 @@ export function sendPrompt(): void {
   state.sendButton.addEventListener("click", sendPrompt);
 
   state.abortButton.addEventListener("click", function (): void {
+    if (state.abortRequested) { return; }   // one request per turn; the button is disabled anyway
+    state.abortRequested = true;
+    updateStreamingState();                 // reflect it NOW, not when the backend replies
     window.__vscode.postMessage({ type: "abort" });
   });
 

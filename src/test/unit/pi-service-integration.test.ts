@@ -290,3 +290,29 @@ test("a successful login RESTARTS a Rust session that never started", () => {
   assert.match(decl, /initialize\(\{ fresh: true \}\)/, "and restart it rather than instruct the user");
   assert.match(decl, /"sessionReset"/, "clearing the failed session's chat is part of restarting it");
 });
+
+// ── abort must be acknowledged, and must not fail silently ───────────
+// Reported live: two aborts mid-turn gave different results, "neither a clean interrupt".
+// RustService.abort() is two fire-and-forget writes down a pipe — nothing correlates or confirms
+// them — and PiService did nothing locally, so the outcome depended entirely on where the abort
+// landed and whether the subprocess happened to be reading stdin.
+test("abort() warns when the turn is STILL running after the grace period", async () => {
+  const { pi, backend, events } = makePi("rust");
+  backend.setAgentRunActive(true);          // a turn that ignores the abort
+  await pi.abort();
+  await new Promise((r) => setTimeout(r, 5100));
+  const warned = events.filter((e: Any) =>
+    e.type === "custom-message" && /still running/i.test(String(e.data?.content ?? "")));
+  assert.equal(warned.length, 1, "a stop that never lands must be surfaced, not left silent");
+});
+
+test("abort() stays QUIET when the turn actually ends", async () => {
+  const { pi, backend, events } = makePi("rust");
+  backend.setAgentRunActive(true);
+  await pi.abort();
+  backend.setAgentRunActive(false);         // the abort landed
+  await new Promise((r) => setTimeout(r, 5100));
+  const warned = events.filter((e: Any) =>
+    e.type === "custom-message" && /still running/i.test(String(e.data?.content ?? "")));
+  assert.equal(warned.length, 0, "a successful abort must not produce a scary message");
+});

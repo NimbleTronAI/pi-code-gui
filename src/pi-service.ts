@@ -98,6 +98,10 @@ function tokenFor(signal?: AbortSignal): vscode.CancellationToken | undefined {
   return src.token;
 }
 
+/** How long to give an abort before telling the user it hasn't taken effect. Long enough that a
+ *  normal stop never trips it, short enough that a stuck runtime doesn't look like a hang. */
+const ABORT_GRACE_MS = 5000;
+
 export class PiService {
   /** The TypeScript SDK runtime (module loading, auth, registry, session manager,
    *  agent session) — the TS-path counterpart of `_rust`. The legacy field names
@@ -931,7 +935,22 @@ export class PiService {
     // Both backends kill any running bash before stopping the LLM turn (agent.abort
     // alone would orphan child processes). See SdkService.abort / RustService.abort.
     // Both impls are synchronous (send / local calls); the union return is voided.
-    void this.backend?.abort();
+    const backend = this.backend;
+    void backend?.abort();
+
+    // Watchdog. RustService.abort() is two fire-and-forget writes down a pipe: nothing
+    // correlates them, nothing confirms them, and a subprocess busy inside a tool call may not
+    // read stdin for a while. So a Stop that never lands is indistinguishable from one still in
+    // flight — the user gets a silent, permanently "stopping" turn. If the run is still active
+    // after the grace period, say so rather than leave them guessing. (The SDK aborts in-process
+    // and effectively always lands, so this only ever fires for Rust in practice.)
+    if (!backend) { return; }
+    setTimeout(() => {
+      // Only complain about the run we actually tried to stop — not a later one, and not a
+      // session that has since been disposed or replaced.
+      if (this.backend !== backend || !backend.getAgentRunActive()) { return; }
+      this.emit({ type: "custom-message", data: { customType: "error", content: `Stop was sent ${Math.round(ABORT_GRACE_MS / 1000)}s ago but the turn is still running. The runtime may be stuck inside a tool call — you can wait, or run /new to start a fresh session.`, timestamp: Date.now() } });
+    }, ABORT_GRACE_MS);
   }
 
   /**

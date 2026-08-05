@@ -143,7 +143,18 @@ export function updateStreamingState(): void {
     state.sendButton.title = "Steer (interrupt current request)";
     state.steerDropdown.classList.remove("hidden");
     state.abortButton.classList.remove("hidden");
+    // Acknowledge a requested abort LOCALLY. Clicking Stop used to change nothing on screen:
+    // it posted a message and waited for the backend to emit a terminal event. Under Rust that
+    // is a fire-and-forget write to a subprocess that may be mid-tool, so the spinner kept
+    // spinning and the button stayed armed — two aborts in the same session could look
+    // completely different depending only on where they landed. The request itself is now
+    // visible immediately, whatever the backend does next.
+    state.abortButton.disabled = state.abortRequested;
+    state.abortButton.textContent = state.abortRequested ? "Stopping…" : "Stop";
   } else {
+    state.abortRequested = false;
+    state.abortButton.disabled = false;
+    state.abortButton.textContent = "Stop";
     state.sendButton.textContent = "\u21B5";
     state.sendButton.title = "Submit (Enter)";
     state.steerDropdown.classList.add("hidden");
