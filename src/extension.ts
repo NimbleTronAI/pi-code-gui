@@ -1342,7 +1342,6 @@ function addSession(context: vscode.ExtensionContext): void {
   }
 
   const sw = createSessionWindow(context, undefined, true);
-  sw.webviewPanel.showWelcome = false;
   sw.webviewPanel.onBeforePrompt = (text) => {
     if (!shouldPromoteDraft(text)) { return; }
     sw.draft = false;
