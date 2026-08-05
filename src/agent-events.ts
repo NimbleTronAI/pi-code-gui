@@ -150,7 +150,6 @@ export interface AgentTranslateResult {
   setAgentRunActive?: boolean;
   setStreaming?: boolean;
   setThinkingLevel?: string;
-  turnIndex?: "reset" | "increment";
   clearToolCalls?: boolean;
   effects: AgentTranslateEffects;
 }
@@ -197,7 +196,6 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       result.setAgentRunActive = true;
       result.setStreaming = true;
       result.clearToolCalls = true;
-      result.turnIndex = "reset";
       events.push({ type: "agent-start" });
       break;
 
@@ -208,7 +206,6 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       result.setAgentRunActive = false;
       result.setStreaming = false;
       result.clearToolCalls = true;
-      result.turnIndex = "reset";
       // Safety net: clear any synthetic queue entries the consume-path missed.
       if (state.backendKind === "rust") { effects.rustClearQueue = true; }
       events.push({ type: "agent-end", data: { messages: event.messages } });
@@ -221,7 +218,6 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
 
     case "turn_end":
       events.push({ type: "turn-end", data: { message: event.message, toolResults: event.toolResults } });
-      result.turnIndex = "increment";
       break;
 
     case "message_start": {

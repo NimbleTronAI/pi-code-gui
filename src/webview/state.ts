@@ -192,6 +192,10 @@ export const state: AppState = {
     // Rust it slips past every handler and gets forwarded raw to the binary, which doesn't
     // parse it. Intercepted → pickActiveTools, which shows the honest "not on Rust" guard.
     "/tools",
+    // Extension-serviced on BOTH runtimes (PiBackend.exportToHtml). Without interception the
+    // Rust RPC would forward "/export" to the model as a literal prompt — a billed turn that
+    // answers a question about the word rather than exporting anything.
+    "/export",
     // Session ops the extension services itself — must be intercepted here so they
     // reach handleSlashCommand → the runtime-aware router, instead of being sent to
     // the model as a prompt. (TypeScript's SDK parses such prompts; the Rust RPC

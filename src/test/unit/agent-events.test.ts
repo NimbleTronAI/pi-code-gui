@@ -29,7 +29,6 @@ test("agent_start: emits agent-start and sets streaming/active, resets turn, cle
   assert.equal(r.setAgentRunActive, true);
   assert.equal(r.setStreaming, true);
   assert.equal(r.clearToolCalls, true);
-  assert.equal(r.turnIndex, "reset");
 });
 
 test("agent_end (rust, run not active): treated as the duplicate — no-op", () => {
@@ -65,7 +64,6 @@ test("turn_start: emits turn-start", () => {
 test("turn_end: emits turn-end and increments the turn index", () => {
   const r = translateAgentEvent({ type: "turn_end", message: { id: "x" }, toolResults: [] }, makeState());
   assert.deepEqual(types(r), ["turn-end"]);
-  assert.equal(r.turnIndex, "increment");
 });
 
 // ── message_start ────────────────────────────────────────────────────

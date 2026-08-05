@@ -185,8 +185,6 @@ export class PiService {
   // Pending interactive dialogs (select/confirm/input).  Maps dialog ID → Promise resolve.
   private _pendingDialogs = new Map<string, { resolve: (v: unknown) => void }>();
 
-  // Turn tracking (like AgentSession._turnIndex in the SDK)
-  private turnIndex = 0;
 
   // User message history for the resend/reuse feature (#2)
   private _userMessages: Array<{ id: string; text: string; timestamp?: number }> = [];
@@ -650,8 +648,6 @@ export class PiService {
     if (r.setAgentRunActive === false) { this._flushRustSessionInfo(); }
     if (r.setStreaming !== undefined) { this.backend?.setStreaming(r.setStreaming); }
     if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
-    if (r.turnIndex === "reset") { this.turnIndex = 0; }
-    else if (r.turnIndex === "increment") { this.turnIndex++; }
     if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
 
     if (r.effects.rustClearQueue) { this._rust?.clearQueueIfAny(); }
@@ -889,16 +885,9 @@ export class PiService {
         return true;
       }
 
-      case "export": {
-        // Optional output path is the command argument.
-        const outputPath = arg || vscode.Uri.joinPath(
-          vscode.Uri.file(resolveWorkspaceCwd()),
-          `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`
-        ).fsPath;
-        const result = await this.session.exportToHtml(outputPath);
-        vscode.window.showInformationMessage(`Session exported to: ${result}`);
+      case "export":
+        await this.exportSessionInteractive(arg);
         return true;
-      }
 
       case "reload": {
         await this.backend?.reloadContext();
@@ -969,6 +958,26 @@ export class PiService {
    * TypeScript SDK session exports directly; Rust shells out to `pi --export`
    * (there is no in-process session under Rust). Returns the written path.
    */
+  /** `/export` from the chat, on EITHER runtime: resolve a default path when none was given,
+   *  export through the PiBackend seam, and report where it landed. Shared by the TypeScript
+   *  slash handler and the Rust slash router so the two cannot diverge — reaching for
+   *  `this.session` here was the only reason the command had to be TypeScript-only. */
+  async exportSessionInteractive(arg?: string): Promise<void> {
+    const outputPath = arg || vscode.Uri.joinPath(
+      vscode.Uri.file(resolveWorkspaceCwd()),
+      `pi-session-${this.sessionId?.slice(0, 8) ?? "export"}.html`,
+    ).fsPath;
+    try {
+      const result = await this.exportToHtml(outputPath);
+      vscode.window.showInformationMessage(`Session exported to: ${result}`);
+    } catch (e: unknown) {
+      // Rust refuses to export a session with no file yet ("send a message first"). That is a
+      // real, actionable answer — put it in the chat rather than swallowing it.
+      const msg = e instanceof Error ? e.message : String(e);
+      this.emit({ type: "custom-message", data: { customType: "error", content: `Export failed: ${msg}`, timestamp: Date.now() } });
+    }
+  }
+
   async exportToHtml(outputPath: string): Promise<string> {
     // Delegated to the active backend (PiBackend.exportToHtml): Rust shells out to
     // `pi --export`, the SDK exports the in-process session — PiService no longer branches.

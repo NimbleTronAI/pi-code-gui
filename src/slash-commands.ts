@@ -31,7 +31,9 @@ export function buildSlashCommandList(agentCommands: SlashCommand[], caps: Backe
     result.push({ cmd: "/resume", desc: "Resume a previous session", source: "builtin" });
     result.push({ cmd: "/fork", desc: "Fork session from message", source: "builtin" });
   }
-  if (caps.exportHtml && caps.kind === "typescript") {
+  // Capability alone — no identity conjunct. exportHtml is the one flag true for BOTH runtimes,
+  // and the handler now routes through PiBackend.exportToHtml, so the command works on either.
+  if (caps.exportHtml) {
     result.push({ cmd: "/export", desc: "Export session to HTML", source: "builtin" });
   }
   if (caps.toolsPicker) {

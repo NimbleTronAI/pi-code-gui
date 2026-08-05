@@ -472,6 +472,9 @@ export class PiWebviewPanel {
       case "compact":
         await this.piService.compact();
         return true;
+      case "export":
+        await this.piService.exportSessionInteractive();
+        return true;
       default:
         return false;
     }

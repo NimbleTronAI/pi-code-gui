@@ -1,6 +1,11 @@
 // Headless tests for the extracted slash-command assembly + parsing (src/slash-commands.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src");
 import { buildSlashCommandList, parseSlashCommand, type SlashCommand } from "../../slash-commands.js";
 import type { BackendCapabilities } from "../../pi-backend.js";
 
@@ -37,11 +42,33 @@ test("buildSlashCommandList: capability-gated commands appear only when enabled"
   assert.ok(cmds(buildSlashCommandList([], caps({ toolsPicker: true }))).includes("/tools"));
 });
 
-test("buildSlashCommandList: /export needs exportHtml AND the typescript runtime", () => {
-  // Rust with exportHtml (it exports too) must NOT advertise /export from chat.
-  assert.ok(!cmds(buildSlashCommandList([], caps({ kind: "rust", exportHtml: true }))).includes("/export"));
-  // TS with exportHtml → /export offered.
-  assert.ok(cmds(buildSlashCommandList([], caps({ kind: "typescript", exportHtml: true }))).includes("/export"));
+test("buildSlashCommandList: /export follows the CAPABILITY, on either runtime", () => {
+  // This test previously asserted `exportHtml AND kind === "typescript"` — enshrining a leak
+  // rather than protecting a behaviour. Both dual-runtime reviews flagged it independently: the
+  // identity conjunct existed only because the handler reached for `this.session.exportToHtml`
+  // (null on Rust). The handler now goes through PiBackend.exportToHtml, which BOTH backends
+  // implement, so the capability alone decides — as it always claimed to.
+  for (const kind of ["rust", "typescript"] as const) {
+    assert.ok(cmds(buildSlashCommandList([], caps({ kind, exportHtml: true }))).includes("/export"),
+      `${kind} advertises /export when the capability is on`);
+    assert.ok(!cmds(buildSlashCommandList([], caps({ kind, exportHtml: false }))).includes("/export"),
+      `${kind} hides /export when the capability is off`);
+  }
+});
+
+test("/export is intercepted by the webview, so Rust never forwards it to the model", () => {
+  // interceptSlashCommands is false on Rust, so anything not in the webview's local list is sent
+  // to the binary as a literal prompt — a billed turn answering a question about the word
+  // "/export" instead of exporting. Session artefacts show exactly that happening with /models.
+  const state = readFileSync(join(SRC_DIR, "webview", "state.ts"), "utf-8");
+  // Anchor on the ARRAY LITERAL, not the interface field (`localSlashCommands: string[]`),
+  // whose `]` would truncate the slice to nothing and pass vacuously.
+  const start = state.indexOf("localSlashCommands: [");
+  assert.notEqual(start, -1, "the local-interception array must exist");
+  const block = state.slice(start, state.indexOf("],", start));
+  assert.match(block, /"\/export"/,
+    "/export must be locally intercepted or Rust bills a model turn for it");
+  assert.match(block, /"\/new"/, "sanity: the anchor really is the array");
 });
 
 test("parseSlashCommand: name only → cmd, empty arg", () => {
