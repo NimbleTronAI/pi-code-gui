@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4
+
+- Added reusable draft sessions that initialize on the first prompt and preserve the new-session introduction.
+- Added cross-session references, session action menus, and reliable session-list refresh after automatic naming.
+- Added conversation copy controls for user, assistant, and tool output, including displayed diffs and Bash commands.
+- Improved tool cards with complete wrapped titles, accurate change counts, compact collapse behavior, and precise file-link hit areas.
+- Added full VS Code integration testing to CI and hardened the Issue-driven development pipeline.
+
 ## 0.2.3
 
 - Added substring search across Slash command names and descriptions, including `skill:` names containing `:` and `-` separators.

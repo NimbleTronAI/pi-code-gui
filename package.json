@@ -4,7 +4,7 @@
   "author": "Pi on Code contributors",
   "displayName": "Pi / Code",
   "description": "A Pi-native multi-session coding agent workspace for VS Code. Pi Coding Agent / Pi on Code / Pi Code GUI.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "MIT",
   "repository": {
     "type": "git",
