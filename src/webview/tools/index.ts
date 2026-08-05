@@ -1,5 +1,6 @@
 import { state } from "../state.js";
 import { summarizeLineChanges } from "../../tool-change-summary.js";
+import { selectToolOutputCopyText } from "../../tool-output-copy.js";
 import { logEvent } from "../debug.js";
 import {
   createToolBlock, morphRender, escapeHtml, renderToolResult,
@@ -1001,11 +1002,22 @@ export function handleToolUpdate(data: any) {
 
 export function addToolOutputCopyButton(block: HTMLElement, result: ToolResult): void {
     if (block.querySelector(".tool-copy-btn")) { return; }
-    var copyText = (result?.content || [])
+    var fallbackText = (result?.content || [])
       .filter(function (part: { type: string; text?: string }) { return part.type === "text" && typeof part.text === "string"; })
       .map(function (part: { type: string; text?: string }) { return part.text || ""; })
       .join("\n");
-    if (!copyText.trim()) { return; }
+    var editOutput = (block as unknown as { _editEdits?: Array<{ oldText: string; newText: string }> })._editEdits
+      ?.map(function (edit) { return `- ${edit.oldText || ""}\n+ ${edit.newText || ""}`; })
+      .join("\n");
+    var writeOutput = (block as unknown as { _writeState?: { content?: string } })._writeState?.content;
+    var copyText = selectToolOutputCopyText([
+      editOutput,
+      writeOutput,
+      block.querySelector<HTMLElement>(".bash-output")?.textContent,
+      block.querySelector<HTMLElement>(".tool-result")?.textContent,
+      block.querySelector<HTMLElement>(".tool-content")?.textContent,
+    ], fallbackText);
+    if (!copyText) { return; }
     var button = document.createElement("button");
     button.type = "button";
     button.className = "tool-copy-btn";

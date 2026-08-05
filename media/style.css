@@ -2721,6 +2721,7 @@ html.pi-viewport-recovering #pi-web-app {
 
 .bash-command-copy {
   flex: 0 0 auto;
+  opacity: 0;
   padding: 1px 5px;
   border: 1px solid var(--pi-line);
   border-radius: 2px;
@@ -2728,6 +2729,11 @@ html.pi-viewport-recovering #pi-web-app {
   color: var(--pi-muted);
   cursor: pointer;
   font: inherit;
+}
+
+.bash-header:hover .bash-command-copy,
+.bash-command-copy:focus-visible {
+  opacity: 1;
 }
 
 .bash-command-copy:hover {
