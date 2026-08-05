@@ -2713,3 +2713,28 @@ html.pi-viewport-recovering #pi-web-app {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Expanded commands collapse source newlines and wrap only at available width. */
+.bash-execution .bash-command {
+  white-space: normal;
+}
+
+.bash-command-copy {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--pi-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--pi-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.bash-command-copy:hover {
+  border-color: var(--pi-lavender);
+  color: var(--pi-text);
+}
+
+.bash-execution.auto-tool-result-collapsed .bash-command-copy {
+  display: none;
+}
