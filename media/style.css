@@ -2708,10 +2708,17 @@ html.pi-viewport-recovering #pi-web-app {
 
 .tool-block.auto-tool-result-collapsed .tool-path,
 .bash-execution.auto-tool-result-collapsed .bash-command {
-  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tool-block.auto-tool-result-collapsed .tool-path {
+  flex: 0 1 auto;
+}
+
+.bash-execution.auto-tool-result-collapsed .bash-command {
+  flex: 1 1 auto;
 }
 
 /* Expanded commands collapse source newlines and wrap only at available width. */
