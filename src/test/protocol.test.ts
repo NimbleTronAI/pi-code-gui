@@ -90,7 +90,14 @@ suite("Shared webview protocol", () => {
       type: "workspace-files-update",
       data: {
         query: "package",
-        items: [workspaceFile],
+        items: [workspaceFile, {
+          id: "file:///sessions/session-123.jsonl",
+          path: "session:session-123",
+          name: "Prior investigation",
+          kind: "file",
+          external: true,
+          source: "session",
+        }],
       },
     });
     const attachResult = validateExtensionToWebview({
