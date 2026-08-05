@@ -507,7 +507,7 @@ export class PiWebviewPanel {
             model: model?.id ?? "loading...",
             thinkingLevel: this.piService.thinkingLevel,
             effort: this.piService.effort,
-            ready: model !== null,
+            ready: model !== null || this._onBeforePrompt !== null,
           },
         });
         if (model !== null && statusInterval) {
