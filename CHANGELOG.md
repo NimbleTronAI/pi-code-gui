@@ -1,5 +1,15 @@
 # Change Log
 
+## [0.1.2]
+
+Republish of 0.1.1 with no functional changes. 0.1.1 reached the VS Code Marketplace,
+but its Open VSX publish failed before packaging, leaving the two registries on
+different versions. This release exists so both carry the same build — if you are
+already on 0.1.1 there is nothing new here.
+
+### Fixed
+- The Open VSX publish job failed to package the extension. (Release tooling only; no change to the extension.)
+
 ## [0.1.1]
 
 The first release with the **Rust runtime**. Sessions now run on either the

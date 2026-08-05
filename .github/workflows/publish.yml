@@ -51,6 +51,11 @@ jobs:
           node-version: '22'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # `vsce package` runs the `vscode:prepublish` script, i.e. the full `pnpm run package`
+      # gate — which includes check:cleanroom, and that hard-fails without ripgrep. The runner
+      # image does not ship it. This job needs it for exactly the same reason the marketplace
+      # job does; omitting it here is what failed the v0.1.1 Open VSX publish.
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: pnpm exec vsce package --no-dependencies -o pi-code-gui.vsix
       # The token goes through the ENVIRONMENT, not argv: process arguments are world-readable
       # via /proc/<pid>/cmdline on the runner, and appear in error output. ovsx reads OVSX_PAT.
