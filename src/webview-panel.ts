@@ -59,6 +59,7 @@ export class PiWebviewPanel {
 
   /** Callback invoked when the panel is disposed (VS Code tab closed) */
   private _onDispose: PanelDisposeCallback | null = null;
+  private _onBeforePrompt: (() => Promise<boolean>) | null = null;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -73,6 +74,9 @@ export class PiWebviewPanel {
 
   /** Register a callback that fires when the panel/webview is closed. */
   set onDispose(cb: PanelDisposeCallback | null) { this._onDispose = cb; }
+
+  /** Await lazy session initialization before forwarding the first prompt. */
+  set onBeforePrompt(cb: (() => Promise<boolean>) | null) { this._onBeforePrompt = cb; }
 
   /** Register a callback that fires when this panel/view becomes active. */
   set onActivate(cb: (() => void) | null) { this._onActivateCb = cb; }
@@ -536,9 +540,10 @@ export class PiWebviewPanel {
               const promptText = editorContext
                 ? appendEditorContext(msg.text, editorContext)
                 : msg.text;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-              this.piService.sendPrompt(promptText, msg.images, msg.mode).catch((error: any) => {
-                let errMsg = error.message ?? String(error);
+              if (this._onBeforePrompt && !await this._onBeforePrompt()) { return; }
+              this._onBeforePrompt = null;
+              this.piService.sendPrompt(promptText, msg.images, msg.mode).catch((error: unknown) => {
+                let errMsg = error instanceof Error ? error.message : String(error);
                 if (/api.?key|login|authenticate|provider/i.test(errMsg)) {
                   errMsg += "\n\n[Set up an API key →](https://pi.dev/docs/latest/quickstart)";
                 }

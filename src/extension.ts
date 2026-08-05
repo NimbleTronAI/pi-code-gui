@@ -30,6 +30,7 @@ interface SessionWindow {
   piService: PiService;
   webviewPanel: PiWebviewPanel;
   initialized: boolean;
+  initializationPromise?: Promise<boolean>;
   isStreaming: boolean;
   /** True after the session is removed, including while async initialization settles. */
   closed: boolean;
@@ -1324,7 +1325,12 @@ function addSession(context: vscode.ExtensionContext): void {
   setActiveSession(sw);
   void sw.webviewPanel.show();
   sessionTreeProvider?.refresh();
-  void initSessionInBackground(context, sw, { fresh: true });
+  sw.webviewPanel.onBeforePrompt = async () => {
+    if (!sw.initializationPromise) {
+      sw.initializationPromise = initSessionInBackground(context, sw, { fresh: true });
+    }
+    return sw.initializationPromise;
+  };
 }
 
 // ── Early command registration (SDK-independent) ───────
@@ -1432,8 +1438,8 @@ async function refreshPastSessionsList(): Promise<void> {
   piLog(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
 }
 
-async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string }): Promise<void> {
-  if (sw.closed) { return; }
+async function initSessionInBackground(context: vscode.ExtensionContext, sw: SessionWindow, opts?: { fresh?: boolean; openPath?: string }): Promise<boolean> {
+  if (sw.closed) { return false; }
   const fresh = opts?.fresh ?? false;
   const openPath = opts?.openPath;
   // Ensure tree provider exists ASAP so the tree view shows something
@@ -1449,7 +1455,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     : Promise.resolve();
 
   const status = await PiService.checkInstall();
-  if (sw.closed) { return; }
+  if (sw.closed) { return false; }
 
   if (!status.installed) {
     sw.webviewPanel.postMessage({
@@ -1481,7 +1487,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       }
     }
     sessionTreeProvider?.refresh();
-    return;
+    return false;
   }
 
   let result: { success: boolean; error?: string };
@@ -1501,7 +1507,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       }
       await refreshPastSessionsList();
     }
-    return;
+    return false;
   }
 
   if (!result.success) {
@@ -1526,7 +1532,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
       }
     }
     sessionTreeProvider?.refresh();
-    return;
+    return false;
   }
 
   sw.initialized = true;
@@ -1608,6 +1614,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   void saveOpenSessionPaths();
 
   piLog(`Session ${sw.id} ready`);
+  return true;
 }
 
 function removeSession(sw: SessionWindow): void {
