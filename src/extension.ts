@@ -1568,7 +1568,9 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
     } else if (event.type === "status-update" && event.data) {
       const was = sw.isStreaming;
       sw.isStreaming = !!event.data.isStreaming;
-      if (was !== sw.isStreaming) { changed = true; }
+      if (was !== sw.isStreaming || (sw.piService.sessionName && sw.piService.sessionName !== sw.label)) {
+        changed = true;
+      }
     } else if (
       event.type === "chat-message" ||
       event.type === "compaction-summary-message"

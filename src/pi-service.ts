@@ -1956,7 +1956,7 @@ export class PiService {
 
       case "name": {
         const name = text.slice(6).trim();
-        if (name) { this.session.setSessionName(name); }
+        if (name) { this.setSessionName(name); }
         return true;
       }
 
@@ -2835,7 +2835,9 @@ export class PiService {
 
   /** Persist a display name to the session file so it survives tab close. */
   setSessionName(name: string): void {
-    this.session?.setSessionName?.(name);
+    if (!name || !this.session?.setSessionName) { return; }
+    this.session.setSessionName(name);
+    this.reportStatus();
   }
 
   // ── Tools ───────────────────────────────────────────────
