@@ -775,7 +775,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
             path: session.path,
           });
         });
-        row.append(open, remove);
+        row.prepend(open);
+        row.append(remove);
         sessionList.appendChild(row);
       }
     }
