@@ -834,6 +834,14 @@ export class SdkService implements PiBackend {
     if (this.modelRuntime) { model = this.modelRuntime.getModel(provider, id); }
     if (!model) { model = this.AI.getModel(provider, id); }
     if (!model) { return null; }
+    // Re-apply the context budget, exactly as initialize() does. Without this the budget was a
+    // one-shot: it governed the model chosen at startup and then silently stopped applying the
+    // moment the user switched models mid-session, because the SDK reads model.contextWindow for
+    // BOTH the auto-compaction trigger and the context-% denominator. The Rust path has no such
+    // gap — applyState re-clamps on every get_state — so the same action produced a clamped
+    // readout on one runtime and an unclamped one on the other.
+    const budget = this.deps.config().contextBudget;
+    if (budget > 0) { model = { ...model, contextWindow: budget }; }
     await this.session.setModel(model);
     this._model = { id, provider };  // owned here; PiService reads via getModel()
     // No force-persist here: session.setModel() already records a model_change via the

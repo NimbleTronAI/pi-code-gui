@@ -278,3 +278,29 @@ test("getAvailableModels falls back to the cached list when the refresh fails", 
   (h.rust as Any)._modelsFetchedAt = 0;
   assert.deepEqual((await h.rust.getAvailableModels()).map((m) => m.id), ["m1"], "keeps the last good list");
 });
+
+// ── a crashed subprocess must not leave an interactive-looking zombie ────
+// handleExit surfaced the crash but left the dead RustProcess in place, so `initialized` stayed
+// true, the webview kept accepting input, and every later prompt died silently inside
+// RustProcess.writeLine at the `stdin.writable` check with only a debug line. The user typed
+// into a session that no longer existed and saw nothing happen at all.
+test("after an unexpected exit, sendPrompt FAILS LOUDLY instead of dropping the text", async () => {
+  const h = makeHarness();
+  (h.rust as Any).initializing = false;
+  (h.rust as Any).handleExit(1);
+
+  assert.equal((h.rust as Any).process, null, "the dead process must be dropped, not retained");
+  await assert.rejects(
+    () => h.rust.sendPrompt("this must not vanish"),
+    /no longer running|exited with code/i,
+    "a prompt after a crash must raise an error the user can see",
+  );
+});
+
+test("the crash message names the exit code rather than saying 'not initialized'", async () => {
+  const h = makeHarness();
+  (h.rust as Any).initializing = false;
+  (h.rust as Any).handleExit(9);
+  await assert.rejects(() => h.rust.sendPrompt("x"), /code 9/,
+    "'not initialized' is misleading for a session that WAS running and then died");
+});

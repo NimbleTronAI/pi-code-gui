@@ -591,6 +591,17 @@ export class RustService implements PiBackend {
   }
 
   /** Surface an unexpected Rust subprocess exit in the chat. */
+  /** Exit code of a crashed subprocess, so the "why can't I type?" error can say what happened
+   *  instead of the misleading "not initialized". */
+  private _exitCode: number | null | undefined;
+
+  /** Message for a primitive invoked after the subprocess is gone. */
+  private deadSessionMessage(): string {
+    return this._exitCode !== undefined
+      ? `Rust Pi is no longer running (it exited with code ${this._exitCode ?? "?"}). Run /new to start a fresh session.`
+      : "Rust Pi session not initialized";
+  }
+
   private handleExit(code: number | null): void {
     // A spawn failure during initialization (e.g. the extension-parse conflict)
     // is reported through initialize's return value — don't also surface the
@@ -608,6 +619,14 @@ export class RustService implements PiBackend {
       this.emitQueue();
     }
     const file = this.sessionPath;
+    // Drop the dead process. Without this the session becomes a ZOMBIE: `initialized` stays
+    // true, the webview keeps accepting input, and every subsequent prompt dies inside
+    // RustProcess.writeLine at the `stdin.writable` check with only a debug line — the user
+    // types into a session that is gone and sees nothing at all. Nulling it makes the primitives'
+    // existing `if (!this.process)` guards fire instead, which surfaces a real error card.
+    this._exitCode = code;
+    try { this.process?.dispose(); } catch { /* already dead */ }
+    this.process = null;
     this.host.emit({ type: "custom-message", data: { customType: "error", content: `Rust Pi exited unexpectedly (code ${code ?? "?"}).${file ? "" : " Start a new session to continue."}`, timestamp: Date.now() } });
     this.host.reportStatus();
     // The session JSONL persists on disk and rust-pi self-exits on stdin EOF (so
@@ -864,7 +883,7 @@ export class RustService implements PiBackend {
   /** Send a prompt/steer/follow-up to the Rust subprocess. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
-    if (!this.process) { throw new Error("Rust Pi session not initialized"); }
+    if (!this.process) { throw new Error(this.deadSessionMessage()); }
     const imgs = images && images.length > 0 ? images : undefined;
     const payload: Record<string, unknown> = { message: text };
     if (imgs) { payload.images = imgs; }

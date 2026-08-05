@@ -425,3 +425,35 @@ test("defaultModelProvider/defaultModelId override the auto-selected model", asy
   const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
   assert.equal(out.model?.id, "my-default");
 });
+
+// ── the context budget must survive a model switch ───────────────────
+// It was applied once, at init, so switching models mid-session silently dropped it: the SDK
+// reads model.contextWindow for BOTH the auto-compaction trigger and the context-% denominator,
+// so the user kept a budget in settings while the session quietly reverted to the model's native
+// window. Rust never had the gap (applyState re-clamps on every get_state), so the same action
+// behaved differently per runtime.
+test("setModel re-applies the context budget, like initialize does", async () => {
+  const setModels: Any[] = [];
+  const { svc } = makeService();
+  (svc as Any).session = { setModel: async (m: Any) => { setModels.push(m); } };
+  (svc as Any).AI = { getModel: () => ({ id: "m", provider: "p", contextWindow: 1_000_000 }) };
+  (svc as Any).modelRuntime = null;
+  (svc as Any).deps = { ...(svc as Any).deps, config: () => ({ contextBudget: 128_000 }) };
+
+  await svc.setModel("p", "m");
+  assert.equal(setModels.length, 1);
+  assert.equal(setModels[0].contextWindow, 128_000,
+    "the budget must clamp the switched-to model, not just the startup one");
+});
+
+test("setModel leaves the native window alone when no budget is set", async () => {
+  const setModels: Any[] = [];
+  const { svc } = makeService();
+  (svc as Any).session = { setModel: async (m: Any) => { setModels.push(m); } };
+  (svc as Any).AI = { getModel: () => ({ id: "m", provider: "p", contextWindow: 1_000_000 }) };
+  (svc as Any).modelRuntime = null;
+  (svc as Any).deps = { ...(svc as Any).deps, config: () => ({ contextBudget: 0 }) };
+
+  await svc.setModel("p", "m");
+  assert.equal(setModels[0].contextWindow, 1_000_000);
+});
