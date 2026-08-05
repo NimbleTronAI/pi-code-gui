@@ -1,34 +1,49 @@
 # Change Log
 
-## [Unreleased]
-
-### Removed
-- **The `pi-code-gui.anthropicApiKey` / `pi-code-gui.openaiApiKey` settings.** Keys in `settings.json` are plaintext, carried by Settings Sync, and — because VS Code settings are globally readable — retrievable by *any* other installed extension. Authenticate the way pi itself does: run **`/login`** (stores the credential in `~/.pi/agent/auth.json`, shared with the CLI/TUI and used by both runtimes), or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in the environment (in a devcontainer, `containerEnv` or the compose `environment:` block). **Existing values are migrated automatically:** on the next window reload any key still in your settings is moved into VS Code's SecretStorage and cleared from `settings.json`, so nothing needs re-entering and nothing breaks. Secrets are also now scrubbed from the output channel and from error text shown in the chat.
-
-### Fixed
-- **Rust sessions now honor the configured default thinking level.** A fresh Rust session passed `--thinking` to the binary only when the default was *not* `off`, but rust-pi defaults a reasoning model to `high` when the flag is absent (verified live) — so a configured default of `off` silently started the model at `high` while the status bar showed `off`. Fresh sessions now always pass `--thinking` (including `off`); restored sessions keep their own recorded level, as before.
-
-### Changed
-- **Honest thinking-level control under Rust.** A model's thinking *level* only affects generation on provider transports that actually transmit it (`anthropic-messages`, `openai-responses`, `google-generative-ai`). On OpenAI-compatible chat APIs (`openai-completions` — including **DeepSeek**) the level is never sent on the wire (the model self-allocates its reasoning), so picking one was a silent no-op the binary still reported as success. The status bar now shows a read-only **reasoning: on/off** badge for those providers instead of a graded "thinking: …" picker. Verified against rust-pi 0.1.20 (provider request body + live `get_state`).
-
-### Added
-- **`max` thinking level.** Some models put their top reasoning tier behind `max` rather than `xhigh` — Kimi K3 exposes `max` with `xhigh` explicitly unsupported, and DeepSeek V4 Pro has no `xhigh` at all — so under the previous six-rung ladder (off → xhigh) those tiers were simply unreachable. `max` is now a first-class level, offered only for models that actually map it, and only when the active backend accepts it: Rust needs **v0.1.23+** (older binaries reject `max` outright, so it is withheld rather than offered and failed), while the TypeScript runtime supports it via the in-process SDK. The bundled model catalog was regenerated from pi-ai 0.82.1 (854 models, 30 providers) to carry the new tier.
-
-### Added
-- **Rust runtime tool dependencies surfaced + auto-offered.** Rust Pi's `find` and `grep` tools require the external `fd` and `ripgrep` (`rg`) binaries on `PATH` — a documented `pi_agent_rust` prerequisite that its installer does not install. After a managed Rust install, the extension now detects whether they're present and offers a one-click install (`apt install fd-find ripgrep` on Linux incl. the `fdfind`→`fd` symlink, `brew install fd ripgrep` on macOS); otherwise the `find`/`grep` tools fail at runtime. See [Requirements](README.md#requirements).
-
 ## [0.1.1]
 
+The first release with the **Rust runtime**. Sessions now run on either the
+in-process TypeScript Pi SDK or the out-of-process Rust Pi binary, chosen per session.
+
 ### Added
-- **Rust runtime (opt-in).** Run each session on either the in-process TypeScript Pi SDK or the out-of-process Rust Pi binary (`pi --mode rpc`). New sessions default to TypeScript; the choice is per-session.
-- Runtime affordances: **PiGui: Add TypeScript/Rust Pi Session**, **Add Pi Session (Choose Runtime)**, **Set Default Runtime** (remembered), and **Switch Runtime (New Session)**. A runtime chip in each session's status bar and a `TS`/`Rust` badge in the Sessions tree.
-- **Lazy discovery & on-demand install.** Both runtimes are detected at startup; if neither is installed you choose one, and a missing runtime is only installed when you first need it. Rust install offers a managed binary download (verified against GitHub release checksums), the official `curl | sh` installer, manual guidance, or detecting an existing binary.
-- Unified Past Sessions list merges TypeScript and Rust sessions (badged); resume always reuses a session's origin runtime. New settings: `defaultRuntime`, `sessionHistoryScope`, `rustBinaryPath`, `rustInstallMethod`, `rustExtensionPolicy`, `rustExtensions`.
-- **Extension interop handling.** A workspace's TypeScript-format Pi extensions (`.pi/`) can't be parsed by the Rust runtime and previously blocked its startup. The new `rustExtensions` setting (`auto`/`enabled`/`disabled`, default `auto`) passes `--no-extensions` when such extensions are detected; if a conflict slips through, the Rust session self-heals and points you at the setting.
-- **Runtime-aware Packages view.** Packages are one shared catalog across both runtimes; the view now follows the focused session's runtime and marks each package **active** (loaded by that runtime) or **available** (installed but not loaded), with provenance/safety signals from the Rust catalog. It manages packages via the Rust binary when the TypeScript SDK isn't installed, and warns when a package won't load under a focused Rust session.
+- **Rust runtime.** Each session runs on the TypeScript SDK or the Rust binary (`pi --mode rpc`). New sessions default to TypeScript; the choice is per-session and a resumed session always reopens on its origin runtime.
+- Runtime commands: **Add TypeScript/Rust Pi Session**, **Add Pi Session (Choose Runtime)**, **Set Default Runtime**, **Switch Runtime (New Session)**. A runtime chip in the status bar and a `TS`/`Rust` badge in the Sessions tree.
+- **On-demand Rust install** — managed binary download (checksum-verified), the official `curl | sh` installer, manual guidance, or detect an existing binary. Each option states plainly whether it touches your `PATH` or an existing `pi` command.
+- Rust Pi's `find`/`grep` tools need `fd` and `ripgrep` on `PATH`; the extension now detects their absence and links their install guides.
+- Unified Past Sessions across both runtimes, badged by origin.
+- **Runtime-aware Packages view** — one shared catalog, marking each package *active* (loaded by the focused session's runtime) or *available*, with provenance from the Rust catalog.
+- **`max` thinking level.** Some models put their top tier behind `max` rather than `xhigh` (Kimi K3 has no `xhigh`; DeepSeek V4 Pro likewise), making those tiers unreachable before. Offered only for models that map it, and only on backends that accept it — Rust needs v0.1.23+.
+- `autoOpenOnStart` — disable auto-opening a Pi tab on window start. (Thanks @oleg-deezus, #63)
+- New settings: `defaultRuntime`, `sessionHistoryScope`, `rustBinaryPath`, `rustInstallMethod`, `rustExtensionPolicy`, `rustExtensions`, `rustAgentDir`.
+
+### Changed
+- **Minimum VS Code is now 1.125** (was 1.118).
+- **API keys moved to VS Code SecretStorage.** The `anthropicApiKey`/`openaiApiKey` settings are **removed** — settings are plaintext, sync across machines, and are readable by any other installed extension. Use `/login` (shares `~/.pi/agent/auth.json` with the pi CLI) or `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`. Existing keys migrate automatically on first reload; nothing needs re-entering.
+- Secrets are redacted from the output channel and from error text shown in chat.
+- Extension-supplied custom message renderers (arbitrary JS in the webview) now require explicit per-type consent.
+- `sessionDir` is `machine-overridable`, and settings that execute code or redirect writes are disabled in untrusted workspaces.
+- Unknown model pricing shows `$??` rather than `$0.00`, so a missing rate can't read as free.
+- Provider auth failures surface as actionable messages instead of raw SDK errors.
+- All logging goes to the **Pi Code Gui** output channel; nothing is written to the shared developer console.
+- Migrated to the pi-coding-agent 0.80+ `ModelRuntime` API, with a prompt to update an SDK older than this build targets.
+
+### Fixed
+- **Closing a window with more than one session open lost conversation data** — teardown skipped every other session, so their unflushed history was never written.
+- Closing a session from the Sessions tree left its tab open and unusable.
+- The **Auto-retry** toggle did nothing on the TypeScript runtime — it flipped the UI but never reached the session, so retries continued after being switched off.
+- Startup could block for seconds, or indefinitely, before any command worked; commands are now registered immediately.
+- Several commands (including *Install Pi*) were never registered and failed with "command not found".
+- The chat lost its pinned-to-bottom position whenever tool blocks resized on completion.
+- Large writes froze the webview while streaming tool arguments.
+- Quotes were not escaped in five webview render paths.
+- Links and file paths from tool output are validated before opening.
+- Images that fail to load degrade to alt text instead of retrying and logging errors.
+- Duplicate sessions could be created for the same session file.
+- The Open Sessions sweep re-read the entire session history on every refresh.
+- The packaged extension no longer ships internal development files.
 
 ### Known limitations
-- Under the Rust runtime, the 16 VS Code editor-bridge tools are unavailable, the `/tools` picker is disabled, custom-card extensions fall back to markdown, session history is stored separately, and the workspace's TypeScript-format `.pi/` extensions don't load (see `rustExtensions`).
+- Under the Rust runtime: the VS Code editor-bridge tools and the `/tools` picker are unavailable, custom-card extensions fall back to markdown, session history is stored separately, and a workspace's TypeScript-format `.pi/` extensions don't load (see `rustExtensions`).
 
 ## [0.0.55]
 
