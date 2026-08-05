@@ -28,10 +28,22 @@ suite("Session history pagination", () => {
     assert.strictEqual(findHistoryPageStart(entries, entries.length, 20), 0);
   });
 
-  test("recognizes all replayed message roles", () => {
-    for (const role of ["user", "assistant", "custom", "bashExecution"]) {
+  test("recognizes only entries rendered in the transcript", () => {
+    for (const role of ["user", "assistant", "bashExecution"]) {
       assert.strictEqual(isVisibleHistoryEntry({ type: "message", message: { role } }), true);
     }
+    assert.strictEqual(
+      isVisibleHistoryEntry({ type: "message", message: { role: "custom", display: true } }),
+      true,
+    );
+    assert.strictEqual(
+      isVisibleHistoryEntry({ type: "message", message: { role: "custom", customType: "info" } }),
+      true,
+    );
+    assert.strictEqual(
+      isVisibleHistoryEntry({ type: "message", message: { role: "custom", customType: "pi-on-code.active-tools" } }),
+      false,
+    );
     assert.strictEqual(
       isVisibleHistoryEntry({ type: "message", message: { role: "toolResult" } }),
       false,

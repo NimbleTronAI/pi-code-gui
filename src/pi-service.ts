@@ -1219,7 +1219,8 @@ export class PiService {
   }
 
   private async emitInitialHistoryReplay(): Promise<void> {
-    const hasEntries = (this.sessionManager?.getEntries?.()?.length ?? 0) > 0;
+    const entries = this.sessionManager?.getEntries?.() ?? [];
+    const hasEntries = entries.some(isVisibleHistoryEntry);
     this.initialHistoryReplayEvents = [];
     this.capturingInitialHistoryReplay = true;
     let hasMoreHistory = false;
