@@ -13,8 +13,12 @@
 
 /** The VS Code UI surface the auth flow needs — injected so the flow is testable. */
 export interface AuthUI {
-  quickPick<T extends { label: string }>(items: T[], opts: { placeHolder?: string; matchOnDescription?: boolean; ignoreFocusOut?: boolean }): Promise<T | undefined>;
-  inputBox(opts: { prompt?: string; placeHolder?: string; password?: boolean; ignoreFocusOut?: boolean }): Promise<string | undefined>;
+  // `signal` dismisses a prompt that is still open when the flow ends by another route. Every
+  // prompt here sets ignoreFocusOut, so without this an unanswered one stays on screen forever:
+  // an OAuth login that completes via the browser callback leaves its "paste the code" box up,
+  // and the user is left staring at a dropdown for a login that already succeeded.
+  quickPick<T extends { label: string }>(items: T[], opts: { placeHolder?: string; matchOnDescription?: boolean; ignoreFocusOut?: boolean }, signal?: AbortSignal): Promise<T | undefined>;
+  inputBox(opts: { prompt?: string; placeHolder?: string; password?: boolean; ignoreFocusOut?: boolean }, signal?: AbortSignal): Promise<string | undefined>;
   /** Run `task` inside a cancellable progress notification; `report` updates the message,
    *  `signal` aborts when the user cancels. */
   withProgress(title: string, task: (report: (message: string) => void, signal: AbortSignal) => Promise<void>): Promise<void>;
@@ -67,12 +71,12 @@ export function makeAuthInteraction(report: (message: string) => void, signal: A
     prompt: async (p: any): Promise<string> => {
       if (p.type === "select") {
         const options = ((p.options ?? []) as any[]).map((o) => ({ label: o.label, description: o.description, id: o.id }));
-        const pick = await ui.quickPick(options, { placeHolder: p.message, ignoreFocusOut: true });
+        const pick = await ui.quickPick(options, { placeHolder: p.message, ignoreFocusOut: true }, signal);
         if (!pick) { throw new Error("Login cancelled"); }
         return pick.id;
       }
       // "text" | "secret" | "manual_code"
-      const value = await ui.inputBox({ prompt: p.message, placeHolder: p.placeholder, password: p.type === "secret", ignoreFocusOut: true });
+      const value = await ui.inputBox({ prompt: p.message, placeHolder: p.placeholder, password: p.type === "secret", ignoreFocusOut: true }, signal);
       if (value === undefined) { throw new Error("Login cancelled"); }
       return value;
     },

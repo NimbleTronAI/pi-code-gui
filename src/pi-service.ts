@@ -87,6 +87,17 @@ function registerAndReturnSecret(value: string | undefined): string | undefined 
   return value;
 }
 
+/** Bridge an AbortSignal to a vscode CancellationToken so an already-open QuickPick/InputBox
+ *  can be dismissed. Returns undefined when there is no signal, which keeps the plain
+ *  (untokened) overload for callers that don't need it. */
+function tokenFor(signal?: AbortSignal): vscode.CancellationToken | undefined {
+  if (!signal) { return undefined; }
+  const src = new vscode.CancellationTokenSource();
+  if (signal.aborted) { src.cancel(); }
+  else { signal.addEventListener("abort", () => src.cancel(), { once: true }); }
+  return src.token;
+}
+
 export class PiService {
   /** The TypeScript SDK runtime (module loading, auth, registry, session manager,
    *  agent session) — the TS-path counterpart of `_rust`. The legacy field names
@@ -1695,7 +1706,26 @@ export class PiService {
     if (this.capabilities.kind !== "rust") { return; }
     const warning = reseedRustAuth();
     if (warning) { piWarn(`Rust auth re-seed after login: ${warning}`); }
-    this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Rust reads credentials at startup, so start a new session for it to take effect.`, timestamp: Date.now() } });
+
+    // If the session never started — the usual reason someone reaches for /login — the new
+    // credential is exactly what it was missing, so restart it here. Telling the user to "start
+    // a new session" left them stranded in a tab that answered every prompt with "this session
+    // isn't running", when the fix was already in hand. rust-pi only reads auth at startup, so a
+    // restart is genuinely required; it just shouldn't be the user's manual chore.
+    if (!this.initialized) {
+      this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Restarting this session with the new credential…`, timestamp: Date.now() } });
+      void (async (): Promise<void> => {
+        this.emit({ type: "sessionReset" });
+        this.dispose();
+        const r = await this.initialize({ fresh: true });
+        if (!r.success) {
+          this.emit({ type: "custom-message", data: { customType: "error", content: `Still couldn't start after logging in: ${r.error ?? "unknown error"}`, timestamp: Date.now() } });
+        }
+      })();
+      return;
+    }
+    // A LIVE session can't adopt the credential in place — the binary read auth at startup.
+    this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Rust reads credentials at startup, so run /new for it to take effect.`, timestamp: Date.now() } });
   }
 
   /** Real (vscode-backed) deps for the extracted, headlessly-tested login/logout flow. */
@@ -1710,14 +1740,22 @@ export class PiService {
       getActiveModel: () => this._model,
       setModel: (provider, id) => this.setModel(provider, id),
       ui: {
-        quickPick: (items, opts) => Promise.resolve(vscode.window.showQuickPick(items, opts)),
-        inputBox: (opts) => Promise.resolve(vscode.window.showInputBox(opts)),
+        // The AbortSignal becomes a CancellationToken so a prompt left open when the flow
+        // finishes by another route is actually dismissed (see AuthUI).
+        quickPick: (items, opts, signal) => Promise.resolve(vscode.window.showQuickPick(items, opts, tokenFor(signal))),
+        inputBox: (opts, signal) => Promise.resolve(vscode.window.showInputBox(opts, tokenFor(signal))),
         withProgress: (title, task) => Promise.resolve(vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title, cancellable: true },
           async (progress, token) => {
             const controller = new AbortController();
             token.onCancellationRequested(() => controller.abort());
-            await task((message) => progress.report({ message }), controller.signal);
+            try {
+              await task((message) => progress.report({ message }), controller.signal);
+            } finally {
+              // Abort on SUCCESS too, not just cancellation: that is what closes a prompt the
+              // flow never consumed (e.g. the manual-code box when the browser callback won).
+              controller.abort();
+            }
           },
         )),
         openExternal: (url) => { void vscode.env.openExternal(vscode.Uri.parse(url)); },

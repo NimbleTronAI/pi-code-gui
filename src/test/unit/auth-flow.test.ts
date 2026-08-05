@@ -164,3 +164,25 @@ test("runLogin: afterLogin does NOT fire when the login call fails", async () =>
   assert.deepEqual(seen, []);
   assert.ok(log.some((l) => l.startsWith("error:Failed to log in")));
 });
+
+// ── prompts must not outlive the flow ────────────────────────────────
+// Every auth prompt sets ignoreFocusOut, so one left unanswered stays on screen indefinitely.
+// Reported live: an OAuth login completed via the browser callback while its prompt was still
+// open, and the dropdown sat at the top of the window after the login had already succeeded.
+test("makeAuthInteraction passes the abort signal to every prompt it opens", async () => {
+  const seen: Array<{ kind: string; signal: unknown }> = [];
+  const ac = new AbortController();
+  const ui: AuthUI = {
+    quickPick: async (items, _o, signal) => { seen.push({ kind: "quickPick", signal }); return items[0]; },
+    inputBox: async (_o, signal) => { seen.push({ kind: "inputBox", signal }); return "typed"; },
+    withProgress: async (_t, task) => { await task(() => {}, ac.signal); },
+    openExternal: () => {}, info: () => {}, error: () => {},
+  };
+  const it = makeAuthInteraction(() => {}, ac.signal, ui);
+  await it.prompt({ type: "secret", message: "API key" });
+  await it.prompt({ type: "select", message: "pick", options: [{ label: "A", id: "a" }] });
+  assert.equal(seen.length, 2);
+  for (const s of seen) {
+    assert.equal(s.signal, ac.signal, `${s.kind} must receive the signal, or it can never be dismissed`);
+  }
+});

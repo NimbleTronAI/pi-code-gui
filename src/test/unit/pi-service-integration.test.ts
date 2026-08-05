@@ -270,3 +270,23 @@ test("BOTH backends inject the identity block from the SAME shared builder", () 
   assert.match(rust, /--append-system-prompt/, "Rust injects via the binary's flag");
   assert.match(sdk, /systemPromptOverride/, "the SDK injects via its prompt override");
 });
+
+test("the auth progress wrapper aborts on SUCCESS, not only on cancellation", () => {
+  // Aborting only on cancel leaves an unconsumed prompt open after a successful login.
+  const src = readFileSync(join(SRC, "pi-service.ts"), "utf-8");
+  const body = src.slice(src.indexOf("withProgress: (title, task)"));
+  const decl = body.slice(0, body.indexOf("openExternal:"));
+  assert.match(decl, /finally\s*\{[\s\S]*controller\.abort\(\)/,
+    "the controller must abort in a finally so completion dismisses stray prompts");
+});
+
+test("a successful login RESTARTS a Rust session that never started", () => {
+  // "Start a new session for it to take effect" stranded the user in a tab that answered every
+  // prompt with "this session isn't running" — while holding the credential that would fix it.
+  const src = readFileSync(join(SRC, "pi-service.ts"), "utf-8");
+  const body = src.slice(src.indexOf("private afterLoginForRuntime"));
+  const decl = body.slice(0, body.indexOf("\n  }\n"));
+  assert.match(decl, /if \(!this\.initialized\)/, "must detect the dead-session case");
+  assert.match(decl, /initialize\(\{ fresh: true \}\)/, "and restart it rather than instruct the user");
+  assert.match(decl, /"sessionReset"/, "clearing the failed session's chat is part of restarting it");
+});
