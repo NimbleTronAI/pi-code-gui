@@ -2666,3 +2666,11 @@ html.pi-viewport-recovering #pi-web-app {
 .bash-status.error {
   color: var(--pi-red);
 }
+
+.tool-status .tool-change-add {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.tool-status .tool-change-remove {
+  color: var(--vscode-testing-iconFailed, #f14c4c);
+}

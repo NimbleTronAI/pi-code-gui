@@ -405,7 +405,7 @@ export class PiService {
 
   // Track current assistant message content (for toolCall stubs during message_update)
   private currentAssistantToolCalls: Map<string, { toolName: string; toolCallId: string; args: any }> = new Map();
-  private writeOriginalContents = new Map<string, string>();
+  private writeChanges = new Map<string, { before: string; after: string }>();
 
   // Widget activity timer (cleared on dispose to prevent leaks)
   private _widgetTimer: ReturnType<typeof setInterval> | null = null;
@@ -1691,15 +1691,16 @@ export class PiService {
           }
         } catch (_e: unknown) { piWarn(`Tool param decode skipped: ${_e instanceof Error ? _e.message : String(_e)}`); }
 
-        if (event.toolName === "write" && typeof args?.path === "string") {
+        if (event.toolName === "write" && typeof args?.path === "string" && typeof args?.content === "string") {
           const filePath = path.isAbsolute(args.path) ? args.path : path.resolve(getWorkspaceCwd(), args.path);
+          let before = "";
           try {
-            this.writeOriginalContents.set(event.toolCallId, fs.readFileSync(filePath, "utf8"));
-          } catch (error: unknown) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-              this.writeOriginalContents.set(event.toolCallId, "");
-            }
+            before = fs.readFileSync(filePath, "utf8");
+          } catch {
+            // A failed snapshot must not interfere with the write itself. The
+            // successful result will use an empty baseline in this rare case.
           }
+          this.writeChanges.set(event.toolCallId, { before, after: args.content });
         }
 
         if (event.toolName === "bash" || event.toolName === "exec") {
@@ -1731,14 +1732,14 @@ export class PiService {
           this.emit({ type: "bash-end", data: { toolCallId: event.toolCallId, command: event.args?.command ?? "", exitCode: event.isError ? 1 : 0, cancelled: false, output: text ?? "", isError: event.isError, entryId: tcEntryId } });
         } else {
           let result = event.result;
-          const originalContent = this.writeOriginalContents.get(event.toolCallId);
-          this.writeOriginalContents.delete(event.toolCallId);
-          if (event.toolName === "write" && !event.isError && originalContent !== undefined && typeof event.args?.content === "string") {
+          const writeChange = this.writeChanges.get(event.toolCallId);
+          this.writeChanges.delete(event.toolCallId);
+          if (event.toolName === "write" && !event.isError && writeChange) {
             result = {
               ...event.result,
               details: {
                 ...(event.result?.details ?? {}),
-                changeSummary: formatLineChangeSummary(originalContent, event.args.content),
+                changeSummary: formatLineChangeSummary(writeChange.before, writeChange.after),
               },
             };
           }

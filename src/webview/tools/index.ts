@@ -106,6 +106,20 @@ type ToolResult = {
   text?: string;
 };
 type ToolEl = HTMLElement;
+
+function countLines(text: string): number {
+  if (!text) { return 0; }
+  return text.endsWith("\n") ? text.slice(0, -1).split("\n").length : text.split("\n").length;
+}
+
+function setChangeSummary(el: ToolEl, summary: string): void {
+  const match = /^\+(\d+) −(\d+)$/.exec(summary);
+  const status = el.querySelector<HTMLElement>(".tool-status");
+  if (!status || !match) { return; }
+  status.innerHTML = `<span class="tool-change-add">+${match[1]}</span> <span class="tool-change-remove">−${match[2]}</span>`;
+  status.setAttribute("aria-label", `${match[1]} lines added, ${match[2]} lines removed`);
+}
+
 import { CodeBlock } from "../components/code-block.js";
 
 
@@ -186,8 +200,7 @@ export const writeToolRenderer = {
       }
 
       if (!isError && typeof result?.details?.changeSummary === "string") {
-        var writeStatus = el.querySelector<HTMLElement>(".tool-status");
-        if (writeStatus) { writeStatus.textContent = result.details.changeSummary; }
+        setChangeSummary(el, result.details.changeSummary);
       }
 
       // Re-render final content, then collapse long writes like Pi TUI's
@@ -376,8 +389,9 @@ export const editToolRenderer = {
 
       const completedEdits = (el as unknown as { _editEdits?: Array<{ oldText: string; newText: string }> })._editEdits;
       if (!isError && completedEdits?.length) {
-        var editStatus = el.querySelector<HTMLElement>(".tool-status");
-        if (editStatus) { editStatus.textContent = `${completedEdits.length} ${completedEdits.length === 1 ? "edit" : "edits"}`; }
+        const additions = completedEdits.reduce((total, edit) => total + countLines(edit.newText), 0);
+        const deletions = completedEdits.reduce((total, edit) => total + countLines(edit.oldText), 0);
+        setChangeSummary(el, `+${additions} −${deletions}`);
       }
 
       // Re-render previews to collapse to max 3 now that streaming is done
