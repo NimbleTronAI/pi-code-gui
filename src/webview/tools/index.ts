@@ -738,9 +738,8 @@ export const bashToolRenderer = {
       if (data.entryId) { block.setAttribute("data-entry-id", data.entryId); }
       block.setAttribute("data-status", "running");
       var cmd = (data.args?.command as string) || "";
-      if ((cmd as string).length > 120) {cmd = cmd!.slice(0, 120) + "\u2026";}
       block.innerHTML = html`
-        <div class="bash-header">$ ${cmd}<span class="bash-status">running</span></div>
+        <div class="bash-header"><span class="bash-prompt">$</span><span class="bash-command">${cmd}</span><span class="bash-status">running</span></div>
         <div class="bash-output"></div>
         <div class="bash-footer"><span class="bash-spinner"></span> <span class="cancel-hint">running\u2026</span></div>`;
       state.bashBlocks[data.toolCallId] = block;
