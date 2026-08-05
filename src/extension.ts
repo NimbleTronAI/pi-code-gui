@@ -30,7 +30,6 @@ interface SessionWindow {
   piService: PiService;
   webviewPanel: PiWebviewPanel;
   initialized: boolean;
-  initializationPromise?: Promise<boolean>;
   isStreaming: boolean;
   /** True after the session is removed, including while async initialization settles. */
   closed: boolean;
@@ -55,13 +54,16 @@ async function saveOpenSessionPaths(): Promise<void> {
   const paths: string[] = [];
   for (const sw of sessions) {
     const fp = sw.piService.sessionFilePath ?? sw.restoringPath;
-    if (fp) { paths.push(fp); }
+    if (fp && fs.existsSync(fp)) { paths.push(fp); }
   }
   await extContext.workspaceState.update("pi-on-code.openSessionPaths", paths);
   await extContext.workspaceState.update("pi-on-code.sessionCounter", sessionCounter);
   // Persist which session was active so we can restore focus after reload
-  const activePath = activeSessionWindow
-    ? activeSessionWindow.piService.sessionFilePath ?? activeSessionWindow.restoringPath ?? null
+  const candidateActivePath = activeSessionWindow
+    ? activeSessionWindow.piService.sessionFilePath ?? activeSessionWindow.restoringPath
+    : undefined;
+  const activePath = candidateActivePath && fs.existsSync(candidateActivePath)
+    ? candidateActivePath
     : null;
   await extContext.workspaceState.update("pi-on-code.activeSessionPath", activePath);
 }
@@ -1325,12 +1327,7 @@ function addSession(context: vscode.ExtensionContext): void {
   setActiveSession(sw);
   void sw.webviewPanel.show();
   sessionTreeProvider?.refresh();
-  sw.webviewPanel.onBeforePrompt = async () => {
-    if (!sw.initializationPromise) {
-      sw.initializationPromise = initSessionInBackground(context, sw, { fresh: true });
-    }
-    return sw.initializationPromise;
-  };
+  void initSessionInBackground(context, sw, { fresh: true });
 }
 
 // ── Early command registration (SDK-independent) ───────
