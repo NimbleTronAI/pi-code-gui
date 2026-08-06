@@ -19,7 +19,7 @@ import {
 } from "./render/engine.js";
 import { shouldLoadOlderHistory } from "./render/history-pagination.js";
 import { nextFollowScrollLock } from "./render/scroll-lock.js";
-import { ScrollJumpControls } from "./components/scroll-jump-controls.js";
+import { ConversationMinimap } from "./components/conversation-minimap.js";
 
 // Side-effect imports (self-register on load)
 import "./tools/index.js";
@@ -38,12 +38,12 @@ initState(document);
 // Start MutationObserver for debug logging
 initDebugObserver();
 
-const scrollJumpControls = new ScrollJumpControls(state.chatContainer, {
-  onNavigate: (destination) => {
-    state.hasScrolledUp = destination !== "bottom";
+const conversationMinimap = new ConversationMinimap(state.chatContainer, {
+  onNavigate: () => {
+    state.hasScrolledUp = true;
   },
 });
-scrollJumpControls.mount(document.body);
+conversationMinimap.mount(document.body);
 
 // Set up event delegation (code copy buttons, file path clicks)
 setupCodeBlockHandlers();
