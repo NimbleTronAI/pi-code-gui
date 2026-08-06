@@ -1,0 +1,24 @@
+name: Wake Issue Pipeline
+
+on:
+  issues:
+    types: [labeled]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-on-code-pipeline-waker
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    name: wake controller
+    if: github.event.label.name == 'agent:dispatch'
+    runs-on: [self-hosted, pi-on-code-waker]
+    timeout-minutes: 2
+    steps:
+      - name: Start reconciliation service
+        run: systemctl --user start pi-on-code-pipeline.service
