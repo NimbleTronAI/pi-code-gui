@@ -65,6 +65,12 @@ async function saveOpenSessionPaths(): Promise<void> {
     if (fp && fs.existsSync(fp)) { paths.push(fp); }
   }
   await extContext.workspaceState.update("pi-on-code.openSessionPaths", paths);
+  const directories = Object.fromEntries(sessions
+    .filter((sw) => !sw.draft)
+    .map((sw) => [sw.piService.sessionFilePath ?? sw.restoringPath, sw.cwd])
+    .filter((entry): entry is [string, string] => typeof entry[0] === "string"),
+  );
+  await extContext.workspaceState.update("pi-on-code.openSessionDirectories", directories);
   await extContext.workspaceState.update("pi-on-code.sessionCounter", sessionCounter);
   // Persist which session was active so we can restore focus after reload
   const candidateActivePath = activeSessionWindow && !activeSessionWindow.draft
@@ -869,7 +875,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const sw = createSessionWindow(context, {
           path: resolved,
           title: summary?.name ?? summary?.firstMessage,
-        });
+        }, false, summary?.cwd ?? getWorkspaceCwd());
         setActiveSession(sw);
         void sw.webviewPanel.show();
         sessionTreeProvider?.refresh();
@@ -1067,6 +1073,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const savedPaths: string[] = ((context.workspaceState.get("pi-on-code.openSessionPaths") as string[]) ?? [])
       .filter((p: string) => fs.existsSync(p));
     const savedActivePath: string | undefined = context.workspaceState.get("pi-on-code.activeSessionPath") ?? undefined;
+    const savedDirectories = context.workspaceState.get<Record<string, string>>("pi-on-code.openSessionDirectories") ?? {};
     const autoOpen = vscode.workspace.getConfiguration("pi-on-code").get<boolean>("autoOpenOnStart", false);
 
     if (savedPaths.length > 0) {
@@ -1078,7 +1085,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Restore every session that was open, in order.
       piLog(`Restoring ${savedPaths.length} open sessions...`);
       for (let i = 0; i < savedPaths.length; i++) {
-        const sw = createSessionWindow(context, { path: savedPaths[i] });
+        const sw = createSessionWindow(context, { path: savedPaths[i] }, false, savedDirectories[savedPaths[i]] ?? getWorkspaceCwd());
         if (i === 0) { setActiveSession(sw); }
         if (shouldRevealSessionPanel({
           restoringPreviouslyOpenSession: true,
