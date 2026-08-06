@@ -17,7 +17,7 @@ concurrency:
 jobs:
   wake:
     name: wake controller
-    if: github.event.label.name == 'agent:dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:dispatch'
     runs-on: [self-hosted, pi-on-code-waker]
     timeout-minutes: 2
     steps:
