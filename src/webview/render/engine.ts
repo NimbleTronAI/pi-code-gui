@@ -11,6 +11,7 @@ import { logEvent } from "../debug.js";
 import { html, safe } from "./html.js";
 import { CodeBlock } from "../components/code-block.js";
 import { ThinkingBlock } from "../components/thinking-block.js";
+import { safeInlineLinkHref } from "../../shared/webview-nav-guard.js";
 
 // ═══ Utilities ══════════════════════════════════════════════
 
@@ -327,9 +328,16 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
       case "codespan":
         result += html`<code>${t.text}</code>`;
         break;
-      case "link":
-        result += html`<a href="${t.href}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
+      case "link": {
+        const href = safeInlineLinkHref(t.href as string);
+        if (href) {
+          result += html`<a href="${href}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
+        } else {
+          // Disallowed or empty scheme: render the link text without a clickable href.
+          result += html`<span>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</span>`;
+        }
         break;
+      }
       case "del":
         result += html`<del>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</del>`;
         break;
@@ -349,7 +357,11 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
         result += "<br>";
         break;
       case "html":
-        result += (t.text as string) || (t.raw as string) || "";
+        // Escape raw HTML from (untrusted) message content so it renders as
+        // literal text instead of being injected into the DOM. Markdown
+        // structure (headings, lists, code, links, emphasis) is unaffected —
+        // marked only emits an "html" token for raw HTML in the input.
+        result += escapeHtml((t.text as string) || (t.raw as string) || "");
         break;
       case "escape":
         result += escapeHtml(t.text as string);

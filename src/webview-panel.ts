@@ -3,7 +3,8 @@ import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
 import { validateExtensionToWebview, validateWebviewToExtension, isExtensionToWebviewType, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
 import { piWarn } from "./logger.js";
-import { safeExternalUrlString, safeWorkspaceFilePath } from "./shared/webview-nav-guard.js";
+import { safeExternalUrlString } from "./shared/webview-nav-guard.js";
+import { safeWorkspaceFilePath } from "./shared/workspace-path-guard.js";
 
 export type PanelDisposeCallback = (piService: PiService) => void;
 
