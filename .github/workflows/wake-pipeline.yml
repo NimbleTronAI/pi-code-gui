@@ -1,6 +1,7 @@
 name: Wake Issue Pipeline
 
 on:
+  workflow_dispatch:
   issues:
     types: [labeled]
   pull_request_target:
