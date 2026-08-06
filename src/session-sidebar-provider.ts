@@ -427,6 +427,13 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       color: var(--pi-muted);
       cursor: pointer;
       font: inherit;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .session-directory-heading:hover .session-directory-new,
+    .session-directory-heading:focus-within .session-directory-new {
+      opacity: 1;
+      pointer-events: auto;
     }
     .session-directory-new:hover { color: var(--pi-strong); }
 
