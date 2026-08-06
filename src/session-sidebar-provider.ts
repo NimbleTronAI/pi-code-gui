@@ -10,6 +10,7 @@ export interface PiSidebarSession {
   kind: "open" | "past";
   path?: string;
   referenceId?: string;
+  directory?: string;
 }
 
 export interface PiSidebarPackage {
@@ -39,8 +40,15 @@ export interface PiSidebarPackages {
   marketplace: PiSidebarPackage[];
 }
 
+export interface PiSidebarDirectory {
+  name: string;
+  path: string;
+}
+
 export interface PiSidebarState {
   sessions: PiSidebarSession[];
+  directories: PiSidebarDirectory[];
+  collapsedDirectories: Record<string, boolean>;
   packages: PiSidebarPackages;
 }
 
@@ -52,7 +60,9 @@ export interface PiSidebarDeleteTarget {
 
 interface PiSidebarActions {
   getState: () => PiSidebarState;
-  createSession: () => void;
+  createSession: (cwd?: string) => void;
+  refreshSessions: () => void | Promise<void>;
+  setDirectoryCollapsed: (path: string, collapsed: boolean) => void | Promise<void>;
   focusSession: (sessionId: string) => void;
   resumeSession: (path: string) => void;
   deleteSession: (target: PiSidebarDeleteTarget) => void | Promise<void>;
@@ -98,7 +108,15 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
           this.refresh();
           break;
         case "new":
-          this.actions.createSession();
+          this.actions.createSession(typeof payload.cwd === "string" ? payload.cwd : undefined);
+          break;
+        case "session-refresh":
+          void this.actions.refreshSessions();
+          break;
+        case "directory-collapse":
+          if (typeof payload.path === "string" && typeof payload.collapsed === "boolean") {
+            void this.actions.setDirectoryCollapsed(payload.path, payload.collapsed);
+          }
           break;
         case "open":
           if (payload.kind === "open" && typeof payload.id === "string") {
@@ -285,10 +303,12 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     html,
     body {
       width: 100%;
+      height: 100%;
       min-height: 100%;
       margin: 0;
       padding: 0;
       overflow-x: hidden;
+      overflow-y: auto;
       background: var(--pi-bg);
       color: var(--pi-text);
       font-family: var(--vscode-editor-font-family, "SFMono-Regular", Consolas, monospace);
@@ -371,6 +391,51 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     .session-list { padding: 0 7px 12px; }
+    .session-directory { padding: 0 7px 10px; }
+    .session-directory-heading {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 3px 7px 4px;
+      color: var(--pi-strong);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .session-directory-icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
+      color: var(--pi-muted);
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.25;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .session-directory-heading:hover .session-directory-icon { color: var(--pi-strong); }
+    .session-folder-open { display: none; }
+    .session-directory-heading[aria-expanded="true"] .session-folder-closed { display: none; }
+    .session-directory-heading[aria-expanded="true"] .session-folder-open { display: inline; }
+    .session-directory-new {
+      margin-left: auto;
+      padding: 1px 4px;
+      border: 0;
+      background: transparent;
+      color: var(--pi-muted);
+      cursor: pointer;
+      font: inherit;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .session-directory-heading:hover .session-directory-new,
+    .session-directory-heading:focus-within .session-directory-new {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .session-directory-new:hover { color: var(--pi-strong); }
 
     .session-row {
       position: relative;
@@ -667,7 +732,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       <img class="pi-mark pi-mark-dark" src="${brandIconDarkUri}" alt="" aria-hidden="true">
       <img class="pi-mark pi-mark-light" src="${brandIconLightUri}" alt="" aria-hidden="true">
       <span class="wordmark">pi / code</span>
-      <button class="new-session" id="new-session" type="button" aria-label="New Pi session">+ new</button>
+      <button class="new-session" id="session-refresh" type="button" title="Refresh sessions" aria-label="Refresh sessions">↻</button>
     </header>
     <section aria-labelledby="sessions-heading">
       <div class="section-title" id="sessions-heading">sessions</div>
@@ -695,7 +760,10 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const savedUiState = vscode.getState() || {};
-    const uiState = { packagesExpanded: savedUiState.packagesExpanded === true };
+    const uiState = {
+      packagesExpanded: savedUiState.packagesExpanded === true,
+      directoryExpanded: savedUiState.directoryExpanded || {},
+    };
     const sessionList = document.getElementById("session-list");
     const packagesSection = document.getElementById("packages-section");
     const packagesToggle = document.getElementById("packages-toggle");
@@ -711,8 +779,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       vscode.setState(uiState);
     }
 
-    document.getElementById("new-session").addEventListener("click", () => {
-      vscode.postMessage({ type: "new" });
+    document.getElementById("session-refresh").addEventListener("click", () => {
+      vscode.postMessage({ type: "session-refresh" });
     });
     packagesToggle.addEventListener("click", () => {
       uiState.packagesExpanded = !uiState.packagesExpanded;
@@ -744,16 +812,77 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       document.querySelectorAll(".session-menu-toggle").forEach((toggle) => toggle.setAttribute("aria-expanded", "false"));
     });
 
-    function renderSessions(sessions) {
+    function createDirectoryIcon() {
+      const namespace = "http://www.w3.org/2000/svg";
+      const icon = document.createElementNS(namespace, "svg");
+      icon.classList.add("session-directory-icon");
+      icon.setAttribute("viewBox", "0 0 16 16");
+      icon.setAttribute("aria-hidden", "true");
+      icon.setAttribute("focusable", "false");
+
+      const closed = document.createElementNS(namespace, "path");
+      closed.classList.add("session-folder-closed");
+      closed.setAttribute("d", "M2 5V4.25C2 3.56 2.56 3 3.25 3h2.6L7.1 4.5h5.65c.69 0 1.25.56 1.25 1.25v6c0 .69-.56 1.25-1.25 1.25h-9.5C2.56 13 2 12.44 2 11.75V5Z");
+
+      const open = document.createElementNS(namespace, "g");
+      open.classList.add("session-folder-open");
+      const openBack = document.createElementNS(namespace, "path");
+      openBack.setAttribute("d", "M2 7V4.25C2 3.56 2.56 3 3.25 3h2.6L7.1 4.5h5.65c.69 0 1.25.56 1.25 1.25V7");
+      const openFront = document.createElementNS(namespace, "path");
+      openFront.setAttribute("d", "M2.75 6.5h11.1c.5 0 .86.48.72.96l-1.3 4.58c-.15.54-.64.91-1.2.91H3.25C2.56 12.95 2 12.39 2 11.7V7.25c0-.41.34-.75.75-.75Z");
+      open.append(openBack, openFront);
+      icon.append(closed, open);
+      return icon;
+    }
+
+    function renderSessions(sessions, directories, collapsedDirectories) {
       sessionList.replaceChildren();
-      if (sessions.length === 0) {
+      for (const [path, collapsed] of Object.entries(collapsedDirectories || {})) {
+        if (!(path in uiState.directoryExpanded)) uiState.directoryExpanded[path] = !collapsed;
+      }
+      const multiRoot = directories.length > 1;
+      const groups = multiRoot
+        ? directories.map((directory) => ({ ...directory, sessions: sessions.filter((session) => session.directory === directory.path) }))
+        : [{ name: "", path: directories[0]?.path, sessions }];
+      if (sessions.length === 0 && !multiRoot) {
         const empty = document.createElement("div");
         empty.className = "empty";
         empty.textContent = "No sessions yet. Select + new to start.";
         sessionList.appendChild(empty);
         return;
       }
-      for (const session of sessions) {
+      for (const group of groups) {
+        const list = multiRoot ? document.createElement("div") : sessionList;
+        if (multiRoot) {
+          const directory = document.createElement("div");
+          directory.className = "session-directory";
+          const heading = document.createElement("button");
+          heading.type = "button";
+          heading.className = "session-directory-heading";
+          heading.setAttribute("aria-expanded", String(uiState.directoryExpanded[group.path] !== false));
+          heading.append(createDirectoryIcon(), document.createTextNode(group.name));
+          heading.addEventListener("click", () => {
+            uiState.directoryExpanded[group.path] = uiState.directoryExpanded[group.path] === false;
+            vscode.setState(uiState);
+            vscode.postMessage({ type: "directory-collapse", path: group.path, collapsed: uiState.directoryExpanded[group.path] === false });
+            renderSessions(currentState?.sessions || [], currentState?.directories || [], currentState?.collapsedDirectories || {});
+          });
+          const create = document.createElement("button");
+          create.type = "button";
+          create.className = "session-directory-new";
+          create.textContent = "+";
+          create.title = "New session";
+          create.setAttribute("aria-label", "New session in " + group.name);
+          create.addEventListener("click", (event) => {
+            event.stopPropagation();
+            vscode.postMessage({ type: "new", cwd: group.path });
+          });
+          heading.appendChild(create);
+          directory.append(heading, list);
+          sessionList.appendChild(directory);
+          if (uiState.directoryExpanded[group.path] === false) continue;
+        }
+        for (const session of group.sessions) {
         const row = document.createElement("div");
         row.className = "session-row" + (session.active ? " active" : "");
         const open = document.createElement("button");
@@ -839,7 +968,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
         actions.append(menuToggle, menu);
         row.prepend(open);
         row.append(actions);
-        sessionList.appendChild(row);
+        list.appendChild(row);
+        }
       }
     }
 
@@ -1023,7 +1153,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 
     function render(state) {
       currentState = state;
-      renderSessions(Array.isArray(state?.sessions) ? state.sessions : []);
+      renderSessions(Array.isArray(state?.sessions) ? state.sessions : [], Array.isArray(state?.directories) ? state.directories : [], state?.collapsedDirectories || {});
       renderPackages(state?.packages || {});
     }
 
