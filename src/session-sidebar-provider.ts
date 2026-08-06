@@ -404,8 +404,21 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
       font-weight: 600;
     }
-    .session-directory-heading::before { content: "▾"; color: var(--pi-muted); }
-    .session-directory-heading[aria-expanded="false"]::before { content: "▸"; }
+    .session-directory-icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
+      color: var(--pi-muted);
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.25;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .session-directory-heading:hover .session-directory-icon { color: var(--pi-strong); }
+    .session-folder-open { display: none; }
+    .session-directory-heading[aria-expanded="true"] .session-folder-closed { display: none; }
+    .session-directory-heading[aria-expanded="true"] .session-folder-open { display: inline; }
     .session-directory-new {
       margin-left: auto;
       padding: 1px 4px;
@@ -792,6 +805,29 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       document.querySelectorAll(".session-menu-toggle").forEach((toggle) => toggle.setAttribute("aria-expanded", "false"));
     });
 
+    function createDirectoryIcon() {
+      const namespace = "http://www.w3.org/2000/svg";
+      const icon = document.createElementNS(namespace, "svg");
+      icon.classList.add("session-directory-icon");
+      icon.setAttribute("viewBox", "0 0 16 16");
+      icon.setAttribute("aria-hidden", "true");
+      icon.setAttribute("focusable", "false");
+
+      const closed = document.createElementNS(namespace, "path");
+      closed.classList.add("session-folder-closed");
+      closed.setAttribute("d", "M2 5V4.25C2 3.56 2.56 3 3.25 3h2.6L7.1 4.5h5.65c.69 0 1.25.56 1.25 1.25v6c0 .69-.56 1.25-1.25 1.25h-9.5C2.56 13 2 12.44 2 11.75V5Z");
+
+      const open = document.createElementNS(namespace, "g");
+      open.classList.add("session-folder-open");
+      const openBack = document.createElementNS(namespace, "path");
+      openBack.setAttribute("d", "M2 7V4.25C2 3.56 2.56 3 3.25 3h2.6L7.1 4.5h5.65c.69 0 1.25.56 1.25 1.25V7");
+      const openFront = document.createElementNS(namespace, "path");
+      openFront.setAttribute("d", "M2.75 6.5h11.1c.5 0 .86.48.72.96l-1.3 4.58c-.15.54-.64.91-1.2.91H3.25C2.56 12.95 2 12.39 2 11.7V7.25c0-.41.34-.75.75-.75Z");
+      open.append(openBack, openFront);
+      icon.append(closed, open);
+      return icon;
+    }
+
     function renderSessions(sessions, directories, collapsedDirectories) {
       sessionList.replaceChildren();
       for (const [path, collapsed] of Object.entries(collapsedDirectories || {})) {
@@ -817,7 +853,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
           heading.type = "button";
           heading.className = "session-directory-heading";
           heading.setAttribute("aria-expanded", String(uiState.directoryExpanded[group.path] !== false));
-          heading.append(document.createTextNode(group.name));
+          heading.append(createDirectoryIcon(), document.createTextNode(group.name));
           heading.addEventListener("click", () => {
             uiState.directoryExpanded[group.path] = uiState.directoryExpanded[group.path] === false;
             vscode.setState(uiState);
