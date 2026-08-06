@@ -214,6 +214,7 @@ function getSidebarState(): PiSidebarState {
   return {
     sessions: items,
     directories: getWorkspaceFolders(),
+    collapsedDirectories: extContext?.workspaceState.get<Record<string, boolean>>("pi-on-code.collapsedSessionDirectories") ?? {},
     packages: packagesTreeProvider?.getWebState() ?? {
       ready: false,
       loading: false,
@@ -412,6 +413,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       getState: getSidebarState,
       createSession: (cwd) => {
         addSession(context, cwd);
+      },
+      refreshSessions: async () => {
+        await refreshPastSessionsList();
+      },
+      setDirectoryCollapsed: async (path, collapsed) => {
+        const states = context.workspaceState.get<Record<string, boolean>>("pi-on-code.collapsedSessionDirectories") ?? {};
+        states[path] = collapsed;
+        await context.workspaceState.update("pi-on-code.collapsedSessionDirectories", states);
       },
       focusSession: (sessionId) => {
         void vscode.commands.executeCommand("pi-on-code.focusSession", sessionId);

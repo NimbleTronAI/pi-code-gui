@@ -48,6 +48,7 @@ export interface PiSidebarDirectory {
 export interface PiSidebarState {
   sessions: PiSidebarSession[];
   directories: PiSidebarDirectory[];
+  collapsedDirectories: Record<string, boolean>;
   packages: PiSidebarPackages;
 }
 
@@ -60,6 +61,8 @@ export interface PiSidebarDeleteTarget {
 interface PiSidebarActions {
   getState: () => PiSidebarState;
   createSession: (cwd?: string) => void;
+  refreshSessions: () => void | Promise<void>;
+  setDirectoryCollapsed: (path: string, collapsed: boolean) => void | Promise<void>;
   focusSession: (sessionId: string) => void;
   resumeSession: (path: string) => void;
   deleteSession: (target: PiSidebarDeleteTarget) => void | Promise<void>;
@@ -106,6 +109,14 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
           break;
         case "new":
           this.actions.createSession(typeof payload.cwd === "string" ? payload.cwd : undefined);
+          break;
+        case "session-refresh":
+          void this.actions.refreshSessions();
+          break;
+        case "directory-collapse":
+          if (typeof payload.path === "string" && typeof payload.collapsed === "boolean") {
+            void this.actions.setDirectoryCollapsed(payload.path, payload.collapsed);
+          }
           break;
         case "open":
           if (payload.kind === "open" && typeof payload.id === "string") {
@@ -292,10 +303,12 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     html,
     body {
       width: 100%;
+      height: 100%;
       min-height: 100%;
       margin: 0;
       padding: 0;
       overflow-x: hidden;
+      overflow-y: auto;
       background: var(--pi-bg);
       color: var(--pi-text);
       font-family: var(--vscode-editor-font-family, "SFMono-Regular", Consolas, monospace);
@@ -380,6 +393,9 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
     .session-list { padding: 0 7px 12px; }
     .session-directory { padding: 0 7px 10px; }
     .session-directory-heading {
+      width: 100%;
+      border: 0;
+      background: transparent;
       display: flex;
       align-items: center;
       gap: 7px;
@@ -388,7 +404,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
       font-weight: 600;
     }
-    .session-directory-heading::before { content: "▱"; color: var(--pi-muted); }
+    .session-directory-heading::before { content: "▾"; color: var(--pi-muted); }
+    .session-directory-heading[aria-expanded="false"]::before { content: "▸"; }
     .session-directory-new {
       margin-left: auto;
       padding: 1px 4px;
@@ -695,7 +712,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       <img class="pi-mark pi-mark-dark" src="${brandIconDarkUri}" alt="" aria-hidden="true">
       <img class="pi-mark pi-mark-light" src="${brandIconLightUri}" alt="" aria-hidden="true">
       <span class="wordmark">pi / code</span>
-      <button class="new-session" id="new-session" type="button" aria-label="New Pi session">+ new</button>
+      <button class="new-session" id="session-refresh" type="button" title="Refresh sessions" aria-label="Refresh sessions">↻</button>
     </header>
     <section aria-labelledby="sessions-heading">
       <div class="section-title" id="sessions-heading">sessions</div>
@@ -723,7 +740,10 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const savedUiState = vscode.getState() || {};
-    const uiState = { packagesExpanded: savedUiState.packagesExpanded === true };
+    const uiState = {
+      packagesExpanded: savedUiState.packagesExpanded === true,
+      directoryExpanded: savedUiState.directoryExpanded || {},
+    };
     const sessionList = document.getElementById("session-list");
     const packagesSection = document.getElementById("packages-section");
     const packagesToggle = document.getElementById("packages-toggle");
@@ -739,8 +759,8 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       vscode.setState(uiState);
     }
 
-    document.getElementById("new-session").addEventListener("click", () => {
-      vscode.postMessage({ type: "new" });
+    document.getElementById("session-refresh").addEventListener("click", () => {
+      vscode.postMessage({ type: "session-refresh" });
     });
     packagesToggle.addEventListener("click", () => {
       uiState.packagesExpanded = !uiState.packagesExpanded;
@@ -772,8 +792,11 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
       document.querySelectorAll(".session-menu-toggle").forEach((toggle) => toggle.setAttribute("aria-expanded", "false"));
     });
 
-    function renderSessions(sessions, directories) {
+    function renderSessions(sessions, directories, collapsedDirectories) {
       sessionList.replaceChildren();
+      for (const [path, collapsed] of Object.entries(collapsedDirectories || {})) {
+        if (!(path in uiState.directoryExpanded)) uiState.directoryExpanded[path] = !collapsed;
+      }
       const multiRoot = directories.length > 1;
       const groups = multiRoot
         ? directories.map((directory) => ({ ...directory, sessions: sessions.filter((session) => session.directory === directory.path) }))
@@ -790,19 +813,31 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
         if (multiRoot) {
           const directory = document.createElement("div");
           directory.className = "session-directory";
-          const heading = document.createElement("div");
+          const heading = document.createElement("button");
+          heading.type = "button";
           heading.className = "session-directory-heading";
-          heading.textContent = group.name;
+          heading.setAttribute("aria-expanded", String(uiState.directoryExpanded[group.path] !== false));
+          heading.append(document.createTextNode(group.name));
+          heading.addEventListener("click", () => {
+            uiState.directoryExpanded[group.path] = uiState.directoryExpanded[group.path] === false;
+            vscode.setState(uiState);
+            vscode.postMessage({ type: "directory-collapse", path: group.path, collapsed: uiState.directoryExpanded[group.path] === false });
+            renderSessions(currentState?.sessions || [], currentState?.directories || [], currentState?.collapsedDirectories || {});
+          });
           const create = document.createElement("button");
           create.type = "button";
           create.className = "session-directory-new";
           create.textContent = "+";
           create.title = "New session";
           create.setAttribute("aria-label", "New session in " + group.name);
-          create.addEventListener("click", () => vscode.postMessage({ type: "new", cwd: group.path }));
+          create.addEventListener("click", (event) => {
+            event.stopPropagation();
+            vscode.postMessage({ type: "new", cwd: group.path });
+          });
           heading.appendChild(create);
           directory.append(heading, list);
           sessionList.appendChild(directory);
+          if (uiState.directoryExpanded[group.path] === false) continue;
         }
         for (const session of group.sessions) {
         const row = document.createElement("div");
@@ -1075,7 +1110,7 @@ export class PiSessionSidebarProvider implements vscode.WebviewViewProvider {
 
     function render(state) {
       currentState = state;
-      renderSessions(Array.isArray(state?.sessions) ? state.sessions : [], Array.isArray(state?.directories) ? state.directories : []);
+      renderSessions(Array.isArray(state?.sessions) ? state.sessions : [], Array.isArray(state?.directories) ? state.directories : [], state?.collapsedDirectories || {});
       renderPackages(state?.packages || {});
     }
 
