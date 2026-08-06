@@ -1,7 +1,6 @@
 import type { Component } from "./types.js";
 
 const PREVIEW_CHARACTER_LIMIT = 700;
-const ACTIVE_TURN_TOLERANCE_PX = 8;
 
 export function truncateTurnPreview(
   text: string,
@@ -10,18 +9,6 @@ export function truncateTurnPreview(
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) { return normalized; }
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-export function findActiveTurnIndex(
-  positions: readonly number[],
-  viewportAnchor: number,
-  tolerance = ACTIVE_TURN_TOLERANCE_PX,
-): number {
-  if (positions.length === 0) { return -1; }
-  for (let index = positions.length - 1; index >= 0; index--) {
-    if (positions[index]! <= viewportAnchor + tolerance) { return index; }
-  }
-  return 0;
 }
 
 export function getTurnTickPercent(index: number, count: number): number {
@@ -43,7 +30,6 @@ export class ConversationMinimap implements Component<Record<string, never>> {
   private readonly observer: MutationObserver;
   private userMessages: HTMLElement[] = [];
   private tickButtons: HTMLButtonElement[] = [];
-  private activeIndex = -1;
   private previewUser: HTMLElement | null = null;
   private updateFrame: number | null = null;
 
@@ -64,29 +50,15 @@ export class ConversationMinimap implements Component<Record<string, never>> {
     this.tooltip.setAttribute("role", "tooltip");
     this.tooltip.hidden = true;
 
-    const userLabel = document.createElement("div");
-    userLabel.className = "conversation-minimap-tooltip-label";
-    userLabel.textContent = "User";
     this.userPreview = document.createElement("div");
     this.userPreview.className = "conversation-minimap-tooltip-user";
-
-    const agentLabel = document.createElement("div");
-    agentLabel.className = "conversation-minimap-tooltip-label";
-    agentLabel.textContent = "Agent";
     this.agentPreview = document.createElement("div");
     this.agentPreview.className = "conversation-minimap-tooltip-agent";
 
-    this.tooltip.append(userLabel, this.userPreview, agentLabel, this.agentPreview);
+    this.tooltip.append(this.userPreview, this.agentPreview);
     this.el.append(this.ticks, this.tooltip);
 
     this.el.addEventListener("mouseleave", this.hideTooltip);
-    this.el.addEventListener("focusout", (event) => {
-      const nextTarget = event.relatedTarget;
-      if (!(nextTarget instanceof Node) || !this.el.contains(nextTarget)) {
-        this.hideTooltip();
-      }
-    });
-    this.scrollContainer.addEventListener("scroll", this.scheduleUpdate, { passive: true });
     window.addEventListener("resize", this.scheduleUpdate, { passive: true });
 
     this.observer = new MutationObserver(this.scheduleUpdate);
@@ -109,7 +81,6 @@ export class ConversationMinimap implements Component<Record<string, never>> {
 
   destroy(): void {
     this.observer.disconnect();
-    this.scrollContainer.removeEventListener("scroll", this.scheduleUpdate);
     window.removeEventListener("resize", this.scheduleUpdate);
     if (this.updateFrame !== null) { cancelAnimationFrame(this.updateFrame); }
     this.el.remove();
@@ -134,7 +105,6 @@ export class ConversationMinimap implements Component<Record<string, never>> {
       this.rebuildTicks();
     }
     this.updateMinimapHeight();
-    this.updateActiveTurn();
     if (this.previewUser?.isConnected) { this.updateTooltipContent(this.previewUser); }
   }
 
@@ -148,42 +118,17 @@ export class ConversationMinimap implements Component<Record<string, never>> {
       button.style.top = `${getTurnTickPercent(index, this.userMessages.length)}%`;
       button.setAttribute("aria-label", `Jump to user message ${index + 1}`);
       button.addEventListener("mouseenter", () => this.showTooltip(message, button));
-      button.addEventListener("focus", () => this.showTooltip(message, button));
       button.addEventListener("click", () => this.navigateTo(message));
       return button;
     });
     this.ticks.replaceChildren(...this.tickButtons);
     this.el.hidden = this.userMessages.length === 0;
-    this.activeIndex = -1;
   }
 
   private updateMinimapHeight(): void {
     const preferredHeight = Math.max(16, (this.userMessages.length - 1) * 10);
     const viewportLimit = Math.max(28, Math.min(320, window.innerHeight * 0.42));
     this.el.style.height = `${Math.min(preferredHeight, viewportLimit)}px`;
-  }
-
-  private getMessagePositions(): number[] {
-    const containerTop = this.scrollContainer.getBoundingClientRect().top;
-    return this.userMessages.map((message) =>
-      message.getBoundingClientRect().top - containerTop + this.scrollContainer.scrollTop,
-    );
-  }
-
-  private updateActiveTurn(): void {
-    const anchor = this.scrollContainer.scrollTop
-      + Math.min(120, this.scrollContainer.clientHeight * 0.25);
-    const nextIndex = findActiveTurnIndex(this.getMessagePositions(), anchor);
-    if (nextIndex === this.activeIndex) { return; }
-    if (this.activeIndex >= 0) {
-      this.tickButtons[this.activeIndex]?.classList.remove("active");
-      this.tickButtons[this.activeIndex]?.removeAttribute("aria-current");
-    }
-    this.activeIndex = nextIndex;
-    if (nextIndex >= 0) {
-      this.tickButtons[nextIndex]?.classList.add("active");
-      this.tickButtons[nextIndex]?.setAttribute("aria-current", "true");
-    }
   }
 
   private navigateTo(message: HTMLElement): void {
@@ -223,7 +168,7 @@ export class ConversationMinimap implements Component<Record<string, never>> {
     let sibling = userMessage.nextElementSibling;
     while (sibling && !sibling.matches(".message.user")) {
       if (sibling instanceof HTMLElement && sibling.matches(".message.assistant")) {
-        const text = this.readMessageText(sibling);
+        const text = this.readMessageText(sibling, true);
         if (text) { agentParts.push(text); }
       }
       sibling = sibling.nextElementSibling;
@@ -233,8 +178,18 @@ export class ConversationMinimap implements Component<Record<string, never>> {
       : "Waiting for response…";
   }
 
-  private readMessageText(message: HTMLElement): string {
+  private readMessageText(message: HTMLElement, excludeThinking = false): string {
     const content = message.querySelector<HTMLElement>(":scope > .message-content");
-    return truncateTurnPreview(content?.innerText ?? content?.textContent ?? "");
+    if (!content) { return ""; }
+    const previewContent = excludeThinking
+      ? content.cloneNode(true) as HTMLElement
+      : content;
+    if (excludeThinking) {
+      previewContent.querySelectorAll(".thinking-block").forEach((element) => element.remove());
+    }
+    const text = Array.from(previewContent.childNodes)
+      .map((node) => node.textContent ?? "")
+      .join(" ");
+    return truncateTurnPreview(text);
   }
 }

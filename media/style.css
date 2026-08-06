@@ -1870,7 +1870,7 @@ html.pi-viewport-recovering #pi-web-app {
 }
 
 /* Session-turn minimap. Each line represents one user message and its agent
-   response; the active turn expands in the same style as Codex navigation. */
+   response; a line expands only while hovered. */
 .conversation-minimap {
   position: fixed;
   z-index: 90;
@@ -1920,9 +1920,7 @@ html.pi-viewport-recovering #pi-web-app {
   transition: width 100ms ease, background-color 100ms ease, opacity 100ms ease;
 }
 
-.conversation-minimap-tick:hover::before,
-.conversation-minimap-tick:focus-visible::before,
-.conversation-minimap-tick.active::before {
+.conversation-minimap-tick:hover::before {
   width: 22px;
   background: var(--pi-text);
   opacity: 0.92;
@@ -1947,15 +1945,6 @@ html.pi-viewport-recovering #pi-web-app {
   overflow: hidden;
   pointer-events: none;
   transform: translateY(-50%);
-}
-
-.conversation-minimap-tooltip-label {
-  margin: 0 0 3px;
-  color: var(--pi-faint);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 
 .conversation-minimap-tooltip-user,

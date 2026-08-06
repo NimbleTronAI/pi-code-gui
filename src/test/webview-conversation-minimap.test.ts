@@ -1,6 +1,5 @@
 import * as assert from "node:assert";
 import {
-  findActiveTurnIndex,
   getTurnTickPercent,
   truncateTurnPreview,
 } from "../webview/components/conversation-minimap.js";
@@ -9,16 +8,6 @@ suite("Webview conversation minimap", () => {
   test("normalizes and truncates tooltip previews", () => {
     assert.strictEqual(truncateTurnPreview("  first\n\nsecond  "), "first second");
     assert.strictEqual(truncateTurnPreview("abcdefgh", 6), "abcde…");
-  });
-
-  test("selects the turn at the viewport anchor", () => {
-    const positions = [40, 280, 640, 980];
-
-    assert.strictEqual(findActiveTurnIndex(positions, 0), 0);
-    assert.strictEqual(findActiveTurnIndex(positions, 500), 1);
-    assert.strictEqual(findActiveTurnIndex(positions, 640), 2);
-    assert.strictEqual(findActiveTurnIndex(positions, 1_200), 3);
-    assert.strictEqual(findActiveTurnIndex([], 500), -1);
   });
 
   test("distributes turn ticks across the complete minimap", () => {
