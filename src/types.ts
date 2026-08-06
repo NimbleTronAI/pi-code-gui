@@ -13,6 +13,8 @@ export interface SessionSummary {
   messageCount: number;
   created?: number;
   modified?: number;
+  /** Workspace directory that owns this session listing. */
+  cwd?: string;
 }
 
 /** A single entry in a session (message, compaction, model change, etc.). */

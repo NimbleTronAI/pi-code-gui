@@ -12,7 +12,7 @@ import {
   type PiSidebarState,
 } from "./session-sidebar-provider.js";
 import { initLogger, piLog, piWarn } from "./logger.js";
-import { getWorkspaceCwd, getWorkspaceRoot, getWorkspaceUri } from "./workspace-context.js";
+import { getWorkspaceCwd, getWorkspaceFolders, getWorkspaceRoot, getWorkspaceUri } from "./workspace-context.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary } from "./types.js";
@@ -44,6 +44,8 @@ interface SessionWindow {
   restoringPath?: string;
   /** Cached display label derived from session name or tab summary */
   label: string;
+  /** Workspace directory used to create this session. */
+  cwd: string;
 }
 
 const sessions: SessionWindow[] = [];
@@ -178,6 +180,7 @@ function getSidebarState(): PiSidebarState {
       kind: "open",
       path: sessionPath,
       referenceId: sw.piService.sessionIdValue ?? readSessionId(sessionPath),
+      directory: sw.cwd,
     });
   }
 
@@ -198,11 +201,13 @@ function getSidebarState(): PiSidebarState {
       kind: "past",
       path: session.path,
       referenceId: readSessionId(session.path),
+      directory: session.cwd,
     });
   }
 
   return {
     sessions: items,
+    directories: getWorkspaceFolders(),
     packages: packagesTreeProvider?.getWebState() ?? {
       ready: false,
       loading: false,
@@ -315,6 +320,7 @@ function createSessionWindow(
   context: vscode.ExtensionContext,
   restore?: { path: string; title?: string },
   draft = false,
+  cwd = getWorkspaceCwd(),
 ): SessionWindow {
   const id = `session-${++sessionCounter}`;
   const piService = new PiService(context.secrets);
@@ -333,6 +339,7 @@ function createSessionWindow(
     closed: false, deleteFileWhenReady: false,
     restoringPath: restore?.path,
     label: restore?.title ? cleanSessionTitle(restore.title) : getGenericSessionLabel(id),
+    cwd,
   };
 
   // Track when this panel becomes active
@@ -397,8 +404,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   sessionSidebarProvider = new PiSessionSidebarProvider(
     {
       getState: getSidebarState,
-      createSession: () => {
-        void vscode.commands.executeCommand("pi-on-code.addSession");
+      createSession: (cwd) => {
+        addSession(context, cwd);
       },
       focusSession: (sessionId) => {
         void vscode.commands.executeCommand("pi-on-code.focusSession", sessionId);
@@ -1375,15 +1382,15 @@ async function doUpdatePackage(source: string): Promise<void> {
 
 // ── Add a new session window ──────────────────────────
 
-function addSession(context: vscode.ExtensionContext): void {
-  const existingDraft = findReusableDraft(sessions);
+function addSession(context: vscode.ExtensionContext, cwd = getWorkspaceCwd()): void {
+  const existingDraft = findReusableDraft(sessions.filter((session) => session.cwd === cwd));
   if (existingDraft) {
     setActiveSession(existingDraft);
     void existingDraft.webviewPanel.show();
     return;
   }
 
-  const sw = createSessionWindow(context, undefined, true);
+  const sw = createSessionWindow(context, undefined, true, cwd);
   sw.webviewPanel.onBeforePrompt = (text) => {
     if (!shouldPromoteDraft(text)) { return; }
     sw.draft = false;
@@ -1490,13 +1497,13 @@ function ensureTreeProvider(context: vscode.ExtensionContext): void {
  * delete / resume operations that change the pool of saved sessions.
  */
 async function refreshPastSessionsList(): Promise<void> {
-  const cwd = getWorkspaceCwd();
+  const workspaceFolders = getWorkspaceFolders();
   if (!sessionTreeProvider) {
     piWarn("refreshPastSessionsList: sessionTreeProvider is null, skipping");
     return;
   }
-  piLog(`refreshPastSessionsList: loading past sessions for cwd=${cwd}`);
-  await sessionTreeProvider.refreshPastSessions(cwd);
+  piLog(`refreshPastSessionsList: loading past sessions for ${workspaceFolders.length} workspace directories`);
+  await sessionTreeProvider.refreshPastSessions(workspaceFolders);
   piLog(`refreshPastSessionsList: done, found ${sessionTreeProvider.pastSessions.length} past sessions`);
 }
 
@@ -1554,7 +1561,7 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
 
   let result: { success: boolean; error?: string };
   try {
-    result = await sw.piService.initialize(openPath ? { openPath } : { fresh });
+    result = await sw.piService.initialize(openPath ? { openPath, cwd: sw.cwd } : { fresh, cwd: sw.cwd });
   } catch (e: unknown) {
     result = { success: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -1827,10 +1834,13 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
   private _pastHeaderItem: SessionTreeItem | null = null;
 
   /** Reload past sessions from disk asynchronously and fire refresh. */
-  async refreshPastSessions(cwd: string): Promise<void> {
+  async refreshPastSessions(folders: Array<{ name: string; path: string }>): Promise<void> {
     this._loadingPast = true;
     try {
-      this._pastSessions = await PiService.listSessions(cwd);
+      const groups = await Promise.all(folders.map(async (folder) =>
+        (await PiService.listSessions(folder.path)).map((session) => ({ ...session, cwd: folder.path })),
+      ));
+      this._pastSessions = groups.flat();
       piLog(`refreshPastSessions: loaded ${this._pastSessions.length} past sessions`);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {

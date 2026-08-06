@@ -565,7 +565,7 @@ export class PiService {
     await fs.promises.unlink(filePath);
   }
 
-  async initialize(opts?: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string }> {
+  async initialize(opts?: { fresh?: boolean; openPath?: string; cwd?: string }): Promise<{ success: boolean; error?: string }> {
     const fresh = opts?.fresh ?? false;
     const openPath = opts?.openPath ?? null;
     // ── Step 1: Resolve SDK ────────────────────────────
@@ -603,7 +603,7 @@ export class PiService {
     }
 
     const SDK = this.SDK;
-    const cwd = getWorkspaceCwd();
+    const cwd = opts?.cwd ?? getWorkspaceCwd();
 
     // ── Step 3: Runtime settings and SDK services ──────
     // Provider extensions must be loaded before resolving defaults. In SDK 0.80

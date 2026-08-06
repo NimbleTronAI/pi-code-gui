@@ -25,3 +25,13 @@ export function getWorkspaceUri(): vscode.Uri {
   const folderUri = vscode.workspace.workspaceFolders?.[0]?.uri;
   return folderUri ?? vscode.Uri.file(getWorkspaceCwd());
 }
+
+/** All workspace directories, retaining the development fallback for tests. */
+export function getWorkspaceFolders(): Array<{ name: string; path: string }> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length > 0) {
+    return folders.map((folder) => ({ name: folder.name, path: folder.uri.fsPath }));
+  }
+  const root = getWorkspaceRoot();
+  return root ? [{ name: "Workspace", path: root }] : [];
+}
