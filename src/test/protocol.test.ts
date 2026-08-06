@@ -55,6 +55,22 @@ suite("Shared webview protocol", () => {
     assert.strictEqual(page.success, true);
   });
 
+  test("accepts complete minimap turns and targeted history loads", () => {
+    const update = validateExtensionToWebview({
+      type: "conversation-turns-update",
+      data: {
+        turns: [{ entryId: "user-entry-1", user: "Question", agent: "Answer" }],
+      },
+    });
+    const request = validateWebviewToExtension({
+      type: "loadHistoryToEntry",
+      entryId: "user-entry-1",
+    });
+
+    assert.strictEqual(update.success, true);
+    assert.strictEqual(request.success, true);
+  });
+
   test("accepts visible editor context updates and prompt selections", () => {
     const item = {
       id: "file:///workspace/src/index.ts",

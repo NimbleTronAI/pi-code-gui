@@ -1909,7 +1909,7 @@ html.pi-viewport-recovering #pi-web-app {
   position: absolute;
   top: 50%;
   left: 4px;
-  width: 7px;
+  width: var(--conversation-minimap-tick-width, 7px);
   height: 2px;
   border-radius: 1px;
   background: var(--pi-faint);
@@ -1920,8 +1920,8 @@ html.pi-viewport-recovering #pi-web-app {
   transition: width 100ms ease, background-color 100ms ease, opacity 100ms ease;
 }
 
-.conversation-minimap-tick:hover::before {
-  width: 22px;
+.conversation-minimap-tick:hover::before,
+.conversation-minimap-tick.active::before {
   background: var(--pi-text);
   opacity: 0.92;
 }

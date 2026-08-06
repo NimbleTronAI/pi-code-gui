@@ -31,6 +31,7 @@ import { LiveCard } from "../components/live-card.js";
 import { InlineCard } from "../components/inline-card.js";
 import { Dialog, dialogQuestionStem } from "../components/dialog.js";
 import { CustomUi } from "../components/custom-ui.js";
+import { CONVERSATION_TURNS_EVENT } from "../components/conversation-minimap.js";
 import { findWorkspaceFileMention, removeWorkspaceFileMention } from "../file-mention.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
@@ -183,6 +184,9 @@ function handleExtensionMessage(msg: any): void {
       case "batch-start":         handleBatchStart(msg.data); break;
       case "batch-end":           handleBatchEnd(msg.data); break;
       case "history-page":        handleHistoryPage(msg.data); break;
+      case "conversation-turns-update":
+        window.dispatchEvent(new CustomEvent(CONVERSATION_TURNS_EVENT, { detail: msg.data?.turns ?? [] }));
+        break;
 
       // New features (#1, #2, #7, #9)
       case "compaction-summary-message": handleCompactionSummaryMessage(msg.data); break;
@@ -2963,8 +2967,14 @@ export function updateSlashAutocomplete(filter: string) {
   // ═══ #9: Scroll-to-entry ═══════════════════════════════════
   // ═══ #9: Scroll-to-entry ═══════════════════════════════════
 
-export function handleRevealEntry(entryId: string, toolCallId: string) {
+export function handleRevealEntry(entryId: string, toolCallId: string, waitFrames = 0) {
     if (!entryId && !toolCallId) {return;}
+    if (state.historyLoading && waitFrames < 10) {
+      requestAnimationFrame(function () {
+        handleRevealEntry(entryId, toolCallId, waitFrames + 1);
+      });
+      return;
+    }
     var el: HTMLElement | null = null;
 
     // Strategy 1: exact ID match (entry-{id}, tool-{id}, bash-{id})

@@ -570,6 +570,10 @@ export class PiWebviewPanel {
             await this.piService.loadOlderHistory();
             break;
 
+          case "loadHistoryToEntry":
+            await this.piService.loadHistoryToEntry(message.entryId);
+            break;
+
           case "abort":
             await this.piService.abort();
             break;

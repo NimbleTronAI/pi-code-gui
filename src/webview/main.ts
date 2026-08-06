@@ -42,6 +42,9 @@ const conversationMinimap = new ConversationMinimap(state.chatContainer, {
   onNavigate: () => {
     state.hasScrolledUp = true;
   },
+  onLoadTurn: (entryId) => {
+    vscode.postMessage({ type: "loadHistoryToEntry", entryId });
+  },
 });
 conversationMinimap.mount(document.body);
 

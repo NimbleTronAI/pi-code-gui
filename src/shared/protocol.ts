@@ -313,6 +313,16 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       events: z.array(z.unknown()),
     }),
   }),
+  z.object({
+    type: z.literal("conversation-turns-update"),
+    data: z.object({
+      turns: z.array(z.object({
+        entryId: z.string().min(1),
+        user: z.string(),
+        agent: z.string(),
+      })),
+    }),
+  }),
 
   // Thinking
   z.object({
@@ -500,6 +510,7 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("abort") }),
   z.object({ type: z.literal("loadOlderHistory") }),
+  z.object({ type: z.literal("loadHistoryToEntry"), entryId: z.string().min(1) }),
   z.object({ type: z.literal("slashCommand"), command: z.string() }),
   z.object({ type: z.literal("pickModel") }),
   z.object({ type: z.literal("pickThinkingLevel") }),
