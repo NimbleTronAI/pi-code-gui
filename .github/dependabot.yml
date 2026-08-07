@@ -1,0 +1,69 @@
+# Dependabot configuration.
+#
+# Dependabot keeps dependencies current by opening PULL REQUESTS — it never bumps
+# versions on your branch directly. You review/merge each PR (or turn on
+# auto-merge separately). By default it checks ALL manifest deps (dependencies
+# AND devDependencies); the grouping + ignore rules below tune that so you get a
+# small number of reviewable PRs instead of one-per-package noise.
+#
+# Major bumps always get their OWN PR (so breaking changes are reviewed alone);
+# minor/patch bumps are grouped into a single weekly PR per ecosystem.
+#
+# Note: security updates are a separate feature — enable "Dependabot security
+# updates" in the repo's Settings → Code security to also get fix PRs for
+# vulnerable (incl. transitive/lockfile-only) packages.
+#
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # ── npm / pnpm (package.json + pnpm-lock.yaml) ────────────────────────────
+  - package-ecosystem: "npm" # drives pnpm too, via pnpm-lock.yaml
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    groups:
+      # One weekly PR for all non-breaking bumps (dev + prod). Majors excluded
+      # here, so they each open individually for a closer look.
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # @types/vscode must track engines.vscode (currently ^1.125.0). Bumping it past
+      # the engine would type-check against APIs that older VS Code versions lack, and
+      # vsce rejects the mismatch at package time — so update it BY HAND together with
+      # the engine, since raising the floor also drops users below it.
+      - dependency-name: "@types/vscode"
+      # pi-ai is the bundled model catalog AND our pricing source. A version bump alone
+      # leaves the generated registry stamped at the old version, which check-model-registry
+      # fails the build on — the bump is only complete after `pnpm run gen:model-registry`,
+      # and the regenerated prices deserve a human look (the 0.83->0.84 sweep moved 36 of
+      # them, one by 5x). scripts/check-currency.mjs reports this drift instead.
+      - dependency-name: "@earendil-works/pi-ai"
+      # TypeScript is held at 5.x deliberately; 7.x is the native-port rewrite and is not a
+      # routine bump. Revisit as its own PR.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # ── GitHub Actions (.github/workflows/*) ──────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "github-actions"]
+    groups:
+      actions:
+        update-types: ["minor", "patch"]
+
+  # ── Dev container base image (.devcontainer/Dockerfile) ───────────────────
+  - package-ecosystem: "docker"
+    directory: "/.devcontainer"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "devcontainer"]
