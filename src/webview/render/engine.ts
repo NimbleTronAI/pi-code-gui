@@ -333,8 +333,9 @@ export function renderInline(tokens: MarkedTokens | undefined): string {
         if (href) {
           result += html`<a href="${href}">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</a>`;
         } else {
-          // Disallowed or empty scheme: render the link text without a clickable href.
-          result += html`<span>${safe(renderInline(t.tokens as MarkedTokens | undefined))}</span>`;
+          // Disallowed or empty scheme: render the link text without a clickable href, with a
+          // title so the refusal is visible rather than link-ish text that silently does nothing.
+          result += html`<span title="Link blocked: unsupported scheme">${safe(renderInline(t.tokens as MarkedTokens | undefined))}</span>`;
         }
         break;
       }
