@@ -128,6 +128,18 @@ All DOM-building functions in `engine.ts`, `tools/index.ts`, and
 (`'<div class="' + x + '">'`) to the `html` tagged template. This eliminates
 the entire class of HTML injection and CSS token leakage bugs.
 
+The `html` template covers string-built DOM, but the token renderer
+`renderInline()` in `engine.ts` also handles marked's `html` inline token
+(raw HTML in message content) and `link` tokens directly. Those are hardened:
+`html` tokens are escaped via `escapeHtml()` so model-authored raw HTML renders
+as literal text, and link `href`s pass through `safeInlineLinkHref()` (in
+`src/shared/webview-nav-guard.ts`, sharing `ALLOWED_URL_SCHEMES` with
+`safeExternalUrlString` so the openUrl and renderInline paths never drift on
+which schemes are allowed). It allows only `http(s)`, `mailto`, and scheme-less
+refs (relative paths, anchors), blocking `javascript:`, `data:`, `vbscript:`,
+`file:`, `ftp`, `vscode:`, etc. Disallowed-scheme links render as a non-clickable
+`<span>`.
+
 ## Related
 
 - [Webview Panel](webview-panel.md) — the extension-host side that loads the bundle
@@ -137,6 +149,8 @@ the entire class of HTML injection and CSS token leakage bugs.
 - [Streaming Pipeline](streaming-pipeline.md) — RAF-batched rendering
 - [Component System Proposal](component-system-proposal.md) — proposed architectural upgrade
 
-> **Last updated:** 2026-06-25 — inbound `validateWebviewToExtension` is now wired (warn-only) at `onDidReceiveMessage`; schema is 38 events / 18 commands (added `switchRuntime`)
+> **Last updated:** 2026-08-06 — `renderInline()` link-href guard consolidated into `safeInlineLinkHref` in `src/shared/webview-nav-guard.ts` (shares `ALLOWED_URL_SCHEMES` with `safeExternalUrlString`; `ftp` dropped so both paths agree)
+> **Earlier:** 2026-07-24 — `renderInline()` hardened (escape inline `html` tokens; link-href scheme allowlist)
+> **Earlier:** 2026-06-25 — inbound `validateWebviewToExtension` is now wired (warn-only) at `onDidReceiveMessage`; schema is 38 events / 18 commands (added `switchRuntime`)
 > **Earlier:** 2026-06-24 — corrected schema counts (38 events / 17 commands) and removed the false "webview→extension is Zod-validated" claim
 > **Earlier:** 2026-05-19 — All 7 steps complete (Zod, safe HTML, components, dialogs, status bar)

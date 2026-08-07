@@ -68,7 +68,10 @@ and `safe()` marker. Migrated all DOM-building functions in:
   `handleWidgetUpdate`, `handleQueueUpdate`
 
 Every `${...}` is auto-escaped unless explicitly marked as safe HTML. This
-eliminates the entire class of HTML injection + CSS leakage bugs.
+eliminates the entire class of HTML injection + CSS leakage bugs **for the
+string-built DOM**. (The `renderInline()` token renderer's `html`/`link` cases
+are a separate path that does not go through the `html` template; they are
+hardened separately — see [Webview Frontend](webview-frontend.md).)
 
 **What this fixes:** CSS token leakage, HTML breakout, markup corruption from
 nested string concatenation.

@@ -1,9 +1,10 @@
-// Tests for the openUrl / openFile guards. Both messages act on a string the WEBVIEW supplies,
-// and both senders are blanket handlers over model-rendered content (any <a href> in the
-// transcript; any element carrying data-path), so the model effectively chooses these values.
+// Tests for the openUrl / renderInline link-href guards. Both act on a string the WEBVIEW
+// supplies, and both senders are blanket handlers over model-rendered content (any <a href> in
+// the transcript), so the model effectively chooses these values. The openFile path guard lives
+// in workspace-path-guard.test.ts (it uses `node:path`, which the webview bundle can't import).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeExternalUrlString, safeWorkspaceFilePath } from "../../shared/webview-nav-guard.js";
+import { safeExternalUrlString, safeInlineLinkHref } from "../../shared/webview-nav-guard.js";
 
 test("openUrl: ordinary web links pass", () => {
   assert.equal(safeExternalUrlString("https://pi.dev/docs"), "https://pi.dev/docs");
@@ -33,34 +34,60 @@ test("openUrl: scheme matching is case-insensitive", () => {
   assert.equal(safeExternalUrlString("VSCode://x/y"), null);
 });
 
-const ROOT = "/home/dev/project";
+// ── safeInlineLinkHref ───────────────────────────────────────────────────────
+// The renderInline `link` token guard: the model chooses the href, so dangerous schemes
+// (javascript:/data:/vbscript:/file:) must be neutralized before the href reaches the DOM.
+// Unlike safeExternalUrlString, scheme-less refs (relative paths, anchors) ARE preserved —
+// they render as links but a click is still routed through openUrl (the openExternal gate),
+// which blocks them from opening. Both guards share ALLOWED_URL_SCHEMES, so `ftp` is blocked
+// here just as it is at openUrl (it was previously allowed only on this path — a drift).
 
-test("openFile: paths inside the workspace resolve to an absolute path", () => {
-  assert.equal(safeWorkspaceFilePath(`${ROOT}/src/index.ts`, [ROOT]), `${ROOT}/src/index.ts`);
-  assert.equal(safeWorkspaceFilePath("src/index.ts", [ROOT]), `${ROOT}/src/index.ts`, "relative resolves against the root");
-  assert.equal(safeWorkspaceFilePath(".", [ROOT]), ROOT);
+test("safeInlineLinkHref: allows http, https, and mailto", () => {
+  assert.equal(safeInlineLinkHref("https://example.com"), "https://example.com");
+  assert.equal(safeInlineLinkHref("http://example.com"), "http://example.com");
+  assert.equal(safeInlineLinkHref("mailto:foo@bar.com"), "mailto:foo@bar.com");
 });
 
-test("openFile: escaping the workspace is BLOCKED", () => {
-  assert.equal(safeWorkspaceFilePath("/home/dev/.ssh/id_rsa", [ROOT]), null, "absolute outside");
-  assert.equal(safeWorkspaceFilePath("../../.ssh/id_rsa", [ROOT]), null, "traversal");
-  assert.equal(safeWorkspaceFilePath("/etc/passwd", [ROOT]), null);
-  assert.equal(safeWorkspaceFilePath(`${ROOT}/../secrets.txt`, [ROOT]), null, "normalises before comparing");
+test("safeInlineLinkHref: ftp is BLOCKED (matches the openUrl allowlist)", () => {
+  // `ftp` was previously allowed here only — a drift the shared allowlist closes.
+  assert.equal(safeInlineLinkHref("ftp://ftp.example.com"), "");
 });
 
-test("openFile: a sibling root whose name merely PREFIXES the root is not inside it", () => {
-  // /home/dev/project-secrets must not count as inside /home/dev/project.
-  assert.equal(safeWorkspaceFilePath("/home/dev/project-secrets/x", [ROOT]), null);
+test("safeInlineLinkHref: allows scheme-less refs (relative paths and anchors)", () => {
+  assert.equal(safeInlineLinkHref("path/to/page"), "path/to/page");
+  assert.equal(safeInlineLinkHref("#section"), "#section");
+  assert.equal(safeInlineLinkHref("/abs/path"), "/abs/path");
+  assert.equal(safeInlineLinkHref("./rel"), "./rel");
+  assert.equal(safeInlineLinkHref("../rel"), "../rel");
 });
 
-test("openFile: multi-root workspaces accept any root", () => {
-  const roots = [ROOT, "/home/dev/other"];
-  assert.equal(safeWorkspaceFilePath("/home/dev/other/a.ts", roots), "/home/dev/other/a.ts");
-  assert.equal(safeWorkspaceFilePath("/home/dev/elsewhere/a.ts", roots), null);
+test("safeInlineLinkHref: blocks javascript: (any case)", () => {
+  assert.equal(safeInlineLinkHref("javascript:alert(1)"), "");
+  assert.equal(safeInlineLinkHref("JaVaScRiPt:alert(1)"), "");
 });
 
-test("openFile: no workspace open blocks everything, and NUL bytes are rejected", () => {
-  assert.equal(safeWorkspaceFilePath(`${ROOT}/a.ts`, []), null);
-  assert.equal(safeWorkspaceFilePath(`${ROOT}/a\0.ts`, [ROOT]), null);
-  assert.equal(safeWorkspaceFilePath(undefined, [ROOT]), null);
+test("safeInlineLinkHref: blocks other dangerous schemes", () => {
+  assert.equal(safeInlineLinkHref("data:text/html,<script>alert(1)</script>"), "");
+  assert.equal(safeInlineLinkHref("vbscript:msgbox(1)"), "");
+  assert.equal(safeInlineLinkHref("file:///etc/passwd"), "");
+  assert.equal(safeInlineLinkHref("vscode://ms-vscode.remote-server/x"), "");
+});
+
+test("safeInlineLinkHref: strips leading whitespace before resolving the scheme", () => {
+  assert.equal(safeInlineLinkHref("   https://example.com"), "https://example.com");
+  assert.equal(safeInlineLinkHref("\t\nhttps://example.com"), "https://example.com");
+});
+
+test("safeInlineLinkHref: removes embedded tab/newline that would hide a javascript: scheme", () => {
+  // Browsers strip \t/\n/\r from URLs before resolving the scheme, so "java\tscript:"
+  // resolves to "javascript:" — the sanitizer must too.
+  assert.equal(safeInlineLinkHref("java\tscript:alert(1)"), "");
+  assert.equal(safeInlineLinkHref("java\nscript:alert(1)"), "");
+  assert.equal(safeInlineLinkHref("java\rscript:alert(1)"), "");
+});
+
+test("safeInlineLinkHref: returns empty for empty or whitespace-only input", () => {
+  assert.equal(safeInlineLinkHref(""), "");
+  assert.equal(safeInlineLinkHref("   "), "");
+  assert.equal(safeInlineLinkHref("\t\n\r"), "");
 });

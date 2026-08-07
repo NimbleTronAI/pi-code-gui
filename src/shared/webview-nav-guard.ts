@@ -1,17 +1,25 @@
-// Guards for the two webview→extension messages that act on a string the WEBVIEW supplies:
-// `openUrl` → vscode.env.openExternal, and `openFile` → vscode.window.showTextDocument.
+// URL guards for strings the WEBVIEW renders or posts that the model effectively chooses.
+// Two call sites share ONE allowlist (`ALLOWED_URL_SCHEMES`) so they can never drift on
+// which absolute schemes are permitted:
+//   `openUrl`         → vscode.env.openExternal ........... safeExternalUrlString (absolute-only)
+//   renderInline link → <a href="..."> .................. safeInlineLinkHref (allows scheme-less refs)
 //
-// Both senders are blanket handlers over MODEL-RENDERED content — handlers/index.ts posts
-// openUrl for any <a href> in the transcript, and render/engine.ts posts openFile for any
-// element carrying data-path. So the model chooses these values, and before this an injected
-// link could reach openExternal with an arbitrary scheme (e.g. a vscode: deep link) on one
-// click, and an injected data-path could open any absolute file.
+// Both functions are reached by blanket handlers over MODEL-RENDERED content — handlers/index.ts
+// posts openUrl for any <a href> in the transcript, and render/engine.ts calls safeInlineLinkHref
+// for the `link` token — so the model chooses these values, and before this an injected link could
+// reach openExternal with an arbitrary scheme (e.g. a vscode: deep link) on one click. The
+// renderInline href guard neutralizes dangerous schemes (javascript:/data:/vbscript:/file:) in the
+// model's own markdown links before they reach the DOM; scheme-less refs (relative paths, anchors)
+// are preserved as links — a click is still routed through openUrl, which is the actual openExternal
+// gate, so they can't open anything the allowlist disallows.
 //
-// Pure string/path logic, deliberately free of the vscode module so it is unit-testable; the
-// caller converts the result to a Uri.
-import * as path from "node:path";
+// This module is imported by BOTH bundles — the extension-host (esbuild.js, platform node) and the
+// webview (esbuild.webview.js, platform browser) — so it is deliberately dependency-free and
+// browser-safe (no `node:` imports). The `openFile` path guard (`safeWorkspaceFilePath`) lives in
+// workspace-path-guard.ts because it needs `node:path` and the webview bundle must not pull that in.
 
-/** Schemes allowed to leave the editor. Deliberately excludes `vscode:`/`command:`/`file:`. */
+/** Schemes allowed to leave the editor. Deliberately excludes `vscode:`/`command:`/`file:`/`ftp:`.
+ *  Shared by safeExternalUrlString and safeInlineLinkHref so the two call sites agree. */
 const ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 /** The URL to hand to openExternal, or null if it must be blocked. */
@@ -23,18 +31,26 @@ export function safeExternalUrlString(raw: unknown): string | null {
   return parsed.toString();
 }
 
-/** The absolute path to open, or null when it escapes every workspace root.
- *  `roots` are the workspace folder fsPaths; an empty list blocks everything. */
-export function safeWorkspaceFilePath(raw: unknown, roots: string[]): string | null {
-  if (typeof raw !== "string" || !raw.trim()) { return null; }
-  if (raw.includes("\0")) { return null; }
-  if (!roots.length) { return null; }
-  for (const root of roots) {
-    // Resolve a relative path against the root; an absolute path resolves to itself.
-    const abs = path.resolve(root, raw);
-    const rel = path.relative(root, abs);
-    // Inside the root iff the relative path neither escapes upward nor is absolute.
-    if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) { return abs; }
+/** The href to write into a markdown link's `<a href="...">`, or "" when the scheme is disallowed.
+ *
+ *  Used by renderInline (render/engine.ts) for the model-authored `link` token. Unlike
+ *  safeExternalUrlString (which serves openExternal and blocks relative/garbage), this PRESERVES
+ *  scheme-less refs (relative paths, anchors) so legitimate markdown links keep rendering — a
+ *  click is still routed through openUrl, which is the actual openExternal gate. Both functions
+ *  share `ALLOWED_URL_SCHEMES`, so the set of allowed absolute schemes is identical.
+ *
+ *  Browsers ignore leading control/whitespace and strip tab/newline chars when resolving a
+ *  scheme, so those are removed first to prevent hiding a `javascript:` URL
+ *  (e.g. `java\tscript:alert(1)` resolves to `javascript:alert(1)`). */
+export function safeInlineLinkHref(raw: string): string {
+  const s = (raw || "")
+    .replace(/[\t\n\r]/g, "")
+    .replace(/^[\x00-\x20]+/, "")
+    .replace(/[\x00-\x20]+$/, "");
+  if (!s) { return ""; }
+  const schemeMatch = s.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*):/);
+  if (schemeMatch && !ALLOWED_URL_SCHEMES.has(schemeMatch[1].toLowerCase() + ":")) {
+    return "";
   }
-  return null;
+  return s;
 }

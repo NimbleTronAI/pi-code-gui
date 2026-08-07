@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.1.3]
+
+### Security
+- Escaped raw inline HTML and sanitized link schemes in chat rendering. Model output containing raw HTML (e.g. `<img onerror=...>`) or `javascript:`/`data:`/`file:`/`ftp:` markdown links is now rendered as literal text or a non-clickable span instead of being injected into the DOM. The link-href guard (`safeInlineLinkHref`) shares its scheme allowlist with the `openUrl` handler's `safeExternalUrlString`, so the two paths never drift on which schemes are allowed.
+
 ## [0.1.2]
 
 Republish of 0.1.1 with no functional changes. 0.1.1 reached the VS Code Marketplace,
