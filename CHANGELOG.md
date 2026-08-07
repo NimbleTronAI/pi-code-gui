@@ -1,5 +1,10 @@
 # Change Log
 
+## [Unreleased]
+
+### Changed
+- Refreshed the bundled model catalog (pi-ai 0.84.1): 2 new providers, 88 models added, and 36 price corrections — including `gpt-5.6-luna`, whose input rate was 5x too high.
+
 ## [0.1.3]
 
 ### Security
