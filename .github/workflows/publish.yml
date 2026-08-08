@@ -51,6 +51,21 @@ jobs:
           node-version: '24'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # Supply-chain gate: known-compromised versions, IOC filenames/strings/hashes, and install
+      # hooks outside the allowlist. CRITICAL findings exit non-zero even without --strict.
+      #
+      # This also runs in ci.yml, and that is NOT enough. ci.yml and release.yml trigger on the
+      # same push to main and run concurrently, so the publish is dispatched and can finish
+      # before CI has said anything — CI cannot gate it. Every other CI step is already covered
+      # here, because `vsce publish`/`vsce package` run `vscode:prepublish` (the full
+      # `pnpm run package` gate: cleanroom, diagram, model registry, types, lint, the unit
+      # suite, production bundles). This scan was the sole exception, which meant a compromised
+      # dependency could be installed and bundled into the .vsix unscanned. Keep it here so the
+      # publish stands on its own and the CI race stays irrelevant.
+      #
+      # Drift is advisory without --strict, and unreachable upstream sources only fail under
+      # --strict, so a flaky registry cannot block a release. Only a CRITICAL finding does.
+      - run: node scripts/check-currency.mjs
       # check:cleanroom scans with ripgrep and HARD-FAILS when it is absent — a missing rg
       # used to exit 127 and fall through to a silent PASS, so the wall reported OK on a
       # machine that could not actually scan. The runner image does not ship ripgrep.
@@ -82,6 +97,21 @@ jobs:
           node-version: '24'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # Supply-chain gate: known-compromised versions, IOC filenames/strings/hashes, and install
+      # hooks outside the allowlist. CRITICAL findings exit non-zero even without --strict.
+      #
+      # This also runs in ci.yml, and that is NOT enough. ci.yml and release.yml trigger on the
+      # same push to main and run concurrently, so the publish is dispatched and can finish
+      # before CI has said anything — CI cannot gate it. Every other CI step is already covered
+      # here, because `vsce publish`/`vsce package` run `vscode:prepublish` (the full
+      # `pnpm run package` gate: cleanroom, diagram, model registry, types, lint, the unit
+      # suite, production bundles). This scan was the sole exception, which meant a compromised
+      # dependency could be installed and bundled into the .vsix unscanned. Keep it here so the
+      # publish stands on its own and the CI race stays irrelevant.
+      #
+      # Drift is advisory without --strict, and unreachable upstream sources only fail under
+      # --strict, so a flaky registry cannot block a release. Only a CRITICAL finding does.
+      - run: node scripts/check-currency.mjs
       # `vsce package` runs the `vscode:prepublish` script, i.e. the full `pnpm run package`
       # gate — which includes check:cleanroom, and that hard-fails without ripgrep. The runner
       # image does not ship it. This job needs it for exactly the same reason the marketplace
