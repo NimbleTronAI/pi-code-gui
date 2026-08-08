@@ -9,7 +9,7 @@
 # binaries built on the old base (esbuild, ripgrep/fd, native node modules)
 # remain forward-compatible.
 #
-FROM mcr.microsoft.com/devcontainers/typescript-node:22-trixie
+FROM mcr.microsoft.com/devcontainers/typescript-node:24-trixie
 
 ARG USERNAME=node
 
