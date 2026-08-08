@@ -5,9 +5,14 @@ name: Tag and release on version bump
 # and a GitHub Release with auto-generated notes.
 #
 # Publishing to the VS Code Marketplace / Open VSX is NOT done here — publish.yml
-# already does that on `release: published` (gated by the `marketplace`
-# environment's required reviewers). So this release will QUEUE that publish for
-# your approval; it won't ship anything on its own.
+# does that, and the step below dispatches it.
+#
+# Be clear about what gates that publish: the `marketplace` environment's ONLY
+# protection rule is a deployment branch policy admitting the single TAG pattern
+# `v0.*`. There are no required reviewers and no wait timer, so nothing pauses
+# for human approval — a successful run of this workflow SHIPS. Earlier comments
+# here claimed an approval gate that does not exist; if you want one, add
+# required reviewers to the environment, don't rely on this text.
 on:
   push:
     branches: [main]
@@ -60,6 +65,11 @@ jobs:
           # GITHUB_TOKEN, and GitHub does not start workflow runs from that token — so
           # publish.yml would never fire on its own. v0.1.4 was tagged and released and simply
           # never published, with nothing queued and no failure to notice. Dispatching by hand
-          # closes the chain without introducing a PAT. The publish still runs inside the
-          # `marketplace` environment, so its required reviewers gate it exactly as before.
-          gh workflow run publish.yml --ref main -f tag="$V"
+          # closes the chain without introducing a PAT.
+          #
+          # Dispatch on the TAG, not on main. The `marketplace` environment admits only tag
+          # refs matching `v0.*`, so a run dispatched with `--ref main` is rejected outright:
+          # both jobs fail in ~2s with no runner and no steps, which reads as a build failure
+          # and is not one. That is exactly how v0.1.6 failed. The tag also pins the workflow
+          # definition to the released commit, so a publish reflects what was tagged.
+          gh workflow run publish.yml --ref "$V" -f tag="$V"
