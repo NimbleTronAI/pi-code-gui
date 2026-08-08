@@ -1,6 +1,24 @@
 # Change Log
 
+## [0.1.7]
+
+Carries the Windows fix below, which 0.1.6 tagged but never shipped.
+
+### Fixed
+- **Automated releases were rejected before they could publish.** The `marketplace` environment
+  admits only tag refs matching `v0.*`, and release.yml dispatched the publish with `--ref main`,
+  so both jobs failed in about two seconds with no runner assigned and no steps run — which reads
+  as a build failure and is not one. That stranded v0.1.6. The dispatch now targets the tag it
+  just created.
+
+  Corrects the surrounding comments as well: they described the publish as gated behind the
+  environment's required reviewers and said a release "won't ship anything on its own". That
+  gate does not exist — the environment has no required reviewers and no wait timer, so a
+  merge to main now goes live unattended.
+
 ## [0.1.6]
+
+Tagged and released, but never reached either marketplace — see 0.1.7. Nothing to install here.
 
 ### Fixed
 - **The TypeScript runtime could not start on Windows.** SDK modules are loaded by absolute path, and Node's ESM loader reads a Windows path's drive letter as a URL scheme (`Received protocol 'c:'`), so every session failed at startup. Paths are now converted with `pathToFileURL`. (#71)

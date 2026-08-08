@@ -1,6 +1,12 @@
-# Triggered when a GitHub Release is published.
-# The publish jobs run inside the `marketplace` environment, which gates them
-# behind required reviewers and branch policy.
+# Triggered when a GitHub Release is published, or dispatched by release.yml.
+#
+# The publish jobs run inside the `marketplace` environment. Its only protection rule is a
+# deployment branch policy admitting the single TAG pattern `v0.*` — there are NO required
+# reviewers, so reaching these jobs means shipping, with nothing to approve. Two consequences
+# worth knowing before you edit this file:
+#   - This workflow must be reached on a tag ref. A run on a branch ref is rejected before any
+#     step executes (~2s, no runner), which looks like a build failure and is not one.
+#   - Nothing else stands between a merge to main and a live release.
 
 name: Publish the VS Code Extension
 
@@ -35,8 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # On workflow_dispatch the default ref is the branch, which would package the wrong
-          # commit; on `release: published` this is empty and checkout keeps its default.
+          # Pin the packaged commit to the tag input rather than trusting the dispatched ref:
+          # a hand-run from the Actions UI can select any ref, and packaging something other
+          # than the tag being published is silent and hard to spot. On `release: published`
+          # this is empty and checkout keeps its default.
           ref: ${{ inputs.tag || '' }}
       - uses: actions/setup-node@v7
         with:
@@ -64,8 +72,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # On workflow_dispatch the default ref is the branch, which would package the wrong
-          # commit; on `release: published` this is empty and checkout keeps its default.
+          # Pin the packaged commit to the tag input rather than trusting the dispatched ref:
+          # a hand-run from the Actions UI can select any ref, and packaging something other
+          # than the tag being published is silent and hard to spot. On `release: published`
+          # this is empty and checkout keeps its default.
           ref: ${{ inputs.tag || '' }}
       - uses: actions/setup-node@v7
         with:
