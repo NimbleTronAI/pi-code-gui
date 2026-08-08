@@ -1,6 +1,6 @@
 # Change Log
 
-## [Unreleased]
+## [0.1.6]
 
 ### Fixed
 - **The TypeScript runtime could not start on Windows.** SDK modules are loaded by absolute path, and Node's ESM loader reads a Windows path's drive letter as a URL scheme (`Received protocol 'c:'`), so every session failed at startup. Paths are now converted with `pathToFileURL`. (#71)
