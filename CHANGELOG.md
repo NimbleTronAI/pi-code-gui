@@ -1,5 +1,19 @@
 # Change Log
 
+## [0.1.8]
+
+No user-facing change — a release-pipeline fix.
+
+### Security
+- **The supply-chain scan now runs before publishing, not only in CI.** `check-currency.mjs`
+  rejects known-compromised dependency versions, indicators of compromise, and install hooks
+  outside the allowlist. It ran only in ci.yml, which cannot gate a release: CI and the release
+  workflow trigger on the same push and run concurrently, so the publish is dispatched — and can
+  finish — before CI reports. In 0.1.7 the publish completed 15 seconds after CI, having never
+  waited for it. Every other CI check was already re-run at publish time via `vscode:prepublish`;
+  this scan was the only one that was not, so a compromised package could be installed and
+  bundled into the `.vsix` unscanned. Both publish jobs now run it themselves.
+
 ## [0.1.7]
 
 Carries the Windows fix below, which 0.1.6 tagged but never shipped.
