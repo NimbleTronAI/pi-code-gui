@@ -34,7 +34,8 @@
   "homepage": "https://github.com/NimbleTronAI/pi-code-gui#readme",
   "type": "module",
   "engines": {
-    "vscode": "^1.125.0"
+    "vscode": "^1.125.0",
+    "node": ">=24"
   },
   "categories": [
     "AI",

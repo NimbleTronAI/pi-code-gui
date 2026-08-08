@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { importSpecifierFor } from "./sdk-service.js";
 import { resolvePiPackagePath } from "./pi-service.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
 import type { Runtime } from "./types.js";
@@ -111,7 +112,10 @@ export class PiPackageService {
     let sdkError: string;
     try {
       this.sdkRoot = resolvePiPackagePath();
-      const SDK = (await import(path.join(this.sdkRoot, "dist/index.js")));
+      // Same Windows ESM constraint as importWithRetry — see importSpecifierFor. This second
+      // call site was not named in gh #71, so fixing only sdk-service.ts would have left the
+      // Packages view broken on Windows while the sessions it reports on worked.
+      const SDK = (await import(importSpecifierFor(path.join(this.sdkRoot, "dist/index.js"))));
       const cwd = resolveWorkspaceCwd();
       const SettingsManager = SDK.SettingsManager;
       const DefaultPackageManagerClass = SDK.DefaultPackageManager;

@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # `gh workflow run` dispatches publish.yml — see the step below.
+  actions: write
 
 jobs:
   release:
@@ -54,3 +56,10 @@ jobs:
           git tag -a "$V" -m "$V"
           git push origin "$V"
           gh release create "$V" --title "$V" --generate-notes
+          # Start the publish EXPLICITLY. The `release: published` event above is raised by
+          # GITHUB_TOKEN, and GitHub does not start workflow runs from that token — so
+          # publish.yml would never fire on its own. v0.1.4 was tagged and released and simply
+          # never published, with nothing queued and no failure to notice. Dispatching by hand
+          # closes the chain without introducing a PAT. The publish still runs inside the
+          # `marketplace` environment, so its required reviewers gate it exactly as before.
+          gh workflow run publish.yml --ref main -f tag="$V"

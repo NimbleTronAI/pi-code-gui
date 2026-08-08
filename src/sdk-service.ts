@@ -16,6 +16,7 @@
 // sequence is driven headlessly in unit tests (see sdk-service.test.ts). The real
 // vscode-backed deps are built by PiService.makeSdkDeps().
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
 import { piDebug, piWarn } from "./logger.js";
 import { piAiVersionNotice } from "./version-compare.js";
@@ -43,6 +44,25 @@ const SUPPORTED_PI_AI_VERSION = "0.80.0";
 const TARGET_PI_AI_VERSION = (bundledRegistry as { piAiVersion?: string }).piAiVersion ?? SUPPORTED_PI_AI_VERSION;
 let _piAiVersionWarned = false;
 
+/** The specifier to hand `import()` for a path on disk.
+ *
+ *  Node's ESM loader parses its argument as a URL, so a Windows absolute path is read as a
+ *  protocol: `C:\\Users\\...\\dist\\index.js` fails with "Only URLs with a scheme in: file,
+ *  data, node, and electron are supported ... Received protocol 'c:'". Every SDK module this
+ *  extension loads is addressed by an absolute path built with path.join, so on Windows the
+ *  TypeScript runtime could not start at all (gh #71).
+ *
+ *  pathToFileURL is the standard-library answer and handles drive letters, UNC paths and
+ *  percent-encoding correctly — none of which a string concat of "file://" gets right. Applied
+ *  on every platform, not just win32: on POSIX it is a faithful no-op in effect (an absolute
+ *  path becomes file:///... which the loader resolves identically), and a platform-conditional
+ *  would leave the POSIX path untested by the same code the Windows path uses. Relative and
+ *  bare specifiers (package names) are passed through untouched — they are not filesystem
+ *  paths and must keep resolving through Node's normal algorithm. */
+export function importSpecifierFor(modulePath: string): string {
+  return path.isAbsolute(modulePath) ? pathToFileURL(modulePath).href : modulePath;
+}
+
 /**
  * Dynamic import with retry — handles the race where npm is still populating
  * node_modules when the extension host first activates. Exported: PiService's
@@ -54,13 +74,14 @@ export async function importWithRetry(
   delayMs: number,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
+  const target = importSpecifierFor(modulePath);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await import(modulePath);
+      return await import(target);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       if (attempt === maxAttempts) { throw e; }
-      piWarn(`importWithRetry: attempt ${attempt}/${maxAttempts} failed for ${modulePath}: ${e.message}`);
+      piWarn(`importWithRetry: attempt ${attempt}/${maxAttempts} failed for ${target}: ${e.message}`);
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }

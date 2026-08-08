@@ -7,6 +7,19 @@ name: Publish the VS Code Extension
 on:
   release:
     types: [published]
+  # Manual escape hatch. A release created by release.yml uses GITHUB_TOKEN, and GitHub
+  # deliberately does NOT start workflow runs from events raised by that token (its
+  # anti-recursion rule) — so `release: published` never fires for an automated release and the
+  # publish silently never happens. That stranded v0.1.4: tagged, released, and absent from both
+  # marketplaces with nothing queued and no failure anywhere to notice.
+  # release.yml now calls this workflow directly, and this input lets a human re-run a publish
+  # for any tag without deleting and recreating the release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.5)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,9 +34,13 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # On workflow_dispatch the default ref is the branch, which would package the wrong
+          # commit; on `release: published` this is empty and checkout keeps its default.
+          ref: ${{ inputs.tag || '' }}
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       # check:cleanroom scans with ripgrep and HARD-FAILS when it is absent — a missing rg
@@ -46,9 +63,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # On workflow_dispatch the default ref is the branch, which would package the wrong
+          # commit; on `release: published` this is empty and checkout keeps its default.
+          ref: ${{ inputs.tag || '' }}
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       # `vsce package` runs the `vscode:prepublish` script, i.e. the full `pnpm run package`
