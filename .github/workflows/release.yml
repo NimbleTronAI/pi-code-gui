@@ -1,0 +1,56 @@
+name: Tag and release on version bump
+
+# When the version in package.json changes on the default branch (e.g. you merge
+# a dependency PR that the bump workflow versioned), create the matching git tag
+# and a GitHub Release with auto-generated notes.
+#
+# Publishing to the VS Code Marketplace / Open VSX is NOT done here — publish.yml
+# already does that on `release: published` (gated by the `marketplace`
+# environment's required reviewers). So this release will QUEUE that publish for
+# your approval; it won't ship anything on its own.
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Detect version change
+        id: ver
+        run: |
+          set -euo pipefail
+          new=$(node -p "require('./package.json').version")
+          old=$(git show HEAD~1:package.json 2>/dev/null \
+                | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(JSON.parse(s).version)}catch{process.stdout.write('')}})" \
+                || echo "")
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          if [ -n "$new" ] && [ "$new" != "$old" ] && ! git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing v$new (was: ${old:-none})."
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No new version to release (old=${old:-none}, new=$new) or tag already exists."
+          fi
+
+      - name: Create tag and GitHub Release
+        if: ${{ steps.ver.outputs.release == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: v${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$V" -m "$V"
+          git push origin "$V"
+          gh release create "$V" --title "$V" --generate-notes

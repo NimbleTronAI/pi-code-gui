@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.1.4]
+
+### Changed
+- Refreshed the bundled model catalog from pi-ai 0.84.1 — 2 new providers, 88 models added, and **36 corrected prices**. Most notably `gpt-5.6-luna`, which was being costed at 5x its real input rate. Models withdrawn upstream (including `claude-opus-4-1`) now show `$??` rather than a stale figure.
+
 ## [0.1.3]
 
 ### Security

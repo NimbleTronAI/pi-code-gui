@@ -1,0 +1,71 @@
+name: Bump version on dependency PRs
+
+# Adds a patch-version bump commit to Dependabot PRs, so merging one produces a
+# new releasable version (picked up by release.yml on the default branch).
+#
+# Why pull_request_target: Dependabot's own workflow runs get a READ-ONLY token,
+# which can't push. pull_request_target runs in the BASE-branch context with a
+# write token. To stay safe we only ever run the inline git/node below — never
+# the PR's own scripts (no install/build) — and we gate on the Dependabot actor,
+# so the write token is never exposed to untrusted code.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+# One bump at a time per PR; cancel a superseded run if the branch moves again.
+concurrency:
+  group: version-bump-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Bump patch version (skip if already bumped vs base)
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF" --depth=1
+
+          # Surgical read of the top-level "version" string (tolerant of the
+          # repo's non-strict-semver values, e.g. "0.1.01").
+          ver_of() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const m=s.match(/\"version\"\s*:\s*\"([^\"]+)\"/);process.stdout.write(m?m[1]:'')})"; }
+          base_ver=$(git show "origin/$BASE_REF:package.json" | ver_of)
+          head_ver=$(ver_of < package.json)
+
+          if [ "$base_ver" != "$head_ver" ]; then
+            echo "Version already bumped in this PR ($base_ver -> $head_ver); nothing to do."
+            exit 0
+          fi
+
+          new_ver=$(node -e '
+            const fs = require("fs");
+            let t = fs.readFileSync("package.json", "utf8");
+            const cur = t.match(/"version"\s*:\s*"([^"]+)"/)[1];
+            const p = cur.split(".");
+            p[p.length - 1] = String(Number(p[p.length - 1]) + 1);
+            const nv = p.join(".");
+            // Replace only the first (top-level) version field; preserve all
+            // other formatting so the diff is a single clean line.
+            fs.writeFileSync("package.json", t.replace(/("version"\s*:\s*")[^"]+(")/, `$1${nv}$2`));
+            process.stdout.write(nv);
+          ')
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore: bump version to $new_ver"
+          git push origin "HEAD:$HEAD_REF"
+          echo "Bumped $head_ver -> $new_ver and pushed to $HEAD_REF."
