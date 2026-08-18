@@ -614,7 +614,7 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.84.1",
     "@resvg/resvg-js": "^2.6.2",
-    "@types/jsdom": "^28.0.3",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "~26.2.0",
     "@types/vscode": "^1.125.0",
     "@vscode/test-cli": "^0.0.15",
