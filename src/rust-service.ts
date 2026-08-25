@@ -105,6 +105,10 @@ export interface RustSessionConfig {
 export interface RustDeps {
   detectBinary(): RustInstallStatus;
   shouldDisableExtensions(cwd: string): boolean;
+  /** VS Code's own workspace-trust verdict for this folder. rust-pi 0.3.0 gates
+   *  project-local `.pi/settings.json` packages and `.pi/extensions/` behind trust and
+   *  fails closed for non-interactive launches — which every `--mode rpc` session is. */
+  workspaceIsTrusted(): boolean;
   /** The rustExtensions setting mode: "auto" | "enabled" | "disabled". */
   extensionsMode(): string;
   setupModels(): { piEnv: Record<string, string>; warnings: string[] };
@@ -255,6 +259,23 @@ export class RustService implements PiBackend {
       backendVersion: status.version?.match(/\d+\.\d+\.\d+/)?.[0],
     }));
     args.push("--extension-policy", cfg.rustExtensionPolicy?.trim() || "balanced");
+
+    // rust-pi 0.3.0 gates project-local `.pi/settings.json` packages and `.pi/extensions/`
+    // behind workspace trust, and a NON-INTERACTIVE launch — which `--mode rpc` always is —
+    // fails closed. Measured against the real 0.3.0 binary: the process still starts and RPC
+    // still answers, so this is not a crash. The project-local config is simply skipped, and
+    // the only announcement is a stderr line that classifyRustLoadError does not recognise —
+    // so it lands in the log via the generic `[rust-stderr]` path and never reaches the user.
+    //
+    // Defer to VS Code's verdict instead of prompting again: the user has already answered
+    // this exact question for this folder, and package.json already declares
+    // `capabilities.untrustedWorkspaces`. An untrusted workspace deliberately gets NO flag —
+    // failing closed is correct there, not a regression to paper over.
+    //
+    // Safe on older binaries: 0.1.20 and 0.3.0 both IGNORE unknown flags (verified by spawning
+    // each with a bogus one — RPC came up clean, stderr empty), so this needs no version gate
+    // and a user pinned to an older build is unaffected.
+    if (this.deps.workspaceIsTrusted()) { args.push("--trust"); }
 
     // Extension discovery. The Rust binary aborts `--mode rpc` startup when it
     // meets the workspace's TypeScript-SDK `.pi/` extensions (it wants its own

@@ -104,6 +104,7 @@ function makeDeps(mode: string, overrides?: Partial<RustDeps>): RustDeps {
   return {
     detectBinary: () => ({ installed: true, binaryPath: process.execPath }),
     shouldDisableExtensions: () => false,
+    workspaceIsTrusted: () => true,
     extensionsMode: () => "auto",
     setupModels: () => ({ piEnv: {}, warnings: [] }),
     sessionDir: () => tmp,
@@ -222,6 +223,31 @@ test("initialize (fresh): passes --thinking with the configured default, INCLUDI
       const i = seenArgs.indexOf("--thinking");
       assert.notEqual(i, -1, `--thinking present for ${level}`);
       assert.equal(seenArgs[i + 1], level);
+    } finally { svc.dispose(); }
+  }
+});
+
+// ── Workspace trust (rust-pi 0.3.0) ──────────────────────────────────
+// 0.3.0 gates project-local `.pi/settings.json` packages and `.pi/extensions/` behind
+// workspace trust and fails CLOSED for non-interactive launches. Measured against the real
+// binary, "fails closed" means the process still starts and RPC still answers — the config is
+// silently skipped — so no crash test would ever have caught this. The flag is the only signal.
+test("initialize: passes --trust exactly when VS Code trusts the workspace", async () => {
+  for (const trusted of [true, false]) {
+    const { host } = makeHost();
+    let seenArgs: string[] = [];
+    const svc = new RustService(host, makeDeps("ok", {
+      workspaceIsTrusted: () => trusted,
+      createProcess: (opts: RustProcessOpts) => {
+        seenArgs = opts.args;
+        return new RustProcess({ ...opts, binaryPath: process.execPath, args: [fakeBin, ...opts.args], env: { ...opts.env, FAKE_MODE: "ok" } });
+      },
+    }));
+    const result = await svc.initialize({ fresh: true });
+    try {
+      assert.equal(result.success, true);
+      assert.equal(seenArgs.includes("--trust"), trusted,
+        trusted ? "--trust present in a trusted workspace" : "--trust withheld in an untrusted workspace (fail closed)");
     } finally { svc.dispose(); }
   }
 });

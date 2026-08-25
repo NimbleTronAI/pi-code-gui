@@ -1,5 +1,25 @@
 # Change Log
 
+## [0.1.11]
+
+### Fixed
+- **Project-local `.pi/` configuration silently stopped loading on rust-pi 0.3.0.** That release
+  gates project-local `.pi/settings.json` packages and `.pi/extensions/` behind workspace trust,
+  and fails closed for non-interactive launches — which every session the extension starts
+  (`--mode rpc`) is. Measured against the real 0.3.0 binary, "fails closed" does not mean a
+  crash: the process starts, RPC answers, and the project-local config is simply skipped, with
+  the only notice being a stderr line the extension's classifier does not recognise, so it
+  reached the log and never the user. The extension now passes `--trust` exactly when VS Code
+  itself trusts the workspace — the question the user has already answered for that folder, and
+  which `capabilities.untrustedWorkspaces` in the manifest already reflects. An untrusted
+  workspace still gets no flag, because failing closed is correct there. Older binaries ignore
+  unknown flags (verified against 0.1.20 and 0.3.0), so anyone on the pinned v0.1.23 build is
+  unaffected.
+
+## [0.1.9] — [0.1.10]
+
+No functional changes — dependency bumps the release automation versioned automatically.
+
 ## [0.1.8]
 
 No user-facing change — a release-pipeline fix.

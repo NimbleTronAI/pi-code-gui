@@ -402,6 +402,7 @@ export class PiService {
     return {
       detectBinary: () => detectRustBinary(),
       shouldDisableExtensions: (cwd) => shouldDisableRustExtensions(cwd),
+      workspaceIsTrusted: () => vscode.workspace.isTrusted,
       extensionsMode: () => rustExtensionsMode(),
       setupModels: () => setupRustModels(),
       sessionDir: () => resolveRustSessionDir(),
