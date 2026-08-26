@@ -107,3 +107,54 @@ test("negative sentinel rates render $?? — never a negative cost", () => {
     assert.ok(s.cost >= 0, `${rt}: cost must never go negative`);
   }
 });
+
+// ── withheld cost: a price the catalog cannot express ────────────────
+// Native DeepSeek V4 bills on a clock (peak 2x off-peak) and the catalog holds one flat scalar —
+// which is ALSO stale: pi-ai 0.84.3 still ships pre-August-16 rates understating output by up to
+// 4.6x. DeepSeek reports no cost of its own (verified live: token counts only), so there is
+// nothing to fall back on. Show nothing rather than a confident wrong number.
+test("withheld rates force $?? on the Rust path, with the reason attached", () => {
+  const u = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+  const rates = { input: 0.435, output: 0.87, cacheRead: 0, cacheWrite: 0 };
+  const s = computeUsageStats(u, rates, "rust", "because clocks");
+  assert.equal(s.costKnown, false, "renders $??");
+  assert.equal(s.cost, 0, "no figure is asserted");
+  assert.equal(s.costNote, "because clocks", "the chip can explain itself");
+});
+
+test("withheld rates also beat a TypeScript-runtime COMPUTED cost", () => {
+  // The subtle one. The SDK derives its cost from the same flat catalog rates, so a non-zero
+  // SDK cost is not a measurement — without this, the TypeScript runtime would keep showing the
+  // very number the Rust runtime is suppressing.
+  const u = { input: 500_000, output: 500_000, cacheRead: 0, cacheWrite: 0, cost: 0.65, contextPercent: null, contextWindow: 0 };
+  const s = computeUsageStats(u, null, "typescript", "because clocks");
+  assert.equal(s.costKnown, false);
+  assert.equal(s.cost, 0);
+});
+
+test("no withheld reason leaves both runtimes exactly as they were", () => {
+  const u = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+  const rates = { input: 2, output: 4, cacheRead: 0, cacheWrite: 0 };
+  const s = computeUsageStats(u, rates, "rust");
+  assert.equal(s.costKnown, true);
+  assert.equal(s.cost, 2);
+  assert.equal(s.costNote, undefined);
+});
+
+test("an unpriceable model explains its own $?? too, on both runtimes", () => {
+  // The common case, and the one that actually shipped broken: DeepSeek is rare, a 0/0-rate model
+  // is not. Without this the chip said "$??" and, worse, my first attempt blanked the tooltip.
+  const u = { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+  for (const runtime of ["rust", "typescript"] as const) {
+    const s = computeUsageStats(u, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, runtime);
+    assert.equal(s.costKnown, false, runtime);
+    assert.ok((s.costNote ?? "").includes("subscription"), runtime + " explains why");
+  }
+});
+
+test("a priced session carries no note to explain", () => {
+  const u = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+  const s = computeUsageStats(u, { input: 3, output: 6, cacheRead: 0, cacheWrite: 0 }, "rust");
+  assert.equal(s.costKnown, true);
+  assert.equal(s.costNote, undefined);
+});

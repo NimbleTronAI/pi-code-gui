@@ -709,6 +709,12 @@ export function handleStatusUpdate(data: MsgData<"status-update">): void {
       // Once a turn has run, ALWAYS show cost: the real figure when we hold the model's
       // rates, or "$??" when we don't \u2014 so an unknown cost is visible, never hidden.
       if (u.input > 0 || u.output > 0) {parts.push(u.costKnown ? "$" + u.cost.toFixed(2) : "$??");}
+      // "$??" is only honest if the reason is reachable. Hover the chip to get it, rather than
+      // leaving the user to guess whether cost is broken, free, or unknown. The chip is also
+      // clickable, so APPEND — assigning the note alone silently destroyed the click hint that
+      // ships in the markup, which is a worse trade than the note is worth.
+      var budgetHint = "Click to set context budget";
+      sbUsage.title = (!u.costKnown && u.costNote) ? (u.costNote + "\n\n" + budgetHint) : budgetHint;
       if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }

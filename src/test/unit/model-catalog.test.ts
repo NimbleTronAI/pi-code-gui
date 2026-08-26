@@ -7,7 +7,7 @@
 // normally when the field is omitted entirely.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, rustHonorsMaxThinkingLevel, clampThinkingLevelForRust } from "../../model-catalog.js";
+import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, rustHonorsMaxThinkingLevel, clampThinkingLevelForRust, catalogRatesAreUnexpressible, costWithheldReason } from "../../model-catalog.js";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -315,4 +315,23 @@ test("clampThinkingLevelForRust: every other level is untouched on every version
 test("clampThinkingLevelForRust: xhigh is a value the failing binary itself listed as valid", () => {
   // The downgrade target is taken from that binary's own error text, not guessed.
   assert.equal(clampThinkingLevelForRust("xhigh", "0.1.20"), "xhigh");
+});
+
+// ── unexpressible catalog rates ─────────────────────────────────────
+test("native DeepSeek V4 rates are treated as unexpressible; gateways are not", () => {
+  assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-pro"), true);
+  assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-flash"), true);
+  assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-flash-vision-exp"), true);
+  // The clock is DeepSeek's. A gateway resells under its own provider id at its own flat rate,
+  // which the catalog CAN express — suppressing those would hide costs we actually know.
+  assert.equal(catalogRatesAreUnexpressible("openrouter", "deepseek-v4-pro"), false);
+  assert.equal(catalogRatesAreUnexpressible("vercel-ai-gateway", "deepseek-v4-pro"), false);
+  // Older flat-priced DeepSeek models are unaffected.
+  assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-chat"), false);
+  assert.equal(catalogRatesAreUnexpressible(undefined, undefined), false);
+});
+
+test("the withheld reason is present exactly when the rates are withheld", () => {
+  assert.ok((costWithheldReason("deepseek", "deepseek-v4-pro") ?? "").includes("time of day"));
+  assert.equal(costWithheldReason("openrouter", "deepseek-v4-pro"), null);
 });

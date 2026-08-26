@@ -20,6 +20,9 @@ export type CostRates = { input: number; output: number; cacheRead: number; cach
 export interface UsageStats extends RawUsage {
   /** False when we have no cost rates for the model → the status bar renders "$??", not "$0". */
   costKnown: boolean;
+  /** Why the cost is withheld, when it is — surfaced as the status chip's tooltip so "$??" is
+   *  self-explanatory at the point a user meets it. Absent when a cost IS shown. */
+  costNote?: string;
 }
 
 /** Whether rates say anything we can price a turn with.
@@ -44,10 +47,24 @@ function ratesArePriceable(rates: CostRates | null): rates is CostRates {
  *  - SDK: keeps the SDK's own computed cost; costKnown when it computed one OR we hold
  *    priceable rates (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
  *    An SDK-computed cost > 0 always wins — that is a measurement, not an inference. */
-export function computeUsageStats(u: RawUsage, rates: CostRates | null, runtime: Runtime): UsageStats {
+export function computeUsageStats(u: RawUsage, rates: CostRates | null, runtime: Runtime, withheldReason?: string | null): UsageStats {
+  // An unexpressible price outranks BOTH runtimes' normal paths, including an SDK-computed cost.
+  // That cost is not a measurement here: the SDK derives it from the same flat catalog rates, so
+  // "the SDK computed one" is not evidence it is right. See catalogRatesAreUnexpressible.
+  if (withheldReason) { return { ...u, cost: 0, costKnown: false, costNote: withheldReason }; }
   const priceable = ratesArePriceable(rates);
+  // Whenever we render "$??" the reason travels with it. The unpriceable case is the COMMON one
+  // (99 of 854 bundled models sit at 0/0 rates: genuinely free models and whole subscription
+  // providers, which the catalog gives us no way to tell apart) — so leaving it unexplained is
+  // what a user actually meets most of the time.
+  const NO_RATE_NOTE =
+    "No per-token price is published for this model in the bundled catalog — it may be free, or " +
+    "billed under a subscription plan — so the session cost can't be computed. Token counts above " +
+    "are still exact.";
   if (runtime === "rust") {
-    return { ...u, cost: priceable ? computeTokenCost(u, rates) : 0, costKnown: priceable };
+    if (!priceable) { return { ...u, cost: 0, costKnown: false, costNote: NO_RATE_NOTE }; }
+    return { ...u, cost: computeTokenCost(u, rates), costKnown: true };
   }
-  return { ...u, costKnown: u.cost > 0 || priceable };
+  const known = u.cost > 0 || priceable;
+  return known ? { ...u, costKnown: true } : { ...u, costKnown: false, costNote: NO_RATE_NOTE };
 }

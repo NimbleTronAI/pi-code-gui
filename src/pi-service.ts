@@ -12,7 +12,7 @@ import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } fro
 import { setupRustModels, reseedRustAuth } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
@@ -1475,6 +1475,9 @@ export class PiService {
    *  null when we have no rate info (→ the status bar shows "$??" rather than $0). */
   private activeCostRates(): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
     const p = this._model?.provider; const id = this._model?.id;
+    // Withhold rates we know cannot be right rather than pricing with them — the Rust path
+    // multiplies these directly, so returning them would produce a confident wrong figure.
+    if (catalogRatesAreUnexpressible(p, id)) { return null; }
     return (p && id) ? findCatalogModelCost(this.bundledProviders, p, id) : null;
   }
 
@@ -1483,7 +1486,8 @@ export class PiService {
     // session entries; RustService caches get_session_stats). The cost policy — the genuine
     // runtime divergence — is the pure, tested computeUsageStats (src/usage-stats.ts).
     const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-    return computeUsageStats(u, this.activeCostRates(), this._backendKind);
+    return computeUsageStats(u, this.activeCostRates(), this._backendKind,
+      costWithheldReason(this._model?.provider, this._model?.id));
   }
 
   // ── Getters ────────────────────────────────────────────

@@ -238,6 +238,44 @@ export function findCatalogThinkingModel(
  *  absent. Used to restore billing rates a stripped runtime `models.json` override
  *  omits — without which pi-ai's calculateCost (rate/1e6 × tokens) yields exactly $0
  *  and the status bar shows no cost at all. */
+/**
+ * Models whose PUBLISHED price the catalog's four flat rates cannot express, so any cost we
+ * compute from them is wrong by construction rather than merely stale.
+ *
+ * Native DeepSeek V4 bills on a clock: peak is 2x off-peak (UTC 01:00-04:00 and 06:00-10:00 on
+ * weekdays; weekends always off-peak). A single scalar cannot be right at both ends of that, and
+ * the catalog has no field for it. Two independent facts make this worse than a rounding error:
+ *
+ *   - pi-ai 0.84.3 (latest at the time of writing) still ships the PRE-August-16 rates, so the
+ *     figures are stale AND unexpressible. Measured against DeepSeek's published page,
+ *     deepseek-v4-pro output is listed at $0.87 against a real $1.98 off-peak / $3.96 peak —
+ *     understating by 2.3x to 4.6x. Bumping pi-ai does not fix it; 0.84.1 and 0.84.3 are byte-
+ *     identical here.
+ *   - The provider does not report cost. Verified against api.deepseek.com: the usage object
+ *     carries token counts only (prompt_tokens, completion_tokens, prompt_cache_hit_tokens,
+ *     prompt_cache_miss_tokens) with no cost field and no billing headers, so there is nothing
+ *     authoritative to fall back on. earendil-works/pi#6881 would read a reported cost where one
+ *     exists; it cannot help here.
+ *
+ * Upstream has this as earendil-works/pi#8510 and #8491, both auto-closed by a new-contributor
+ * bot; a maintainer's only comment floats a blended midpoint, which is still wrong by ±50% by
+ * construction. So we decline to state a number until the catalog can express the real one.
+ *
+ * Deliberately keyed to the NATIVE `deepseek` provider. The same models reached through a
+ * gateway (openrouter, vercel-ai-gateway, opencode) are billed and priced by that gateway under
+ * its own provider id and its own rates, which are not affected by DeepSeek's clock.
+ */
+export function catalogRatesAreUnexpressible(provider: string | undefined, modelId: string | undefined): boolean {
+  return provider === "deepseek" && /^deepseek-v4/.test(modelId ?? "");
+}
+
+/** Why a cost is being withheld, for the status chip's tooltip. Null when it is not. */
+export function costWithheldReason(provider: string | undefined, modelId: string | undefined): string | null {
+  return catalogRatesAreUnexpressible(provider, modelId)
+    ? "DeepSeek V4 bills at different rates by time of day (peak is 2\u00d7 off-peak), which the bundled price catalog can't express, and DeepSeek doesn't report the billed cost. Showing a number here would understate it by up to 4.6\u00d7, so it's left unknown."
+    : null;
+}
+
 export function findCatalogModelCost(
   providers: Record<string, { models: Array<{ id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> | undefined,
   provider: string,
