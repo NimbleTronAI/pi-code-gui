@@ -2,6 +2,9 @@
 
 ## [0.1.12]
 
+### Changed
+- **Rust Pi is now pinned to v0.3.0** (was v0.1.23) — the version the managed install downloads and the extension is tested against. 0.3.0 enables ten more tools by default (`web_search`, `lsp`, `debug`, `ast_grep`/`ast_edit`, `todo`, `jobs` and others) and adds the `ask` question card, which 0.1.11 taught the extension to answer. An existing binary keeps working and is not replaced; you'll get a one-time notice that it differs from the tested version.
+
 ### Fixed
 - **Windows: the SDK went undetected when the npm prefix is itself on `PATH`.** Candidates were only ever derived from the PATH entry's *parent*, so a layout like `D:\nodejs` (packages in `D:\nodejs\node_modules`) had none — the extension reported "SDK is not installed" while `pi --version` worked in a shell. Also affects nvm-windows. The PATH entry itself is now probed, on every platform. (#81)
 
