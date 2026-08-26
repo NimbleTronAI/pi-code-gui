@@ -6,6 +6,7 @@
 - **Rust Pi is now pinned to v0.3.0** (was v0.1.23) — the version the managed install downloads and the extension is tested against. 0.3.0 enables ten more tools by default (`web_search`, `lsp`, `debug`, `ast_grep`/`ast_edit`, `todo`, `jobs` and others) and adds the `ask` question card, which 0.1.11 taught the extension to answer. An existing binary keeps working and is not replaced; you'll get a one-time notice that it differs from the tested version.
 
 ### Fixed
+- **Rust sessions wouldn't start on rust-pi 0.3.0: `auth.json must be a regular non-link file`.** The extension symlinked `auth.json` into the Rust agent home so a later `/login` tracked automatically; 0.3.0 hardened against linked credentials and exits immediately (code 1) when it finds one. Every session created before 0.3.0 left a symlink there, so this broke every existing user on upgrade. It's now a regular file, and an existing symlink is migrated on the next session start. A `/login` still reaches Rust — the copy is refreshed when the source is newer, so reopen the session after logging in.
 - **Windows: the SDK went undetected when the npm prefix is itself on `PATH`.** Candidates were only ever derived from the PATH entry's *parent*, so a layout like `D:\nodejs` (packages in `D:\nodejs\node_modules`) had none — the extension reported "SDK is not installed" while `pi --version` worked in a shell. Also affects nvm-windows. The PATH entry itself is now probed, on every platform. (#81)
 
 ## [0.1.11]

@@ -15,24 +15,26 @@ const AUTH = JSON.stringify({ anthropic: { type: "oauth", token: "t1" } });
 
 function tmp(): string { return mkdtempSync(join(tmpdir(), "authseed-")); }
 
-test("seeds a SYMLINK when nothing is there (so future logins track automatically)", () => {
+test("seeds a REGULAR FILE when nothing is there (0.3.0 refuses a linked auth.json)", () => {
   const d = tmp();
   try {
     const src = join(d, "src.json"), dst = join(d, "dst.json");
     writeFileSync(src, AUTH);
     assert.equal(seedAuthFrom(src, dst), null, "no warning on the happy path");
-    assert.ok(lstatSync(dst).isSymbolicLink(), "symlink preferred");
+    assert.ok(!lstatSync(dst).isSymbolicLink(), "never a symlink");
+    assert.ok(lstatSync(dst).isFile(), "a real file rust-pi 0.3.0 will accept");
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test("an existing symlink is left alone", () => {
+test("an existing symlink is MIGRATED to a copy, not left alone", () => {
   const d = tmp();
   try {
     const src = join(d, "src.json"), dst = join(d, "dst.json");
     writeFileSync(src, AUTH);
     symlinkSync(src, dst);
     assert.equal(seedAuthFrom(src, dst), null);
-    assert.ok(lstatSync(dst).isSymbolicLink());
+    assert.ok(!lstatSync(dst).isSymbolicLink(), "the fatal link is gone");
+    assert.ok(lstatSync(dst).isFile());
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -73,7 +75,7 @@ test("a missing/empty/corrupt source is not seeded, and a stale symlink to it is
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test("a copied destination is UPGRADED to a symlink when symlinking becomes possible", () => {
+test("a copied destination is never turned back into a symlink", () => {
   const d = tmp();
   try {
     const src = join(d, "src.json"), dst = join(d, "dst.json");
@@ -81,6 +83,26 @@ test("a copied destination is UPGRADED to a symlink when symlinking becomes poss
     writeFileSync(dst, AUTH);                    // a plain file left by the copy fallback
     assert.ok(!lstatSync(dst).isSymbolicLink());
     assert.equal(seedAuthFrom(src, dst), null);
-    assert.ok(lstatSync(dst).isSymbolicLink(), "upgraded, so it stops going stale");
+    // It used to be "upgraded" to a symlink here so it stopped going stale. That upgrade is now
+    // the failure mode: rust-pi 0.3.0 refuses to start on a linked auth.json. Staleness is
+    // handled by refreshing the copy when the source is newer (the test above), not by linking.
+    assert.ok(!lstatSync(dst).isSymbolicLink(), "stays a regular file");
   } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test("migrating a symlink does not write THROUGH it to the user's real auth.json", () => {
+  // The trap in this migration: copyFileSync follows the link, so copying without unlinking
+  // first would overwrite ~/.pi/agent/auth.json — the shared credential the pi CLI also uses —
+  // and leave the fatal symlink in place. Unlink first, then copy.
+  const dir = mkdtempSync(join(tmpdir(), "auth-migrate-"));
+  try {
+    const src = join(dir, "src.json");
+    const dst = join(dir, "dst.json");
+    writeFileSync(src, JSON.stringify({ token: "real" }));
+    symlinkSync(src, dst);
+    seedAuthFrom(src, dst);
+    assert.ok(!lstatSync(dst).isSymbolicLink(), "link replaced");
+    assert.equal(JSON.parse(readFileSync(src, "utf8")).token, "real", "source untouched");
+    assert.equal(JSON.parse(readFileSync(dst, "utf8")).token, "real", "copy carries the credential");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
