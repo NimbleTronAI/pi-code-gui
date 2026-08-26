@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.1.12]
+
+### Fixed
+- **Windows: the SDK went undetected when the npm prefix is itself on `PATH`.** Candidates were only ever derived from the PATH entry's *parent*, so a layout like `D:\nodejs` (packages in `D:\nodejs\node_modules`) had none — the extension reported "SDK is not installed" while `pi --version` worked in a shell. Also affects nvm-windows. The PATH entry itself is now probed, on every platform. (#81)
+
 ## [0.1.11]
 
 ### Changed
