@@ -79,3 +79,31 @@ test("pickPiPackagePath: a throwing probe skips that candidate, not the whole sc
   });
   assert.equal(found, "/y");
 });
+
+// ── #81: the npm prefix IS the PATH entry ───────────────────────────
+test("buildPiPackageCandidates: a PATH entry that is itself the npm prefix resolves (#81)", () => {
+  // Node installed to D:\nodejs with npm prefix = D:\nodejs puts packages in
+  // D:\nodejs\node_modules, beside node.exe rather than under a parent. Deriving only from
+  // dirname() probed D:\lib\node_modules and D:\node_modules and gave up — the extension
+  // reported "SDK is not installed" while `pi --version` worked in a shell. nvm-windows lays
+  // the active version out the same way.
+  const c = buildPiPackageCandidates({ platform: "win32", pathEnv: "D:\\nodejs" });
+  assert.ok(c.includes(path.join("D:\\nodejs", SUFFIX)), "the PATH entry itself is a candidate");
+});
+
+test("buildPiPackageCandidates: prefix-on-PATH also resolves on POSIX", () => {
+  // Deliberately not gated on win32: the layout is not Windows-specific, and a candidate that
+  // does not exist costs one stat.
+  const c = buildPiPackageCandidates({ platform: "linux", pathEnv: "/opt/node" });
+  assert.ok(c.includes(path.join("/opt/node", SUFFIX)));
+});
+
+test("buildPiPackageCandidates: the new candidate never outranks an existing resolution", () => {
+  // Ordering is load-bearing here, so assert it rather than trusting insertion order: the
+  // conventional <prefix>/lib layout must still be probed before the PATH entry itself.
+  const c = buildPiPackageCandidates({ platform: "linux", pathEnv: "/usr/local/bin" });
+  const conventional = c.indexOf(path.join("/usr/local", "lib", SUFFIX));
+  const pathEntry = c.indexOf(path.join("/usr/local/bin", SUFFIX));
+  assert.ok(conventional !== -1 && pathEntry !== -1);
+  assert.ok(conventional < pathEntry, "conventional prefix layout still wins");
+});

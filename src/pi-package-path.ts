@@ -49,6 +49,20 @@ export function buildPiPackageCandidates(i: PiPackageCandidateInputs): string[] 
     const prefix = path.dirname(normBin);
     candidates.add(path.join(prefix, "lib", PKG_SUFFIX));
     if (isWin) { candidates.add(path.join(prefix, PKG_SUFFIX)); }
+    // The PATH entry ITSELF, not just its parent. Every candidate above assumes the npm prefix
+    // is dirname(<PATH entry>) — true for `<prefix>/bin` on POSIX and `<prefix>/npm` on Windows,
+    // and false whenever the prefix directory is on PATH directly and holds node_modules beside
+    // its binaries. Node installed to D:\nodejs (npm prefix = D:\nodejs, packages in
+    // D:\nodejs\node_modules) then had NO candidate at all: dirname gives D:\, so we probed
+    // D:\lib\node_modules and D:\node_modules and gave up, reporting "SDK is not installed"
+    // while `pi --version` worked in a shell. nvm-windows puts the active version directory on
+    // PATH the same way. (#81)
+    //
+    // Added on every platform, not just win32 as reported: the layout is not Windows-specific,
+    // an unrelated candidate costs one stat of a directory that does not exist, and gating it on
+    // the platform would leave the identical POSIX prefix-on-PATH case to be re-reported later.
+    // Added LAST in the loop so it cannot outrank an existing working resolution.
+    candidates.add(path.join(normBin, PKG_SUFFIX));
   }
 
   // 3. Windows AppData (npm default on Windows)
