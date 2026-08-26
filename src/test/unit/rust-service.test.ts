@@ -104,6 +104,7 @@ function makeDeps(mode: string, overrides?: Partial<RustDeps>): RustDeps {
   return {
     detectBinary: () => ({ installed: true, binaryPath: process.execPath }),
     shouldDisableExtensions: () => false,
+    workspaceIsTrusted: () => true,
     extensionsMode: () => "auto",
     setupModels: () => ({ piEnv: {}, warnings: [] }),
     sessionDir: () => tmp,
@@ -226,6 +227,31 @@ test("initialize (fresh): passes --thinking with the configured default, INCLUDI
   }
 });
 
+// ── Workspace trust (rust-pi 0.3.0) ──────────────────────────────────
+// 0.3.0 gates project-local `.pi/settings.json` packages and `.pi/extensions/` behind
+// workspace trust and fails CLOSED for non-interactive launches. Measured against the real
+// binary, "fails closed" means the process still starts and RPC still answers — the config is
+// silently skipped — so no crash test would ever have caught this. The flag is the only signal.
+test("initialize: passes --trust exactly when VS Code trusts the workspace", async () => {
+  for (const trusted of [true, false]) {
+    const { host } = makeHost();
+    let seenArgs: string[] = [];
+    const svc = new RustService(host, makeDeps("ok", {
+      workspaceIsTrusted: () => trusted,
+      createProcess: (opts: RustProcessOpts) => {
+        seenArgs = opts.args;
+        return new RustProcess({ ...opts, binaryPath: process.execPath, args: [fakeBin, ...opts.args], env: { ...opts.env, FAKE_MODE: "ok" } });
+      },
+    }));
+    const result = await svc.initialize({ fresh: true });
+    try {
+      assert.equal(result.success, true);
+      assert.equal(seenArgs.includes("--trust"), trusted,
+        trusted ? "--trust present in a trusted workspace" : "--trust withheld in an untrusted workspace (fail closed)");
+    } finally { svc.dispose(); }
+  }
+});
+
 // ── Spawn-failure teardown (audit: orphaned child) ───────────────────
 // RustProcess.spawn() rejects when the readiness probe (get_state) times out — and in that
 // case the child is still ALIVE. Nulling this.process without disposing orphaned it: PiService
@@ -272,4 +298,149 @@ test("a spawn failure on the --no-extensions retry also disposes (both failure p
   assert.equal(result.success, false);
   assert.equal(attempts, 2, "retried once with --no-extensions");
   assert.equal(disposed, 2, "both the original and the retry child were disposed");
+});
+
+// ── handshake-timeout recovery ───────────────────────────────────────
+// A project-local package can HANG init rather than fail the spawn: the process starts, reports
+// its load failure on stderr, then never answers get_state. Observed live with a package
+// importing `node:dns/promises` — the user saw "RPC 'get_state' timed out after 15000ms" with
+// nothing naming the package. The spawn-time retry cannot help: spawn() never threw.
+function makeHangingProcess(opts: RustProcessOpts, state: { attempts: number; disposed: number }) {
+  state.attempts++;
+  const first = state.attempts === 1;
+  return {
+    // Report the load failure the way RustProcess does — during startup, before the handshake —
+    // then never answer get_state.
+    spawn: async () => {
+      if (first) {
+        opts.onLoadError?.({
+          kind: "unsupported-module", packageName: "pi-web-access",
+          detail: "Imports node:dns/promises, which the Rust runtime's module loader doesn't support.",
+        });
+      }
+    },
+    dispose: () => { state.disposed++; },
+    isAlive: () => true,
+    request: async (command: string) => {
+      if (command === "get_state" && first) { throw new Error("RPC 'get_state' timed out after 15000ms"); }
+      return { type: "response", success: true, data: {} };
+    },
+    send: () => {},
+  } as unknown as RustProcess;
+}
+
+test("a handshake timeout after a package load failure retries without project extensions", async () => {
+  const { host, state: hostState } = makeHost();
+  const state = { attempts: 0, disposed: 0 };
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (opts: RustProcessOpts) => makeHangingProcess(opts, state),
+  }));
+
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, true, "recovered instead of failing the session");
+  assert.equal(state.attempts, 2, "respawned once");
+  const messages = hostState.events.map((e) => String(((e as { data?: { content?: string } }).data)?.content ?? ""));
+  // The recovery notice is the one that explains the cost — distinct from the plain load-error
+  // line RustProcess already emits, which names the package but not what the extension DID.
+  const notice = messages.find((c) => c.includes("rustExtensions"));
+  assert.ok(notice, "the user is told a retry happened and how to skip it next time");
+  assert.ok(notice.includes("pi-web-access"), "names the package responsible");
+  assert.ok(/\.pi\/settings\.json/.test(notice), "points at the file declaring the package");
+  assert.ok(/15 seconds/.test(notice), "names the start-up cost it just paid");
+  svc.dispose();
+});
+
+test("a non-timeout start failure with NO load failure is reported, not retried", async () => {
+  // Nothing to blame on extensions and no hang to escape: respawning would just fail the same
+  // way. Only a timeout or a classified load error earns a retry.
+  const { host } = makeHost();
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (_opts: RustProcessOpts) => ({
+      spawn: async () => { attempts++; },
+      dispose: () => {},
+      isAlive: () => true,
+      request: async () => { throw new Error("binary exited with code 1"); },
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, false);
+  assert.equal(attempts, 1, "no pointless respawn");
+  svc.dispose();
+});
+
+test("a readiness-probe timeout after a package load failure retries without project extensions", async () => {
+  // The REAL door. spawn() runs the readiness probe (readyCommand: get_state), so a package that
+  // wedges the binary rejects spawn() with "RPC 'get_state' timed out after 15000ms" — the exact
+  // string users saw as "Failed to start Rust Pi: ...". It matches no conflict signature, so
+  // before this the session just died. _loadErrors is what names the culprit.
+  const { host, state: hostState } = makeHost();
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (opts: RustProcessOpts) => {
+      attempts++;
+      const first = attempts === 1;
+      return {
+        spawn: async () => {
+          if (first) {
+            opts.onLoadError?.({
+              kind: "unsupported-module", packageName: "pi-web-access",
+              detail: "Imports node:dns/promises, which the Rust runtime's module loader doesn't support.",
+            });
+            throw new Error("RPC 'get_state' timed out after 15000ms");
+          }
+        },
+        dispose: () => {},
+        isAlive: () => true,
+        request: async () => ({ type: "response", success: true, data: {} }),
+        send: () => {},
+      } as unknown as RustProcess;
+    },
+  }));
+
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, true, "recovered instead of failing the session");
+  assert.equal(attempts, 2, "respawned once with --no-extensions");
+  const notice = hostState.events
+    .map((e) => String(((e as { data?: { content?: string } }).data)?.content ?? ""))
+    .find((c) => c.includes("pi-web-access") && c.includes("rustExtensions"));
+  assert.ok(notice, "names the package AND the setting that avoids the retry next time");
+  svc.dispose();
+});
+
+test("a cold-cache startup timeout retries blind, with no load error to name", async () => {
+  // The case that broke the first fix: on a cold package cache the binary prints NOTHING within
+  // the 15s probe, so there is no classified load error to trigger on. The timeout alone has to
+  // be enough, and the notice must not name a culprit it has not identified.
+  const { host, state: hostState } = makeHost();
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (_opts: RustProcessOpts) => {
+      attempts++;
+      const first = attempts === 1;
+      return {
+        spawn: async () => { if (first) { throw new Error("RPC 'get_state' timed out after 15000ms"); } },
+        dispose: () => {},
+        isAlive: () => true,
+        request: async () => ({ type: "response", success: true, data: {} }),
+        send: () => {},
+      } as unknown as RustProcess;
+    },
+  }));
+
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, true, "recovered rather than failing the session");
+  assert.equal(attempts, 2, "retried with --no-extensions on the timeout alone");
+  const notice = hostState.events
+    .map((e) => String(((e as { data?: { content?: string } }).data)?.content ?? ""))
+    .find((c) => c.includes("rustExtensions"));
+  assert.ok(notice, "tells the user what happened and how to avoid the cost");
+  assert.ok(!/pi-web-access|failed to load/.test(notice), "does not invent a culprit it never identified");
+  svc.dispose();
 });

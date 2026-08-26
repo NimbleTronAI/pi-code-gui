@@ -304,3 +304,60 @@ test("the crash message names the exit code rather than saying 'not initialized'
   await assert.rejects(() => h.rust.sendPrompt("x"), /code 9/,
     "'not initialized' is misleading for a session that WAS running and then died");
 });
+
+// ── ask_request (rust-pi 0.3.0) ──────────────────────────────────────
+// The `ask` tool joined 0.3.0's default tool set and BLOCKS the turn until answered. The wire
+// contract below was established by probing the real 0.3.0 binary — its source is behind the
+// clean-room wall — and is enforced by the binary itself: `answers` must be a sequence of
+// AskAnswer structs carrying `questionId` and a `selected` list, or `dismissed: true`.
+function makeAskHarness(dialogAnswer: unknown) {
+  const sent: Array<{ command: string; payload: Any }> = [];
+  const host = {
+    emit: () => {}, handleAgentEvent: () => {}, reportStatus: () => {},
+    sendInitialMessages: async () => {}, emitPostInitState: () => {},
+    showDialog: () => (dialogAnswer === undefined ? undefined : Promise.resolve(dialogAnswer)),
+    rememberReasoning: () => {}, setSessionId: () => {},
+    getCycleModels: () => [], setCycleModels: () => {},
+    setAutoCompactionEnabled: () => {}, setAutoRetryEnabled: () => {},
+  } as unknown as RustHost;
+  const deps = { config: () => CONFIG } as unknown as RustDeps;
+  const rust = new RustService(host, deps);
+  (rust as Any).process = { send: (command: string, payload: Any) => sent.push({ command, payload }), request: async () => ({ type: "response", success: true, data: {} }), dispose: () => {} };
+  return { rust, sent };
+}
+
+const ASK_EVENT: Any = {
+  type: "ask_request", id: "req-1", timeoutMs: 300000,
+  questions: [{ id: "pref", header: "A or B?", question: "Which option?", multi: false,
+                options: [{ label: "Option A", description: "first" }, { label: "Option B", description: "second" }] }],
+};
+
+test("ask_request: a chosen option answers on the wire in the binary's AskAnswer shape", async () => {
+  const { rust, sent } = makeAskHarness("Option B");
+  (rust as Any).handleEvent(ASK_EVENT);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].command, "ask_response");
+  assert.deepEqual(sent[0].payload, { id: "req-1", answers: [{ questionId: "pref", selected: ["Option B"] }] });
+  rust.dispose();
+});
+
+test("ask_request: cancelling sends dismissed — omitting it would leave the turn blocked", async () => {
+  // `{id}` alone is rejected by the binary ("Missing answers field (or dismissed: true)"), so a
+  // cancelled card MUST say so explicitly; staying silent is the stall this whole path fixes.
+  const { rust, sent } = makeAskHarness(undefined);
+  (rust as Any).handleEvent(ASK_EVENT);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].command, "ask_response");
+  assert.deepEqual(sent[0].payload, { id: "req-1", dismissed: true });
+  rust.dispose();
+});
+
+test("ask_request: a card with no questions is dismissed rather than left hanging", async () => {
+  const { rust, sent } = makeAskHarness("x");
+  (rust as Any).handleEvent({ type: "ask_request", id: "req-2", questions: [] });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent[0].payload, { id: "req-2", dismissed: true });
+  rust.dispose();
+});

@@ -96,6 +96,14 @@ Nothing fails silently: an unwritable agent directory surfaces as a clear error 
 
 ## Gotchas
 
+- **DeepSeek V4 sessions show `$??` instead of a cost.** DeepSeek bills those models at
+  different rates by time of day (peak is 2x off-peak), the bundled price catalog has no field
+  for time-varying rates, and DeepSeek's API doesn't report the billed amount. Any figure shown
+  would be wrong — currently by up to 4.6x, since the catalog also still carries pre-August-2026
+  rates. Token counts and context % are unaffected, and the same models reached through a
+  gateway (OpenRouter, Vercel AI Gateway) still price normally. Tracked upstream as
+  [pi#8510](https://github.com/earendil-works/pi/issues/8510) and
+  [pi#8491](https://github.com/earendil-works/pi/issues/8491).
 - Not all TUI behaviours map well into VSCode's UX. For instance, having new UI widgets spawned by extension packages. I did a best effort implementation, but there is definitely room for improvement.
 
 ## Custom Messages — Minimal Working Example

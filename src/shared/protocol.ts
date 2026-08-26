@@ -188,6 +188,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
             output: z.number(),
             cost: z.number(),
             costKnown: z.boolean().optional(),
+            // Why a cost is withheld — the status chip's tooltip, so "$??" explains itself.
+            costNote: z.string().optional(),
             contextPercent: z.number().nullable(),
           })
           .optional(),

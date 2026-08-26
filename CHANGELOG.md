@@ -1,5 +1,20 @@
 # Change Log
 
+## [0.1.11]
+
+### Changed
+- **DeepSeek V4 sessions show `$??` instead of a cost.** DeepSeek bills by time of day (peak is 2x off-peak) and doesn't report the billed amount, so any figure from the flat-rate catalog is wrong — currently understating by 2.3x-4.6x. Hover the status chip for why. DeepSeek via a gateway (OpenRouter, Vercel AI Gateway) is unaffected.
+
+### Fixed
+- **A project extension that hangs startup no longer kills the session.** rust-pi can start, fail to load a `.pi/settings.json` package, then never answer `get_state` — failing the session after 15s with an error naming the RPC, not the package. It now retries once without project extensions and names the culprit. Set `pi-code-gui.rustExtensions` to `disabled` to skip the retry.
+- **An `ask` question from the agent no longer hangs the session.** rust-pi 0.3.0 enables its `ask` tool by default and blocks the turn until a client answers; the extension had no route for the event, so the session sat for five minutes with no way to reply. Questions now appear as a picker, and cancelling dismisses the card.
+- **Project-local `.pi/` config loads again on rust-pi 0.3.0.** That release gates packages and extensions behind workspace trust and skips them silently for non-interactive launches. The extension now passes `--trust` when VS Code itself trusts the workspace; untrusted workspaces still get nothing.
+- `$??` now explains itself on hover in every case, including models with no published per-token rate.
+
+## [0.1.9] — [0.1.10]
+
+No functional changes — dependency bumps the release automation versioned automatically.
+
 ## [0.1.8]
 
 No user-facing change — a release-pipeline fix.

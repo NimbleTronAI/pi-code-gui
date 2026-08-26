@@ -17,6 +17,7 @@ import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProc
 import { formatRustLoadError } from "./extension-errors.js";
 import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
+import type { RustLoadError } from "./extension-errors.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
 import { thinkingLevelIsLive, clampThinkingLevelForRust } from "./model-catalog.js";
@@ -105,6 +106,10 @@ export interface RustSessionConfig {
 export interface RustDeps {
   detectBinary(): RustInstallStatus;
   shouldDisableExtensions(cwd: string): boolean;
+  /** VS Code's own workspace-trust verdict for this folder. rust-pi 0.3.0 gates
+   *  project-local `.pi/settings.json` packages and `.pi/extensions/` behind trust and
+   *  fails closed for non-interactive launches — which every `--mode rpc` session is. */
+  workspaceIsTrusted(): boolean;
   /** The rustExtensions setting mode: "auto" | "enabled" | "disabled". */
   extensionsMode(): string;
   setupModels(): { piEnv: Record<string, string>; warnings: string[] };
@@ -162,6 +167,10 @@ export class RustService implements PiBackend {
   private _refreshing = false;
   /** One-shot guard for the get_state RPC-shape-drift warning (a permanent structural
    *  mismatch, distinct from transient capability degradation). */
+  /** Extension/skill load failures classified from this spawn's stderr. The handshake-timeout
+   *  recovery reads it: a package that hangs init produces no spawn error, so these lines are
+   *  the only signal naming the culprit. */
+  private _loadErrors: RustLoadError[] = [];
   private _shapeProbeWarned = false;
 
   constructor(private readonly host: RustHost, private readonly deps: RustDeps) {}
@@ -256,6 +265,23 @@ export class RustService implements PiBackend {
     }));
     args.push("--extension-policy", cfg.rustExtensionPolicy?.trim() || "balanced");
 
+    // rust-pi 0.3.0 gates project-local `.pi/settings.json` packages and `.pi/extensions/`
+    // behind workspace trust, and a NON-INTERACTIVE launch — which `--mode rpc` always is —
+    // fails closed. Measured against the real 0.3.0 binary: the process still starts and RPC
+    // still answers, so this is not a crash. The project-local config is simply skipped, and
+    // the only announcement is a stderr line that classifyRustLoadError does not recognise —
+    // so it lands in the log via the generic `[rust-stderr]` path and never reaches the user.
+    //
+    // Defer to VS Code's verdict instead of prompting again: the user has already answered
+    // this exact question for this folder, and package.json already declares
+    // `capabilities.untrustedWorkspaces`. An untrusted workspace deliberately gets NO flag —
+    // failing closed is correct there, not a regression to paper over.
+    //
+    // Safe on older binaries: 0.1.20 and 0.3.0 both IGNORE unknown flags (verified by spawning
+    // each with a bogus one — RPC came up clean, stderr empty), so this needs no version gate
+    // and a user pinned to an older build is unaffected.
+    if (this.deps.workspaceIsTrusted()) { args.push("--trust"); }
+
     // Extension discovery. The Rust binary aborts `--mode rpc` startup when it
     // meets the workspace's TypeScript-SDK `.pi/` extensions (it wants its own
     // tool-manifest shape: `missing field 'parameters'`). Per the rustExtensions
@@ -294,12 +320,32 @@ export class RustService implements PiBackend {
       await this.spawn(status.binaryPath, args, cwd, env);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // Recover only from the extension-parse conflict, and only when we did NOT
-      // already disable extensions. In "auto" mode we self-heal (retry with
-      // discovery off + warn); when the user explicitly set "enabled" we respect
-      // that and surface an actionable error that points to the setting.
-      if (isRustExtensionConflict(msg) && !noExtensions && this.deps.extensionsMode() === "auto") {
-        piWarn("Rust start hit a TS-extension conflict; retrying with --no-extensions");
+      // Recover from an extension-parse conflict OR from a package that HANGS startup, and only
+      // when we did NOT already disable extensions. In "auto" mode we self-heal (retry with
+      // discovery off + warn); when the user explicitly set "enabled" we respect that and
+      // surface an actionable error that points to the setting.
+      //
+      // The hang is the case the conflict check alone misses. spawn() rejects on the
+      // READINESS-PROBE timeout (readyCommand: get_state), so a package that loads badly enough
+      // to wedge the binary surfaces here as "RPC 'get_state' timed out after 15000ms" — which
+      // matches no conflict signature and used to fail the session outright. Observed live with
+      // a package importing `node:dns/promises`: the process stayed alive and silent, and the
+      // user got a timeout naming get_state and nothing else. _loadErrors carries the stderr
+      // classification that DOES name the culprit, so blame extensions when we have one.
+      const blocking = this._loadErrors[0];
+      // The readiness probe timing out is itself grounds to suspect extensions, EVEN WITH NO
+      // classified load error in hand. Measured against the real binary: with a warm package
+      // cache the stderr line arrives at 0.9s and `blocking` is set, but on a COLD cache the
+      // binary spends longer than the whole 15s probe preparing packages and has printed
+      // nothing yet — same hang, no evidence, and waiting for evidence that has not been
+      // written yet is how the first version of this fix failed to fire at all.
+      const probeTimedOut = /timed out after \d+ms/i.test(msg);
+      if ((isRustExtensionConflict(msg) || blocking || probeTimedOut) && !noExtensions && this.deps.extensionsMode() === "auto") {
+        piWarn(blocking
+          ? `Rust start blocked by extension load failure (${blocking.packageName ?? "unknown package"}); retrying with --no-extensions`
+          : `Rust start failed (${msg}); retrying with --no-extensions`);
+        if (blocking) { this.noticeExtensionsAutoDisabled(blocking, 15); }
+        else if (probeTimedOut) { this.noticeStartupRetriedBlind(); }
         args.push("--no-extensions");
         noExtensions = true;
         warning = "rust-extensions-auto-disabled";
@@ -326,7 +372,7 @@ export class RustService implements PiBackend {
     this.sessionPath = openPath ?? null;
 
     // spawn succeeded above, so the process is live for the handshake.
-    const proc = this.process!;
+    let proc = this.process!;
 
     // Handshake: state → models → history.
     // get_state doubles as the liveness check: if the process crashed during or
@@ -353,9 +399,42 @@ export class RustService implements PiBackend {
     } catch (e: unknown) {
       const m = e instanceof Error ? e.message : String(e);
       piWarn(`Rust get_state failed: ${m}`);
-      this.process?.dispose();
-      this.process = null;
-      return { success: false, error: `Rust Pi started but did not respond (${m}). The binary may have crashed on startup — check the Pi Code Gui output channel.` };
+      // A project-local package can HANG the handshake instead of failing the spawn: the
+      // process starts, reports the load failure on stderr, and then never answers get_state.
+      // The spawn-time recovery below cannot see that — it only catches a throw from spawn() —
+      // so this is the second door onto the same fix. Observed with a package importing
+      // `node:dns/promises`: the binary stayed alive and silent until the 15s timeout, and the
+      // user got "RPC 'get_state' timed out" with nothing naming the package responsible.
+      const blocking = this._loadErrors[0];
+      if (blocking && !noExtensions && this.deps.extensionsMode() === "auto") {
+        piWarn(`Rust handshake timed out after an extension load failure (${blocking.packageName ?? "unknown package"}); retrying with --no-extensions`);
+        args.push("--no-extensions");
+        noExtensions = true;
+        warning = "rust-extensions-auto-disabled";
+        this.noticeExtensionsAutoDisabled(blocking, 15);
+        try {
+          await this.spawn(status.binaryPath, args, cwd, env);
+        } catch (e2: unknown) {
+          const m2 = e2 instanceof Error ? e2.message : String(e2);
+          this.process?.dispose();
+          this.process = null;
+          return { success: false, error: `Failed to start Rust Pi without project extensions: ${m2}` };
+        }
+        proc = this.process!;
+        try {
+          const retried = await proc.request(RUST_RPC.getState, {}, 15000);
+          if (retried.success) { this.applyState(retried.data); }
+        } catch (e3: unknown) {
+          const m3 = e3 instanceof Error ? e3.message : String(e3);
+          this.process?.dispose();
+          this.process = null;
+          return { success: false, error: `Rust Pi did not respond even with project extensions disabled (${m3}). Check the Pi Code Gui output channel.` };
+        }
+      } else {
+        this.process?.dispose();
+        this.process = null;
+        return { success: false, error: `Rust Pi started but did not respond (${m}). The binary may have crashed on startup — check the Pi Code Gui output channel.` };
+      }
     }
     if (!proc.isAlive()) {
       piWarn("Rust process exited during initialization handshake");
@@ -474,6 +553,8 @@ export class RustService implements PiBackend {
   /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
   private async spawn(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
     this.process?.dispose();
+    // Per-spawn, so a retry's verdict is not polluted by the attempt that failed.
+    this._loadErrors = [];
     const createProcess = this.deps.createProcess ?? ((o: RustProcessOpts) => new RustProcess(o));
     this.process = createProcess({
       binaryPath, args, cwd, env,
@@ -482,10 +563,15 @@ export class RustService implements PiBackend {
       // Surface a failed extension/skill load once, as an in-chat notice — users
       // can't be expected to read raw stderr, and we can't control which
       // extensions they have installed. Deduped upstream in RustProcess.
-      onLoadError: (e) => this.host.emit({
-        type: "custom-message",
-        data: { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
-      }),
+      onLoadError: (e) => {
+        // Kept for the handshake-timeout recovery below: a package that HANGS init never
+        // throws from spawn(), so this stderr classification is the only evidence of why.
+        this._loadErrors.push(e);
+        this.host.emit({
+          type: "custom-message",
+          data: { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
+        });
+      },
       // Confirm startup by a real get_state round-trip rather than a blind timer.
       readyCommand: RUST_RPC.getState,
     });
@@ -534,6 +620,9 @@ export class RustService implements PiBackend {
     switch (routing.action) {
       case "ui-request":
         void this.handleUiRequest(event);
+        return;
+      case "ask-request":
+        void this.handleAskRequest(event);
         return;
       case "extension-error":
         this.host.emit({ type: "custom-message", data: { customType: "error", content: `Extension error: ${event.error ?? ""}`, timestamp: Date.now() } });
@@ -634,6 +723,85 @@ export class RustService implements PiBackend {
     // fresh window via the existing resume flow — avoids in-place re-init (which
     // would replay history into the dead tab) and crash-loops (user-initiated).
     if (file) { this.deps.offerReopen(file); }
+  }
+
+  /** Tell the user which project extension blocked startup, that we restarted without project
+   *  extensions, and how to avoid paying the retry cost again. The load failure itself is
+   *  already surfaced by onLoadError; this adds what it cost and what to do about it. */
+  private noticeExtensionsAutoDisabled(blocking: RustLoadError, secondsLost: number): void {
+    const culprit = blocking.packageName ? `"${blocking.packageName}"` : "A project extension";
+    this.host.emit({ type: "custom-message", data: { customType: "error", timestamp: Date.now(), content:
+      `⚠ ${formatRustLoadError(blocking)}\n\n` +
+      `Rust Pi then stopped responding, so this session was restarted with project extensions ` +
+      `disabled — that recovery cost about ${secondsLost} seconds. To start immediately next time, ` +
+      `remove ${culprit} from \`.pi/settings.json\`, or set \`pi-code-gui.rustExtensions\` to ` +
+      `"disabled" to skip loading project extensions altogether.` } });
+  }
+
+  /** Startup timed out with no classified load failure to name. We still retried without
+   *  project extensions, so say what we did and how to make it stop costing time — without
+   *  claiming a culprit we have not identified. */
+  private noticeStartupRetriedBlind(): void {
+    this.host.emit({ type: "custom-message", data: { customType: "error", timestamp: Date.now(), content:
+      "⚠ Rust Pi didn't finish starting within 15 seconds, so this session was restarted with " +
+      "project extensions disabled — that recovery cost about 15 seconds.\n\n" +
+      "If the session is working now, a project extension declared in `.pi/settings.json` is the " +
+      "cause; the Pi Code Gui output channel names it once it reports. To start immediately every " +
+      "time, set `pi-code-gui.rustExtensions` to \"disabled\", or remove the package from " +
+      "`.pi/settings.json`." } });
+  }
+
+  /** Answer a Rust `ask_request` — the `ask` tool's option card — over the RPC.
+   *
+   *  rust-pi 0.3.0 default-enables `ask` (it joined the default `--tools` set, which grew from
+   *  8 tools to 18). The binary BLOCKS the turn until a client answers: measured against the
+   *  0.3.0 binary, an unanswered card leaves `tool_execution_start` with no matching end, no
+   *  `turn_end` and no `agent_end` — the session simply sits there for the request's own
+   *  `timeoutMs` (300000, i.e. five minutes). Before this handler existed the extension had no
+   *  route for the event at all, so every `ask` the model chose to make hung the session.
+   *
+   *  The wire contract was established by probing the 0.3.0 binary, since its source is behind
+   *  the clean-room wall. The binary's own validation errors define it:
+   *    answers must be a SEQUENCE   ("invalid type: map, expected a sequence")
+   *    of AskAnswer structs         ("invalid type: string, expected struct AskAnswer")
+   *    requiring `questionId`       ("missing field `questionId`")
+   *    and `selected`               ("missing field `selected`"), itself a sequence.
+   *  `{ dismissed: true }` is the accepted alternative to `answers` — the binary names it in
+   *  the same error ("Missing answers field (or dismissed: true)"), which is what a cancelled
+   *  card must send: omitting both is rejected and leaves the turn blocked.
+   *
+   *  One question at a time, reusing the same host dialog bridge as extension_ui_request rather
+   *  than introducing a second UI path. A `multi: true` question is answered with a single
+   *  choice — `selected` is a list, so one element is well-formed — because the shared bridge
+   *  has no multi-select dialog; the turn proceeds rather than hanging on a card we cannot draw.
+   */
+  private async handleAskRequest(req: RustEvent): Promise<void> {
+    const id = typeof req.id === "string" ? req.id : undefined;
+    const questions = Array.isArray(req.questions) ? (req.questions as Array<Record<string, unknown>>) : [];
+    if (!id) { return; }
+    if (questions.length === 0) {
+      // Nothing to ask, but the turn is still blocked — dismiss so it resumes.
+      this.process?.send(RUST_RPC.askResponse, { id, dismissed: true });
+      return;
+    }
+    const answers: Array<{ questionId: string; selected: string[] }> = [];
+    for (const q of questions) {
+      const questionId = String(q.id ?? "");
+      const prompt = String(q.question ?? q.header ?? "");
+      const options = Array.isArray(q.options)
+        ? (q.options as Array<Record<string, unknown>>).map((o) => String(o?.label ?? ""))
+        : [];
+      const pending = this.host.showDialog("select", prompt, { options });
+      const chosen = pending ? await pending : undefined;
+      if (chosen === undefined || chosen === null) {
+        // Cancelling ANY question dismisses the whole card: a partial answers list would be
+        // answering a question the user declined to answer.
+        this.process?.send(RUST_RPC.askResponse, { id, dismissed: true });
+        return;
+      }
+      answers.push({ questionId, selected: [String(chosen)] });
+    }
+    this.process?.send(RUST_RPC.askResponse, { id, answers });
   }
 
   /** Map a Rust `extension_ui_request` onto the host's webview dialog/widget bridge. */

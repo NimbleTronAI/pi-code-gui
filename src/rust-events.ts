@@ -89,9 +89,10 @@ export interface RustEventRouting {
   isRealAgentEnd: boolean;
   /** How the caller should dispatch the event after the above side-effects:
    *  - "ui-request"      → handle as an extension_ui_request (no delegate)
+   *  - "ask-request"     → handle as an `ask` tool card (no delegate)
    *  - "extension-error" → surface as an error message (no delegate)
    *  - "delegate"        → route through the shared handleAgentEvent path */
-  action: "ui-request" | "extension-error" | "delegate";
+  action: "ui-request" | "ask-request" | "extension-error" | "delegate";
 }
 
 /**
@@ -113,6 +114,12 @@ export function routeRustEvent(event: RustEvent, queueNonEmpty: boolean, agentRu
   let captureSessionId: string | null = null;
   if (type === "extension_ui_request") {
     action = "ui-request";
+  } else if (type === "ask_request") {
+    // rust-pi 0.3.0 default-enables the `ask` tool, which BLOCKS the turn on a card the
+    // binary expects a client to answer. Unrouted it is not a dropped event, it is a stall:
+    // measured against 0.3.0, tool_execution_start arrives with no end, no turn_end and no
+    // agent_end, until the request's own timeoutMs (300000) expires.
+    action = "ask-request";
   } else if (type === "extension_error") {
     action = "extension-error";
   } else if (type === "agent_start" && typeof event.sessionId === "string") {

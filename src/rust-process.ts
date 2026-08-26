@@ -46,6 +46,7 @@ export const RUST_RPC = {
   setAutoCompaction: "set_auto_compaction",
   setAutoRetry: "set_auto_retry",
   extensionUiResponse: "extension_ui_response",
+  askResponse: "ask_response",
 } as const;
 
 export interface RustProcessOpts {

@@ -59,6 +59,13 @@ test("routeRustEvent: extension_ui_request short-circuits to ui-request", () => 
   assert.equal(route({ type: "extension_ui_request", method: "confirm" }).action, "ui-request");
 });
 
+test("routeRustEvent: ask_request short-circuits to ask-request", () => {
+  // Not a cosmetic routing detail: rust-pi 0.3.0 default-enables the `ask` tool and BLOCKS the
+  // turn until the card is answered. An unrouted ask_request is a five-minute stall, not a
+  // dropped event — no tool_execution_end, no turn_end, no agent_end.
+  assert.equal(route({ type: "ask_request", id: "a1", questions: [] }).action, "ask-request");
+});
+
 test("routeRustEvent: extension_error short-circuits to extension-error", () => {
   assert.equal(route({ type: "extension_error", error: "boom" }).action, "extension-error");
 });
