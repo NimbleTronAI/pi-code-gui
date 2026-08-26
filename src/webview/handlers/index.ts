@@ -2029,14 +2029,17 @@ export function handleShowDialog(data: MsgData<"show_dialog">): void {
       options: data.options || [],
       defaultValue: data.defaultValue || "",
     });
-    // Mount in a dedicated overlay container below the status bar
-    var container = document.getElementById("dialog-overlay");
-    if (!container) {
-      container = document.createElement("div");
-      container.id = "dialog-overlay";
-      document.body.appendChild(container);
-    }
-    dlg.mount(container);
+    // Mount straight onto <body>. The Dialog's own root IS the full-screen overlay
+    // (.pi-dialog-overlay: position fixed, inset 0, z-index 1000), so the #dialog-overlay
+    // wrapper that used to be created here was a SECOND identical fixed layer — and it was
+    // never removed. Dialog.destroy() only removes its own element, so once any dialog had
+    // opened, an empty full-screen layer stayed on top of the UI for the rest of the session,
+    // swallowing every click and scroll. It also double-dimmed the backdrop, both layers
+    // painting rgba(0,0,0,0.4).
+    //
+    // Clean up a stale wrapper from a webview that is still alive from a previous version.
+    document.getElementById("dialog-overlay")?.remove();
+    dlg.mount(document.body);
   }
 
   // ═══ #8: Slash Command Autocomplete ═══════════════════════
