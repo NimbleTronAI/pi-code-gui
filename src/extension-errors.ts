@@ -105,13 +105,22 @@ export function classifyRustLoadError(line: string | undefined | null): RustLoad
   if (!line) { return null; }
 
   if (/digest[_ ]mismatch|provenance verification failed/i.test(line)) {
-    const pkg = (/\bfor (?:npm:)?((?:@[^/\s]+\/)?[^\s:]+):/.exec(line) || [])[1];
+    // The package is named after "for", optionally prefixed by its source scheme
+    // ("npm:pi-web-access"). Do NOT require a trailing colon: the real line reads
+    //   "...resolved provenance changed for npm:pi-web-access while source is immutable..."
+    // and a pattern anchored on a trailing ":" backtracks into capturing the SCHEME —
+    // the user was told a package called "npm" had failed, and advised to run
+    // `pi remove npm`, which is not a package and would not have helped.
+    const spec = (/\bfor ((?:[a-z][a-z0-9+.-]*:)?(?:@[^/\s]+\/)?[^\s:]+)/i.exec(line) || [])[1];
+    // Display the bare name; keep the full spec for the command, since that is what the
+    // package manager expects ("pi update npm:pi-web-access").
+    const pkg = spec?.replace(/^[a-z][a-z0-9+.-]*:/i, "");
     return {
       kind: "digest-mismatch",
       packageName: pkg,
       detail: "Package contents changed since they were last trusted.",
-      remediation: pkg
-        ? `Run \`pi remove ${pkg}\` then \`pi install ${pkg}\` to re-trust the new version.`
+      remediation: spec
+        ? `Run \`pi update ${spec}\`, or reinstall it, to re-trust the new version.`
         : undefined,
     };
   }

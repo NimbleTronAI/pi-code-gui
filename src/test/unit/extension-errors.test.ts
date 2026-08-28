@@ -60,8 +60,10 @@ test("rust load: digest mismatch extracts package + remediation", () => {
   assert.ok(r);
   assert.equal(r.kind, "digest-mismatch");
   assert.equal(r.packageName, "pi-web-access");
-  assert.match(r.remediation ?? "", /pi remove pi-web-access/);
-  assert.match(r.remediation ?? "", /pi install pi-web-access/);
+  // Remediation quotes what the binary itself recommends for this failure
+  // ("Use `pi update npm:pi-web-access` …"), using the full source spec the package
+  // manager expects rather than the bare name.
+  assert.match(r.remediation ?? "", /pi update npm:pi-web-access/);
 });
 
 test("rust load: unsupported module specifier extracts module + package", () => {
@@ -82,7 +84,7 @@ test("formatRustLoadError / humanizeRustLoadError: one-line user message", () =>
   const out = humanizeRustLoadError(digestLine);
   assert.ok(out);
   assert.match(out, /Pi extension "pi-web-access" failed to load \(digest-mismatch\)/);
-  assert.match(out, /pi remove pi-web-access/);
+  assert.match(out, /pi update npm:pi-web-access/);
   // direct format from a structured value (no package)
   assert.equal(
     formatRustLoadError({ kind: "load-failed", detail: "Failed to load themes: bad" }),
@@ -98,4 +100,35 @@ test("rust load: generic load failure + non-load lines return null", () => {
 
   assert.equal(classifyRustLoadError(""), null);
   assert.equal(classifyRustLoadError("RustProcess: spawn /usr/bin/pi --mode rpc"), null);
+});
+
+// ── digest/provenance mismatch: name the right package ──────────────
+// Captured verbatim from rust-pi 0.3.0 stderr. The previous pattern required a trailing colon
+// after the package, so on this line it backtracked into capturing the SOURCE SCHEME: the user
+// was told Pi extension "npm" had failed and advised to run `pi remove npm` — not a package,
+// and no help at all in finding the one that actually broke.
+const PROVENANCE_LINE =
+  "Warning: Failed to load skills/prompts/themes/extensions: Tool error: package_manager: " +
+  "Package lock/provenance verification failed [provenance_mismatch]: resolved provenance " +
+  "changed for npm:pi-web-access while source is immutable in this operation";
+
+test("classifyRustLoadError: names the package, not its source scheme", () => {
+  const e = classifyRustLoadError(PROVENANCE_LINE);
+  assert.ok(e);
+  assert.equal(e.kind, "digest-mismatch");
+  assert.equal(e.packageName, "pi-web-access", "the scheme prefix is not the package");
+  assert.ok(!/\bnpm\b/.test(e.packageName ?? ""), "must never surface as \"npm\"");
+});
+
+test("classifyRustLoadError: remediation uses the full source spec", () => {
+  // The package manager wants the spec, not the bare name.
+  const e = classifyRustLoadError(PROVENANCE_LINE);
+  assert.ok((e?.remediation ?? "").includes("npm:pi-web-access"));
+});
+
+test("classifyRustLoadError: still works when the package has no scheme or is scoped", () => {
+  const bare = classifyRustLoadError("provenance verification failed: changed for pi-memory while immutable");
+  assert.equal(bare?.packageName, "pi-memory");
+  const scoped = classifyRustLoadError("digest_mismatch for npm:@acme/pi-thing while source is immutable");
+  assert.equal(scoped?.packageName, "@acme/pi-thing");
 });
