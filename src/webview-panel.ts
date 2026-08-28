@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
+import { resolvePanelLocation } from "./panel-restore.js";
 import { validateExtensionToWebview, validateWebviewToExtension, isExtensionToWebviewType, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
 import { piWarn } from "./logger.js";
 import { safeExternalUrlString } from "./shared/webview-nav-guard.js";
@@ -47,10 +48,17 @@ export class PiWebviewPanel {
     // reload via the WebviewPanelSerializer registered in extension.ts (a random
     // viewType would opt out of restoration). Stale-HTML across extension upgrades
     // is a non-issue: attach() regenerates the HTML on every create AND revive.
+    // ViewColumn.Two was hardcoded, which is not "beside" — it is literally column two. A user
+    // working in a single group got one split open on every session (the #83 report), and a user
+    // in column three got the chat somewhere unrelated. Beside expresses the original intent
+    // correctly from any column; Active honours a user who would rather keep one group.
+    const location = resolvePanelLocation(
+      vscode.workspace.getConfiguration("pi-code-gui").get<string>("panelLocation"),
+    );
     const panel = vscode.window.createWebviewPanel(
       "pi-code-gui.session",
       "Pi Code Gui",
-      vscode.ViewColumn.Two,
+      location === "active" ? vscode.ViewColumn.Active : vscode.ViewColumn.Beside,
       {
         enableScripts: true,
         retainContextWhenHidden: true,

@@ -282,6 +282,7 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 |---------|------|---------|-------------|
 | `pi-code-gui.promptToInstall` | boolean | `true` | Prompt to install Pi if not found |
 | `pi-code-gui.autoOpenOnStart` | boolean | `true` | Open a Pi tab automatically when the window starts |
+| `pi-code-gui.panelLocation` | string | `beside` | Where a chat opens: `beside` (split off a second group) or `active` (a tab in the current group) |
 | `pi-code-gui.systemPromptAppend` | string | `""` | Additional instructions appended to the system prompt |
 | `pi-code-gui.enableSkills` | boolean | `true` | Load project and global pi skills |
 | `pi-code-gui.enableContextFiles` | boolean | `true` | Inject project context files |

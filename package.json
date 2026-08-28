@@ -4,7 +4,7 @@
   "author": "Jack Noppé",
   "displayName": "Pi Code Gui",
   "description": "Native VS Code editor experience for Pi coding agent",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "license": "MIT",
   "sponsor": {
     "url": "https://github.com/sponsors/NimbleTronAI"
@@ -433,6 +433,19 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
+        },
+        "pi-code-gui.panelLocation": {
+          "type": "string",
+          "enum": [
+            "beside",
+            "active"
+          ],
+          "default": "beside",
+          "enumDescriptions": [
+            "Open the chat in a group beside the active editor, splitting if there is only one group.",
+            "Open the chat as a tab in the active editor group, leaving your layout as it is."
+          ],
+          "markdownDescription": "Where a Pi chat opens. `beside` splits off a second group (the default, and the previous behaviour); `active` opens the chat as a tab in the group you are already in — useful on a single screen where a split costs half the width. Only affects newly opened chats: a chat restored after a reload returns to wherever it was."
         },
         "pi-code-gui.rustAgentDir": {
           "type": "string",
