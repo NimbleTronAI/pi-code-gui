@@ -567,9 +567,20 @@ export class RustService implements PiBackend {
         // Kept for the handshake-timeout recovery below: a package that HANGS init never
         // throws from spawn(), so this stderr classification is the only evidence of why.
         this._loadErrors.push(e);
+        // Match the severity to what the user asked for. When we passed --no-extensions, a
+        // project package failing to load is the EXPECTED outcome, not a fault: rust-pi still
+        // attempts `.pi/settings.json` packages and reports the failure, so a red "Error" card
+        // (plus the same line in the output channel) told the user twice that something had
+        // gone wrong with a thing they had already turned off, and offered nothing to act on
+        // in that session. Keep the card — the package genuinely did not load, and that is
+        // worth knowing — but say so as a note.
+        const extensionsOff = args.includes("--no-extensions");
         this.host.emit({
           type: "custom-message",
-          data: { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
+          data: extensionsOff
+            ? { customType: "notice", timestamp: Date.now(), content:
+                `${e.packageName ? `"${e.packageName}"` : "A project extension"} didn't load, which is expected here — project extensions are disabled for this session. For reference: ${e.detail}${e.remediation ? ` ${e.remediation}` : ""}` }
+            : { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
         });
       },
       // Confirm startup by a real get_state round-trip rather than a blind timer.

@@ -82,6 +82,8 @@ export function defaultMessageRenderer(data: CustomMessageData): HTMLElement {
       label = content.split("\n")[0].split("  ")[0].substring(0, 60);
     }
     if (customType === "error") { label = "Error"; }
+    // A note is not a failure — see the --no-extensions path in rust-service.ts.
+    if (customType === "notice") { label = "Note"; }
 
     // Unique key so cards stack instead of overwriting each other.
     var key = customType + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
