@@ -21,6 +21,7 @@ import * as fs from "node:fs";
 import { piDebug, piWarn } from "./logger.js";
 import { piAiVersionNotice } from "./version-compare.js";
 import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
+import type { PlanMode, ApprovalMode } from "./types.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import { humanizeProviderError } from "./extension-errors.js";
@@ -360,6 +361,16 @@ export class SdkService implements PiBackend {
    *  these instead of hard-coding `_backendKind === "typescript"` gates. The SDK handles
    *  thinking per-provider in-process, so the level is always "live"; and PiService
    *  intercepts builtin slash commands before session.prompt (as the CLI does). */
+  // ── Session modes: the SDK has neither plan mode nor an approval posture. Inert rather
+  //    than absent, so PiService can call the seam without narrowing to a concrete class;
+  //    capabilities.sessionModes is what gates the UI.
+  get planMode(): PlanMode { return "off"; }
+  get approvalMode(): ApprovalMode { return "always-ask"; }
+  get currentSessionPath(): string | null { return null; }
+  async setPlanMode(_on: boolean): Promise<PlanMode> { return "off"; }
+  async approvePlan(): Promise<string | null> { return null; }
+  async rejectPlan(): Promise<boolean> { return false; }
+
   get capabilities(): BackendCapabilities {
     // All flags are the runtime default for TypeScript (everything on; thinking always live in
     // process). Single source of truth — see backendCapabilityDefaults.

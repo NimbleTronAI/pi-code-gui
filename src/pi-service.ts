@@ -12,7 +12,7 @@ import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } fro
 import { setupRustModels, reseedRustAuth, writeApprovalMode, defaultRustAgentDir } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
@@ -1158,15 +1158,6 @@ export class PiService {
     // persisted, and shared with the TypeScript runtime where `max` is legitimately offered. On
     // a pre-#139 binary that reaches the wire as a rejected request; clamping here means every
     // caller — picker, toggle, or any future one — is covered by construction.
-    if (this.capabilities.kind === "rust") {
-      let rustVersion: string | undefined;
-      try { rustVersion = detectRustBinary().version; } catch { /* unknown → clamp fails closed */ }
-      const clamped = clampThinkingLevelForRust(level, rustVersion);
-      if (clamped !== level) {
-        piWarn(`Thinking level "${level}" isn't supported by the installed Rust Pi — using "${clamped}".`);
-        level = clamped;
-      }
-    }
     // The backend sets it on the wire and returns the EFFECTIVE level after its own
     // clamp (Rust re-reads get_state; the SDK records the clamped level itself and
     // echoes the request). No force-persist here — both runtimes record the change
@@ -1332,9 +1323,11 @@ export class PiService {
    *  it there turns a picker entry into a hard failure. TS goes through the in-process SDK,
    *  which carries its own post-#139 pi-ai and clamps rather than rejecting. */
   private backendHonorsMax(): boolean {
-    if (this.capabilities.kind !== "rust") { return true; }
-    try { return rustHonorsMaxThinkingLevel(detectRustBinary().version); }
-    catch { return false; }   // fail closed — never offer a level we can't confirm
+    // Always. The gate existed for pre-#139 rust-pi builds that rejected
+    // set_thinking_level("max") outright; 0.2.0 requires rust-pi 0.3.0, so there is no
+    // supported binary that refuses it. It also re-probed detectRustBinary() from here — a
+    // version check standing in for a capability, which the backend seam exists to avoid.
+    return true;
   }
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
@@ -1747,10 +1740,10 @@ export class PiService {
    *  the opposite — it lives in a file the binary reads at startup, so the setting is applied by
    *  writing it before the session starts, and here we only report what the file says. */
   async applyDefaultModes(): Promise<void> {
-    if (this._backendKind !== "rust") { this.emitModeState(); return; }
+    if (!this.capabilities.sessionModes || !this.backend) { this.emitModeState(); return; }
     const cfg = vscode.workspace.getConfiguration("pi-code-gui");
     if (cfg.get<string>("defaultMode") === "plan") {
-      try { await (this.backend as unknown as { setPlanMode(on: boolean): Promise<string> }).setPlanMode(true); }
+      try { await this.backend.setPlanMode(true); }
       catch { /* a session that cannot enter plan mode still runs; the strip will show "code" */ }
     }
     this.emitModeState();
@@ -1764,25 +1757,25 @@ export class PiService {
 
   /** Push the current mode state to the webview. Safe to call on any runtime. */
   emitModeState(plan?: string): void {
-    const rust = this._backendKind === "rust"
-      ? (this.backend as unknown as { planMode?: string; approvalMode?: string }) : null;
+    const b = this.backend;
     this.emit({
       type: "mode-update",
       data: {
-        available: !!rust,
-        planMode: (rust?.planMode ?? "off") as "off" | "planning" | "pending" | "approved",
+        // capabilities.sessionModes, not a kind check: the strip follows the CAPABILITY.
+        available: !!b && this.capabilities.sessionModes,
+        planMode: b?.planMode ?? "off",
         // The RUNNING session's posture, fixed at spawn — never the file's current value, which
         // this session would not be obeying.
-        approval: (rust?.approvalMode ?? "always-ask") as "always-ask" | "write" | "yolo",
+        approval: b?.approvalMode ?? "always-ask",
         ...(plan ? { plan } : {}),
       },
     });
   }
 
   async setPlanMode(on: boolean, makeDefault: boolean): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
     try {
-      await (this.backend as unknown as { setPlanMode(on: boolean): Promise<string> }).setPlanMode(on);
+      await this.backend.setPlanMode(on);
     } catch (e) {
       this.emit({ type: "custom-message", data: { customType: "error", timestamp: Date.now(),
         content: `⚠ Couldn't change plan mode — ${e instanceof Error ? e.message : String(e)}` } });
@@ -1798,8 +1791,8 @@ export class PiService {
    *  pickModel's shape: `$(check)` marks what this session is running, ★ marks the saved default,
    *  and choosing a non-default offers to save it in a second step. */
   async pickApprovalMode(): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
-    const current = (this.backend as unknown as { approvalMode?: string }).approvalMode ?? "always-ask";
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
+    const current = this.backend.approvalMode;
     const saved = vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultApproval") ?? "always-ask";
     const rows: Array<{ id: "always-ask" | "write" | "yolo"; detail: string }> = [
       { id: "always-ask", detail: "Every edit and command needs a yes" },
@@ -1833,8 +1826,7 @@ export class PiService {
   }
 
   async setApprovalMode(mode: "always-ask" | "write" | "yolo", makeDefault: boolean): Promise<void> {
-    const current = this._backendKind === "rust"
-      ? (this.backend as unknown as { approvalMode?: string }).approvalMode ?? "always-ask" : "always-ask";
+    const current = this.backend?.approvalMode ?? "always-ask";
     if (mode === current) { return; }
 
     // rust-pi reads approval config ONLY at startup and offers no RPC to change it. Writing the
@@ -1875,7 +1867,7 @@ export class PiService {
     // reopening the same JSONL replays it into the webview (sendInitialMessages). Restarting
     // fresh would make an approval change cost the user their transcript — a steep price for a
     // setting, and an avoidable one.
-    const resumePath = (this.backend as unknown as { currentSessionPath?: string | null }).currentSessionPath ?? null;
+    const resumePath = this.backend?.currentSessionPath ?? null;
     this.emit({ type: "sessionReset" });
     this.dispose();
     await this.initialize(resumePath ? { openPath: resumePath } : { fresh: true });
@@ -1883,8 +1875,8 @@ export class PiService {
   }
 
   async approvePlan(): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
-    const plan = await (this.backend as unknown as { approvePlan(): Promise<string | null> }).approvePlan();
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
+    const plan = await this.backend.approvePlan();
     this.emitModeState(plan ?? undefined);
     // approve_plan does NOT resume the agent — measured against 0.3.0. Rather than leave the
     // user in front of an idle session wondering, offer the next move as one keystroke.
@@ -1892,8 +1884,8 @@ export class PiService {
   }
 
   async rejectPlan(): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
-    await (this.backend as unknown as { rejectPlan(): Promise<boolean> }).rejectPlan();
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
+    await this.backend.rejectPlan();
     this.emitModeState();
     // reject_plan carries no feedback field, so a reason has to travel as a follow-up prompt —
     // the input is left for the user to type it, not pre-filled with words they did not choose.

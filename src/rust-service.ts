@@ -21,7 +21,7 @@ import type { RustLoadError } from "./extension-errors.js";
 import { providerHasCredential, oauthProviders, defaultRustAgentDir, readApprovalMode } from "./rust-models.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
-import { thinkingLevelIsLive, clampThinkingLevelForRust } from "./model-catalog.js";
+import { thinkingLevelIsLive } from "./model-catalog.js";
 import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
@@ -249,7 +249,7 @@ export class RustService implements PiBackend {
     const restoring = !!openPath || !fresh;
     // Clamp against the DETECTED binary: `--thinking max` is rejected during argument parsing
     // by a pre-#139 build, which exits 2 before any RPC exists — the session never starts.
-    const thinking = clampThinkingLevelForRust(cfg.defaultThinkingLevel?.trim() || "off", status.version);
+    const thinking = cfg.defaultThinkingLevel?.trim() || "off";
     if (!restoring) {
       if (provider) { args.push("--provider", provider); }
       if (modelId) { args.push("--model", modelId); }

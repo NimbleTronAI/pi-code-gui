@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiService } from "../../pi-service.js";
 import { backendCapabilityDefaults, type PiBackend, type BackendUsage } from "../../pi-backend.js";
-import type { Runtime, PiServiceEvent } from "../../types.js";
+import type { Runtime, PiServiceEvent, PlanMode, ApprovalMode } from "../../types.js";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
@@ -23,6 +23,15 @@ type Any = ReturnType<typeof JSON.parse>;
 /** A recording fake PiBackend. sendPrompt/setAutoCompaction/etc. just log their calls; toggles
  *  do NOT echo back (so the test observes PiService's own eager-vs-not flip, not the backend's). */
 class FakeBackend implements PiBackend {
+  // The seam now REQUIRES these, so a double cannot silently omit what production calls —
+  // the reason plan/approval could be reached through `as unknown as` casts in the first place.
+  planMode: PlanMode = "off";
+  approvalMode: ApprovalMode = "always-ask";
+  currentSessionPath: string | null = null;
+  async setPlanMode(on: boolean): Promise<PlanMode> { this.planMode = on ? "planning" : "off"; return this.planMode; }
+  async approvePlan(): Promise<string | null> { this.planMode = "approved"; return "a plan"; }
+  async rejectPlan(): Promise<boolean> { this.planMode = "planning"; return true; }
+
   calls: Array<{ m: string; args: Any[] }> = [];
   usage: BackendUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
   constructor(private kind: Runtime) {}
