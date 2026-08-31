@@ -661,7 +661,7 @@
     "@earendil-works/pi-ai": "^0.84.1",
     "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "^30.0.0",
-    "@types/node": "~26.2.0",
+    "@types/node": "~26.4.0",
     "@types/vscode": "^1.125.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
@@ -672,7 +672,7 @@
     "npm-run-all2": "^9.0.3",
     "ovsx": "^1.1.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.67.0",
+    "typescript-eslint": "^8.68.0",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {

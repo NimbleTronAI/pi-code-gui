@@ -23,6 +23,10 @@ support for earlier binaries — older versions are missing commands this releas
 - **Approval mode is settable at all.** rust-pi's `--approval-mode` and `--yolo` flags are inert over RPC — every file edit came back `Approval required in always-ask mode`, which made the Rust runtime unable to edit anything. The working lever is `approval.mode` in the agent home's `settings.json`; the extension now writes exactly that key, preserving the rest of the file. It is shared with the Pi CLI, so it changes the CLI's posture too — the menu and the setting both say so.
 - **`pi-code-gui.panelLocation`** — open a chat as a tab in the current editor group (`active`) instead of splitting off a second one (`beside`, the default and previous behaviour). Useful on a single screen. Restored chats return to wherever they were. (#83)
 
+## [0.1.13]
+
+No functional changes — dependency bumps the release automation versioned automatically.
+
 ## [0.1.12]
 
 ### Fixed
