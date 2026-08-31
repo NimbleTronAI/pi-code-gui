@@ -1,5 +1,13 @@
 # Change Log
 
+## [Unreleased]
+
+### Fixed
+- **A turn cut short by Rust Pi's tool ceiling now says so.** rust-pi stops a turn after 50 tool calls and records `stopReason: "error"` with `Maximum tool iterations (50) exceeded` — but the webview only handled `stopReason: "aborted"`, so every other terminal reason fell through and rendered as nothing. A codebase review stopped mid-sentence as it was about to write its report, with the reason sitting unread in the transcript, and the session looked like the model had lost interest. Any terminal stop reason — and any reason carrying an error message, so a novel one can't go silent — is now surfaced both inline on the turn and as its own card.
+
+### Added
+- **`pi-code-gui.maxToolIterations`** — raise Rust Pi's per-turn tool-call ceiling (`PI_MAX_TOOL_ITERATIONS`). `0` (default) keeps Rust Pi's own limit of 50, which long refactors and codebase-wide reviews reach routinely. The message shown when a turn hits the ceiling names this setting.
+
 ## [0.2.0]
 
 **Requires Rust Pi v0.3.0.** This release targets the 0.3.0 RPC contract directly and drops

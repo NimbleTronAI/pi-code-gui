@@ -341,5 +341,12 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   const w = checkAuthAvailable(dir);
   if (w) { warnings.push(w); }
   piDebug(`Rust model catalog: merged ${merged.written} managed entries for ${scope.size} credentialed provider(s) [${[...scope].join(", ") || "none"}] into ${dir}/models.json (budget=${budget}, ${merged.omitted} placeholder maxTokens omitted, ${merged.userOwned} left to the user)`);
-  return { piEnv: { PI_CODING_AGENT_DIR: dir }, warnings };
+  // PI_MAX_TOOL_ITERATIONS: rust-pi stops a turn at 50 tool calls by default and reports
+  // `stopReason: "error"`, cutting long work off mid-task. 0 leaves the binary's default alone
+  // rather than pinning us to a number that could drift out from under the setting.
+  const piEnv: Record<string, string> = { PI_CODING_AGENT_DIR: dir };
+  const maxIters = vscode.workspace.getConfiguration("pi-code-gui").get<number>("maxToolIterations") ?? 0;
+  if (Number.isInteger(maxIters) && maxIters > 0) { piEnv.PI_MAX_TOOL_ITERATIONS = String(maxIters); }
+
+  return { piEnv, warnings };
 }

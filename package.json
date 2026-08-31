@@ -429,6 +429,12 @@
           ],
           "markdownDescription": "Whether **Rust** Pi sessions discover and load Pi extensions (controls the `--no-extensions` flag). The Rust runtime aborts startup when it meets the in-process TypeScript SDK's `.pi/` extensions (`missing field 'parameters'`). `auto` disables discovery only when such extensions are detected; `disabled` always disables it; `enabled` never does. Does not affect the TypeScript runtime."
         },
+        "pi-code-gui.maxToolIterations": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Maximum tool calls the **Rust** agent may make in a single turn (`PI_MAX_TOOL_ITERATIONS`). `0` (default) uses Rust Pi's own limit of 50. When a turn hits the ceiling it stops mid-task — the reply is cut off and the agent has not finished — so raise this for long refactors or codebase-wide reviews, which reach 50 routinely. Applies to sessions started after the change."
+        },
         "pi-code-gui.autoOpenOnStart": {
           "type": "boolean",
           "default": true,
