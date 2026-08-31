@@ -15,6 +15,12 @@ export interface ImageContent {
  */
 export type Runtime = "typescript" | "rust";
 
+/** Plan-mode lifecycle. rust-pi reports none of this — see RustService.planMode. */
+export type PlanMode = "off" | "planning" | "pending" | "approved";
+
+/** Tool-approval posture, mirroring rust-pi's ApprovalMode. */
+export type ApprovalMode = "always-ask" | "write" | "yolo";
+
 /** Compile-time exhaustiveness guard. Placing `assertNever(x)` in the default/else of a
  *  discriminated switch makes adding a third runtime a TYPE error at every unhandled
  *  branch, instead of silently falling through to the TypeScript path. */

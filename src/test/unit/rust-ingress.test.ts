@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RustProcess, type RustEvent } from "../../rust-process.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage } from "../../rust-events.js";
+import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, parseRustModels, scopeModelsToCredentials } from "../../rust-events.js";
 import { extractMessageText } from "../../agent-events.js";
 
 // ── extractMessageText (pure) ─────────────────────────────────────────
@@ -186,4 +186,57 @@ test("ingress: a full turn normalizes, clears the queue, captures sessionId, and
   const ends = seen.filter((s) => s.type === "agent_end");
   assert.equal(ends.length, 2, "both agent_end events were received");
   assert.equal(ends.filter((s) => s.routing.isRealAgentEnd).length, 1, "only the first agent_end is real");
+});
+
+// ── duplicate models in get_available_models ────────────────────────
+test("parseRustModels: one row per model, the authoritative definition winning", () => {
+  // rust-pi resolves from three catalogs (built-ins, models.fetched.json, the user's
+  // models.json) and LISTS all of them, so a model described in more than one arrives several
+  // times — measured: deepseek-v4-flash three times in a single reply. Keep the LAST, matching
+  // the binary's own precedence, so a built-in row with a 23x smaller maxTokens cannot mask the
+  // entry the extension manages.
+  const list = parseRustModels({ models: [
+    { provider: "deepseek", id: "deepseek-v4-flash", name: "built-in", contextWindow: 128000 },
+    { provider: "deepseek", id: "deepseek-v4-flash", name: "fetched", contextWindow: 128000 },
+    { provider: "deepseek", id: "deepseek-v4-flash", name: "ours", contextWindow: 200000 },
+    { provider: "deepseek", id: "deepseek-v4-pro", name: "pro", contextWindow: 200000 },
+  ] });
+  assert.equal(list.length, 2, "deduped");
+  const flash = list.find((m: { id: string }) => m.id === "deepseek-v4-flash");
+  assert.equal(flash?.name, "ours", "the authoritative definition survives");
+  assert.equal(flash?.contextWindow, 200000);
+});
+
+test("parseRustModels: the same id under DIFFERENT providers is not a duplicate", () => {
+  const list = parseRustModels({ models: [
+    { provider: "deepseek", id: "deepseek-v4-pro" },
+    { provider: "openrouter", id: "deepseek-v4-pro" },
+  ] });
+  assert.equal(list.length, 2, "provider is part of identity");
+});
+
+// ── the Rust picker is scoped too ───────────────────────────────────
+// get_available_models lists the binary's ~94 built-ins regardless of credentials, so scoping
+// what we WRITE into models.json never touched the picker: the TypeScript runtime offered three
+// models and Rust offered a hundred, most of which could not be authenticated.
+const MIXED = [
+  { provider: "deepseek", id: "deepseek-v4-flash" },
+  { provider: "amazon-bedrock", id: "llama-4-scout" },
+  { provider: "sap-ai-core", id: "anthropic--claude-3-sonnet" },
+];
+
+test("scopeModelsToCredentials: only credentialed providers are offered", () => {
+  const kept = scopeModelsToCredentials(MIXED, (p) => p === "deepseek");
+  assert.deepEqual(kept.map((m) => m.provider), ["deepseek"]);
+});
+
+test("scopeModelsToCredentials: fails OPEN rather than emptying the picker", () => {
+  // A provider whose credential we cannot recognise must not become unreachable, and an empty
+  // picker is worse than a noisy one.
+  const kept = scopeModelsToCredentials(MIXED, () => false);
+  assert.equal(kept.length, 3, "unfiltered when nothing matches");
+});
+
+test("scopeModelsToCredentials: an empty list stays empty", () => {
+  assert.deepEqual(scopeModelsToCredentials([], () => true), []);
 });

@@ -9,7 +9,7 @@ import { confirmRendererConsent } from "./renderer-consent.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
-import { setupRustModels, reseedRustAuth } from "./rust-models.js";
+import { setupRustModels, reseedRustAuth, writeApprovalMode, defaultRustAgentDir } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
@@ -33,7 +33,7 @@ import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
 import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
-import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, type ModelChoice } from "./model-picker.js";
+import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems, type ModelChoice } from "./model-picker.js";
 
 export interface InstallStatus {
   installed: boolean;
@@ -507,7 +507,8 @@ export class PiService {
       handleAgentEvent: (e) => this.handleAgentEvent(e),
       reportStatus: () => this.reportStatus(),
       sendInitialMessages: (entries) => this.sendInitialMessages(entries),
-      emitPostInitState: () => { this.emitSettings(); this.emitSlashCommands(); },
+      emitPostInitState: () => { this.emitSettings(); this.emitSlashCommands(); void this.applyDefaultModes(); },
+      emitModeState: () => { this.emitModeState(); },
       showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
       rememberReasoning: () => { this.rememberReasoning(); },
       setSessionId: (id) => { this.sessionId = id; },
@@ -1266,13 +1267,15 @@ export class PiService {
 
     await this.setModel(picked.provider, picked.modelId);
 
-    // Offer to save as default if not already
+    // Offer to save as default if not already. BOTH answers are rows: a single-item QuickPick
+    // left "no" to be expressed by dismissing it, which is not a visible option.
     if (!picked.isDefault) {
-      const save = await vscode.window.showQuickPick(
-        [{ label: "\u2605 Save as default", description: "Use this model for future sessions" }],
-        { placeHolder: `Use as default?` },
+      const def = this.getDefaultModel();
+      const choice = await vscode.window.showQuickPick(
+        buildDefaultChoiceItems(picked.modelId, def ? def.id : null),
+        { placeHolder: "Default model for future sessions" },
       );
-      if (save) { this.saveDefaultModel(); }
+      if (choice?.save) { this.saveDefaultModel(); }
     }
 
     return true;
@@ -1736,6 +1739,165 @@ export class PiService {
    * picks / browser-open) via makeAuthInteraction. Replaces the removed AuthStorage flow.
    */
   async login(): Promise<void> { return runLogin(await this.makeAuthFlowDeps()); }
+
+  /** Apply the configured default mode at session start and publish the strip.
+   *
+   *  Plan mode is per-session state in the binary with no way to read it back, so the default is
+   *  ASSERTED rather than assumed: if the setting says plan, we send set_plan_mode. Approval is
+   *  the opposite — it lives in a file the binary reads at startup, so the setting is applied by
+   *  writing it before the session starts, and here we only report what the file says. */
+  async applyDefaultModes(): Promise<void> {
+    if (this._backendKind !== "rust") { this.emitModeState(); return; }
+    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    if (cfg.get<string>("defaultMode") === "plan") {
+      try { await (this.backend as unknown as { setPlanMode(on: boolean): Promise<string> }).setPlanMode(true); }
+      catch { /* a session that cannot enter plan mode still runs; the strip will show "code" */ }
+    }
+    this.emitModeState();
+  }
+
+  // ═══ Mode strip ═════════════════════════════════════════════
+  // The binary reports neither plan mode nor approval mode, so the extension owns both: plan
+  // mode as per-session state on RustService, approval mode as a key in the shared agent home's
+  // settings.json. Every change re-emits the whole strip rather than patching it, so the webview
+  // can never drift from the session.
+
+  /** Push the current mode state to the webview. Safe to call on any runtime. */
+  emitModeState(plan?: string): void {
+    const rust = this._backendKind === "rust"
+      ? (this.backend as unknown as { planMode?: string; approvalMode?: string }) : null;
+    this.emit({
+      type: "mode-update",
+      data: {
+        available: !!rust,
+        planMode: (rust?.planMode ?? "off") as "off" | "planning" | "pending" | "approved",
+        // The RUNNING session's posture, fixed at spawn — never the file's current value, which
+        // this session would not be obeying.
+        approval: (rust?.approvalMode ?? "always-ask") as "always-ask" | "write" | "yolo",
+        ...(plan ? { plan } : {}),
+      },
+    });
+  }
+
+  async setPlanMode(on: boolean, makeDefault: boolean): Promise<void> {
+    if (this._backendKind !== "rust") { return; }
+    try {
+      await (this.backend as unknown as { setPlanMode(on: boolean): Promise<string> }).setPlanMode(on);
+    } catch (e) {
+      this.emit({ type: "custom-message", data: { customType: "error", timestamp: Date.now(),
+        content: `⚠ Couldn't change plan mode — ${e instanceof Error ? e.message : String(e)}` } });
+    }
+    if (makeDefault) {
+      await vscode.workspace.getConfiguration("pi-code-gui")
+        .update("defaultMode", on ? "plan" : "code", vscode.ConfigurationTarget.Global);
+    }
+    this.emitModeState();
+  }
+
+  /** The approval picker — VS Code's own QuickPick, matching every other picker here, including
+   *  pickModel's shape: `$(check)` marks what this session is running, ★ marks the saved default,
+   *  and choosing a non-default offers to save it in a second step. */
+  async pickApprovalMode(): Promise<void> {
+    if (this._backendKind !== "rust") { return; }
+    const current = (this.backend as unknown as { approvalMode?: string }).approvalMode ?? "always-ask";
+    const saved = vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultApproval") ?? "always-ask";
+    const rows: Array<{ id: "always-ask" | "write" | "yolo"; detail: string }> = [
+      { id: "always-ask", detail: "Every edit and command needs a yes" },
+      { id: "write", detail: "File edits go through; commands still ask" },
+      { id: "yolo", detail: "Nothing asks — edits and commands run" },
+    ];
+    const items = rows.map((r) => ({
+      label: `${r.id}${r.id === current ? " $(check)" : ""}${r.id === saved ? " \u2605" : ""}`,
+      detail: r.detail,
+      id: r.id,
+      isDefault: r.id === saved,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: "Approval for this session (\u2605 = default)",
+      matchOnDetail: true,
+    });
+    if (!picked) { return; }
+
+    // Collect BOTH decisions before doing anything destructive — a "save as default" prompt
+    // appearing after the session has already restarted would be jarring.
+    let makeDefault = false;
+    if (!picked.isDefault) {
+      const choice = await vscode.window.showQuickPick(
+        buildDefaultChoiceItems(picked.id, saved),
+        { placeHolder: "Default approval mode for future sessions" },
+      );
+      if (!choice) { return; }   // dismissed the whole flow — change nothing
+      makeDefault = choice.save;
+    }
+    await this.setApprovalMode(picked.id, makeDefault);
+  }
+
+  async setApprovalMode(mode: "always-ask" | "write" | "yolo", makeDefault: boolean): Promise<void> {
+    const current = this._backendKind === "rust"
+      ? (this.backend as unknown as { approvalMode?: string }).approvalMode ?? "always-ask" : "always-ask";
+    if (mode === current) { return; }
+
+    // rust-pi reads approval config ONLY at startup and offers no RPC to change it. Writing the
+    // file and carrying on would leave the strip claiming a posture the running session is not
+    // obeying — so the restart is the change, and the user is asked before losing the session.
+    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const RESTART = "Restart session";
+    const RESTART_QUIET = "Restart, don't ask again";
+    // A modal cannot carry a checkbox, so the suppression is its own button — the same shape
+    // VS Code's own "don't show again" prompts use.
+    const proceed = cfg.get<boolean>("confirmApprovalRestart") === false ? RESTART : await vscode.window.showWarningMessage(
+      `Switch approval to "${mode}"?`,
+      {
+        modal: true,
+        detail:
+          `Rust Pi reads the approval mode only when a session starts, so this session is `
+          + `restarted to apply it. Your conversation is reloaded from disk and carries forward; `
+          + `anything still streaming is interrupted.\n\n`
+          + `This setting is shared with the \`pi\` CLI, so it applies there too.`,
+      },
+      RESTART, RESTART_QUIET,
+    );
+    if (proceed !== RESTART && proceed !== RESTART_QUIET) { return; }
+    if (proceed === RESTART_QUIET) {
+      await cfg.update("confirmApprovalRestart", false, vscode.ConfigurationTarget.Global);
+    }
+
+    const warning = writeApprovalMode(defaultRustAgentDir(), mode);
+    if (warning) {
+      this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${warning}`, timestamp: Date.now() } });
+      return;
+    }
+    if (makeDefault) {
+      await vscode.workspace.getConfiguration("pi-code-gui")
+        .update("defaultApproval", mode, vscode.ConfigurationTarget.Global);
+    }
+    // RESUME rather than start fresh: rust-pi has already persisted this conversation, and
+    // reopening the same JSONL replays it into the webview (sendInitialMessages). Restarting
+    // fresh would make an approval change cost the user their transcript — a steep price for a
+    // setting, and an avoidable one.
+    const resumePath = (this.backend as unknown as { currentSessionPath?: string | null }).currentSessionPath ?? null;
+    this.emit({ type: "sessionReset" });
+    this.dispose();
+    await this.initialize(resumePath ? { openPath: resumePath } : { fresh: true });
+    this.emitModeState();
+  }
+
+  async approvePlan(): Promise<void> {
+    if (this._backendKind !== "rust") { return; }
+    const plan = await (this.backend as unknown as { approvePlan(): Promise<string | null> }).approvePlan();
+    this.emitModeState(plan ?? undefined);
+    // approve_plan does NOT resume the agent — measured against 0.3.0. Rather than leave the
+    // user in front of an idle session wondering, offer the next move as one keystroke.
+    this.emit({ type: "insertCommand", command: "Carry out the plan" });
+  }
+
+  async rejectPlan(): Promise<void> {
+    if (this._backendKind !== "rust") { return; }
+    await (this.backend as unknown as { rejectPlan(): Promise<boolean> }).rejectPlan();
+    this.emitModeState();
+    // reject_plan carries no feedback field, so a reason has to travel as a follow-up prompt —
+    // the input is left for the user to type it, not pre-filled with words they did not choose.
+  }
 
   /** Provider logout. Lists stored credentials and removes the chosen one; env vars /
    *  models.json config are untouched. See auth-flow.ts. */

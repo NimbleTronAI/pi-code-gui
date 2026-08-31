@@ -895,6 +895,73 @@
     }
   }
 
+  /* ═══ Mode strip ══════════════════════════════════════════ */
+  /* Declares what the NEXT prompt will do, so it sits above the composer rather than in the
+     status bar (which reports what already is). Same tokens as the status bar, one step louder. */
+
+  #pi-mode-strip {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 16px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    font-size: 0.85em;
+
+    &.hidden { display: none; }
+    .pi-mode-spacer { flex: 1; }
+  }
+
+  #pi-mode-seg {
+    display: flex; border: 1px solid var(--vscode-input-border, #3c3c3c);
+    border-radius: 4px; overflow: hidden;
+  }
+
+  .pi-mode-opt {
+    background: transparent; color: var(--fg-secondary);
+    border: none; padding: 2px 10px; cursor: pointer;
+    font-family: inherit; font-size: inherit; line-height: 1.6;
+
+    & + & { border-left: 1px solid var(--vscode-input-border, #3c3c3c); }
+    &:hover { background: var(--vscode-list-hoverBackground); }
+
+    /* Selected states carry meaning, not just emphasis: blue = ordinary, amber = writes held. */
+    &.on-code { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    &.on-plan { background: #cca700; color: #1e1e2e; }
+    &.on-approved { background: #388a34; color: #ffffff; }
+  }
+
+  #pi-mode-hint { color: var(--fg-secondary); opacity: 0.75; }
+  #pi-mode-hint.warn { color: #cca700; opacity: 1; }
+
+  #pi-approval-chip {
+    background: transparent; color: var(--fg-secondary);
+    border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: 3px;
+    padding: 2px 8px; cursor: pointer;
+    font-family: inherit; font-size: inherit; line-height: 1.6;
+
+    &:hover { background: var(--vscode-list-hoverBackground); }
+    &.appr-write { color: #cca700; border-color: #5a4a00; }
+    &.appr-yolo  { color: #f14c4c; border-color: #5a2020; }
+  }
+
+  #pi-plan-actions {
+    display: flex; gap: 6px;
+    &.hidden { display: none; }
+  }
+
+  .pi-plan-btn {
+    background: transparent; color: var(--fg-primary);
+    border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: 3px;
+    padding: 2px 12px; cursor: pointer;
+    font-family: inherit; font-size: inherit; line-height: 1.6;
+
+    &:hover { background: var(--vscode-list-hoverBackground); }
+    &.primary {
+      background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+      border-color: transparent; font-weight: 600;
+      &:hover { background: var(--vscode-button-hoverBackground); }
+    }
+  }
+
   /* ═══ Input area ══════════════════════════════════════════ */
 
   #input-area {

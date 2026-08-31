@@ -164,6 +164,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
       // Session events
       case "status-update":       handleStatusUpdate(msg.data); break;
       case "status":              handleStatus(msg.data); break;
+      case "mode-update":         handleModeUpdate(msg.data); break;
       case "queue-update":        logEvent("queue-update", { s: msg.data?.steering?.length, f: msg.data?.followUp?.length }); handleQueueUpdate(msg.data); break;
       case "compaction-start":    handleCompactionStart(msg.data); break;
       case "compaction-end":      handleCompactionEnd(msg.data); break;
@@ -2375,3 +2376,59 @@ export function handleDebugCommand(): void {
     state.chatContainer.appendChild(el);
     scrollToBottom();
   }
+
+// ═══ Mode strip ═══════════════════════════════════════════════════
+// Renders what the NEXT prompt will do. All state comes from the extension — the webview never
+// guesses, because the binary reports none of this and a divergent guess would be worse than a
+// stale one.
+
+let modeStripWired = false;
+
+function postMode(msg: Record<string, unknown>): void {
+  if (typeof window.__vscode !== "undefined") { window.__vscode.postMessage(msg); }
+}
+
+export function handleModeUpdate(data: MsgData<"mode-update">): void {
+  const strip = document.getElementById("pi-mode-strip");
+  if (!strip || !data) { return; }
+  strip.classList.toggle("hidden", !data.available);
+  if (!data.available) { return; }
+
+  const codeBtn = document.getElementById("pi-mode-code") as HTMLButtonElement | null;
+  const planBtn = document.getElementById("pi-mode-plan") as HTMLButtonElement | null;
+  const hint    = document.getElementById("pi-mode-hint");
+  const actions = document.getElementById("pi-plan-actions");
+  const chip    = document.getElementById("pi-approval-chip") as HTMLButtonElement | null;
+  if (!codeBtn || !planBtn || !hint || !actions || !chip) { return; }
+
+  const plan = data.planMode;
+  codeBtn.className = "pi-mode-opt" + (plan === "off" ? " on-code" : "");
+  planBtn.className = "pi-mode-opt" + (plan === "planning" || plan === "pending" ? " on-plan"
+                                     : plan === "approved" ? " on-approved" : "");
+  planBtn.textContent = plan === "approved" ? "plan ✓" : "plan";
+
+  hint.className = plan === "off" ? "" : "warn";
+  hint.textContent =
+    plan === "off"       ? "runs edits directly" :
+    plan === "planning"  ? "writes held until you approve a plan" :
+    plan === "pending"   ? "plan ready for review" :
+                           "plan approved — writes allowed";
+
+  actions.classList.toggle("hidden", plan !== "pending");
+
+  chip.textContent = `approval: ${data.approval} ▾`;
+  chip.title = "What this session asks approval for. Rust Pi reads it only at startup, "
+    + "so changing it restarts the session.";
+  chip.className = data.approval === "yolo" ? "appr-yolo" : data.approval === "write" ? "appr-write" : "";
+
+  if (modeStripWired) { return; }
+  modeStripWired = true;
+
+  // The segmented control switches directly — two options, both visible, no menu needed.
+  codeBtn.addEventListener("click", () => postMode({ type: "setPlanMode", on: false }));
+  planBtn.addEventListener("click", () => postMode({ type: "setPlanMode", on: true }));
+  document.getElementById("pi-plan-approve")?.addEventListener("click", () => postMode({ type: "approvePlan" }));
+  document.getElementById("pi-plan-reject")?.addEventListener("click", () => postMode({ type: "rejectPlan" }));
+  // Three options with real consequences — VS Code's QuickPick, like every other picker here.
+  chip.addEventListener("click", () => postMode({ type: "openApprovalPicker" }));
+}

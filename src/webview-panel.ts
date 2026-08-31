@@ -288,6 +288,26 @@ export class PiWebviewPanel {
           case "clearQueue":
             await this.piService.clearQueue();
             break;
+
+          case "setPlanMode":
+            await this.piService.setPlanMode(message.on, message.makeDefault === true);
+            break;
+
+          case "setApprovalMode":
+            await this.piService.setApprovalMode(message.mode, message.makeDefault === true);
+            break;
+
+          case "openApprovalPicker":
+            await this.piService.pickApprovalMode();
+            break;
+
+          case "approvePlan":
+            await this.piService.approvePlan();
+            break;
+
+          case "rejectPlan":
+            await this.piService.rejectPlan();
+            break;
         }
       },
       undefined,
@@ -526,6 +546,22 @@ export class PiWebviewPanel {
   <div id="live-panel"></div>
 
   <div id="attachment-bar"></div>
+
+  <!-- Mode strip. Sits ABOVE the composer because it declares what the NEXT prompt will do —
+       the status bar below reports what IS. Rust only; hidden otherwise. -->
+  <div id="pi-mode-strip" class="hidden">
+    <div id="pi-mode-seg" role="group" aria-label="Session mode">
+      <button id="pi-mode-code" class="pi-mode-opt" title="Edits run as the agent decides">code</button>
+      <button id="pi-mode-plan" class="pi-mode-opt" title="Draft a plan first; edits wait for approval">plan</button>
+    </div>
+    <span id="pi-mode-hint"></span>
+    <div id="pi-plan-actions" class="hidden">
+      <button id="pi-plan-approve" class="pi-plan-btn primary">Approve</button>
+      <button id="pi-plan-reject" class="pi-plan-btn">Reject</button>
+    </div>
+    <span class="pi-mode-spacer"></span>
+    <button id="pi-approval-chip" title="Which actions need your approval">approval: always-ask ▾</button>
+  </div>
 
   <div id="input-area">
     <textarea id="prompt-input" placeholder="Ask pi to do something..." rows="1" disabled></textarea>
