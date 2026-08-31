@@ -1,6 +1,6 @@
 # Custom Message Renderer
 
-> **Status:** evolving
+> **Status:** stable
 
 The Custom Message Renderer (`src/webview/handlers/index.ts`,
 `renderInlineCustomMessage` and `handleRegisterMessageRenderer` functions, plus

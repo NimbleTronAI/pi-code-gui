@@ -61,7 +61,7 @@ hardcoded fallback colors. This preserves VS Code theme compatibility.
 
 ## Bundle impact
 
-highlight.js core + 15 languages: ~39KB gzipped added to the webview bundle.
+highlight.js core + 14 languages: ~39KB gzipped added to the webview bundle.
 The hand-rolled highlighters (~5KB) were removed. Net: +34KB.
 
 ## Related
@@ -71,4 +71,6 @@ The hand-rolled highlighters (~5KB) were removed. Net: +34KB.
   `renderFileContent`
 - [Build Pipeline](../operations/build-pipeline.md) — esbuild bundles highlight.js
 
-> **Last updated:** 2026-05-27 — added yaml, sql, diff; 12→15 languages
+> **Last updated:** 2026-08-31 — audited against `src/webview/highlight.ts`: the count was
+> 15, the source registers 14 (bash, css, diff, go, java, javascript, json, markdown, python, rust, sql, typescript, xml, yaml). Everything else on this page
+> still matches.

@@ -49,4 +49,26 @@ commands to the Pi session for extension handling.
 - [Webview Frontend](webview-frontend.md) — the TypeScript modules that run inside the webview
 - [Session Window](session-window.md) — the pairing that owns this panel
 
-> **Last updated:** 2026-05-16 — update for single-bundle loading and typed protocol
+## Where a chat opens (#83)
+
+The column was hardcoded to `vscode.ViewColumn.Two`, which is not "beside the active
+editor" but literally column two: a user working in a single group got a split forced
+open on every session, and a user in column three got the chat somewhere unrelated.
+
+The default is now `ViewColumn.Beside` — what the original value was trying to express,
+and correct from any column — with `pi-code-gui.panelLocation: "active"` opening the
+chat as a tab in the current group instead. Parsing lives in the vscode-free
+`panel-restore.ts` so it is headlessly testable, and an unrecognised value falls back
+to `beside`: a hand-edited setting must not stop a chat from opening.
+
+Restored panels are unaffected — VS Code returns them to their remembered column,
+which is the wanted behaviour.
+
+## The mode strip
+
+`#pi-mode-strip` sits between the transcript and `#input-area`, above the composer
+rather than in the status bar below it: it declares what the **next** prompt will do,
+where the status bar reports what already is. It is Rust-only and hidden otherwise.
+See [Session Modes](session-modes.md).
+
+> **Last updated:** 2026-08-31 — added the panel-column fix (#83) and the mode strip.

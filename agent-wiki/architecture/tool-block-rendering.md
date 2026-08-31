@@ -67,4 +67,6 @@ handles any unrecognized tool name by wrapping results in `renderToolResult`
   active tool streaming
 - [Webview Frontend](webview-frontend.md) — the DOM context these blocks render into
 
-> **Last updated:** 2026-05-19 — initial documentation of tool block rendering patterns
+> **Last updated:** 2026-08-31 — audited, no changes needed: the four renderers still
+> exist, `.tool-scroll-view` is still capped at 15rem (set inline in
+> `src/webview/tools/index.ts`) and `.bash-output` at 300px.

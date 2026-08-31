@@ -18,6 +18,8 @@ reference; follow the links for depth.
 - [PiService](architecture/pi-service.md) — the runtime-agnostic orchestrator: lifecycle, pickers, slash routing, and what was extracted out of it
 - [PiBackend](architecture/pi-backend.md) — the runtime seam: the primitive interface, `BackendCapabilities`, and where the seam still leaks
 - [Pure Core Modules](architecture/pure-core-modules.md) — the extract-the-decision pattern, and an index of all ~27 pure modules
+- [Model Catalog & the Shared Agent Home](architecture/model-catalog.md) — merged `models.json`, `_managedBy` ownership, credential scoping, and why the agent home is shared
+- [Session Modes](architecture/session-modes.md) — plan mode and approval posture: the verified RPC contract, and why both are extension-owned state
 - [Runtime Selection](architecture/runtime-selection.md) — TypeScript vs Rust runtimes, capability gating, RPC, install/detection
 - [Runtime Switching UX](architecture/runtime-switching-ux.md) — per-session runtime pickers, switch command, indicators, install dialogs
 - [Webview Panel](architecture/webview-panel.md) — Webview creation, bidirectional messaging, tab indicators

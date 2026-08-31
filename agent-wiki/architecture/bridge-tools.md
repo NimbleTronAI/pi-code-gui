@@ -1,6 +1,6 @@
 # Bridge Tools
 
-> **Status:** evolving
+> **Status:** stable
 
 Bridge Tools (`src/bridge-tools.ts`) are 16 VS Code API tools registered as Pi
 SDK `customTools` that give the AI agent full visibility into the VS Code editor

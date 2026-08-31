@@ -1,6 +1,6 @@
 # Session Window
 
-> **Status:** evolving
+> **Status:** stable
 
 The Session Window pattern (`src/extension.ts`, the `SessionWindow` interface and
 surrounding management code) is the top-level abstraction for multi-session

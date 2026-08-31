@@ -93,6 +93,17 @@ real; what they should NOT conclude is that the pattern is unintended.
 - [Runtime Selection](runtime-selection.md) — how a session picks its runtime
 - [Event Translation](event-translation.md) — the two event streams behind the seam
 
-> **Last updated:** 2026-08-05 — new page. The seam and capability model had no page of
-> its own despite being the central abstraction; it was mentioned in passing on one
-> other page.
+## Modes are extension-owned state (0.2.0)
+
+`RustService` now also owns two things the binary does not report: `planMode` (the
+`set_plan_mode` / `submit_plan` / `approve_plan` lifecycle) and `approvalMode` — the
+posture the session was **spawned** with, since rust-pi reads approval only at startup
+and exposes no RPC to change it. Both are per-session state that a restart resets;
+neither appears in `get_state`. See [Session Modes](session-modes.md).
+
+This is the capability model doing its job in an awkward case: the flags describe what
+a runtime can do, but plan/approval are *state* the seam has to carry because only one
+runtime has the concept, and even there the binary will not answer for it.
+
+> **Last updated:** 2026-08-31 — noted the extension-owned plan/approval state
+> added in 0.2.0.
