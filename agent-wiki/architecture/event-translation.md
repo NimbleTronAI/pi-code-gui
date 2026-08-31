@@ -1,6 +1,6 @@
 # Event Translation
 
-> **Status:** evolving
+> **Status:** stable
 
 The Event Translation Layer translates raw Pi SDK / Rust agent events into typed
 `PiServiceEvent` emissions that the webview panel and extension commands consume.

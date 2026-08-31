@@ -78,3 +78,18 @@ pass performed), `archive` (page moved to archive).
 ## [2026-05-15] ingest | Operations — Build Pipeline (`operations/build-pipeline.md`)
 ## [2026-05-15] update | AGENTS.md bootstrap — filled project overview, dev workflow, tool discipline, storage rules, quick reference
 ## [2026-05-15] update | TDD discipline — filled project test conventions (locations, commands, preflight)
+
+## [2026-08-31] audit | Full audit against CHANGELOG 0.1.3-0.2.0 — the wiki was ~9 releases behind
+## [2026-08-31] ingest | Architecture — Model Catalog & the Shared Agent Home (`architecture/model-catalog.md`)
+## [2026-08-31] ingest | Architecture — Session Modes (`architecture/session-modes.md`)
+## [2026-08-31] update | Runtime Selection — CORRECTED: the relocated agent home and linked `auth.json` it described were removed in 0.2.0; RPC flags re-verified against v0.3.0; noted the inert approval flags and the blocking `ask` tool
+## [2026-08-31] update | PiBackend — plan/approval are extension-owned session state
+## [2026-08-31] update | Extension UI Bridge — `ask_request`/`ask_response` contract; the three dialog faults it exposed
+## [2026-08-31] update | SDK Resolution — the PATH-entry candidate (#81)
+## [2026-08-31] update | Build Pipeline — release/publish chain, tag-ref requirement, absent approval gate, publish-time supply-chain scan
+## [2026-08-31] update | Error Surfacing — provenance package naming; severity matched to intent
+## [2026-08-31] update | Webview Panel — panel column (#83) and the mode strip
+## [2026-08-31] update | Syntax Highlighting — corrected the language count (15 -> 14) against source
+## [2026-08-31] update | Tool Block Rendering — audited, accurate, footer refreshed
+## [2026-08-31] update | Promoted 9 pages from "evolving" to "stable" after verifying each; the two ingested today stay evolving
+## [2026-08-31] update | wiki-lint — staleness and status-rotation checks now skip `discipline/`: process pages have no code to drift from, and five false positives were hiding the one page that was genuinely wrong

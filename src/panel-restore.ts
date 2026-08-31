@@ -28,3 +28,14 @@ export function planPanelRestore(
   if (!fileExists(p)) { return { action: "dispose", runtime }; }
   return { action: "open", runtime, openPath: p };
 }
+
+/** Where a newly opened chat should go. Pure so the setting's parsing is tested without vscode.
+ *
+ *  "beside" reproduces the historical behaviour and stays the default; "active" opens the chat
+ *  as a tab in the group the user is already in. Anything unrecognised (a hand-edited
+ *  settings.json, a value from a newer version) falls back to "beside" rather than throwing —
+ *  a bad setting should not stop a chat from opening. (#83)
+ */
+export function resolvePanelLocation(raw: string | undefined | null): "beside" | "active" {
+  return raw?.trim() === "active" ? "active" : "beside";
+}

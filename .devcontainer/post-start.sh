@@ -57,20 +57,50 @@ else
     echo "    warn: pi not found — skipping package updates"
 fi
 
-# ── rust-pi (TEMPORARY local build) ──────────────────
+# ── rust-pi (pinned release) ─────────────────────────
 # The extension resolves rust-pi at ~/.local/bin/rust-pi, which lives on the
-# container layer and is WIPED on every rebuild. We're temporarily running a
-# locally-built rust-pi (pi_agent_rust 87b70f74 — gh #114 DeepSeek thinking,
-# #116 Anthropic adaptive effort, #117 authoritative catalog, #118 typed
-# transient-retry, #121 cache-read vs input usage accounting, + ~/.pi/agent
-# lockfile/OAuth interop; ahead of the upstream release). It's stashed in the
-# persistent ~/.pi volume; restore it here so the extension survives rebuilds.
-# REVERT once upstream pi_agent_rust ships these: delete this block, remove
-# /home/node/.pi/rust-pi-87b70f74, and install the published rust-pi.
-if [ -x /home/node/.pi/rust-pi-87b70f74 ]; then
-    echo "==> rust-pi (local 87b70f74)"
-    mkdir -p /home/node/.local/bin
-    rm -f /home/node/.local/bin/rust-pi
-    cp /home/node/.pi/rust-pi-87b70f74 /home/node/.local/bin/rust-pi
-    echo "    restored $(/home/node/.local/bin/rust-pi --version 2>/dev/null | head -1)"
+# container layer and is WIPED on every rebuild — so it is installed here.
+#
+# This block used to restore a locally-built 87b70f74 (0.1.20) from the persistent
+# ~/.pi volume, from before upstream shipped those fixes. It now installs the
+# version the extension is actually pinned to (src/rust-pi-version.json), because
+# 0.2.0 targets the rust-pi 0.3.0 RPC contract and does not support older binaries.
+# Restoring 0.1.20 on every container start silently reverted the pin and made
+# 0.3.0-only behaviour untestable — including a probe run that reported a command
+# surface belonging to the wrong binary.
+PIN_TAG="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /workspaces/pi-vscode-gui/src/rust-pi-version.json 2>/dev/null)"
+if [ -n "$PIN_TAG" ]; then
+    echo "==> rust-pi (pinned $PIN_TAG)"
+    WANT="${PIN_TAG#v}"
+    HAVE="$(/home/node/.local/bin/rust-pi --version 2>/dev/null | sed -n 's/^pi \([0-9.]*\).*/\1/p')"
+    if [ "$HAVE" = "$WANT" ]; then
+        echo "    already on $HAVE"
+    else
+        case "$(uname -m)" in
+            aarch64|arm64) ASSET="pi-linux-arm64.tar.xz" ;;
+            *)             ASSET="pi-linux-amd64.tar.xz" ;;
+        esac
+        BASE="https://github.com/Dicklesworthstone/pi_agent_rust/releases/download/$PIN_TAG"
+        TMP="$(mktemp -d)"
+        # Checksum-verified, like the extension's own managed install. A failure here
+        # leaves whatever was already installed rather than breaking container start.
+        if curl -fsSL -o "$TMP/$ASSET" "$BASE/$ASSET" && curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"; then
+            if (cd "$TMP" && grep " $ASSET\$" SHA256SUMS | sha256sum -c - >/dev/null 2>&1); then
+                mkdir -p /home/node/.local/bin
+                tar -xJf "$TMP/$ASSET" -C "$TMP"
+                BIN="$(find "$TMP" -type f -name pi -perm -u+x | head -1)"
+                if [ -n "$BIN" ]; then
+                    install -m 0755 "$BIN" /home/node/.local/bin/rust-pi
+                    echo "    installed $(/home/node/.local/bin/rust-pi --version 2>/dev/null | head -1)"
+                else
+                    echo "    WARNING: no pi binary in $ASSET — left existing install alone"
+                fi
+            else
+                echo "    WARNING: checksum mismatch for $ASSET — left existing install alone"
+            fi
+        else
+            echo "    WARNING: could not download $PIN_TAG (offline?) — left existing install alone"
+        fi
+        rm -rf "$TMP"
+    fi
 fi

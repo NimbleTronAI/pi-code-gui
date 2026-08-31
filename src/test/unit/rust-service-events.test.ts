@@ -361,3 +361,42 @@ test("ask_request: a card with no questions is dismissed rather than left hangin
   assert.deepEqual(sent[0].payload, { id: "req-2", dismissed: true });
   rust.dispose();
 });
+
+// ── load-failure severity matches what was asked for ────────────────
+// rust-pi still attempts .pi/settings.json packages when --no-extensions is passed, so the
+// failure arrives either way. A red "Error" card for a thing the user deliberately turned off
+// is noise they cannot act on — but the package really did not load, so the card stays.
+function captureLoadNotice(extraArgs: string[]) {
+  const events: Any[] = [];
+  const host = {
+    emit: (e: Any) => events.push(e), handleAgentEvent: () => {}, reportStatus: () => {},
+    sendInitialMessages: async () => {}, emitPostInitState: () => {}, showDialog: () => undefined,
+    rememberReasoning: () => {}, setSessionId: () => {}, getCycleModels: () => [],
+    setCycleModels: () => {}, setAutoCompactionEnabled: () => {}, setAutoRetryEnabled: () => {},
+  } as unknown as RustHost;
+  const rust = new RustService(host, { config: () => CONFIG } as unknown as RustDeps);
+  let fired: ((e: Any) => void) | undefined;
+  (rust as Any).deps.createProcess = (opts: Any) => { fired = opts.onLoadError; return {
+    spawn: async () => {}, dispose: () => {}, isAlive: () => true,
+    request: async () => ({ type: "response", success: true, data: {} }), send: () => {},
+  }; };
+  void (rust as Any).spawn("/bin/true", ["--mode", "rpc", ...extraArgs], "/tmp", {});
+  fired?.({ kind: "digest-mismatch", packageName: "pi-web-access",
+            detail: "Package contents changed since they were last trusted.",
+            remediation: "Run `pi update npm:pi-web-access`, or reinstall it, to re-trust the new version." });
+  return events.map((e) => e.data).filter((d: Any) => d && d.customType);
+}
+
+test("a load failure is an Error when extensions were meant to load", async () => {
+  const [card] = captureLoadNotice([]);
+  assert.equal(card.customType, "error");
+  assert.match(String(card.content), /pi-web-access/);
+});
+
+test("with --no-extensions it is softened to a note, but still shown", async () => {
+  const [card] = captureLoadNotice(["--no-extensions"]);
+  assert.equal(card.customType, "notice", "not an error — the user turned extensions off");
+  assert.match(String(card.content), /expected here/);
+  assert.match(String(card.content), /pi-web-access/, "still names the package");
+  assert.ok(!String(card.content).startsWith("\u26a0"), "no warning glyph");
+});

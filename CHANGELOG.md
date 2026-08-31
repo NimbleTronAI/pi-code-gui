@@ -1,5 +1,32 @@
 # Change Log
 
+## [0.2.0]
+
+**Requires Rust Pi v0.3.0.** This release targets the 0.3.0 RPC contract directly and drops
+support for earlier binaries — older versions are missing commands this release depends on.
+
+### Changed
+- **Rust Pi is now pinned to v0.3.0** (was v0.1.23) — the version the managed install downloads and the extension is tested against. 0.3.0 enables ten more tools by default (`web_search`, `lsp`, `debug`, `ast_grep`/`ast_edit`, `todo`, `jobs` and others) and adds the `ask` question card, which 0.1.11 taught the extension to answer. An existing binary keeps working and is not replaced; you'll get a one-time notice that it differs from the tested version.
+
+### Fixed
+- **The Rust runtime now shares your `~/.pi/agent` home.** rust-pi 0.3.0 refuses a symlinked `auth.json` — it exits immediately with `auth.json must be a regular non-link file` — so 0.1.x switched to copying. That traded a loud failure for a silent one: OAuth refresh tokens rotate, so whichever copy refreshed first invalidated the other and you'd meet `invalid_grant: Refresh token not found or invalid` on a credential you never touched. Sharing the directory removes the problem instead of managing it — one agent home, one `auth.json`, nothing to synchronise, and identical behaviour on every platform.
+- **The bundled model catalog is merged into `models.json`, not written over it.** Sharing the home makes that file yours, so the extension now adds only per-model entries, each stamped `_managedBy: "pi-code-gui@<version>"`. Entries without that marker are never touched — a hand-edited entry wins, even where it names a model we also manage (delete the marker to take ownership of one of ours). Entries are written only for providers you have credentials for, from the environment or an OAuth login: on a typical machine that is **1,613 bytes for one provider instead of 501 KB for 32**. The model picker correspondingly offers models you can actually authenticate to.
+- **The Rust model picker offers only models you can authenticate to.** It is populated from the binary's `get_available_models`, which lists all ~94 of its built-ins regardless of credentials — so Rust offered a hundred models (Bedrock, SAP AI Core and the rest) while the TypeScript runtime, built from the bundled registry, offered three. Both now apply the same rule. If no provider can be recognised the full list is shown rather than an empty picker.
+- **The model picker no longer shows the same model several times.** rust-pi resolves models from three catalogs and lists all of them, so a model described in more than one arrived repeatedly — `deepseek-v4-flash` appeared three times. The list is now deduplicated, keeping the authoritative definition so a built-in row can't mask a managed entry with a 23× smaller output limit.
+- **A package that couldn't load with extensions disabled is now a note, not an error.** rust-pi still attempts `.pi/settings.json` packages when `--no-extensions` is passed, so the failure was reported as a red Error card even though you had deliberately turned extensions off — twice over, counting the output channel. The card stays, since the package genuinely didn't load, but it now reads as a note and says the outcome was expected. With extensions enabled it is still an error.
+- **A failed package load named the wrong package.** rust-pi reports a provenance failure as `…changed for npm:pi-web-access while source is immutable…`, and the classifier required a colon straight after the package name — so it captured the source scheme instead, telling you `Pi extension "npm" failed to load` and to run `pi remove npm`, which is not a package. It now names the real package and quotes the command the binary itself recommends (`pi update npm:pi-web-access`).
+- **Option dialogs couldn't be answered, and left the chat frozen.** Three separate faults, all reachable the moment rust-pi's `ask` tool started opening these routinely: options rendered as raw HTML instead of clickable rows (escaped twice); once visible they had no click handler and the key handler sat on an element that could never take focus, so OK always committed the first option; and closing the dialog left an empty full-screen layer over the UI that swallowed every click and scroll for the rest of the session. Clicking now selects, double-click commits, arrows/Enter/Escape work, and the dialog cleans up after itself.
+
+### Added
+- **Plan mode and approval control, in a strip above the prompt.** Rust Pi 0.3.0 can draft a plan before touching anything and can be told how much to run without asking, but neither was reachable — `/plan` typed into the chat reached the model as ordinary text, since the Rust runtime exposes no slash commands over RPC. Both are now shown where you commit to a message: switch between `code` and `plan`, approve or reject a submitted plan in place, and set the approval posture (`always-ask` / `write` / `yolo`). The chip reports what the **running session** is actually using rather than what the config file says — Rust Pi reads approval only at startup, so changing it restarts the session, which the prompt states plainly (your conversation is reloaded from disk and carries forward). Defaults for new sessions: `pi-code-gui.defaultMode`, `pi-code-gui.defaultApproval`.
+- **Both "save as default?" prompts now show a decline row.** Choosing a model or approval mode offers to remember it, but that prompt had a single item — declining meant dismissing the picker, which is not a visible option. It now offers "Keep *x* as default" beside the save row, so both answers are on screen and each names its consequence.
+- **Approval mode is settable at all.** rust-pi's `--approval-mode` and `--yolo` flags are inert over RPC — every file edit came back `Approval required in always-ask mode`, which made the Rust runtime unable to edit anything. The working lever is `approval.mode` in the agent home's `settings.json`; the extension now writes exactly that key, preserving the rest of the file. It is shared with the Pi CLI, so it changes the CLI's posture too — the menu and the setting both say so.
+- **`pi-code-gui.panelLocation`** — open a chat as a tab in the current editor group (`active`) instead of splitting off a second one (`beside`, the default and previous behaviour). Useful on a single screen. Restored chats return to wherever they were. (#83)
+
+## [0.1.13]
+
+No functional changes — dependency bumps the release automation versioned automatically.
+
 ## [0.1.12]
 
 ### Fixed

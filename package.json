@@ -4,7 +4,7 @@
   "author": "Jack Noppé",
   "displayName": "Pi Code Gui",
   "description": "Native VS Code editor experience for Pi coding agent",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "license": "MIT",
   "sponsor": {
     "url": "https://github.com/sponsors/NimbleTronAI"
@@ -434,11 +434,57 @@
           "default": true,
           "description": "Automatically open the Pi chat tab when VS Code starts. When disabled, sessions initialize in the background but the tab is not revealed until you open it manually."
         },
+        "pi-code-gui.panelLocation": {
+          "type": "string",
+          "enum": [
+            "beside",
+            "active"
+          ],
+          "default": "beside",
+          "enumDescriptions": [
+            "Open the chat in a group beside the active editor, splitting if there is only one group.",
+            "Open the chat as a tab in the active editor group, leaving your layout as it is."
+          ],
+          "markdownDescription": "Where a Pi chat opens. `beside` splits off a second group (the default, and the previous behaviour); `active` opens the chat as a tab in the group you are already in — useful on a single screen where a split costs half the width. Only affects newly opened chats: a chat restored after a reload returns to wherever it was."
+        },
+        "pi-code-gui.defaultMode": {
+          "type": "string",
+          "enum": [
+            "code",
+            "plan"
+          ],
+          "default": "code",
+          "enumDescriptions": [
+            "Start sessions ready to edit — the agent runs changes as it decides.",
+            "Start sessions in plan mode — the agent drafts a plan and edits wait for your approval."
+          ],
+          "markdownDescription": "Which mode a **Rust** session starts in. Changeable per session from the strip above the prompt, where the same choice can be made the new default. Plan mode holds writes until you approve a plan. Not used by the TypeScript runtime, which has no plan mode."
+        },
+        "pi-code-gui.defaultApproval": {
+          "type": "string",
+          "enum": [
+            "always-ask",
+            "write",
+            "yolo"
+          ],
+          "default": "always-ask",
+          "enumDescriptions": [
+            "Every edit and command needs your approval.",
+            "File edits go through; commands still ask.",
+            "Nothing asks — edits and commands run."
+          ],
+          "markdownDescription": "Which actions a **Rust** session may take without asking. Written as `approval.mode` in `~/.pi/agent/settings.json`, which the extension shares with the Pi CLI — so this changes the CLI's posture too. rust-pi reads it at startup, so a change applies to the next session."
+        },
         "pi-code-gui.rustAgentDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`), where the extension writes its managed `models.json` (the bundled Pi model catalog). Empty (default) uses an extension-managed folder so the full-catalog write never clobbers your own `~/.pi/agent`; `auth.json` is seeded from `~/.pi/agent` for OAuth, and API keys resolve from the environment. Set a path to force a specific location. Sessions are unaffected (placed via `--session-dir`).",
+          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`). Empty (default) shares your own `~/.pi/agent`, so the Rust runtime reads the same `auth.json` as the Pi CLI and a `/login` applies to both with nothing copied. The extension merges per-model entries into that folder's `models.json`, each marked `_managedBy`, and never touches entries you wrote yourself — only for providers you have credentials for. Set this to another path to keep the Rust runtime's agent home separate; its credentials are then separate too, so OAuth logins made against `~/.pi/agent` will not apply there (API keys from the environment still work). Does not move your sessions — use `pi-code-gui.sessionDir` for that.",
           "scope": "machine-overridable"
+        },
+        "pi-code-gui.confirmApprovalRestart": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Confirm before changing the approval mode. Rust Pi reads that setting only when a session starts, so a change restarts the session (the conversation is reloaded from disk and carries forward). Turn this off — or choose **Restart, don't ask again** in the prompt — to switch without confirming."
         }
       }
     },

@@ -15,15 +15,17 @@
 import { piWarn } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
-import { normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
+import { scopeModelsToCredentials, normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
 import type { RustLoadError } from "./extension-errors.js";
+import { providerHasCredential, oauthProviders, defaultRustAgentDir, readApprovalMode } from "./rust-models.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
 import { thinkingLevelIsLive, clampThinkingLevelForRust } from "./model-catalog.js";
 import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
+import type { PlanMode, ApprovalMode } from "./types.js";
 import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
 
 /** A model entry for the model-cycle list (shared with PiService). */
@@ -66,6 +68,8 @@ export interface RustHost {
   sendInitialMessages(entries: any[]): Promise<void>;
   /** emitSettings + emitSlashCommands, after the handshake. */
   emitPostInitState(): void;
+  /** Re-publish the mode strip (plan lifecycle moved). Optional: only PiService supplies it. */
+  emitModeState?(): void;
   showDialog(
     dialogType: "select" | "confirm" | "input",
     prompt: string,
@@ -137,6 +141,9 @@ export class RustService implements PiBackend {
   private process: RustProcess | null = null;
   private initializing = false;
   private sessionPath: string | null = null;
+  /** The JSONL this session is reading/writing, so a restart can resume it rather than start
+   *  empty — rust-pi persists the transcript, and reopening replays it into the webview. */
+  get currentSessionPath(): string | null { return this.sessionPath; }
   private usage: RustUsage | null = null;
   private contextWindow = 0;
   private lastContextTokens = 0;
@@ -313,6 +320,10 @@ export class RustService implements PiBackend {
       // Continue: built-in models still work; an unresolved model is caught below.
     }
 
+    // Record the posture this session is being spawned with — rust-pi reads it once, here, and
+    // never again, so this is the only accurate answer for the strip's lifetime.
+    this._approvalAtStart = readApprovalMode(defaultRustAgentDir());
+
     this._thinkingLevel = thinking; this.host.rememberReasoning();
 
     let warning: string | undefined;
@@ -445,7 +456,7 @@ export class RustService implements PiBackend {
 
     try {
       const models = await proc.request(RUST_RPC.getAvailableModels, {}, 15000);
-      const list = parseRustModels(models.data);
+      const list = this.scopeModels(parseRustModels(models.data));
       if (models.success && list.length > 0) { this._availableModels = list; this._modelsFetchedAt = Date.now(); this.host.setCycleModels(list); this.recordCapOk("models"); }
       else {
         // Distinguish "genuinely no models" from "entries arrived but none parsed" (a shape
@@ -567,9 +578,20 @@ export class RustService implements PiBackend {
         // Kept for the handshake-timeout recovery below: a package that HANGS init never
         // throws from spawn(), so this stderr classification is the only evidence of why.
         this._loadErrors.push(e);
+        // Match the severity to what the user asked for. When we passed --no-extensions, a
+        // project package failing to load is the EXPECTED outcome, not a fault: rust-pi still
+        // attempts `.pi/settings.json` packages and reports the failure, so a red "Error" card
+        // (plus the same line in the output channel) told the user twice that something had
+        // gone wrong with a thing they had already turned off, and offered nothing to act on
+        // in that session. Keep the card — the package genuinely did not load, and that is
+        // worth knowing — but say so as a note.
+        const extensionsOff = args.includes("--no-extensions");
         this.host.emit({
           type: "custom-message",
-          data: { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
+          data: extensionsOff
+            ? { customType: "notice", timestamp: Date.now(), content:
+                `${e.packageName ? `"${e.packageName}"` : "A project extension"} didn't load, which is expected here — project extensions are disabled for this session. For reference: ${e.detail}${e.remediation ? ` ${e.remediation}` : ""}` }
+            : { customType: "error", content: `⚠ ${formatRustLoadError(e)}`, timestamp: Date.now() },
         });
       },
       // Confirm startup by a real get_state round-trip rather than a blind timer.
@@ -630,6 +652,14 @@ export class RustService implements PiBackend {
       case "delegate":
         break;
     }
+    // submit_plan completing is the ONLY signal that a plan is waiting: the binary emits no
+    // plan event and get_state carries no plan field, so the tool result is where the lifecycle
+    // moves from "planning" to "pending".
+    if (event?.type === "tool_execution_end" && event.toolName === "submit_plan" && !event.isError) {
+      this.markPlanSubmitted();
+      this.host.emitModeState?.();
+    }
+
     try {
       this.host.handleAgentEvent(event);
     } catch (e: unknown) {
@@ -1133,6 +1163,64 @@ export class RustService implements PiBackend {
   abort(): void {
     this.process?.send(RUST_RPC.abortBash);
     this.process?.send(RUST_RPC.abort);
+  }
+
+  /** Offer only models the user can authenticate to — parity with the TypeScript picker, which
+   *  is built from the bundled registry and has always been scoped. See scopeModelsToCredentials. */
+  private scopeModels(list: ReturnType<typeof parseRustModels>): ReturnType<typeof parseRustModels> {
+    const oauth = oauthProviders(defaultRustAgentDir());
+    return scopeModelsToCredentials(list, (prov) => providerHasCredential(prov, process.env, oauth));
+  }
+
+  /** Plan mode, tracked here because the binary does not report it.
+   *
+   *  Verified against 0.3.0: `set_plan_mode` answers {"planMode":"planning"|"off"}, but
+   *  `get_state` carries no plan field at all and no event is emitted on a transition — so the
+   *  client is the only place the mode is known. It is therefore per-session state, reset by a
+   *  restart, and re-asserted on the wire at session start from the configured default.
+   *
+   *  `submit_plan` moves it to "pending" (seen in that tool's result details, planReview), and
+   *  approve/reject move it on from there. */
+  private _planMode: PlanMode = "off";
+  get planMode(): PlanMode { return this._planMode; }
+
+  /** The approval posture this session was SPAWNED with.
+   *
+   *  rust-pi reads approval config once at startup and exposes no RPC to change it, so the
+   *  running session's posture is fixed for its lifetime. Reporting the file's current value
+   *  instead would show a chip that the session is not actually obeying — the same class of
+   *  error as a confident wrong cost. Recorded at spawn, and only a restart moves it. */
+  private _approvalAtStart: ApprovalMode = "always-ask";
+  get approvalMode(): ApprovalMode { return this._approvalAtStart; }
+  setApprovalAtStart(mode: ApprovalMode): void { this._approvalAtStart = mode; }
+
+  /** Enter or leave plan mode. `mode` is the binary's own argument name; anything other than
+   *  "off"/"false"/"0" enters, which is why this passes the word explicitly. */
+  async setPlanMode(on: boolean): Promise<PlanMode> {
+    const reply = await this.process?.request(RUST_RPC.setPlanMode, { mode: on ? "on" : "off" }, 8000);
+    const got = (reply?.data as { planMode?: string } | undefined)?.planMode;
+    this._planMode = got === "planning" ? "planning" : "off";
+    return this._planMode;
+  }
+
+  /** Called when submit_plan lands, so the UI can offer the decision. */
+  markPlanSubmitted(): void { if (this._planMode === "planning") { this._planMode = "pending"; } }
+
+  /** Approve the submitted plan. Does NOT resume the agent — measured: approve_plan returns
+   *  {approved:true, plan:"…"} and nothing further happens until the client prompts again. The
+   *  caller is responsible for offering that next step. */
+  async approvePlan(): Promise<string | null> {
+    const reply = await this.process?.request(RUST_RPC.approvePlan, {}, 8000);
+    if (reply?.success) { this._planMode = "approved"; }
+    return ((reply?.data as { plan?: string } | undefined)?.plan) ?? null;
+  }
+
+  /** Reject it. The binary takes NO feedback field — a reason is a follow-up prompt, so the UI
+   *  invites one rather than pretending this call carries it. */
+  async rejectPlan(): Promise<boolean> {
+    const reply = await this.process?.request(RUST_RPC.rejectPlan, {}, 8000);
+    if (reply?.success) { this._planMode = "planning"; }
+    return !!reply?.success;
   }
 
   /** Abort a running bash tool only (the LLM turn keeps going). */

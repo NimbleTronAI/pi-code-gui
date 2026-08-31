@@ -10,7 +10,7 @@
 //   Up/Down — navigate select options
 
 import type { Component } from "./types.js";
-import { html } from "../render/html.js";
+import { html, safe } from "../render/html.js";
 
 export type DialogType = "select" | "confirm" | "input";
 
@@ -38,6 +38,11 @@ export class Dialog implements Component<DialogProps> {
     this.el = document.createElement("div");
     this.el.className = "pi-dialog-overlay";
     this.el.setAttribute("data-dialog-id", props.id);
+    // Focusable, or the keydown listener below is dead code. A plain <div> cannot take keyboard
+    // focus, and only the INPUT dialog ever focused anything — so on a select dialog the arrow
+    // keys, Enter and Escape all went to whatever had focus before the dialog opened, and the
+    // dialog could only be dismissed with the mouse.
+    this.el.setAttribute("tabindex", "-1");
 
     this._options = props.options || [];
 
@@ -53,7 +58,15 @@ export class Dialog implements Component<DialogProps> {
         </div>`;
       this.inputEl = this.el.querySelector(".pi-dialog-input")!;
     } else {
-      // Select or confirm
+      // Select or confirm.
+      //
+      // optionsHtml is ALREADY-ESCAPED markup: each option's label goes through the inner
+      // html`` above, which escapes it. Interpolating it into the outer html`` plainly would
+      // escape it a SECOND time, rendering the option <div>s as literal text — which is exactly
+      // what the dialog did, showing users `<div class="pi-dialog-option" ...> Option A </div>`
+      // as the body. safe() is the marker for exactly this: content that is already escaped.
+      // The labels are still escaped once, so the XSS hardening this template exists for is
+      // unaffected.
       var optionsHtml = "";
       for (var i = 0; i < this._options.length; i++) {
         optionsHtml += html`
@@ -64,7 +77,7 @@ export class Dialog implements Component<DialogProps> {
       this.el.innerHTML = html`
         <div class="pi-dialog">
           <div class="pi-dialog-prompt">${props.prompt}</div>
-          <div class="pi-dialog-options">${optionsHtml}</div>
+          <div class="pi-dialog-options">${safe(optionsHtml)}</div>
           <div class="pi-dialog-actions">
             <button class="pi-dialog-btn pi-dialog-cancel">Cancel</button>
             <button class="pi-dialog-btn pi-dialog-confirm">OK</button>
@@ -84,6 +97,30 @@ export class Dialog implements Component<DialogProps> {
     // Keyboard handling
     this.el.addEventListener("keydown", (e): void => this.handleKey(e));
 
+    // Option clicks. There was NO handler here: options highlighted on hover (pure CSS) and
+    // then did nothing, so a select dialog could not actually be answered with the mouse — the
+    // choice was stuck on whatever _selectedIdx started at. Delegated from the container so it
+    // survives any future re-render of the option list.
+    if (this.optionsEl) {
+      this.optionsEl.addEventListener("click", (e): void => {
+        const target = e.target as HTMLElement | null;
+        const option = target?.closest?.(".pi-dialog-option") as HTMLElement | null;
+        if (!option) { return; }
+        const idx = Number(option.getAttribute("data-index"));
+        if (!Number.isInteger(idx) || idx < 0 || idx >= this._options.length) { return; }
+        e.stopPropagation();   // the overlay's own click handler treats stray clicks as cancel
+        this._selectedIdx = idx;
+        this.highlightOption();
+      });
+      // Double-click commits, so a decisive user does not have to travel to the OK button.
+      this.optionsEl.addEventListener("dblclick", (e): void => {
+        const target = e.target as HTMLElement | null;
+        if (!target?.closest?.(".pi-dialog-option")) { return; }
+        e.stopPropagation();
+        this.submit();
+      });
+    }
+
     // Close on overlay click (click outside dialog box)
     this.el.addEventListener("click", (e): void => {
       if (e.target === this.el) { this.cancel(); }
@@ -92,9 +129,11 @@ export class Dialog implements Component<DialogProps> {
 
   mount(container: HTMLElement): void {
     container.appendChild(this.el);
-    // Focus the input if present
+    // Focus the input if present; otherwise focus the dialog itself so keys reach handleKey.
     if (this.inputEl) {
       setTimeout((): void => this.inputEl!.focus(), 50);
+    } else {
+      setTimeout((): void => this.el.focus(), 50);
     }
   }
 

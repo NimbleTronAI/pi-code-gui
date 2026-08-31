@@ -20,9 +20,21 @@ import { collectJsonlFiles, summarizeSessionFile, RUST_SESSION_NAME_ENTRY } from
 
 export { RUST_SESSION_NAME_ENTRY };
 
-/** The Rust agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent). */
-function rustAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+/** Where Rust session JSONLs live: ~/.pi/agent/sessions-rust, and deliberately NOT derived
+ *  from the agent home.
+ *
+ *  This used to read process.env.PI_CODING_AGENT_DIR — a variable the extension sets on the
+ *  CHILD process and never on its own — so it always resolved to the default anyway. Making it
+ *  genuinely follow the agent home would be worse than the bug: sessions are USER DATA, and
+ *  moving the agent home would strand every existing
+ *  session where the Past Sessions list can no longer see it.
+ *
+ *  So the location is stated once, explicitly. `pi-code-gui.sessionDir` / PI_SESSIONS_DIR
+ *  remain the supported ways to move sessions; `rustAgentDir` moves only what the extension
+ *  writes. The pool stays separate from the TypeScript SDK's because the two JSONL formats are
+ *  not cross-readable. */
+function rustSessionsRoot(): string {
+  return path.join(os.homedir(), ".pi", "agent");
 }
 
 /**
@@ -36,7 +48,7 @@ export function rustSessionStorageDir(): string {
   if (cfg) { return path.join(cfg, "rust"); }
   const env = process.env.PI_SESSIONS_DIR?.trim();
   if (env) { return path.join(env, "rust"); }
-  return path.join(rustAgentDir(), "sessions-rust");
+  return path.join(rustSessionsRoot(), "sessions-rust");
 }
 
 /** Value passed to the Rust binary's `--session-dir` flag (always defined). */

@@ -1,7 +1,7 @@
 // Headless tests for the extracted model picker core (src/model-picker.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FALLBACK_MODELS, formatModelDetail, toModelChoices, buildModelPickerItems } from "../../model-picker.js";
+import { FALLBACK_MODELS, formatModelDetail, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems } from "../../model-picker.js";
 
 const STAR = "★";
 const CHECK = "$(check)";
@@ -64,4 +64,28 @@ test("formatModelDetail: all-zero rates omit the pricing clause (no '$0/$0 per M
   assert.equal(formatModelDetail({ input: 0, output: 0 }, undefined), "");
   // A real rate on either side is still worth showing.
   assert.equal(formatModelDetail({ input: 0, output: 2 }, undefined), "$0/$2 per M tokens");
+});
+
+// ── the "save as default?" step ─────────────────────────────────────
+// This used to be a ONE-item QuickPick, so declining meant dismissing it — an invisible
+// affordance. Both answers are rows now, and each names its consequence.
+
+test("buildDefaultChoiceItems: declining is a visible row, not a dismissal", () => {
+  const items = buildDefaultChoiceItems("deepseek-v4-pro", "deepseek-v4-flash");
+  assert.equal(items.length, 2);
+  assert.equal(items[0].save, true);
+  assert.equal(items[1].save, false, "the second row is the explicit no");
+});
+
+test("buildDefaultChoiceItems: both rows name what they would do", () => {
+  const [save, keep] = buildDefaultChoiceItems("yolo", "always-ask");
+  assert.match(save.label, /yolo/, "says what would become the default");
+  assert.match(keep.label, /always-ask/, "says what would be kept — not just \"No\"");
+  assert.match(keep.description, /this session/i);
+});
+
+test("buildDefaultChoiceItems: with no default set, the decline row says so", () => {
+  const [, keep] = buildDefaultChoiceItems("deepseek-v4-pro", null);
+  assert.match(keep.label, /Don't set a default/);
+  assert.equal(keep.save, false);
 });

@@ -1,6 +1,6 @@
 # Tree Views
 
-> **Status:** evolving
+> **Status:** stable
 
 Tree Views (`src/extension.ts` — `MultiSessionTreeProvider` inner class, and
 `src/pi-packages-tree-provider.ts` — `PiPackagesTreeProvider`) are the two

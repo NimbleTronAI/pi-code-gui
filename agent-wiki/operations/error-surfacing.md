@@ -58,7 +58,26 @@ humanization of a provider-key error event.
 - [Event Translation](../architecture/event-translation.md) — the `agent-events.ts` choke point
 - [Runtime Selection](../architecture/runtime-selection.md) — the Rust subprocess + stderr plumbing
 
-> **Last updated:** 2026-06-25 — initial page: pure `extension-errors.ts`
-> classifiers; TS provider-key failures humanized at the agent-event choke
-> point; Rust load failures deduped in `RustProcess` and surfaced once as an
-> in-chat card via `RustService`.
+## Naming the right package, and matching severity to intent
+
+Two lessons from classifier bugs that reached users.
+
+**Name the package, not its scheme.** rust-pi reports a provenance failure as
+`…resolved provenance changed for npm:pi-web-access while source is immutable…`. The
+classifier anchored on a colon straight after the package name, so on that line it
+backtracked into capturing the *source scheme*: the user was told
+`Pi extension "npm" failed to load` and advised to run `pi remove npm` — not a package,
+and no help in finding the one that broke. Matching no longer depends on the
+delimiter, and the remediation quotes the command the binary itself recommends. Note
+the sibling shape (`digest changed for npm:pi-web-access: expected …`) *does* put a
+colon there, which is why the bug survived: the existing test used that variant.
+
+**Severity follows intent.** rust-pi still attempts project packages when
+`--no-extensions` is passed, so the failure arrives either way. Raising a red Error
+card for a thing the user deliberately turned off — duplicated in the output channel —
+reported a fault where there was none. With extensions disabled the card remains (the
+package genuinely did not load) but reads as a note saying the outcome was expected;
+with extensions enabled it is still an error.
+
+> **Last updated:** 2026-08-31 — added the provenance-naming fix and the
+> intent-matched severity rule (both shipped 0.2.0).

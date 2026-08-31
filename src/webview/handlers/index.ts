@@ -82,6 +82,8 @@ export function defaultMessageRenderer(data: CustomMessageData): HTMLElement {
       label = content.split("\n")[0].split("  ")[0].substring(0, 60);
     }
     if (customType === "error") { label = "Error"; }
+    // A note is not a failure — see the --no-extensions path in rust-service.ts.
+    if (customType === "notice") { label = "Note"; }
 
     // Unique key so cards stack instead of overwriting each other.
     var key = customType + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
@@ -162,6 +164,7 @@ export function createLiveCard(key: string, customType: string, label: string, c
       // Session events
       case "status-update":       handleStatusUpdate(msg.data); break;
       case "status":              handleStatus(msg.data); break;
+      case "mode-update":         handleModeUpdate(msg.data); break;
       case "queue-update":        logEvent("queue-update", { s: msg.data?.steering?.length, f: msg.data?.followUp?.length }); handleQueueUpdate(msg.data); break;
       case "compaction-start":    handleCompactionStart(msg.data); break;
       case "compaction-end":      handleCompactionEnd(msg.data); break;
@@ -2029,14 +2032,17 @@ export function handleShowDialog(data: MsgData<"show_dialog">): void {
       options: data.options || [],
       defaultValue: data.defaultValue || "",
     });
-    // Mount in a dedicated overlay container below the status bar
-    var container = document.getElementById("dialog-overlay");
-    if (!container) {
-      container = document.createElement("div");
-      container.id = "dialog-overlay";
-      document.body.appendChild(container);
-    }
-    dlg.mount(container);
+    // Mount straight onto <body>. The Dialog's own root IS the full-screen overlay
+    // (.pi-dialog-overlay: position fixed, inset 0, z-index 1000), so the #dialog-overlay
+    // wrapper that used to be created here was a SECOND identical fixed layer — and it was
+    // never removed. Dialog.destroy() only removes its own element, so once any dialog had
+    // opened, an empty full-screen layer stayed on top of the UI for the rest of the session,
+    // swallowing every click and scroll. It also double-dimmed the backdrop, both layers
+    // painting rgba(0,0,0,0.4).
+    //
+    // Clean up a stale wrapper from a webview that is still alive from a previous version.
+    document.getElementById("dialog-overlay")?.remove();
+    dlg.mount(document.body);
   }
 
   // ═══ #8: Slash Command Autocomplete ═══════════════════════
@@ -2370,3 +2376,59 @@ export function handleDebugCommand(): void {
     state.chatContainer.appendChild(el);
     scrollToBottom();
   }
+
+// ═══ Mode strip ═══════════════════════════════════════════════════
+// Renders what the NEXT prompt will do. All state comes from the extension — the webview never
+// guesses, because the binary reports none of this and a divergent guess would be worse than a
+// stale one.
+
+let modeStripWired = false;
+
+function postMode(msg: Record<string, unknown>): void {
+  if (typeof window.__vscode !== "undefined") { window.__vscode.postMessage(msg); }
+}
+
+export function handleModeUpdate(data: MsgData<"mode-update">): void {
+  const strip = document.getElementById("pi-mode-strip");
+  if (!strip || !data) { return; }
+  strip.classList.toggle("hidden", !data.available);
+  if (!data.available) { return; }
+
+  const codeBtn = document.getElementById("pi-mode-code") as HTMLButtonElement | null;
+  const planBtn = document.getElementById("pi-mode-plan") as HTMLButtonElement | null;
+  const hint    = document.getElementById("pi-mode-hint");
+  const actions = document.getElementById("pi-plan-actions");
+  const chip    = document.getElementById("pi-approval-chip") as HTMLButtonElement | null;
+  if (!codeBtn || !planBtn || !hint || !actions || !chip) { return; }
+
+  const plan = data.planMode;
+  codeBtn.className = "pi-mode-opt" + (plan === "off" ? " on-code" : "");
+  planBtn.className = "pi-mode-opt" + (plan === "planning" || plan === "pending" ? " on-plan"
+                                     : plan === "approved" ? " on-approved" : "");
+  planBtn.textContent = plan === "approved" ? "plan ✓" : "plan";
+
+  hint.className = plan === "off" ? "" : "warn";
+  hint.textContent =
+    plan === "off"       ? "runs edits directly" :
+    plan === "planning"  ? "writes held until you approve a plan" :
+    plan === "pending"   ? "plan ready for review" :
+                           "plan approved — writes allowed";
+
+  actions.classList.toggle("hidden", plan !== "pending");
+
+  chip.textContent = `approval: ${data.approval} ▾`;
+  chip.title = "What this session asks approval for. Rust Pi reads it only at startup, "
+    + "so changing it restarts the session.";
+  chip.className = data.approval === "yolo" ? "appr-yolo" : data.approval === "write" ? "appr-write" : "";
+
+  if (modeStripWired) { return; }
+  modeStripWired = true;
+
+  // The segmented control switches directly — two options, both visible, no menu needed.
+  codeBtn.addEventListener("click", () => postMode({ type: "setPlanMode", on: false }));
+  planBtn.addEventListener("click", () => postMode({ type: "setPlanMode", on: true }));
+  document.getElementById("pi-plan-approve")?.addEventListener("click", () => postMode({ type: "approvePlan" }));
+  document.getElementById("pi-plan-reject")?.addEventListener("click", () => postMode({ type: "rejectPlan" }));
+  // Three options with real consequences — VS Code's QuickPick, like every other picker here.
+  chip.addEventListener("click", () => postMode({ type: "openApprovalPicker" }));
+}

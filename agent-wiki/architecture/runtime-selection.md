@@ -1,7 +1,10 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-07-21 — dual-runtime audit remediation: capability defaults unified behind `backendCapabilityDefaults(runtime)` (one source for all three copies); the four remaining `_backendKind` branches are now `assertNever`-guarded (third-runtime = compile error); `RustService.setThinkingLevel` is non-blocking (optimistic + fire-and-forget clamp re-read, no 8 s picker freeze); `refreshUsage` is guarded against a mid-turn `compact()` wipe; a usage wire-shape drift probe (`sessionStatsLookDrifted` / `tokenFieldsLookDrifted`) prevents a renamed token field reading as a silent `$0.00`; and the RustService event loop + usage arithmetic now have direct coverage (`rust-service-events.test.ts`).
+> **Last updated:** 2026-08-31 — corrected the agent-home section (0.2.0 shares
+> `~/.pi/agent` and merges the catalog; the relocated home and linked `auth.json`
+> described here were removed), re-verified the RPC flags against v0.3.0, and noted
+> the inert approval flags and the blocking `ask` tool.
 >
 > **2026-07-06** — `PiBackend` seam migration COMPLETE: `SdkService` and `RustService` both `implements PiBackend`, and PiService delegates every primitive through the `backend` accessor instead of `_backendKind === "rust"` branches; the remaining feature gates read `capabilities`.
 > **Earlier:** 2026-07-06 — audit-remediation pass: `SdkService` extraction (the TS runtime now mirrors `RustService`), `RustDeps` injection (RustService is vscode-free and headless-testable), `get_state` shape probe, `rust-catalog.ts` → `model-catalog.ts` rename, shared helpers moved into `agent-events.ts`, architecture diagram.
@@ -155,13 +158,22 @@ branch point rather than a silent misroute.
   `resolveEffectiveDefaultRuntime()`, `refreshRuntimeContext()` (sets the
   `pi-code-gui.{ts,rust,both,any}Available` context keys).
 
-## RPC flags (verified against the v0.1.18 binary)
+## RPC flags (verified against the v0.3.0 binary)
 
 `pi --mode rpc --session-dir <dir>` plus, as applicable: `--session <path>`
 (resume), `--provider`/`--model`, `--thinking <level>`,
-`--extension-policy safe|balanced|permissive`. There is **no `--approve` flag**
-(project trust is the binary's own concern). Commands use underscores
-(`get_state`, `follow_up`); responses are `{type:"response", id, success, data}`.
+`--extension-policy safe|balanced|permissive`, `--trust`, `--no-extensions`.
+Commands use underscores (`get_state`, `follow_up`); responses are
+`{type:"response", id, success, data}`.
+
+Two flags exist but do **not** work over RPC: `--approval-mode` and `--yolo` are
+inert, leaving every session in `always-ask`. Approval is settable only through
+`approval.mode` in the agent home's `settings.json` — see
+[Session Modes](session-modes.md).
+
+0.3.0 also enables ten more tools by default (18, up from 8), including `ask`,
+which BLOCKS the turn until the client answers `ask_request`. An unrouted
+`ask_request` is a five-minute stall, not a dropped event.
 
 ## What does NOT carry over to Rust (documented limitations)
 
@@ -284,11 +296,15 @@ rejected alternative. (Lightweight, in lieu of formal ADRs.)
   (written into `models.json`) are clamped to the context budget — lowering a
   built-in's window would require shadowing it. The displayed `%` honours the
   budget for both.
-- **Relocated agent home + guarded auth seed.** Every Rust session sets
-  `PI_CODING_AGENT_DIR` to an extension-owned dir so writing the bundled
-  `models.json` never clobbers `~/.pi/agent`. `auth.json` is linked from there
-  only when the source is non-empty, valid JSON (a 0-byte source made the binary
-  write `auth.json.corrupt`).
+- **Shared agent home (changed in 0.2.0).** Rust sessions point
+  `PI_CODING_AGENT_DIR` at the user's own `~/.pi/agent`, so there is one
+  `auth.json` and a `/login` applies to both the extension and the `pi` CLI with
+  nothing copied or linked. Earlier releases relocated the home to an
+  extension-owned directory and seeded `auth.json` into it; that is no longer
+  true, and the credential-carrying mechanisms it required (symlink, copy, hard
+  link) were each wrong in a different way. The catalog is now *merged* into the
+  user's `models.json` rather than written over it, which is what made sharing
+  safe. See [Model Catalog & the Shared Agent Home](model-catalog.md).
 - **No orphan watchdog needed; crash offers one-click reopen.** Verified that
   rust-pi exits cleanly (~15ms) on stdin EOF, so when the extension host dies the
   closed pipe terminates the subprocess — no orphaning, no watchdog. `dispose()`

@@ -1,6 +1,6 @@
 # Build Pipeline
 
-> **Status:** evolving
+> **Status:** stable
 
 The Build Pipeline (`esbuild.js`, `tsconfig.json`, `eslint.config.mjs`,
 `.vscode-test.mjs`, and npm scripts in `package.json`) compiles, type-checks,
@@ -74,4 +74,31 @@ container files, and `.pi/`. Ships only `dist/`, `media/`, `package.json`,
 
 - [SDK Resolution & Init](sdk-resolution.md) — how the extension finds and loads Pi SDK at runtime
 
-> **Last updated:** 2026-05-15 — initial documentation
+## Release chain (0.1.7-0.1.8)
+
+Two failures here were silent, and both are worth knowing before editing the
+workflows.
+
+**Releases were never published.** `release.yml` creates the GitHub Release with
+`GITHUB_TOKEN`, and GitHub deliberately does not start workflow runs from events
+raised by that token — so `publish.yml`'s `release: published` trigger never fired for
+an automated release. v0.1.4 was tagged, released, and absent from both marketplaces
+with nothing queued and no failure anywhere. `release.yml` now dispatches `publish.yml`
+explicitly, **on the tag**: the `marketplace` environment admits only tag refs matching
+`v0.*`, so a dispatch with `--ref main` is rejected before any step runs (~2s, no
+runner, no steps) — which reads as a build failure and is not one.
+
+**There is no approval gate.** The `marketplace` environment has no required reviewers
+and no wait timer, only that branch policy. Comments in both workflows once claimed a
+release would "queue that publish for your approval"; it does not. A merge to `main`
+that changes the version ships, unattended.
+
+**The supply-chain scan runs at publish time too.** `check-currency.mjs` exits non-zero
+on CRITICAL findings (known-compromised versions, IOC hashes, unrecognised install
+hooks). It ran only in `ci.yml`, which cannot gate a release — CI and the release
+workflow trigger on the same push and run concurrently, so the publish can finish
+before CI reports. Both publish jobs now run it themselves, making publish a superset
+of CI rather than a race.
+
+> **Last updated:** 2026-08-31 — documented the release/publish chain, the tag-ref
+> requirement, the absent approval gate, and the publish-time supply-chain scan.

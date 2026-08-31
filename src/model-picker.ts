@@ -54,3 +54,19 @@ export function buildModelPickerItems(models: ModelChoice[], currentId: string |
   });
 }
 
+/** The two options for the "save as default?" step, shared by every picker that offers one.
+ *
+ *  This step used to present ONE item ("★ Save as default"), leaving "no" to be expressed by
+ *  dismissing the QuickPick — an invisible affordance the user has to guess at. Declining is a
+ *  real answer and gets a real row, which also names what would be kept, so the consequence of
+ *  each choice is on screen rather than remembered. */
+export interface DefaultChoiceItem { label: string; description: string; save: boolean }
+
+export function buildDefaultChoiceItems(nextLabel: string, currentDefaultLabel: string | null): DefaultChoiceItem[] {
+  return [
+    { label: `\u2605 Save "${nextLabel}" as default`, description: "Start future sessions with this", save: true },
+    currentDefaultLabel
+      ? { label: `Keep "${currentDefaultLabel}" as default`, description: "This session only", save: false }
+      : { label: "Don't set a default", description: "This session only", save: false },
+  ];
+}

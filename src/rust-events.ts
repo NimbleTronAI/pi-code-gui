@@ -198,6 +198,26 @@ export interface RustModelEntry {
   contextWindow?: number;
 }
 
+/** Keep only models whose provider the user can authenticate to.
+ *
+ *  The Rust picker is populated from the binary's get_available_models, which lists its ~94
+ *  BUILT-INS regardless of credentials — amazon-bedrock, sap-ai-core and the rest — so scoping
+ *  what the extension writes into models.json never touched it. The TypeScript picker is built
+ *  from the bundled registry and was already scoped, so the two runtimes disagreed: one offered
+ *  three models, the other a hundred, most unusable.
+ *
+ *  `has` is asked per provider so the caller supplies the credential rule (env keys + OAuth).
+ *  Fails OPEN: if the filter would empty the list, the unfiltered list is returned. An empty
+ *  picker is worse than a noisy one, and a provider whose credential we cannot recognise (an
+ *  unusual env var, a provider outside the bundled registry) must not become unreachable. */
+export function scopeModelsToCredentials(
+  list: RustModelEntry[],
+  has: (provider: string) => boolean,
+): RustModelEntry[] {
+  const kept = list.filter((m) => has(m.provider));
+  return kept.length > 0 ? kept : list;
+}
+
 /** Normalize a Rust `get_available_models` reply to {provider, id, …} pairs. */
 export function parseRustModels(data: unknown): RustModelEntry[] {
   const d = data as { models?: unknown } | undefined;
@@ -216,7 +236,22 @@ export function parseRustModels(data: unknown): RustModelEntry[] {
       cost: m.cost && typeof m.cost.input === "number" && typeof m.cost.output === "number"
         ? { input: m.cost.input, output: m.cost.output }
         : undefined,
-    }));
+    }))
+    // DEDUPE by provider+id. rust-pi 0.3.0 resolves a model from three catalogs — its built-ins,
+    // the generated models.fetched.json, and the user's models.json (loaded last and
+    // authoritative) — and get_available_models LISTS them all, so a model described in more than
+    // one arrives several times. Measured: deepseek-v4-flash three times in one reply. That is a
+    // listing artifact, not ambiguity: the binary has already decided which definition wins for
+    // resolution, so the picker showing the same model repeatedly is pure noise.
+    //
+    // The LAST occurrence is kept, matching the binary's own precedence — the authoritative
+    // models.json is loaded last, so the entries the extension manages win over a built-in or
+    // fetched row describing the same model with, say, a 23x smaller maxTokens.
+    .reduce<RustModelEntry[]>((acc, m) => {
+      const at = acc.findIndex((x) => x.provider === m.provider && x.id === m.id);
+      if (at === -1) { acc.push(m); } else { acc[at] = m; }
+      return acc;
+    }, []);
 }
 
 /** Wrap a Rust `get_messages` reply as session-entry shapes for sendInitialMessages. */

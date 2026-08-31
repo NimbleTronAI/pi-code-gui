@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { PiService } from "./pi-service.js";
 import type { PiServiceEvent } from "./types.js";
+import { resolvePanelLocation } from "./panel-restore.js";
 import { validateExtensionToWebview, validateWebviewToExtension, isExtensionToWebviewType, type WebviewToExtension, type ExtensionToWebview } from "./shared/protocol.js";
 import { piWarn } from "./logger.js";
 import { safeExternalUrlString } from "./shared/webview-nav-guard.js";
@@ -47,10 +48,17 @@ export class PiWebviewPanel {
     // reload via the WebviewPanelSerializer registered in extension.ts (a random
     // viewType would opt out of restoration). Stale-HTML across extension upgrades
     // is a non-issue: attach() regenerates the HTML on every create AND revive.
+    // ViewColumn.Two was hardcoded, which is not "beside" — it is literally column two. A user
+    // working in a single group got one split open on every session (the #83 report), and a user
+    // in column three got the chat somewhere unrelated. Beside expresses the original intent
+    // correctly from any column; Active honours a user who would rather keep one group.
+    const location = resolvePanelLocation(
+      vscode.workspace.getConfiguration("pi-code-gui").get<string>("panelLocation"),
+    );
     const panel = vscode.window.createWebviewPanel(
       "pi-code-gui.session",
       "Pi Code Gui",
-      vscode.ViewColumn.Two,
+      location === "active" ? vscode.ViewColumn.Active : vscode.ViewColumn.Beside,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -279,6 +287,26 @@ export class PiWebviewPanel {
 
           case "clearQueue":
             await this.piService.clearQueue();
+            break;
+
+          case "setPlanMode":
+            await this.piService.setPlanMode(message.on, message.makeDefault === true);
+            break;
+
+          case "setApprovalMode":
+            await this.piService.setApprovalMode(message.mode, message.makeDefault === true);
+            break;
+
+          case "openApprovalPicker":
+            await this.piService.pickApprovalMode();
+            break;
+
+          case "approvePlan":
+            await this.piService.approvePlan();
+            break;
+
+          case "rejectPlan":
+            await this.piService.rejectPlan();
             break;
         }
       },
@@ -518,6 +546,22 @@ export class PiWebviewPanel {
   <div id="live-panel"></div>
 
   <div id="attachment-bar"></div>
+
+  <!-- Mode strip. Sits ABOVE the composer because it declares what the NEXT prompt will do —
+       the status bar below reports what IS. Rust only; hidden otherwise. -->
+  <div id="pi-mode-strip" class="hidden">
+    <div id="pi-mode-seg" role="group" aria-label="Session mode">
+      <button id="pi-mode-code" class="pi-mode-opt" title="Edits run as the agent decides">code</button>
+      <button id="pi-mode-plan" class="pi-mode-opt" title="Draft a plan first; edits wait for approval">plan</button>
+    </div>
+    <span id="pi-mode-hint"></span>
+    <div id="pi-plan-actions" class="hidden">
+      <button id="pi-plan-approve" class="pi-plan-btn primary">Approve</button>
+      <button id="pi-plan-reject" class="pi-plan-btn">Reject</button>
+    </div>
+    <span class="pi-mode-spacer"></span>
+    <button id="pi-approval-chip" title="Which actions need your approval">approval: always-ask ▾</button>
+  </div>
 
   <div id="input-area">
     <textarea id="prompt-input" placeholder="Ask pi to do something..." rows="1" disabled></textarea>

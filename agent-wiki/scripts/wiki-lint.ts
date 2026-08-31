@@ -99,11 +99,24 @@ export function runWikiLint(opts: WikiLintOpts = {}): Finding[] {
       }
     }
 
-    // 4. Stale pages — untouched for 90+ days
+    // 4. Stale pages — untouched for 90+ days.
+    //
+    // Staleness here is a proxy for "the code moved on and this page did not", so it only
+    // means anything for pages that DESCRIBE code. `discipline/` holds process documents —
+    // how to think, when to stop, how to maintain this wiki — with no code to drift from, so
+    // an old mtime there is just an old mtime. Flagging them trained the reader to skim past
+    // the whole staleness section, which is where the one page that WAS wrong hid: an audit
+    // found `runtime-selection.md` still describing an agent-home design two releases dead,
+    // sitting among five false positives.
+    //
+    // Touching a file to silence a linter is the failure mode this exemption avoids: it
+    // resets the signal without improving the page.
     const now = Date.now();
     const ninetyDays = 90 * 24 * 60 * 60 * 1000;
+    const describesCode = (page: string): boolean => !relative(wikiDir, page).startsWith('discipline/');
 
     for (const page of pages) {
+      if (!describesCode(page)) { continue; }
       const mtime = statSync(page).mtimeMs;
       if (now - mtime > ninetyDays) {
         const days = Math.round((now - mtime) / (24 * 60 * 60 * 1000));
@@ -113,6 +126,7 @@ export function runWikiLint(opts: WikiLintOpts = {}): Finding[] {
 
     // 5. Status rotation — pages marked "evolving" for 90+ days
     for (const page of pages) {
+      if (!describesCode(page)) { continue; }   // same reasoning as the staleness check
       const content = readFileSync(page, 'utf-8');
       if (content.includes('> **Status:** evolving')) {
         const mtime = statSync(page).mtimeMs;

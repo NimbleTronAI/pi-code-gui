@@ -3,7 +3,7 @@
 // older extension versions — so the planner must never trust it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planPanelRestore } from "../../panel-restore.js";
+import { planPanelRestore, resolvePanelLocation } from "../../panel-restore.js";
 
 const exists = () => true;
 const missing = () => false;
@@ -38,5 +38,19 @@ test("null/undefined/garbage state never throws and falls back to fresh + defaul
     const plan = planPanelRestore(s, exists, "rust");
     assert.equal(plan.action, "fresh");
     assert.equal(plan.runtime, "rust");
+  }
+});
+
+// ── #83: where a new chat opens ─────────────────────────────────────
+test("resolvePanelLocation: only an explicit \"active\" moves the chat into the current group", () => {
+  assert.equal(resolvePanelLocation("active"), "active");
+  assert.equal(resolvePanelLocation("beside"), "beside");
+  assert.equal(resolvePanelLocation(" active "), "active", "tolerates stray whitespace");
+});
+
+test("resolvePanelLocation: anything unrecognised falls back to the historical behaviour", () => {
+  // A hand-edited settings.json or a value from a newer version must not stop a chat opening.
+  for (const bad of [undefined, null, "", "Active", "split", "two"]) {
+    assert.equal(resolvePanelLocation(bad as string | undefined), "beside", JSON.stringify(bad));
   }
 });

@@ -86,6 +86,7 @@ Nothing fails silently: an unwritable agent directory surfaces as a clear error 
 | 💬 **Chat panel** | Streaming text, collapsible thinking blocks, tool call/result rendering, markdown with syntax-highlighted code blocks |
 | 🔀 **Two runtimes** | Run each session on **TypeScript Pi** (in-process SDK + editor bridge) or **Rust Pi** (fast ~21 MB standalone binary); per-session choice, badged in the status bar — see [Choosing a runtime](#choosing-a-runtime) |
 | 🧰 **Editor bridge** *(TypeScript Pi)* | Agent reads open editors, checks diagnostics, inspects symbols/types, applies edits, formats code through VS Code APIs. Under **Rust Pi**, the agent uses its own file/shell tools instead |
+| 🧭 **Mode strip** *(Rust Pi)* | A strip above the prompt shows what your next message will do, and changes it before you send: **plan mode** — the agent drafts a plan and holds every edit until you approve it — and the **approval posture** governing which actions run without asking (`always-ask` / `write` / `yolo`). Both are visible at the moment you commit, not buried in a command palette |
 | 🔄 **Session history** | Auto-saved conversations can be resumed or deleted. Find with text search |
 | 🪟 **Multi-session** | Multiple independent chat panels, each with its own model, thinking level, and conversation tree |
 | 🔐 **Flexible auth** | Runtime API key overrides via VS Code settings, env vars, or the built-in auth config |
@@ -93,6 +94,27 @@ Nothing fails silently: an unwritable agent directory surfaces as a clear error 
 | 📋 **Custom Messages** *(TypeScript Pi)* | Extensions can render inline interactive cards with buttons, clickable rows, and live polling updates — see [§ Custom Messages](#custom-messages--minimal-working-example). Under **Rust Pi**, cards fall back to markdown |
 | 🛠️ **Tool control** *(TypeScript Pi)* | `/tools` command opens a grouped checkbox picker to select which built-in, bridge, or extension tools are active per session. Persisted to session file, restored on resume. **Rust Pi** runs its full built-in tool set (no picker) |
 | 📦 **Runtime-aware packages** | The Packages view manages the one shared Pi catalog and follows the focused session's runtime — each package is marked **active** (loaded by that runtime) or **available** (installed but not loaded), with provenance/safety signals. Works under either runtime (drives the Rust binary when the TypeScript SDK isn't installed) |
+
+## Plan mode and approvals *(Rust Pi)*
+
+**New in 0.2.0.** Rust Pi 0.3.0 can draft a plan before it touches anything, and can be told how
+much to do without asking. Both now have a home in the UI — a strip directly above the prompt,
+because what the next message will do is worth knowing *before* you send it, not after.
+
+**Plan mode.** Switch to `plan` and the agent works read-only: it explores, then submits a plan
+and waits. Every write is refused until you decide. When a plan arrives you get **Approve** or
+**Reject** right in the strip. Approving unblocks writes and drops "Carry out the plan" into the
+prompt, ready to send; rejecting returns the agent to planning, where a follow-up message is how
+you say what to change.
+
+**Approval posture.** `always-ask` needs a yes for every edit and command, `write` lets file edits
+through while commands still ask, and `yolo` runs everything. Rust Pi reads this only when a
+session starts, so changing it restarts the session — your conversation is reloaded from disk and
+carries forward. The prompt says so, and offers **Restart, don't ask again**.
+
+The setting lives in `~/.pi/agent/settings.json`, which the extension shares with the `pi` CLI —
+so a change applies to both, and the prompt tells you that too. Defaults for new sessions are
+`pi-code-gui.defaultMode` and `pi-code-gui.defaultApproval`, offered whenever you change either.
 
 ## Gotchas
 
@@ -282,6 +304,7 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 |---------|------|---------|-------------|
 | `pi-code-gui.promptToInstall` | boolean | `true` | Prompt to install Pi if not found |
 | `pi-code-gui.autoOpenOnStart` | boolean | `true` | Open a Pi tab automatically when the window starts |
+| `pi-code-gui.panelLocation` | string | `beside` | Where a chat opens: `beside` (split off a second group) or `active` (a tab in the current group) |
 | `pi-code-gui.systemPromptAppend` | string | `""` | Additional instructions appended to the system prompt |
 | `pi-code-gui.enableSkills` | boolean | `true` | Load project and global pi skills |
 | `pi-code-gui.enableContextFiles` | boolean | `true` | Inject project context files |

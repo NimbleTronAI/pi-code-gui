@@ -1,6 +1,6 @@
 # PiService
 
-> **Status:** evolving
+> **Status:** stable
 
 PiService (`src/pi-service.ts`) is the runtime-agnostic **orchestrator** behind every
 `SessionWindow`. It holds one `PiBackend` — either `SdkService` (in-process TypeScript
