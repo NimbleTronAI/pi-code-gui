@@ -655,7 +655,7 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.84.1",
+    "@earendil-works/pi-ai": "^0.84.4",
     "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "^30.0.0",
     "@types/node": "~26.4.0",
