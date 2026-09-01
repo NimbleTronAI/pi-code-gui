@@ -475,17 +475,19 @@
         "pi-code-gui.defaultApproval": {
           "type": "string",
           "enum": [
+            "",
             "always-ask",
             "write",
             "yolo"
           ],
-          "default": "always-ask",
+          "default": "",
           "enumDescriptions": [
-            "Every edit and command needs your approval.",
+            "Follow ~/.pi/agent/settings.json — whatever you or the pi CLI last set. No default is imposed.",
+            "Every edit and command needs a yes.",
             "File edits go through; commands still ask.",
             "Nothing asks — edits and commands run."
           ],
-          "markdownDescription": "Which actions a **Rust** session may take without asking. Written as `approval.mode` in `~/.pi/agent/settings.json`, which the extension shares with the Pi CLI — so this changes the CLI's posture too. rust-pi reads it at startup, so a change applies to the next session."
+          "markdownDescription": "Approval posture for **new Rust sessions**. Empty (default) follows `~/.pi/agent/settings.json` — the file the extension shares with the `pi` CLI — so neither side imposes on the other. Set a value and every new session starts in it, writing that key at session start. Changing the posture of a session already running is done from the strip above the prompt, and restarts it."
         },
         "pi-code-gui.rustAgentDir": {
           "type": "string",

@@ -18,7 +18,7 @@ import { formatRustLoadError } from "./extension-errors.js";
 import { scopeModelsToCredentials, normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
 import { isRustExtensionConflict } from "./rust-interop.js";
 import type { RustLoadError } from "./extension-errors.js";
-import { providerHasCredential, oauthProviders, defaultRustAgentDir, readApprovalMode } from "./rust-models.js";
+import { providerHasCredential, oauthProviders, defaultRustAgentDir, readApprovalMode, writeApprovalMode } from "./rust-models.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
 import { thinkingLevelIsLive } from "./model-catalog.js";
@@ -104,6 +104,8 @@ export interface RustSessionConfig {
    *  minute at a blank panel). Injectable so a test can collapse it; a suite must never inherit
    *  the production budget. */
   readyBudgetMs?: number;
+  /** Approval posture to impose on NEW sessions, or "" to follow the shared agent home. */
+  defaultApproval?: string;
 }
 
 /** Environment dependencies injected into RustService — everything that would
@@ -328,6 +330,20 @@ export class RustService implements PiBackend {
       this.host.emit({ type: "custom-message", data: { customType: "error", content: `⚠ Custom models for Rust couldn't be configured — ${m}`, timestamp: Date.now() } });
       this.deps.showError(`Pi Code Gui: ${m}`);
       // Continue: built-in models still work; an unresolved model is caught below.
+    }
+
+    // Apply the configured default BEFORE reading it back. pi-code-gui.defaultApproval was a
+    // dead setting: it drew the ★ in the picker and was written when you ticked "save as
+    // default", but nothing ever applied it — so a user whose default said `write` got whatever
+    // ~/.pi/agent/settings.json happened to hold, and the picker showed ★ write beside ✓ yolo.
+    //
+    // Empty means "follow the shared file", which is the honest default for a file the pi CLI
+    // also writes: the extension imposes nothing unless asked. A non-empty value is enforced on
+    // every new session, which is what "default for new sessions" has to mean to be true.
+    const wanted = (cfg.defaultApproval ?? "").trim();
+    if (wanted && wanted !== readApprovalMode(defaultRustAgentDir())) {
+      const warn = writeApprovalMode(defaultRustAgentDir(), wanted as ApprovalMode);
+      if (warn) { piWarn(`Applying pi-code-gui.defaultApproval failed: ${warn}`); }
     }
 
     // Record the posture this session is being spawned with — rust-pi reads it once, here, and

@@ -239,3 +239,29 @@ test("writeApprovalMode: a corrupt settings file is replaced, not compounded", (
   assert.equal(writeApprovalMode(dir, "yolo"), null);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).approval, { mode: "yolo" });
 });
+
+// ── defaultApproval must actually apply ─────────────────────────────
+// It was a dead setting: read only to draw the ★ in the picker, written when you ticked "save as
+// default", and never applied. A user whose default said `write` got whatever the shared file
+// happened to hold — the picker showed ★ write beside ✓ yolo, and the session ran yolo.
+
+test("a configured default is written to the shared file before the session reads it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "appr-default-"));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ theme: "dark", approval: { mode: "yolo" } }));
+  // What the spawn path does: apply, then read back.
+  writeApprovalMode(dir, "write");
+  assert.equal(readApprovalMode(dir), "write", "the session starts in the configured default");
+  assert.equal(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).theme, "dark", "rest preserved");
+});
+
+test("an empty default leaves the shared file alone", () => {
+  // "" means follow ~/.pi/agent/settings.json — the file the pi CLI also writes. The extension
+  // imposes nothing unless asked, which is why the default is empty rather than always-ask.
+  const dir = mkdtempSync(join(tmpdir(), "appr-follow-"));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ approval: { mode: "yolo" } }));
+  const before = readFileSync(join(dir, "settings.json"), "utf8");
+  const wanted: "" | "write" = "";
+  if (wanted) { writeApprovalMode(dir, wanted); }   // mirrors the guard at the spawn site
+  assert.equal(readFileSync(join(dir, "settings.json"), "utf8"), before, "untouched");
+  assert.equal(readApprovalMode(dir), "yolo", "the CLI's choice stands");
+});

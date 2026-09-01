@@ -423,6 +423,7 @@ export class PiService {
           openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
           readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
+          defaultApproval: cfg.get<string>("defaultApproval") ?? "",
         };
       },
       showError: (message) => { void vscode.window.showErrorMessage(message); },
@@ -468,6 +469,7 @@ export class PiService {
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
           readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
+          defaultApproval: cfg.get<string>("defaultApproval") ?? "",
           sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
         };
       },
@@ -1759,7 +1761,8 @@ export class PiService {
   async pickApprovalMode(): Promise<void> {
     if (!this.capabilities.sessionModes || !this.backend) { return; }
     const current = this.backend.approvalMode;
-    const saved = vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultApproval") ?? "always-ask";
+    // "" = no default imposed, so nothing gets a ★ — the picker must not invent one.
+    const saved = (vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultApproval") ?? "").trim();
     const rows: Array<{ id: "always-ask" | "write" | "yolo"; detail: string }> = [
       { id: "always-ask", detail: "Every edit and command needs a yes" },
       { id: "write", detail: "File edits go through; commands still ask" },
