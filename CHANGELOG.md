@@ -1,6 +1,9 @@
 # Change Log
 
-## [Unreleased]
+## [0.2.1]
+
+Three ways a Rust session could fail or stall without telling you why, and the naming
+path that reached into a file the binary owns.
 
 ### Fixed
 - **Session names are written by Rust Pi, not by the extension reaching into its file.** Naming a Rust session appended a `session_info` line to the JSONL the binary owns, gated on the binary being idle because an interleaved write could clobber it — a risk the code documented and couldn't rule out. Rust Pi 0.3.0 has a `set_session_name` command that writes an equivalent entry itself, so the extension now asks rather than writes. Existing names are unaffected: the entry is the same shape the Past Sessions list already reads.
