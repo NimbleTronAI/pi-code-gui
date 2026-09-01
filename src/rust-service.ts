@@ -121,6 +121,9 @@ export interface RustDeps {
   /** The rustExtensions setting mode: "auto" | "enabled" | "disabled". */
   extensionsMode(): string;
   setupModels(): { piEnv: Record<string, string>; warnings: string[] };
+  /** True when the user can authenticate to `provider`. Injectable so scoping is testable
+   *  without the ambient environment deciding the answer. */
+  hasCredential?(provider: string): boolean;
   sessionDir(): string;
   workspaceCwd(): string;
   /** Read the current settings (called at init and on state refresh — not cached). */
@@ -1247,8 +1250,13 @@ export class RustService implements PiBackend {
   /** Offer only models the user can authenticate to — parity with the TypeScript picker, which
    *  is built from the bundled registry and has always been scoped. See scopeModelsToCredentials. */
   private scopeModels(list: ReturnType<typeof parseRustModels>): ReturnType<typeof parseRustModels> {
-    const oauth = oauthProviders(defaultRustAgentDir());
-    return scopeModelsToCredentials(list, (prov) => providerHasCredential(prov, process.env, oauth));
+    // Credentials come through deps, not from ambient process.env + $HOME. Reading them directly
+    // made this untestable: a test could only assert scoping if the machine RUNNING it happened
+    // to hold the credential, so it passed locally and failed in CI, where neither the env var
+    // nor ~/.pi/agent/auth.json exists.
+    const has = this.deps.hasCredential
+      ?? ((prov: string) => providerHasCredential(prov, process.env, oauthProviders(defaultRustAgentDir())));
+    return scopeModelsToCredentials(list, has);
   }
 
   /** Plan mode, tracked here because the binary does not report it.

@@ -9,7 +9,7 @@ import { confirmRendererConsent } from "./renderer-consent.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
-import { setupRustModels, reseedRustAuth, readApprovalMode, writeApprovalMode, defaultRustAgentDir } from "./rust-models.js";
+import { setupRustModels, reseedRustAuth, readApprovalMode, writeApprovalMode, defaultRustAgentDir, providerHasCredential, oauthProviders } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
@@ -405,6 +405,7 @@ export class PiService {
       workspaceIsTrusted: () => vscode.workspace.isTrusted,
       extensionsMode: () => rustExtensionsMode(),
       setupModels: () => setupRustModels(),
+      hasCredential: (prov: string) => providerHasCredential(prov, process.env, oauthProviders(defaultRustAgentDir())),
       sessionDir: () => resolveRustSessionDir(),
       workspaceCwd: () => resolveWorkspaceCwd(),
       config: () => {

@@ -523,6 +523,9 @@ test("the model list stays credential-scoped after the cache ages out", async ()
     { provider: "amazon-bedrock", id: "llama-4-scout" },
   ] };
   const svc = new RustService(host, makeDeps("ok", {
+    // Stated, not inherited from whatever the machine happens to hold. This test passed locally
+    // and failed in CI purely because the dev box had DEEPSEEK_API_KEY set.
+    hasCredential: (prov: string) => prov === "deepseek",
     createProcess: (_opts: RustProcessOpts) => ({
       spawn: async () => {}, dispose: () => {}, isAlive: () => true,
       request: async (cmd: string) => cmd === "get_available_models"
