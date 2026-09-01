@@ -93,7 +93,7 @@ export function toolArgsPreviewText(args: unknown): string | null {
   }
   return String(args); // number / boolean — render as-is
 }
-import { humanizeProviderError } from "./extension-errors.js";
+import { humanizeProviderError, explainAgentStop } from "./extension-errors.js";
 
 /** Coerce a raw error value to a display string. rust-pi/DeepSeek can deliver an error
  *  as a structured object ({error, errorHints, …}); extract a nested string field when
@@ -292,6 +292,14 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
         if (state.backendKind === "rust") { effects.captureContext = true; effects.captureUsage = event.message.usage; }
         const toolCalls = extractToolCalls(event.message.content);
         events.push({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
+        // A terminal stopReason is a FAILURE the user must see. It rode along in this payload
+        // for releases while the webview handled only "aborted", so a turn killed by the tool
+        // ceiling looked like the model trailing off. Emitted as its own card so it survives
+        // whatever the message renderer does, and reads the same on both runtimes.
+        const stopNote = explainAgentStop(event.message.stopReason, event.message.errorMessage);
+        if (stopNote) {
+          events.push({ type: "custom-message", data: { customType: "error", content: `⚠ ${stopNote}`, timestamp: Date.now() } });
+        }
         effects.reportStatus = true;
       } else if (event.message?.role === "custom") {
         const custEntry = reverseFind(state.lookups.entries, (e: any) => e.type === "message" && e.message?.role === "custom");

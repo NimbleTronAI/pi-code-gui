@@ -15,7 +15,7 @@
 // in PiService — it's runtime-agnostic and calls these primitives. Backends advertise
 // what they can do via `capabilities` (a data flag) rather than PiService hard-coding
 // `!isRust` conditionals.
-import { assertNever, type Runtime } from "./types.js";
+import { assertNever, type Runtime, type PlanMode, type ApprovalMode } from "./types.js";
 
 /** A backend's usage snapshot. Shared shape across runtimes (RustService already used
  *  it; SdkService now computes the same from its SessionManager). */
@@ -34,11 +34,12 @@ export interface BackendUsage {
 export interface BackendCapabilities {
   readonly kind: Runtime;
   /** In-process VS Code editor-bridge tools (vscode_*). */
-  readonly bridgeTools: boolean;
   /** Interactive custom message cards (vs. markdown fallback). */
-  readonly customCards: boolean;
   /** Per-session /tools enable-disable picker. */
   readonly toolsPicker: boolean;
+  /** Whether this backend has plan mode and an approval posture (rust-pi 0.3.0 does; the
+   *  in-process SDK has neither concept). Gates the mode strip. */
+  readonly sessionModes: boolean;
   /** Fork/clone a session from an entry. */
   readonly fork: boolean;
   /** Reload context files mid-session (/reload). */
@@ -46,7 +47,6 @@ export interface BackendCapabilities {
   /** Export the conversation to HTML. */
   readonly exportHtml: boolean;
   /** Rename a session (/name). */
-  readonly rename: boolean;
   /** Whether PiService should intercept builtin slash commands before sending (TS),
    *  or forward everything raw because the backend handles its own slashes (Rust). */
   readonly interceptSlashCommands: boolean;
@@ -87,13 +87,11 @@ export function backendCapabilityDefaults(runtime: Runtime): BackendCapabilities
   const rust = runtime === "rust";
   return {
     kind: runtime,
-    bridgeTools: !rust,
-    customCards: !rust,
     toolsPicker: !rust,
+    sessionModes: rust,
     fork: !rust,
     reloadContext: !rust,
     exportHtml: true,
-    rename: !rust,
     interceptSlashCommands: !rust,
     thinkingLevelLive: () => !rust,
   };
@@ -122,6 +120,28 @@ export interface PiBackend {
   /** Set the active model on the wire. Returns the resolved model identity applied
    *  (or null if it couldn't be set); the backend also updates its own getModel(). */
   setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null>;
+
+  // ── Session modes (capabilities.sessionModes) ──────────────────────────────
+  // Present on every backend so PiService can call them without narrowing to a concrete class.
+  // The SDK's are inert; rust-pi's drive set_plan_mode / approve_plan / reject_plan. These
+  // exist because the first cut reached through the seam with `as unknown as` casts, which
+  // compiled while asserting a shape the interface never promised.
+
+  /** Plan-mode lifecycle, tracked client-side: rust-pi reports none of it. */
+  readonly planMode: PlanMode;
+  /** The approval posture this session was SPAWNED with — fixed for its lifetime. */
+  readonly approvalMode: ApprovalMode;
+  /** The session file, so a restart can resume rather than start empty. */
+  readonly currentSessionPath: string | null;
+  setPlanMode(on: boolean): Promise<PlanMode>;
+
+  /** Persist a display name for this session. Both runtimes own a native way to do it — the SDK
+   *  through its session, rust-pi through the set_session_name RPC — so this is a plain seam
+   *  method rather than a capability flag with nothing to gate. */
+  setSessionName(name: string): Promise<boolean>;
+  /** Approve the submitted plan; returns its text. Does not resume the agent. */
+  approvePlan(): Promise<string | null>;
+  rejectPlan(): Promise<boolean>;
   /** The active thinking level — OWNED by the backend (Rust captures it from
    *  get_state/applyState; the SDK sets it at init + on setThinkingLevel). PiService reads
    *  this instead of holding its own `_thinkingLevel`. */

@@ -72,6 +72,44 @@ export function humanizeProviderError(raw: string | undefined | null): string | 
   return e ? `${e.title}\n\n${e.detail}\n\n${e.remediation}` : null;
 }
 
+/**
+ * Turn a terminal `stopReason` on an assistant message into something a user can act on.
+ *
+ * A turn that ends with `stopReason: "error"` used to render as SILENCE: the webview only
+ * handled "aborted", so everything else fell through and the conversation simply stopped
+ * mid-thought. Observed with rust-pi's tool ceiling — the transcript recorded
+ * `stopReason: "error"`, `errorMessage: "Maximum tool iterations (50) exceeded"`, and the panel
+ * showed a reply that trailed off as though the model had lost interest.
+ *
+ * Returns null for ordinary completions, so callers can push the result unconditionally.
+ */
+export function explainAgentStop(stopReason: string | undefined, errorMessage: string | undefined): string | null {
+  const detail = (errorMessage ?? "").trim();
+
+  // Deliberately NOT an allowlist of benign reasons — guessing which strings are harmless is
+  // how the original bug happened, and a novel failure reason would go silent again. Explain
+  // the two reasons known to mean failure, plus ANY reason carrying an error message, which is
+  // itself evidence that something went wrong whatever the reason is called.
+  const isFailure = stopReason === "error" || stopReason === "aborted" || detail !== "";
+  if (!stopReason || !isFailure) { return null; }
+
+  // The tool ceiling is the one with a lever the user owns, so it gets named guidance rather
+  // than the raw string. rust-pi's default is 50; the setting overrides it per session.
+  const iterations = /Maximum tool iterations \((\d+)\) exceeded/i.exec(detail);
+  if (iterations) {
+    return `**The agent stopped after ${iterations[1]} tool calls.** That is Rust Pi's per-turn `
+      + `ceiling, not the end of the work — the reply above is cut off mid-task.\n\n`
+      + `Raise it with the \`pi-code-gui.maxToolIterations\` setting (0 keeps Rust Pi's default `
+      + `of ${iterations[1]}), then ask the agent to continue. Long refactors and codebase-wide `
+      + `reviews reach this routinely.`;
+  }
+
+  if (stopReason === "aborted") { return detail || "Operation aborted."; }
+  return detail
+    ? `**The turn ended early** (\`${stopReason}\`): ${detail}`
+    : `**The turn ended early** (\`${stopReason}\`) with no reason given.`;
+}
+
 export type RustLoadErrorKind = "digest-mismatch" | "unsupported-module" | "load-failed";
 
 export interface RustLoadError {

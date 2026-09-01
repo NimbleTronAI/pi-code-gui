@@ -14,8 +14,8 @@ const cmds = (list: SlashCommand[]): string[] => list.map((c) => c.cmd);
 /** A capabilities object with everything off except what a test flips on. */
 function caps(over: Partial<BackendCapabilities> = {}): BackendCapabilities {
   return {
-    kind: "rust", bridgeTools: false, customCards: false, toolsPicker: false, fork: false,
-    reloadContext: false, exportHtml: false, rename: false, interceptSlashCommands: false,
+    kind: "rust", toolsPicker: false, sessionModes: false, fork: false,
+    reloadContext: false, exportHtml: false, interceptSlashCommands: false,
     thinkingLevelLive: () => true, ...over,
   };
 }

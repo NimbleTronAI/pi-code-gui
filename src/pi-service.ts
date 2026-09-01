@@ -9,10 +9,10 @@ import { confirmRendererConsent } from "./renderer-consent.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
-import { setupRustModels, reseedRustAuth, writeApprovalMode, defaultRustAgentDir } from "./rust-models.js";
+import { setupRustModels, reseedRustAuth, readApprovalMode, writeApprovalMode, defaultRustAgentDir, providerHasCredential, oauthProviders } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
-import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, rustHonorsMaxThinkingLevel, THINKING_LEVELS, type ThinkingModel, clampThinkingLevelForRust } from "./model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
@@ -405,6 +405,7 @@ export class PiService {
       workspaceIsTrusted: () => vscode.workspace.isTrusted,
       extensionsMode: () => rustExtensionsMode(),
       setupModels: () => setupRustModels(),
+      hasCredential: (prov: string) => providerHasCredential(prov, process.env, oauthProviders(defaultRustAgentDir())),
       sessionDir: () => resolveRustSessionDir(),
       workspaceCwd: () => resolveWorkspaceCwd(),
       config: () => {
@@ -422,6 +423,7 @@ export class PiService {
           anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
           openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
+          readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
         };
       },
       showError: (message) => { void vscode.window.showErrorMessage(message); },
@@ -466,6 +468,7 @@ export class PiService {
           defaultModelId: cfg.get<string>("defaultModelId"),
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
+          readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
           sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
         };
       },
@@ -656,7 +659,6 @@ export class PiService {
     // through it (RustService reads its own copy directly in its event loop).
     if (r.setAgentRunActive !== undefined) { this.backend?.setAgentRunActive(r.setAgentRunActive); }
     // A run just ended → the binary is idle again, so a title deferred mid-turn can land now.
-    if (r.setAgentRunActive === false) { this._flushRustSessionInfo(); }
     if (r.setStreaming !== undefined) { this.backend?.setStreaming(r.setStreaming); }
     if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
     if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
@@ -1158,15 +1160,6 @@ export class PiService {
     // persisted, and shared with the TypeScript runtime where `max` is legitimately offered. On
     // a pre-#139 binary that reaches the wire as a rejected request; clamping here means every
     // caller — picker, toggle, or any future one — is covered by construction.
-    if (this.capabilities.kind === "rust") {
-      let rustVersion: string | undefined;
-      try { rustVersion = detectRustBinary().version; } catch { /* unknown → clamp fails closed */ }
-      const clamped = clampThinkingLevelForRust(level, rustVersion);
-      if (clamped !== level) {
-        piWarn(`Thinking level "${level}" isn't supported by the installed Rust Pi — using "${clamped}".`);
-        level = clamped;
-      }
-    }
     // The backend sets it on the wire and returns the EFFECTIVE level after its own
     // clamp (Rust re-reads get_state; the SDK records the clamped level itself and
     // echoes the request). No force-persist here — both runtimes record the change
@@ -1332,9 +1325,11 @@ export class PiService {
    *  it there turns a picker entry into a hard failure. TS goes through the in-process SDK,
    *  which carries its own post-#139 pi-ai and clamps rather than rejecting. */
   private backendHonorsMax(): boolean {
-    if (this.capabilities.kind !== "rust") { return true; }
-    try { return rustHonorsMaxThinkingLevel(detectRustBinary().version); }
-    catch { return false; }   // fail closed — never offer a level we can't confirm
+    // Always. The gate existed for pre-#139 rust-pi builds that rejected
+    // set_thinking_level("max") outright; 0.2.0 requires rust-pi 0.3.0, so there is no
+    // supported binary that refuses it. It also re-probed detectRustBinary() from here — a
+    // version check standing in for a capability, which the backend seam exists to avoid.
+    return true;
   }
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
@@ -1553,9 +1548,6 @@ export class PiService {
    *  entry in its JSONL ourselves, the same entry type the SDK writes). */
   private _rustSessionName: string | undefined;
   private _rustSessionNameRead = false;
-  /** A name set but not yet written to the Rust JSONL (we only write while the binary is
-   *  idle — see _flushRustSessionInfo). */
-  private _rustSessionNamePending = false;
 
   /** Get the session display name. TS: the SDK's SessionManager. Rust: the last
    *  `session_info` entry we persisted to the JSONL (read once, then cached) — so a
@@ -1569,21 +1561,22 @@ export class PiService {
   }
 
   /** Persist a display name so it survives tab close AND shows in the Past Sessions tree
-   *  (summarizeSessionFile reads the `session_info` name for both runtimes). TS: the SDK
-   *  writes the entry. Rust: rust-pi exposes no name RPC and doesn't track a name, so the
-   *  extension appends the SAME `session_info` entry to its JSONL directly — "use the
-   *  title entry appropriately" so both runtimes benefit from the one reader. */
+   *  (summarizeSessionFile reads the `session_info` name for both runtimes).
+   *
+   *  Both runtimes now do this natively, through the seam: the SDK writes the entry, and
+   *  rust-pi's `set_session_name` writes an equivalent `session_info` line with its own tree
+   *  fields. The extension used to hand-append that entry to the Rust JSONL itself, gated on
+   *  the binary being idle because an interleaved write might clobber it — a risk it documented
+   *  and could not rule out. The binary owns the file; it writes its own name now.
+   *
+   *  The in-memory copy is kept so the tab label updates immediately rather than waiting for a
+   *  round trip. */
   setSessionName(name: string): void {
-    if (this._backendKind === "rust") {
-      this._rustSessionName = name;
-      this._rustSessionNameRead = true;
-      this._rustSessionNamePending = true;
-      // Only write while the binary is idle — see _flushRustSessionInfo. If a turn is in
-      // flight the entry stays pending and is flushed when the run ends (or at dispose).
-      this._flushRustSessionInfo();
-      return;
-    }
-    this.session?.setSessionName?.(name);
+    this._rustSessionName = name;
+    this._rustSessionNameRead = true;
+    void this.backend?.setSessionName(name).then((ok) => {
+      if (!ok) { piWarn(`Session name "${name}" was not persisted by the ${this._backendKind} backend.`); }
+    });
   }
 
   /** Read the last `session_info` name from the Rust session JSONL, or undefined. */
@@ -1602,41 +1595,8 @@ export class PiService {
     return undefined;
   }
 
-  /** Append a `session_info` name entry to the Rust session JSONL (best-effort; the file
-   *  only exists after the binary writes its first turn, so a very-early name is carried
-   *  live via the webview and flushed at dispose if it never got persisted). */
-  /** Flush a pending `session_info` name, but ONLY while the binary is idle. rust-pi owns this
-   *  JSONL and appends to it as a turn progresses; our append is O_APPEND (atomic w.r.t. its own
-   *  offset), but if the binary writes via a tracked offset rather than O_APPEND, an interleaved
-   *  write could clobber ours. We can't see its source (clean-room), so we simply never write
-   *  while a turn is in flight — the entry stays pending and lands at the next run-end or at
-   *  dispose (after the child is gone). No-op when nothing is pending. */
-  private _flushRustSessionInfo(): void {
-    if (!this._rustSessionNamePending || !this._rustSessionName) { return; }
-    if (this.backend?.getAgentRunActive()) { return; } // mid-turn: stay pending
-    this._persistRustSessionInfo(this._rustSessionName);
-    this._rustSessionNamePending = false;
-  }
-
-  private _persistRustSessionInfo(name: string): void {
-    this._appendRustSessionInfo(this._rust?.getSessionPath() ?? null, name);
-  }
-
-  /** The actual append. Takes the session file explicitly so dispose() can pass a path it
-   *  captured BEFORE tearing the runtime down (getSessionPath() is gone afterwards). */
-  private _appendRustSessionInfo(sf: string | null, name: string): void {
-    if (!sf || !fs.existsSync(sf)) { return; }
-    try {
-      // No id/parentId: this entry is deliberately OUTSIDE rust-pi's tree (see
-      // RUST_SESSION_NAME_ENTRY). Supplying tree fields is exactly what broke the loader before.
-      fs.appendFileSync(sf, JSON.stringify({
-        type: RUST_SESSION_NAME_ENTRY,
-        timestamp: new Date().toISOString(),
-        name,
-      }) + "\n");
-    } catch (e: unknown) { piWarn(`Rust session_info persist failed: ${e instanceof Error ? e.message : String(e)}`); }
-  }
-
+  
+  
   // ── Tools ───────────────────────────────────────────────
 
   /** Get all configured tools available for selection. */
@@ -1747,10 +1707,10 @@ export class PiService {
    *  the opposite — it lives in a file the binary reads at startup, so the setting is applied by
    *  writing it before the session starts, and here we only report what the file says. */
   async applyDefaultModes(): Promise<void> {
-    if (this._backendKind !== "rust") { this.emitModeState(); return; }
+    if (!this.capabilities.sessionModes || !this.backend) { this.emitModeState(); return; }
     const cfg = vscode.workspace.getConfiguration("pi-code-gui");
     if (cfg.get<string>("defaultMode") === "plan") {
-      try { await (this.backend as unknown as { setPlanMode(on: boolean): Promise<string> }).setPlanMode(true); }
+      try { await this.backend.setPlanMode(true); }
       catch { /* a session that cannot enter plan mode still runs; the strip will show "code" */ }
     }
     this.emitModeState();
@@ -1764,25 +1724,25 @@ export class PiService {
 
   /** Push the current mode state to the webview. Safe to call on any runtime. */
   emitModeState(plan?: string): void {
-    const rust = this._backendKind === "rust"
-      ? (this.backend as unknown as { planMode?: string; approvalMode?: string }) : null;
+    const b = this.backend;
     this.emit({
       type: "mode-update",
       data: {
-        available: !!rust,
-        planMode: (rust?.planMode ?? "off") as "off" | "planning" | "pending" | "approved",
+        // capabilities.sessionModes, not a kind check: the strip follows the CAPABILITY.
+        available: !!b && this.capabilities.sessionModes,
+        planMode: b?.planMode ?? "off",
         // The RUNNING session's posture, fixed at spawn — never the file's current value, which
         // this session would not be obeying.
-        approval: (rust?.approvalMode ?? "always-ask") as "always-ask" | "write" | "yolo",
+        approval: b?.approvalMode ?? "always-ask",
         ...(plan ? { plan } : {}),
       },
     });
   }
 
   async setPlanMode(on: boolean, makeDefault: boolean): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
     try {
-      await (this.backend as unknown as { setPlanMode(on: boolean): Promise<string> }).setPlanMode(on);
+      await this.backend.setPlanMode(on);
     } catch (e) {
       this.emit({ type: "custom-message", data: { customType: "error", timestamp: Date.now(),
         content: `⚠ Couldn't change plan mode — ${e instanceof Error ? e.message : String(e)}` } });
@@ -1798,9 +1758,14 @@ export class PiService {
    *  pickModel's shape: `$(check)` marks what this session is running, ★ marks the saved default,
    *  and choosing a non-default offers to save it in a second step. */
   async pickApprovalMode(): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
-    const current = (this.backend as unknown as { approvalMode?: string }).approvalMode ?? "always-ask";
-    const saved = vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultApproval") ?? "always-ask";
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
+    const current = this.backend.approvalMode;
+    // ★ = what a NEW session would start in, read from the same file rust-pi reads at startup.
+    // There is no second store: an extension setting for this would be a duplicate of a value
+    // the file already owns, and the two could disagree — which is exactly the bug that made
+    // the ★ decorative in the first place. It also means ★ and ✓ differing is real information:
+    // the file has changed (from here or from the pi CLI) since this session started.
+    const saved = readApprovalMode(defaultRustAgentDir());
     const rows: Array<{ id: "always-ask" | "write" | "yolo"; detail: string }> = [
       { id: "always-ask", detail: "Every edit and command needs a yes" },
       { id: "write", detail: "File edits go through; commands still ask" },
@@ -1818,23 +1783,15 @@ export class PiService {
     });
     if (!picked) { return; }
 
-    // Collect BOTH decisions before doing anything destructive — a "save as default" prompt
-    // appearing after the session has already restarted would be jarring.
-    let makeDefault = false;
-    if (!picked.isDefault) {
-      const choice = await vscode.window.showQuickPick(
-        buildDefaultChoiceItems(picked.id, saved),
-        { placeHolder: "Default approval mode for future sessions" },
-      );
-      if (!choice) { return; }   // dismissed the whole flow — change nothing
-      makeDefault = choice.save;
-    }
-    await this.setApprovalMode(picked.id, makeDefault);
+    // No "save as default?" step. rust-pi reads approval ONLY from that file at startup and
+    // offers no per-session override (--approval-mode and --yolo are inert over RPC), so every
+    // change is necessarily a change to the default. Offering "just this session" would be
+    // offering something that cannot exist.
+    await this.setApprovalMode(picked.id);
   }
 
-  async setApprovalMode(mode: "always-ask" | "write" | "yolo", makeDefault: boolean): Promise<void> {
-    const current = this._backendKind === "rust"
-      ? (this.backend as unknown as { approvalMode?: string }).approvalMode ?? "always-ask" : "always-ask";
+  async setApprovalMode(mode: "always-ask" | "write" | "yolo"): Promise<void> {
+    const current = this.backend?.approvalMode ?? "always-ask";
     if (mode === current) { return; }
 
     // rust-pi reads approval config ONLY at startup and offers no RPC to change it. Writing the
@@ -1867,15 +1824,11 @@ export class PiService {
       this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${warning}`, timestamp: Date.now() } });
       return;
     }
-    if (makeDefault) {
-      await vscode.workspace.getConfiguration("pi-code-gui")
-        .update("defaultApproval", mode, vscode.ConfigurationTarget.Global);
-    }
     // RESUME rather than start fresh: rust-pi has already persisted this conversation, and
     // reopening the same JSONL replays it into the webview (sendInitialMessages). Restarting
     // fresh would make an approval change cost the user their transcript — a steep price for a
     // setting, and an avoidable one.
-    const resumePath = (this.backend as unknown as { currentSessionPath?: string | null }).currentSessionPath ?? null;
+    const resumePath = this.backend?.currentSessionPath ?? null;
     this.emit({ type: "sessionReset" });
     this.dispose();
     await this.initialize(resumePath ? { openPath: resumePath } : { fresh: true });
@@ -1883,8 +1836,8 @@ export class PiService {
   }
 
   async approvePlan(): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
-    const plan = await (this.backend as unknown as { approvePlan(): Promise<string | null> }).approvePlan();
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
+    const plan = await this.backend.approvePlan();
     this.emitModeState(plan ?? undefined);
     // approve_plan does NOT resume the agent — measured against 0.3.0. Rather than leave the
     // user in front of an idle session wondering, offer the next move as one keystroke.
@@ -1892,8 +1845,8 @@ export class PiService {
   }
 
   async rejectPlan(): Promise<void> {
-    if (this._backendKind !== "rust") { return; }
-    await (this.backend as unknown as { rejectPlan(): Promise<boolean> }).rejectPlan();
+    if (!this.capabilities.sessionModes || !this.backend) { return; }
+    await this.backend.rejectPlan();
     this.emitModeState();
     // reject_plan carries no feedback field, so a reason has to travel as a follow-up prompt —
     // the input is left for the user to type it, not pre-filled with words they did not choose.
@@ -1981,18 +1934,14 @@ export class PiService {
 
     // Rust runtime: tear down the subprocess (it owns its own persistence).
     if (this._backendKind === "rust") {
-      // Capture the session file BEFORE teardown (getSessionPath() is unavailable once the
-      // service is gone), then tear the subprocess down, and only THEN append the session-name
-      // entry — so we are never writing into the JSONL while the binary still owns it. Covers
-      // the case where a title was set before the binary had written the file at all (fresh
-      // session), and any title deferred mid-turn. Re-appending an identical name is harmless:
-      // the tree reader takes the LAST session_info entry.
-      const rustSessionFile = this._rust?.getSessionPath() ?? null;
+      // No name flush here any more. The extension used to capture the session file before
+      // teardown and append a `session_info` entry afterwards, to cover a title set before the
+      // binary had written the file and any title deferred mid-turn. set_session_name makes
+      // both cases the binary's problem: it writes the entry itself, while it still owns the
+      // file, so there is nothing left to reconcile at teardown.
       this._uiBridge?.dispose(); this._uiBridge = null;
       this._rust?.dispose();
       this._rust = null;
-      if (this._rustSessionName) { this._appendRustSessionInfo(rustSessionFile, this._rustSessionName); }
-      this._rustSessionNamePending = false;
       return;
     }
     // Exhaustive: the SDK teardown below is the "typescript" path. A third runtime added to

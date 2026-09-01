@@ -36,13 +36,14 @@ For people who prefer a GUI experience, this extension embeds Pi directly in VS 
 - **Native VS Code bridge** *(TypeScript Pi)* — 16 tools that call VS Code APIs directly: inspect the active editor, check diagnostics, find symbols, look up types, apply edits, and format code. **Rust Pi** works the same files through its own fast `read`/`write`/`edit`/`bash`/`grep` tools.
 - **Session persistence** — conversation history survives VS Code restarts; resume reopens each session on the runtime that created it.
 - **Multi-session support** — multiple chat panels, each with an independent runtime, model, and thinking level.
+- **Plan before you edit** *(Rust Pi)* — put a session in plan mode and the agent drafts a plan while every write is held, then you approve or reject it; a strip above the prompt also sets how much runs without asking.
 
 ## Choosing a runtime
 
 Every session runs on one of two interchangeable Pi runtimes:
 
 - **TypeScript Pi** *(default)* — deepest VS Code integration: 16 editor-bridge tools, interactive cards, per-session tool control, and the full in-process extension catalog.
-- **Rust Pi** — fast and self-contained: ~100 ms startup, <50 MB idle, one ~21 MB binary with no Node.js, and a hard safety floor that blocks catastrophic shell commands. Trades away the editor-bridge tools.
+- **Rust Pi** — fast, self-contained, and the only runtime with **plan mode and approval control** (see [Plan mode and approvals](#plan-mode-and-approvals-rust-pi)): ~100 ms startup, <50 MB idle, one ~21 MB binary with no Node.js, and a hard safety floor that blocks catastrophic shell commands. Trades away the editor-bridge tools.
 
 New sessions use your **default runtime** — the `defaultRuntime` setting, which *ships* as TypeScript and is changed with **PiGui: Set Default Runtime** (remembered). When only one runtime is installed, that one is used regardless. You can also choose per session with **PiGui: Add Rust/TypeScript Pi Session** or **Add Pi Session (Choose Runtime)**. The active runtime shows as a `π TS`/`π Rust` chip in the status bar and a tree badge. Switching opens a *new* session on the other runtime; live sessions don't hot-swap, and the original stays open.
 
@@ -57,9 +58,11 @@ Both runtimes are detected at startup and installed only when you first reach fo
 | VS Code editor-bridge tools | 16 tools (diagnostics, symbols, types, format, apply-edit) | Uses its own file/shell tools instead |
 | `/tools` per-session control | Per-session tool picker | Full built-in tool set (no picker) |
 | Custom interactive cards | Buttons, clickable rows, live polling | Markdown rendering |
+| Plan mode | — | **Draft a plan first**: the agent explores read-only and every edit waits for your approval |
+| Approval control | Tools auto-accept | **`always-ask` / `write` / `yolo`** — choose how much runs without asking |
 | Extension catalog | In-process Pi extension/package catalog | Separate Rust catalog (QuickJS / native) |
 | Session history | `~/.pi/agent/sessions` (JSONL) | Separate Rust pool (JSONL v3 tree + SQLite index) |
-| Built-in safety | Tools auto-accept (no per-tool gate) | Tools auto-accept, **plus** catastrophic-command blocking, zero `unsafe`, secret env filtering |
+| Built-in safety | Tools auto-accept (no per-tool gate) | Approval posture you choose, **plus** catastrophic-command blocking, zero `unsafe`, secret env filter |
 
 ### Model catalog on the Rust runtime
 

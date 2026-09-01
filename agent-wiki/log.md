@@ -93,3 +93,4 @@ pass performed), `archive` (page moved to archive).
 ## [2026-08-31] update | Tool Block Rendering — audited, accurate, footer refreshed
 ## [2026-08-31] update | Promoted 9 pages from "evolving" to "stable" after verifying each; the two ingested today stay evolving
 ## [2026-08-31] update | wiki-lint — staleness and status-rotation checks now skip `discipline/`: process pages have no code to drift from, and five false positives were hiding the one page that was genuinely wrong
+## [2026-08-31] update | Runtime Selection — corrected the stale `_backendKind` list and count; noted `sessionModes` as the first true-for-Rust capability

@@ -1,7 +1,7 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-08-31 — corrected the agent-home section (0.2.0 shares
+> **Last updated:** 2026-08-31 — corrected the `_backendKind` list (getAllSlashCommands no longer branches), dropped the stale count, noted `sessionModes`.
 > `~/.pi/agent` and merges the catalog; the relocated home and linked `auth.json`
 > described here were removed), re-verified the RPC flags against v0.3.0, and noted
 > the inert approval flags and the blocking `ask` tool.
@@ -81,15 +81,24 @@ factory in `pi-backend.ts` — both backends and the PiService no-backend fallba
 from it, so the three copies can't drift (they were hand-authored before; `exportHtml`
 had already been hand-corrected in the fallback).
 
-**Four `_backendKind` checks remain, all deliberate** — runtime identity, not
-feature gates: the `backend` accessor + the `capabilities`-fallback (which service
-is active), `getUsageStats`' cost policy (the Rust binary reports `cost:0`, so
-PiService derives it from catalog rates; the SDK computes its own), the
-`getAllSlashCommands` agent-command source (Rust reports its commands over RPC; the
-SDK introspects its extension runner), and `dispose`' teardown sequencing (subprocess
-kill vs in-process session-file flush). These are genuine runtime divergence, and each
-is now `assertNever`-guarded, so adding a third runtime is a compile error at every
-branch point rather than a silent misroute.
+**A handful of `_backendKind` checks remain, all deliberate** — runtime identity, not
+feature gates: the `backend` accessor and the `capabilities` fallback (which service is
+active), the `initialize` branch (which one to construct), `getUsageStats`' cost policy
+(the Rust binary reports `cost:0` even after a billed turn — probed on 0.3.0 — so
+PiService derives it from catalog rates while the SDK computes its own), `dispose`'
+teardown sequencing (subprocess kill vs in-process session-file flush), and the
+`runtime` getter plus diagnostics. These are genuine runtime divergence, and each is
+`assertNever`-guarded, so adding a third runtime is a compile error at every branch
+point rather than a silent misroute.
+
+`getAllSlashCommands` used to be on that list and no longer is: it delegates through
+`backend.getSlashCommands()`. The count is deliberately not stated here — it was
+"four" through several releases in which it was not four, because a prose number goes
+stale silently while the `assertNever` guards do not.
+
+Feature differences do NOT belong here: they are capability flags on `BackendCapabilities`.
+`sessionModes` (plan mode and the approval posture) is the one flag that is true for Rust
+and false for TypeScript — everything else gated is `!rust`.
 
 - `initialize({runtime})` → `initializeRust()` for Rust, else the existing
   TS path. `get runtime()` exposes `_backendKind`.

@@ -49,20 +49,20 @@ test("the name entry type is NOT one rust-pi owns", () => {
   );
 });
 
-test("the writer emits the namespaced type, with NO tree fields", () => {
-  // id/parentId are what made our old entry look like a tree node to rust-pi. The append site
-  // must not reintroduce them.
+test("the extension no longer writes the name entry at all — the binary does", () => {
+  // This used to assert the shape of our own append (namespaced type, no tree fields, because
+  // id/parentId are what made the old entry look like a tree node to rust-pi). That append is
+  // gone: rust-pi 0.3.0's set_session_name writes the entry itself, while it owns the file.
+  // What matters now is that the extension does not write into that JSONL behind the binary.
   const raw = readFileSync(new URL("../../pi-service.js", import.meta.url), "utf-8");
-  // Strip comments FIRST: this helper's own comment names `parentId` to explain why it is
-  // absent, and matching against prose instead of code is a mistake I have now made twice.
   const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  const start = src.indexOf("_appendRustSessionInfo(sf, name)");
-  assert.notEqual(start, -1, "the append helper still exists");
-  const body = src.slice(start, start + 600);
-  assert.match(body, /RUST_SESSION_NAME_ENTRY/, "must write the namespaced constant, not a literal");
-  assert.doesNotMatch(body, /"session_info"/, "must never write the legacy fatal type again");
-  assert.doesNotMatch(body, /parentId/, "must not supply tree fields — that is what broke the loader");
+  // Narrowly the RUST naming path: _forcePersistEntry still appends for the TypeScript SDK
+  // (tools_active_change and friends), which is a different file and a different owner.
+  assert.doesNotMatch(src, /_appendRustSessionInfo/, "the Rust name append helper is gone");
+  assert.doesNotMatch(src, /_flushRustSessionInfo/, "and its idle-gated flush with it");
+  assert.match(src, /setSessionName\(name\)/, "naming goes through the backend seam");
 });
+
 
 test("summarizeSessionFile reads the NEW name entry", () => {
   withDir((dir) => {

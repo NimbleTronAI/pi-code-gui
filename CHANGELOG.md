@@ -1,5 +1,16 @@
 # Change Log
 
+## [0.2.1]
+
+### Fixed
+- **`pi-code-gui.defaultApproval` is removed; `~/.pi/agent/settings.json` is the one source.** The setting was read only to draw the ★ in the approval picker and never applied, so a new session started in whatever the shared file held — with the setting on `write`, a fresh session could open in `yolo`, ★ and ✓ on different rows. Rather than make the setting apply, it is gone: rust-pi reads approval only from that file at startup and has no per-session override, so the file already *is* the default and a second store could only disagree with it. The picker now reads ★ from the file, and the "save as default?" step is dropped — with one value there is no "just this session" to offer. If you set `defaultApproval` in 0.2.0 it is now ignored; set the posture from the strip instead, which writes the file the `pi` CLI shares.
+- **Session names are written by Rust Pi, not by the extension reaching into its file.** Naming a Rust session appended a `session_info` line to the JSONL the binary owns, gated on the binary being idle because an interleaved write could clobber it — a risk the code documented and couldn't rule out. Rust Pi 0.3.0 has a `set_session_name` command that writes an equivalent entry itself, so the extension now asks rather than writes. Existing names are unaffected: the entry is the same shape the Past Sessions list already reads.
+- **A turn cut short by Rust Pi's tool ceiling now says so.** rust-pi stops a turn after 50 tool calls and records `stopReason: "error"` with `Maximum tool iterations (50) exceeded` — but the webview only handled `stopReason: "aborted"`, so every other terminal reason fell through and rendered as nothing. A codebase review stopped mid-sentence as it was about to write its report, with the reason sitting unread in the transcript, and the session looked like the model had lost interest. Any terminal stop reason — and any reason carrying an error message, so a novel one can't go silent — is now surfaced both inline on the turn and as its own card.
+
+### Added
+- **A slow Rust start is retried instead of failing the session.** Rust Pi usually answers its first request in well under a second, but healthy spawns have been seen taking 30-90s — and a single probe turned those into "Rust Pi started but did not respond", with the extension-conflict retry inheriting the same window so it couldn't rescue them either. Startup is now retried within a budget (`pi-code-gui.startupBudgetSeconds`, default 15), and the panel says it is still waiting rather than showing nothing. A genuine failure — the process exits, or answers with an error — still fails immediately rather than waiting the budget out, and a transient slow start no longer disables your project extensions.
+- **`pi-code-gui.maxToolIterations`** — raise Rust Pi's per-turn tool-call ceiling (`PI_MAX_TOOL_ITERATIONS`). `0` (default) keeps Rust Pi's own limit of 50, which long refactors and codebase-wide reviews reach routinely. The message shown when a turn hits the ceiling names this setting.
+
 ## [0.2.0]
 
 **Requires Rust Pi v0.3.0.** This release targets the 0.3.0 RPC contract directly and drops

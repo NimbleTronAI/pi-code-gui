@@ -99,42 +99,8 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** First rust-pi release whose thinking-level validator accepts `max` (upstream #139). */
-export const MIN_RUST_VERSION_FOR_MAX = "0.1.23";
 
-/** Whether a rust-pi binary will accept `set_thinking_level("max")`.
- *
- *  Gates on the DETECTED binary, not the pinned one: the two diverge routinely (a user on an
- *  older build, or — as of v0.1.23 — a platform the release shipped no asset for). Offering a
- *  level the live binary rejects turns a picker entry into a hard validation error, so this
- *  fails CLOSED: an absent or unparseable version means "assume it can't". Only the numeric
- *  triple is compared; `--version` also carries a build hash and timestamp. */
-export function rustHonorsMaxThinkingLevel(version: string | undefined): boolean {
-  const found = version?.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!found) { return false; }
-  const min = MIN_RUST_VERSION_FOR_MAX.split(".").map(Number);
-  const got = [Number(found[1]), Number(found[2]), Number(found[3])];
-  for (let i = 0; i < 3; i++) {
-    if (got[i] !== min[i]) { return got[i] > min[i]; }
-  }
-  return true; // exactly the minimum
-}
 
-/** Clamp a thinking level to what THIS rust binary will actually accept.
- *
- *  Gating the PICKER (PiService.supportedThinkingLevels) is not enough on its own: the level
- *  also reaches the binary as a CLI argument at spawn, `--thinking <level>`, and that path
- *  bypassed the gate entirely. A pre-#139 binary rejects `max` during ARGUMENT PARSING and
- *  exits 2 before the RPC channel exists, so the whole session dies —
- *  "invalid value 'max' for '--thinking'" — rather than degrading. `max` reaches this setting
- *  even on a binary that can never honour it: defaultThinkingLevel is user-editable, persists,
- *  and is shared with the TypeScript runtime, where `max` IS offered.
- *
- *  Downgrades to `xhigh`, the next rung down and a value every affected build accepts — it is
- *  listed in that binary's own error text. Anything else passes through untouched. */
-export function clampThinkingLevelForRust(level: string, rustVersion: string | undefined): string {
-  if (level !== "max" || rustHonorsMaxThinkingLevel(rustVersion)) { return level; }
-  return "xhigh";
-}
 
 /** The thinking-capability shape read off a catalog/SDK model. Mirrors the fields
  *  @earendil-works/pi-ai carries per model. `thinkingLevelMap` maps each graded

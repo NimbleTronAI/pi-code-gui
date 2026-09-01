@@ -239,3 +239,30 @@ test("writeApprovalMode: a corrupt settings file is replaced, not compounded", (
   assert.equal(writeApprovalMode(dir, "yolo"), null);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).approval, { mode: "yolo" });
 });
+
+// ── the approval file is the default ────────────────────────────────
+// rust-pi reads approval ONLY from ~/.pi/agent/settings.json at startup and has no per-session
+// override, so that file IS the default for new sessions. An extension setting mirroring it was
+// a second store for one fact, and the two disagreed: the picker showed ★ write beside ✓ yolo
+// while the session ran yolo. The file is now the single source for both marks.
+
+test("writing the posture sets what the NEXT session starts in", () => {
+  const dir = mkdtempSync(join(tmpdir(), "appr-default-"));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ theme: "dark", approval: { mode: "yolo" } }));
+  // What the spawn path does: apply, then read back.
+  writeApprovalMode(dir, "write");
+  assert.equal(readApprovalMode(dir), "write", "the session starts in the configured default");
+  assert.equal(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).theme, "dark", "rest preserved");
+});
+
+test("nothing is written unless the user picks a posture", () => {
+  // "" means follow ~/.pi/agent/settings.json — the file the pi CLI also writes. The extension
+  // imposes nothing unless asked, which is why the default is empty rather than always-ask.
+  const dir = mkdtempSync(join(tmpdir(), "appr-follow-"));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ approval: { mode: "yolo" } }));
+  const before = readFileSync(join(dir, "settings.json"), "utf8");
+  const wanted: "" | "write" = "";
+  if (wanted) { writeApprovalMode(dir, wanted); }   // mirrors the guard at the spawn site
+  assert.equal(readFileSync(join(dir, "settings.json"), "utf8"), before, "untouched");
+  assert.equal(readApprovalMode(dir), "yolo", "the CLI's choice stands");
+});

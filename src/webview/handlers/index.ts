@@ -431,8 +431,11 @@ export function handleAssistantEnd(data: MsgData<"assistant-end">): void {
 
       // Handle error/abort stop reasons (like TUI)
       if (data && data.stopReason) {
-        if (data.stopReason === "aborted") {
-          addErrorToElement(state.currentAssistantEl, data.errorMessage || "Operation aborted");
+        // "error" was NOT handled here, so a turn cut short by rust-pi's tool ceiling rendered
+        // as a reply that simply stopped. Any terminal reason attaches its message to the turn.
+        if (data.stopReason === "aborted" || data.stopReason === "error") {
+          addErrorToElement(state.currentAssistantEl,
+            data.errorMessage || (data.stopReason === "aborted" ? "Operation aborted" : "The turn ended early"));
           // Mark any pending tool blocks as errored
           if (data.toolCalls) {
             data.toolCalls.forEach(function (tcId: string): void {
