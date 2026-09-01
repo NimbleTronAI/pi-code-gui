@@ -9,7 +9,7 @@ import { confirmRendererConsent } from "./renderer-consent.js";
 
 import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
 import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
-import { setupRustModels, reseedRustAuth, writeApprovalMode, defaultRustAgentDir } from "./rust-models.js";
+import { setupRustModels, reseedRustAuth, readApprovalMode, writeApprovalMode, defaultRustAgentDir } from "./rust-models.js";
 import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
@@ -423,7 +423,6 @@ export class PiService {
           openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
           readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
-          defaultApproval: cfg.get<string>("defaultApproval") ?? "",
         };
       },
       showError: (message) => { void vscode.window.showErrorMessage(message); },
@@ -469,7 +468,6 @@ export class PiService {
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
           readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
-          defaultApproval: cfg.get<string>("defaultApproval") ?? "",
           sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
         };
       },
@@ -1761,8 +1759,12 @@ export class PiService {
   async pickApprovalMode(): Promise<void> {
     if (!this.capabilities.sessionModes || !this.backend) { return; }
     const current = this.backend.approvalMode;
-    // "" = no default imposed, so nothing gets a ★ — the picker must not invent one.
-    const saved = (vscode.workspace.getConfiguration("pi-code-gui").get<string>("defaultApproval") ?? "").trim();
+    // ★ = what a NEW session would start in, read from the same file rust-pi reads at startup.
+    // There is no second store: an extension setting for this would be a duplicate of a value
+    // the file already owns, and the two could disagree — which is exactly the bug that made
+    // the ★ decorative in the first place. It also means ★ and ✓ differing is real information:
+    // the file has changed (from here or from the pi CLI) since this session started.
+    const saved = readApprovalMode(defaultRustAgentDir());
     const rows: Array<{ id: "always-ask" | "write" | "yolo"; detail: string }> = [
       { id: "always-ask", detail: "Every edit and command needs a yes" },
       { id: "write", detail: "File edits go through; commands still ask" },
@@ -1780,21 +1782,14 @@ export class PiService {
     });
     if (!picked) { return; }
 
-    // Collect BOTH decisions before doing anything destructive — a "save as default" prompt
-    // appearing after the session has already restarted would be jarring.
-    let makeDefault = false;
-    if (!picked.isDefault) {
-      const choice = await vscode.window.showQuickPick(
-        buildDefaultChoiceItems(picked.id, saved),
-        { placeHolder: "Default approval mode for future sessions" },
-      );
-      if (!choice) { return; }   // dismissed the whole flow — change nothing
-      makeDefault = choice.save;
-    }
-    await this.setApprovalMode(picked.id, makeDefault);
+    // No "save as default?" step. rust-pi reads approval ONLY from that file at startup and
+    // offers no per-session override (--approval-mode and --yolo are inert over RPC), so every
+    // change is necessarily a change to the default. Offering "just this session" would be
+    // offering something that cannot exist.
+    await this.setApprovalMode(picked.id);
   }
 
-  async setApprovalMode(mode: "always-ask" | "write" | "yolo", makeDefault: boolean): Promise<void> {
+  async setApprovalMode(mode: "always-ask" | "write" | "yolo"): Promise<void> {
     const current = this.backend?.approvalMode ?? "always-ask";
     if (mode === current) { return; }
 
@@ -1827,10 +1822,6 @@ export class PiService {
     if (warning) {
       this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${warning}`, timestamp: Date.now() } });
       return;
-    }
-    if (makeDefault) {
-      await vscode.workspace.getConfiguration("pi-code-gui")
-        .update("defaultApproval", mode, vscode.ConfigurationTarget.Global);
     }
     // RESUME rather than start fresh: rust-pi has already persisted this conversation, and
     // reopening the same JSONL replays it into the webview (sendInitialMessages). Restarting

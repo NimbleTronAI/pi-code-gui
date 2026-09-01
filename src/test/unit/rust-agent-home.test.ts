@@ -240,12 +240,13 @@ test("writeApprovalMode: a corrupt settings file is replaced, not compounded", (
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).approval, { mode: "yolo" });
 });
 
-// ── defaultApproval must actually apply ─────────────────────────────
-// It was a dead setting: read only to draw the ★ in the picker, written when you ticked "save as
-// default", and never applied. A user whose default said `write` got whatever the shared file
-// happened to hold — the picker showed ★ write beside ✓ yolo, and the session ran yolo.
+// ── the approval file is the default ────────────────────────────────
+// rust-pi reads approval ONLY from ~/.pi/agent/settings.json at startup and has no per-session
+// override, so that file IS the default for new sessions. An extension setting mirroring it was
+// a second store for one fact, and the two disagreed: the picker showed ★ write beside ✓ yolo
+// while the session ran yolo. The file is now the single source for both marks.
 
-test("a configured default is written to the shared file before the session reads it", () => {
+test("writing the posture sets what the NEXT session starts in", () => {
   const dir = mkdtempSync(join(tmpdir(), "appr-default-"));
   writeFileSync(join(dir, "settings.json"), JSON.stringify({ theme: "dark", approval: { mode: "yolo" } }));
   // What the spawn path does: apply, then read back.
@@ -254,7 +255,7 @@ test("a configured default is written to the shared file before the session read
   assert.equal(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).theme, "dark", "rest preserved");
 });
 
-test("an empty default leaves the shared file alone", () => {
+test("nothing is written unless the user picks a posture", () => {
   // "" means follow ~/.pi/agent/settings.json — the file the pi CLI also writes. The extension
   // imposes nothing unless asked, which is why the default is empty rather than always-ask.
   const dir = mkdtempSync(join(tmpdir(), "appr-follow-"));

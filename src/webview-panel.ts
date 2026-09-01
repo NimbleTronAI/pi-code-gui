@@ -294,7 +294,7 @@ export class PiWebviewPanel {
             break;
 
           case "setApprovalMode":
-            await this.piService.setApprovalMode(message.mode, message.makeDefault === true);
+            await this.piService.setApprovalMode(message.mode);
             break;
 
           case "openApprovalPicker":

@@ -386,7 +386,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
 
 const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("setPlanMode"), on: z.boolean(), makeDefault: z.boolean().optional() }),
-  z.object({ type: z.literal("setApprovalMode"), mode: z.enum(["always-ask", "write", "yolo"]), makeDefault: z.boolean().optional() }),
+  z.object({ type: z.literal("setApprovalMode"), mode: z.enum(["always-ask", "write", "yolo"]) }),
   z.object({ type: z.literal("openApprovalPicker") }),
   z.object({ type: z.literal("approvePlan") }),
   z.object({ type: z.literal("rejectPlan") }),

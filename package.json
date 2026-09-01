@@ -472,23 +472,6 @@
           ],
           "markdownDescription": "Which mode a **Rust** session starts in. Changeable per session from the strip above the prompt, where the same choice can be made the new default. Plan mode holds writes until you approve a plan. Not used by the TypeScript runtime, which has no plan mode."
         },
-        "pi-code-gui.defaultApproval": {
-          "type": "string",
-          "enum": [
-            "",
-            "always-ask",
-            "write",
-            "yolo"
-          ],
-          "default": "",
-          "enumDescriptions": [
-            "Follow ~/.pi/agent/settings.json — whatever you or the pi CLI last set. No default is imposed.",
-            "Every edit and command needs a yes.",
-            "File edits go through; commands still ask.",
-            "Nothing asks — edits and commands run."
-          ],
-          "markdownDescription": "Approval posture for **new Rust sessions**. Empty (default) follows `~/.pi/agent/settings.json` — the file the extension shares with the `pi` CLI — so neither side imposes on the other. Set a value and every new session starts in it, writing that key at session start. Changing the posture of a session already running is done from the strip above the prompt, and restarts it."
-        },
         "pi-code-gui.rustAgentDir": {
           "type": "string",
           "default": "",
