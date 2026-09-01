@@ -31,6 +31,8 @@ class FakeBackend implements PiBackend {
   async setPlanMode(on: boolean): Promise<PlanMode> { this.planMode = on ? "planning" : "off"; return this.planMode; }
   async approvePlan(): Promise<string | null> { this.planMode = "approved"; return "a plan"; }
   async rejectPlan(): Promise<boolean> { this.planMode = "planning"; return true; }
+  namedAs: string | null = null;
+  async setSessionName(name: string): Promise<boolean> { this.namedAs = name; return true; }
 
   calls: Array<{ m: string; args: Any[] }> = [];
   usage: BackendUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
@@ -174,13 +176,6 @@ function rustPiWithSessionFile(): { pi: PiService; backend: FakeBackend; file: s
 }
 const names = (es: Any[]) => es.filter((e) => e.type === RUST_SESSION_NAME_ENTRY).map((e) => e.name);
 
-test("setSessionName writes immediately when the binary is IDLE", () => {
-  const { pi, dir, entries } = rustPiWithSessionFile();
-  try {
-    pi.setSessionName("idle title");
-    assert.deepEqual(names(entries()), ["idle title"]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
 
 test("setSessionName DEFERS the write while a turn is in flight", () => {
   const { pi, backend, dir, entries } = rustPiWithSessionFile();
@@ -191,29 +186,7 @@ test("setSessionName DEFERS the write while a turn is in flight", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("a deferred name is flushed when the run ends", () => {
-  const { pi, backend, dir, entries } = rustPiWithSessionFile();
-  try {
-    backend.setAgentRunActive(true);
-    pi.setSessionName("deferred title");
-    assert.deepEqual(names(entries()), []);
-    // agent_end clears the run flag → the pending entry lands.
-    (pi as Any).handleAgentEvent({ type: "agent_end", messages: [] });
-    assert.deepEqual(names(entries()), ["deferred title"]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
 
-test("dispose tears the child down BEFORE appending the name", () => {
-  const { pi, backend, dir, entries } = rustPiWithSessionFile();
-  try {
-    backend.setAgentRunActive(true);
-    pi.setSessionName("dispose title");
-    assert.deepEqual(names(entries()), [], "still pending");
-    pi.dispose();
-    assert.equal(backend.saw("dispose").length, 1, "child disposed");
-    assert.deepEqual(names(entries()), ["dispose title"], "appended after teardown");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
 
 // ── regression guards for the two runtime-gated slash commands ────────────
 // Both failed the same way: a code path that only ever worked on the TypeScript backend, with
@@ -324,4 +297,25 @@ test("abort() stays QUIET when the turn actually ends", async () => {
   const warned = events.filter((e: Any) =>
     e.type === "custom-message" && /still running/i.test(String(e.data?.content ?? "")));
   assert.equal(warned.length, 0, "a successful abort must not produce a scary message");
+});
+
+// ── session naming goes through the seam ────────────────────────────
+// The extension used to append a `session_info` line to the Rust JSONL itself, gated on the
+// binary being idle because an interleaved write might clobber it — a risk it documented and
+// could not rule out behind the clean-room wall. rust-pi 0.3.0 has set_session_name, and probing
+// showed it writes an equivalent `session_info` entry that the extension's reader already
+// accepts. So the binary writes to the file it owns, and there is one path instead of two.
+
+test("setSessionName delegates to the backend instead of writing the session file", async () => {
+  const { pi, backend } = makePi("rust");
+  pi.setSessionName("My Named Session");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(backend.namedAs, "My Named Session", "went through the seam");
+});
+
+test("setSessionName delegates on the TypeScript runtime too — one path, not two", async () => {
+  const { pi, backend } = makePi("typescript");
+  pi.setSessionName("TS Session");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(backend.namedAs, "TS Session");
 });

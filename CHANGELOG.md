@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Session names are written by Rust Pi, not by the extension reaching into its file.** Naming a Rust session appended a `session_info` line to the JSONL the binary owns, gated on the binary being idle because an interleaved write could clobber it — a risk the code documented and couldn't rule out. Rust Pi 0.3.0 has a `set_session_name` command that writes an equivalent entry itself, so the extension now asks rather than writes. Existing names are unaffected: the entry is the same shape the Past Sessions list already reads.
 - **A turn cut short by Rust Pi's tool ceiling now says so.** rust-pi stops a turn after 50 tool calls and records `stopReason: "error"` with `Maximum tool iterations (50) exceeded` — but the webview only handled `stopReason: "aborted"`, so every other terminal reason fell through and rendered as nothing. A codebase review stopped mid-sentence as it was about to write its report, with the reason sitting unread in the transcript, and the session looked like the model had lost interest. Any terminal stop reason — and any reason carrying an error message, so a novel one can't go silent — is now surfaced both inline on the turn and as its own card.
 
 ### Added

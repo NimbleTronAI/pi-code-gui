@@ -855,6 +855,11 @@ export class RustService implements PiBackend {
       "`.pi/settings.json`." } });
   }
 
+  /** The name rust-pi reports for this session (get_state.sessionName), or undefined. Read from
+   *  the wire rather than re-parsed from the file — the binary is the writer. */
+  get reportedSessionName(): string | undefined { return this._sessionName; }
+  private _sessionName: string | undefined;
+
   /** Answer a Rust `ask_request` — the `ask` tool's option card — over the RPC.
    *
    *  rust-pi 0.3.0 default-enables `ask` (it joined the default `--tools` set, which grew from
@@ -1279,6 +1284,28 @@ export class RustService implements PiBackend {
 
   /** Called when submit_plan lands, so the UI can offer the decision. */
   markPlanSubmitted(): void { if (this._planMode === "planning") { this._planMode = "pending"; } }
+
+  /**
+   * Name the session through rust-pi's own RPC.
+   *
+   * The extension used to append a `session_info` line to this JSONL itself, gated on the binary
+   * being idle because an interleaved write could clobber it — a risk the code acknowledged and
+   * could not rule out, since the binary's source is behind the clean-room wall.
+   *
+   * None of that is necessary: `set_session_name` exists on 0.3.0 and writes the name itself, as
+   * a `session_info` entry with the binary's own tree fields — probed, and the extension's
+   * session reader already accepts exactly that shape, so the Past Sessions list needed no
+   * change. The binary owns the file; let it write to it.
+   */
+  async setSessionName(name: string): Promise<boolean> {
+    try {
+      const reply = await this.process?.request(RUST_RPC.setSessionName, { name }, 8000);
+      return !!reply?.success;
+    } catch (e: unknown) {
+      piWarn(`set_session_name failed: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
 
   /** Approve the submitted plan. Does NOT resume the agent — measured: approve_plan returns
    *  {approved:true, plan:"…"} and nothing further happens until the client prompts again. The

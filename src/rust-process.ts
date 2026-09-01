@@ -49,6 +49,7 @@ export const RUST_RPC = {
   setAutoRetry: "set_auto_retry",
   extensionUiResponse: "extension_ui_response",
   askResponse: "ask_response",
+  setSessionName: "set_session_name",
   setPlanMode: "set_plan_mode",
   approvePlan: "approve_plan",
   rejectPlan: "reject_plan",

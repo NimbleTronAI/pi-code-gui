@@ -658,7 +658,6 @@ export class PiService {
     // through it (RustService reads its own copy directly in its event loop).
     if (r.setAgentRunActive !== undefined) { this.backend?.setAgentRunActive(r.setAgentRunActive); }
     // A run just ended → the binary is idle again, so a title deferred mid-turn can land now.
-    if (r.setAgentRunActive === false) { this._flushRustSessionInfo(); }
     if (r.setStreaming !== undefined) { this.backend?.setStreaming(r.setStreaming); }
     if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
     if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
@@ -1548,9 +1547,6 @@ export class PiService {
    *  entry in its JSONL ourselves, the same entry type the SDK writes). */
   private _rustSessionName: string | undefined;
   private _rustSessionNameRead = false;
-  /** A name set but not yet written to the Rust JSONL (we only write while the binary is
-   *  idle — see _flushRustSessionInfo). */
-  private _rustSessionNamePending = false;
 
   /** Get the session display name. TS: the SDK's SessionManager. Rust: the last
    *  `session_info` entry we persisted to the JSONL (read once, then cached) — so a
@@ -1564,21 +1560,22 @@ export class PiService {
   }
 
   /** Persist a display name so it survives tab close AND shows in the Past Sessions tree
-   *  (summarizeSessionFile reads the `session_info` name for both runtimes). TS: the SDK
-   *  writes the entry. Rust: rust-pi exposes no name RPC and doesn't track a name, so the
-   *  extension appends the SAME `session_info` entry to its JSONL directly — "use the
-   *  title entry appropriately" so both runtimes benefit from the one reader. */
+   *  (summarizeSessionFile reads the `session_info` name for both runtimes).
+   *
+   *  Both runtimes now do this natively, through the seam: the SDK writes the entry, and
+   *  rust-pi's `set_session_name` writes an equivalent `session_info` line with its own tree
+   *  fields. The extension used to hand-append that entry to the Rust JSONL itself, gated on
+   *  the binary being idle because an interleaved write might clobber it — a risk it documented
+   *  and could not rule out. The binary owns the file; it writes its own name now.
+   *
+   *  The in-memory copy is kept so the tab label updates immediately rather than waiting for a
+   *  round trip. */
   setSessionName(name: string): void {
-    if (this._backendKind === "rust") {
-      this._rustSessionName = name;
-      this._rustSessionNameRead = true;
-      this._rustSessionNamePending = true;
-      // Only write while the binary is idle — see _flushRustSessionInfo. If a turn is in
-      // flight the entry stays pending and is flushed when the run ends (or at dispose).
-      this._flushRustSessionInfo();
-      return;
-    }
-    this.session?.setSessionName?.(name);
+    this._rustSessionName = name;
+    this._rustSessionNameRead = true;
+    void this.backend?.setSessionName(name).then((ok) => {
+      if (!ok) { piWarn(`Session name "${name}" was not persisted by the ${this._backendKind} backend.`); }
+    });
   }
 
   /** Read the last `session_info` name from the Rust session JSONL, or undefined. */
@@ -1597,41 +1594,8 @@ export class PiService {
     return undefined;
   }
 
-  /** Append a `session_info` name entry to the Rust session JSONL (best-effort; the file
-   *  only exists after the binary writes its first turn, so a very-early name is carried
-   *  live via the webview and flushed at dispose if it never got persisted). */
-  /** Flush a pending `session_info` name, but ONLY while the binary is idle. rust-pi owns this
-   *  JSONL and appends to it as a turn progresses; our append is O_APPEND (atomic w.r.t. its own
-   *  offset), but if the binary writes via a tracked offset rather than O_APPEND, an interleaved
-   *  write could clobber ours. We can't see its source (clean-room), so we simply never write
-   *  while a turn is in flight — the entry stays pending and lands at the next run-end or at
-   *  dispose (after the child is gone). No-op when nothing is pending. */
-  private _flushRustSessionInfo(): void {
-    if (!this._rustSessionNamePending || !this._rustSessionName) { return; }
-    if (this.backend?.getAgentRunActive()) { return; } // mid-turn: stay pending
-    this._persistRustSessionInfo(this._rustSessionName);
-    this._rustSessionNamePending = false;
-  }
-
-  private _persistRustSessionInfo(name: string): void {
-    this._appendRustSessionInfo(this._rust?.getSessionPath() ?? null, name);
-  }
-
-  /** The actual append. Takes the session file explicitly so dispose() can pass a path it
-   *  captured BEFORE tearing the runtime down (getSessionPath() is gone afterwards). */
-  private _appendRustSessionInfo(sf: string | null, name: string): void {
-    if (!sf || !fs.existsSync(sf)) { return; }
-    try {
-      // No id/parentId: this entry is deliberately OUTSIDE rust-pi's tree (see
-      // RUST_SESSION_NAME_ENTRY). Supplying tree fields is exactly what broke the loader before.
-      fs.appendFileSync(sf, JSON.stringify({
-        type: RUST_SESSION_NAME_ENTRY,
-        timestamp: new Date().toISOString(),
-        name,
-      }) + "\n");
-    } catch (e: unknown) { piWarn(`Rust session_info persist failed: ${e instanceof Error ? e.message : String(e)}`); }
-  }
-
+  
+  
   // ── Tools ───────────────────────────────────────────────
 
   /** Get all configured tools available for selection. */
@@ -1975,18 +1939,14 @@ export class PiService {
 
     // Rust runtime: tear down the subprocess (it owns its own persistence).
     if (this._backendKind === "rust") {
-      // Capture the session file BEFORE teardown (getSessionPath() is unavailable once the
-      // service is gone), then tear the subprocess down, and only THEN append the session-name
-      // entry — so we are never writing into the JSONL while the binary still owns it. Covers
-      // the case where a title was set before the binary had written the file at all (fresh
-      // session), and any title deferred mid-turn. Re-appending an identical name is harmless:
-      // the tree reader takes the LAST session_info entry.
-      const rustSessionFile = this._rust?.getSessionPath() ?? null;
+      // No name flush here any more. The extension used to capture the session file before
+      // teardown and append a `session_info` entry afterwards, to cover a title set before the
+      // binary had written the file and any title deferred mid-turn. set_session_name makes
+      // both cases the binary's problem: it writes the entry itself, while it still owns the
+      // file, so there is nothing left to reconcile at teardown.
       this._uiBridge?.dispose(); this._uiBridge = null;
       this._rust?.dispose();
       this._rust = null;
-      if (this._rustSessionName) { this._appendRustSessionInfo(rustSessionFile, this._rustSessionName); }
-      this._rustSessionNamePending = false;
       return;
     }
     // Exhaustive: the SDK teardown below is the "typescript" path. A third runtime added to

@@ -134,6 +134,11 @@ export interface PiBackend {
   /** The session file, so a restart can resume rather than start empty. */
   readonly currentSessionPath: string | null;
   setPlanMode(on: boolean): Promise<PlanMode>;
+
+  /** Persist a display name for this session. Both runtimes own a native way to do it — the SDK
+   *  through its session, rust-pi through the set_session_name RPC — so this is a plain seam
+   *  method rather than a capability flag with nothing to gate. */
+  setSessionName(name: string): Promise<boolean>;
   /** Approve the submitted plan; returns its text. Does not resume the agent. */
   approvePlan(): Promise<string | null>;
   rejectPlan(): Promise<boolean>;

@@ -368,6 +368,13 @@ export class SdkService implements PiBackend {
   get approvalMode(): ApprovalMode { return "always-ask"; }
   get currentSessionPath(): string | null { return null; }
   async setPlanMode(_on: boolean): Promise<PlanMode> { return "off"; }
+  async setSessionName(name: string): Promise<boolean> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sess = (this as any).sessionManager ?? (this as any).session;
+    if (typeof sess?.setSessionName !== "function") { return false; }
+    sess.setSessionName(name);
+    return true;
+  }
   async approvePlan(): Promise<string | null> { return null; }
   async rejectPlan(): Promise<boolean> { return false; }
 
