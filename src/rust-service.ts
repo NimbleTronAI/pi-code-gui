@@ -1477,7 +1477,12 @@ export class RustService implements PiBackend {
     if (this.process && now - this._modelsFetchedAt > MODELS_TTL_MS) {
       try {
         const r = await this.process.request(RUST_RPC.getAvailableModels, {}, 15000);
-        const list = parseRustModels(r.data);
+        // MUST scope here too. This TTL refresh is a SECOND fetch path — the picker triggers it
+        // whenever the cached list ages out — and it assigned the raw reply, so the first picker
+        // of a session was credential-scoped and every later one silently replaced it with all
+        // ~94 of the binary's built-ins. Two call sites, one rule; scoping only the init path
+        // made the bug time-dependent, which is why it read as "changing the default broke it".
+        const list = this.scopeModels(parseRustModels(r.data));
         if (r.success && list.length > 0) {
           this._availableModels = list;
           this.host.setCycleModels(list); // keep /model cycling in sync with the picker

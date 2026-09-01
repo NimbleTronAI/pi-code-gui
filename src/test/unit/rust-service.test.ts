@@ -511,3 +511,32 @@ test("an error reply is NOT retried — only a timeout is", async () => {
   assert.equal(attempts, 1, "failed immediately; a dead process is not a slow one");
   svc.dispose();
 });
+
+test("the model list stays credential-scoped after the cache ages out", async () => {
+  // Two fetch paths: init, and the TTL refresh the picker triggers. Scoping only the first made
+  // the bug time-dependent — the first picker of a session was scoped, every later one showed
+  // all ~94 built-ins, so it read as "changing the default broke the picker".
+  const { host } = makeHost();
+  const wide = { models: [
+    { provider: "deepseek", id: "deepseek-v4-flash" },
+    { provider: "anthropic", id: "claude-sonnet-3-5" },
+    { provider: "amazon-bedrock", id: "llama-4-scout" },
+  ] };
+  const svc = new RustService(host, makeDeps("ok", {
+    createProcess: (_opts: RustProcessOpts) => ({
+      spawn: async () => {}, dispose: () => {}, isAlive: () => true,
+      request: async (cmd: string) => cmd === "get_available_models"
+        ? { type: "response", success: true, data: wide }
+        : { type: "response", success: true, data: {} },
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+  await svc.initialize({ fresh: true });
+
+  // Force the refresh path the picker uses.
+  (svc as unknown as { _modelsFetchedAt: number })._modelsFetchedAt = 0;
+  const after = await svc.getAvailableModels();
+  const providers = [...new Set(after.map((m) => m.provider))];
+  assert.deepEqual(providers, ["deepseek"], `refresh stayed scoped, got ${providers.join(",")}`);
+  svc.dispose();
+});
