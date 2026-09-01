@@ -422,6 +422,7 @@ export class PiService {
           anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
           openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
+          readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
         };
       },
       showError: (message) => { void vscode.window.showErrorMessage(message); },
@@ -466,6 +467,7 @@ export class PiService {
           defaultModelId: cfg.get<string>("defaultModelId"),
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
+          readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
           sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
         };
       },

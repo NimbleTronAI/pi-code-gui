@@ -435,6 +435,12 @@
           "minimum": 0,
           "markdownDescription": "Maximum tool calls the **Rust** agent may make in a single turn (`PI_MAX_TOOL_ITERATIONS`). `0` (default) uses Rust Pi's own limit of 50. When a turn hits the ceiling it stops mid-task — the reply is cut off and the agent has not finished — so raise this for long refactors or codebase-wide reviews, which reach 50 routinely. Applies to sessions started after the change."
         },
+        "pi-code-gui.startupBudgetSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 15,
+          "markdownDescription": "How long to wait for a **Rust** session to answer its first request before giving up. Rust Pi usually replies in well under a second; slow starts of 30-90s have been seen on healthy machines, but nobody waits a minute at a blank panel, so the default stays at 15s and the extension tells you it is still waiting rather than making you guess. Raise it only if you actually hit slow starts. A genuine failure (the process exits, or answers with an error) fails immediately rather than waiting this out."
+        },
         "pi-code-gui.autoOpenOnStart": {
           "type": "boolean",
           "default": true,

@@ -12,7 +12,7 @@
 // every core capability it calls, passes through it. That coupling always
 // existed inside the god class — here it's named and visible.
 
-import { piWarn } from "./logger.js";
+import { piWarn, piDebug } from "./logger.js";
 import { RustProcess, RUST_RPC, type RustEvent, type RustResponse, type RustProcessOpts } from "./rust-process.js";
 import { formatRustLoadError } from "./extension-errors.js";
 import { scopeModelsToCredentials, normalizeRustEvent, routeRustEvent, dropQueuedMessage, promoteQueuedToSteer, checkAndRecordDegraded, clearDegraded, parseRustModels, parseRustEntries, parseRustSlashCommands, commandsReplyLooksDrifted, modelsReplyLooksDrifted, entriesReplyLooksDrifted, sessionStatsLookDrifted, tokenFieldsLookDrifted } from "./rust-events.js";
@@ -100,6 +100,10 @@ export interface RustSessionConfig {
   openaiApiKey?: string;
   /** Resolved context budget (0 = no budget). */
   contextBudget: number;
+  /** Total ms to keep retrying a slow start before failing (default 15000 — nobody waits a
+   *  minute at a blank panel). Injectable so a test can collapse it; a suite must never inherit
+   *  the production budget. */
+  readyBudgetMs?: number;
 }
 
 /** Environment dependencies injected into RustService — everything that would
@@ -193,16 +197,19 @@ export class RustService implements PiBackend {
   /** Say so — visibly — when rust-pi reports no history for a session file that demonstrably
    *  has some. Silence here is what let a corrupted session open as an ordinary blank tab.
    *
-   *  The known cause is a `session_info` entry: the extension used to append one to record the
-   *  tab name, and rust-pi's loader rejects the WHOLE file over it (verified black-box against
-   *  0.1.22 — one such line turns a 137-message session into zero). Writing that entry has been
-   *  fixed, but files already carrying one stay unloadable, so name the cause when we see it. */
+   *  A `session_info` entry the extension used to append for the tab name was the known cause
+   *  on 0.1.22, where one such line turned a 137-message session into zero. That no longer
+   *  reproduces: on 0.3.0 the same entry loads fine at the end of a file and mid-file, in both
+   *  the old tree-field shape and the current one — only a session_info line at the TOP breaks
+   *  the header parse, a position the extension never wrote. So the entry is reported as a
+   *  possible cause rather than the cause, and the message no longer asserts a mechanism that
+   *  the pinned binary does not exhibit. */
   private warnIfHistoryWasNotLoaded(loaded: number): void {
     if (loaded > 0 || !this.sessionPath) { return; }
     const census = censusSessionFile(this.sessionPath);
     if (!census || census.messages === 0) { return; } // genuinely empty: nothing to report
     const cause = census.legacyNameEntries > 0
-      ? " The cause is a `session_info` entry an older build of this extension appended to record the tab name — rust-pi's loader rejects the entire file over it."
+      ? " The file carries a `session_info` entry an older build of this extension appended to record the tab name, which older Rust Pi builds rejected the whole file over — a possible cause, though 0.3.0 loads such files in testing."
       : "";
     const content = `⚠ This session's history did not load. The file on disk still holds ${census.messages} message${census.messages === 1 ? "" : "s"}, but the Rust runtime reported none, so the conversation above is missing AND the model has no context from it.${cause} Your transcript is intact on disk at ${this.sessionPath}`;
     piWarn(`Rust history not loaded: ${census.messages} messages on disk, 0 reported (legacy session_info entries: ${census.legacyNameEntries}) — ${this.sessionPath}`);
@@ -247,16 +254,19 @@ export class RustService implements PiBackend {
     // its file; overriding with the setting would silently switch its model on
     // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
     const restoring = !!openPath || !fresh;
-    // Clamp against the DETECTED binary: `--thinking max` is rejected during argument parsing
-    // by a pre-#139 build, which exits 2 before any RPC exists — the session never starts.
+    // No clamp: 0.2.0 requires rust-pi 0.3.0, which accepts every level including `max`
+    // (probed: `--thinking max` starts cleanly and RPC comes up). The version-gated clamp that
+    // used to live here guarded pre-#139 builds that rejected `max` during argument parsing and
+    // exited 2 before any RPC existed; it was removed with the rest of the back-compat.
     const thinking = cfg.defaultThinkingLevel?.trim() || "off";
     if (!restoring) {
       if (provider) { args.push("--provider", provider); }
       if (modelId) { args.push("--model", modelId); }
-      // Always pass --thinking for a FRESH session, INCLUDING "off": rust-pi
-      // defaults a reasoning model to "high" when the flag is absent (verified
-      // live against 0.1.20), so omitting it for "off" would start the model
-      // thinking at "high" against the configured default. A restored/continued
+      // Always pass --thinking for a FRESH session, INCLUDING "off": rust-pi picks a level for
+      // a reasoning model when the flag is absent — "high" on 0.1.20, and "max" as of 0.3.0
+      // (probed: deepseek-v4-flash with no flag reports thinkingLevel "max"). So omitting it
+      // for "off" would not merely ignore the configured default, it would start the session at
+      // the MOST expensive tier. The always-pass rule matters more now than when it was written. A restored/continued
       // session carries its own recorded level (like model/provider above) and
       // get_state then syncs the display — so don't force the flag there.
       args.push("--thinking", thinking);
@@ -328,7 +338,7 @@ export class RustService implements PiBackend {
 
     let warning: string | undefined;
     try {
-      await this.spawn(status.binaryPath, args, cwd, env);
+      await this.spawnWithinBudget(status.binaryPath, args, cwd, env);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       // Recover from an extension-parse conflict OR from a package that HANGS startup, and only
@@ -361,7 +371,7 @@ export class RustService implements PiBackend {
         noExtensions = true;
         warning = "rust-extensions-auto-disabled";
         try {
-          await this.spawn(status.binaryPath, args, cwd, env);
+          await this.spawnWithinBudget(status.binaryPath, args, cwd, env);
         } catch (e2: unknown) {
           const msg2 = e2 instanceof Error ? e2.message : String(e2);
           // dispose() BEFORE dropping the reference: spawn() rejects on the readiness-probe
@@ -424,7 +434,7 @@ export class RustService implements PiBackend {
         warning = "rust-extensions-auto-disabled";
         this.noticeExtensionsAutoDisabled(blocking, 15);
         try {
-          await this.spawn(status.binaryPath, args, cwd, env);
+          await this.spawnWithinBudget(status.binaryPath, args, cwd, env);
         } catch (e2: unknown) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
           this.process?.dispose();
@@ -562,6 +572,65 @@ export class RustService implements PiBackend {
   private static _autoRetryRebillWarned = false;
 
   /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
+  /**
+   * Spawn, and be patient about a SLOW start without being patient about a dead one.
+   *
+   * rust-pi normally answers its first get_state in well under a second, but healthy spawns have
+   * been observed taking 39s and ~90s — the process alive, the turn streaming perfectly
+   * afterwards. A single 15s probe turned that into "Rust Pi started but did not respond", and
+   * the extension-conflict retry below inherited the same window, so the recovery path could not
+   * rescue it either.
+   *
+   * The retry lives HERE, not in RustProcess: patience is policy, and RustProcess owns the
+   * transport — one spawn, one probe, one timeout. An earlier attempt put the loop inside the
+   * transport and left pending readiness work behind at teardown, hanging the test process after
+   * the suite had passed. Nothing about the transport changes now.
+   *
+   * Only a TIMEOUT earns another attempt. An error reply means the binary answered; an exit
+   * means it is dead. Retrying either is not patience, it is a busy loop.
+   *
+   * Every start is timed and logged whether or not it was slow, so the budget can be chosen from
+   * a distribution rather than from the two anecdotes that prompted this.
+   */
+  private async spawnWithinBudget(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+    const budget = this.deps.config().readyBudgetMs ?? 15000;
+    const started = Date.now();
+    for (let attempt = 1; ; attempt++) {
+      const attemptStart = Date.now();
+      try {
+        await this.spawn(binaryPath, args, cwd, env);
+        const waited = Date.now() - attemptStart;
+        piDebug(`Rust readiness: ready in ${waited}ms (attempt ${attempt}, ${Date.now() - started}ms total)`);
+        if (attempt > 1) {
+          this.host.emit({ type: "custom-message", data: { customType: "notice", timestamp: Date.now(),
+            content: `Rust Pi took ${Math.round((Date.now() - started) / 1000)}s to start (${attempt} attempts). The session is ready.` } });
+        }
+        return;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const elapsed = Date.now() - started;
+        piWarn(`Rust readiness: attempt ${attempt} failed after ${Date.now() - attemptStart}ms (${elapsed}ms total): ${msg}`);
+        // Not a timeout, or the budget is spent: this is a real failure, surfaced as before.
+        if (!/timed out/i.test(msg) || elapsed >= budget) { throw e; }
+        // Say something. A blank panel for a minute reads as breakage just as much as an error.
+        if (attempt === 1) {
+          this.host.emit({ type: "custom-message", data: { customType: "notice", timestamp: Date.now(),
+            content: `Rust Pi is slow to start — still waiting (up to ${Math.round(budget / 1000)}s).` } });
+        }
+        // Dispose before retrying: a wedged process is not worth re-probing, and leaving it
+        // running would orphan it holding its --session-dir and the SQLite index.
+        this.process?.dispose();
+        this.process = null;
+        // Floor the interval. In production a timeout takes 15s so attempts are naturally
+        // spaced, but a fast-failing spawn would otherwise spin as hot as the event loop allows
+        // — burning the budget without waiting for anything, which is the bug that sank the
+        // first attempt at this.
+        const spent = Date.now() - attemptStart;
+        if (spent < 200) { await new Promise((r) => setTimeout(r, 200 - spent)); }
+      }
+    }
+  }
+
   private async spawn(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
     this.process?.dispose();
     // Per-spawn, so a retry's verdict is not polluted by the attempt that failed.
@@ -699,13 +768,18 @@ export class RustService implements PiBackend {
     // snap belongs only at a terminal event, where the stats have settled. Live mid-run cost is
     // the accumulate path's job (and is why TS, which re-sums entries per read, shows it fine).
     if (routing.isRealAgentEnd) { void this.refreshState(); }
-    // agent_settled (v0.1.22) is the terminal "run fully settled" event, emitted after the
-    // agent_end pair. Snap authoritatively here too: it's NOT gated on the agentRunActive
-    // dedupe, so even if a duplicate agent_end latched the flag false and starved the
-    // isRealAgentEnd refresh above, the final cost/token total still lands. Terminal, so the
-    // stats have settled; refreshState's own _refreshing guard drops a redundant overlap with
-    // an in-flight agent_end refresh. THIS is the real fix for the "cost froze after an
-    // abort/retry" report — not a mid-run refresh.
+    // agent_settled is a belt-and-braces snap, NOT the load-bearing one.
+    //
+    // It was documented as "the real fix for the cost froze after an abort/retry report", but
+    // 0.3.0 does not appear to emit it: a full turn plus a mid-turn abort produced only
+    // agent_start / message_* / turn_* / tool_execution_* / agent_end. What DOES carry the fix
+    // on the pinned binary is the isRealAgentEnd refresh above — and the abort path really does
+    // emit agent_end TWICE ({"error":"Aborted"} then again with messages:[]), so that dedupe is
+    // required rather than defensive.
+    //
+    // Kept because it costs nothing and is not gated on the agentRunActive dedupe, so it still
+    // rescues the total on any binary that does emit it. refreshState's own _refreshing guard
+    // drops a redundant overlap with an in-flight agent_end refresh.
     if (event?.type === "agent_settled") { void this.refreshState(); }
   }
 

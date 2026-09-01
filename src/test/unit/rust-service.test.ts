@@ -100,6 +100,9 @@ function makeDeps(mode: string, overrides?: Partial<RustDeps>): RustDeps {
     defaultThinkingLevel: "xhigh",
     rustExtensionPolicy: "balanced",
     contextBudget: 0,
+    // Collapsed deliberately: a suite must never inherit the production 60s budget. What the
+    // tests assert is the RETRY BEHAVIOUR, not the wall-clock wait.
+    readyBudgetMs: 1200,
   };
   return {
     detectBinary: () => ({ installed: true, binaryPath: process.execPath }),
@@ -339,7 +342,7 @@ test("a handshake timeout after a package load failure retries without project e
 
   const result = await svc.initialize({ fresh: true });
   assert.equal(result.success, true, "recovered instead of failing the session");
-  assert.equal(state.attempts, 2, "respawned once");
+  assert.ok(state.attempts >= 2, "respawned with --no-extensions after the readiness budget was spent");
   const messages = hostState.events.map((e) => String(((e as { data?: { content?: string } }).data)?.content ?? ""));
   // The recovery notice is the one that explains the cost — distinct from the plain load-error
   // line RustProcess already emits, which names the package but not what the extension DID.
@@ -384,10 +387,13 @@ test("a readiness-probe timeout after a package load failure retries without pro
     extensionsMode: () => "auto",
     createProcess: (opts: RustProcessOpts) => {
       attempts++;
-      const first = attempts === 1;
+      // Fails PERSISTENTLY until extensions are switched off. A single timeout is now absorbed
+      // by the readiness budget — which is the point of that budget: a transient slow start
+      // must not disable the user's extensions.
+      const withoutExtensions = (opts.args ?? []).includes("--no-extensions");
       return {
         spawn: async () => {
-          if (first) {
+          if (!withoutExtensions) {
             opts.onLoadError?.({
               kind: "unsupported-module", packageName: "pi-web-access",
               detail: "Imports node:dns/promises, which the Rust runtime's module loader doesn't support.",
@@ -405,7 +411,9 @@ test("a readiness-probe timeout after a package load failure retries without pro
 
   const result = await svc.initialize({ fresh: true });
   assert.equal(result.success, true, "recovered instead of failing the session");
-  assert.equal(attempts, 2, "respawned once with --no-extensions");
+  // Not an exact count: the readiness budget legitimately retries the timeout several
+  // times before the extensions fallback is reached. What matters is that it GOT there.
+  assert.ok(attempts >= 2, "respawned with --no-extensions after the readiness budget was spent");
   const notice = hostState.events
     .map((e) => String(((e as { data?: { content?: string } }).data)?.content ?? ""))
     .find((c) => c.includes("pi-web-access") && c.includes("rustExtensions"));
@@ -423,9 +431,9 @@ test("a cold-cache startup timeout retries blind, with no load error to name", a
     extensionsMode: () => "auto",
     createProcess: (_opts: RustProcessOpts) => {
       attempts++;
-      const first = attempts === 1;
       return {
-        spawn: async () => { if (first) { throw new Error("RPC 'get_state' timed out after 15000ms"); } },
+        // Persistent until extensions are off — see the note above.
+        spawn: async () => { if (!(_opts.args ?? []).includes("--no-extensions")) { throw new Error("RPC 'get_state' timed out after 15000ms"); } },
         dispose: () => {},
         isAlive: () => true,
         request: async () => ({ type: "response", success: true, data: {} }),
@@ -436,11 +444,70 @@ test("a cold-cache startup timeout retries blind, with no load error to name", a
 
   const result = await svc.initialize({ fresh: true });
   assert.equal(result.success, true, "recovered rather than failing the session");
-  assert.equal(attempts, 2, "retried with --no-extensions on the timeout alone");
+  assert.ok(attempts >= 2, "retried with --no-extensions once the readiness budget was spent");
   const notice = hostState.events
     .map((e) => String(((e as { data?: { content?: string } }).data)?.content ?? ""))
     .find((c) => c.includes("rustExtensions"));
   assert.ok(notice, "tells the user what happened and how to avoid the cost");
   assert.ok(!/pi-web-access|failed to load/.test(notice), "does not invent a culprit it never identified");
+  svc.dispose();
+});
+
+test("a slow start is retried within the budget, not failed on the first timeout", async () => {
+  // Healthy spawns have been observed taking 39s and 90s while a 15s probe called them dead.
+  const { host } = makeHost();
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    createProcess: (_opts: RustProcessOpts) => ({
+      // Times out twice, then comes up — the shape of a slow start, not a broken one.
+      spawn: async () => { attempts++; if (attempts <= 2) { throw new Error("RPC 'get_state' timed out after 15000ms"); } },
+      dispose: () => {}, isAlive: () => true,
+      request: async () => ({ type: "response", success: true, data: {} }),
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, true, "recovered instead of failing the session");
+  assert.equal(attempts, 3, "retried twice, then succeeded");
+  svc.dispose();
+});
+
+test("a never-ready process fails WITHIN its budget rather than hanging", async () => {
+  // The guard on the mistake that reverted the first attempt: if this regresses it fails fast
+  // instead of stalling the whole suite.
+  const { host } = makeHost();
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    createProcess: (_opts: RustProcessOpts) => ({
+      spawn: async () => { attempts++; throw new Error("RPC 'get_state' timed out after 15000ms"); },
+      dispose: () => {}, isAlive: () => true,
+      request: async () => ({ type: "response", success: false }),
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+  const t0 = Date.now();
+  const result = await svc.initialize({ fresh: true });
+  const took = Date.now() - t0;
+  assert.equal(result.success, false);
+  assert.ok(took < 8000, `gave up in ${took}ms — bounded by the injected budget, not hanging`);
+  assert.ok(attempts > 1, "it did retry before giving up");
+  svc.dispose();
+});
+
+test("an error reply is NOT retried — only a timeout is", async () => {
+  // Retrying a binary that answered is a busy loop, not patience.
+  const { host } = makeHost();
+  let attempts = 0;
+  const svc = new RustService(host, makeDeps("ok", {
+    createProcess: (_opts: RustProcessOpts) => ({
+      spawn: async () => { attempts++; throw new Error("Rust process exited immediately (code 1)"); },
+      dispose: () => {}, isAlive: () => false,
+      request: async () => ({ type: "response", success: false }),
+      send: () => {},
+    } as unknown as RustProcess),
+  }));
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(result.success, false);
+  assert.equal(attempts, 1, "failed immediately; a dead process is not a slow one");
   svc.dispose();
 });
