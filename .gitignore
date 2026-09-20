@@ -8,3 +8,9 @@ env/
 .pi/
 media/bundle.js
 media/bundle.js.map
+
+# macOS Finder artifacts. .DS_Store was committed in the first commit and tracked ever
+# since, so it showed as modified on every mac checkout — noise in every `git status`
+# and a file that could be committed by accident with an unrelated change.
+.DS_Store
+**/.DS_Store

@@ -41,6 +41,11 @@
 # ── belt and braces ───────────────────────────────────────────────────
 # Already excluded by `**`, but named so the intent survives a future edit that loosens the
 # allowlist: never ship internal docs, agent config, CI, hooks, or tooling.
+#
+# .DS_Store is the exception that is NOT merely belt and braces: `!media/lib/**` re-includes
+# that whole subtree, so a Finder artifact created there on a mac would genuinely ship. Excluded
+# after the negations, where it wins.
+**/.DS_Store
 dist/**/*.md
 tmp/**
 .claude/**
