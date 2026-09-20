@@ -401,6 +401,17 @@ export class PiService {
   private makeRustDeps(): RustDeps {
     return {
       detectBinary: () => detectRustBinary(),
+      warnConfiguredBinaryUnusable: (why, usingPath, usingVersion) => {
+        void vscode.window.showWarningMessage(
+          `The Rust Pi binary set in "pi-code-gui.rustBinaryPath" could not be used (${why}). ` +
+          `This session is running ${usingPath}${usingVersion ? ` (${usingVersion})` : ""} instead.`,
+          "Open Setting",
+        ).then((pick) => {
+          if (pick === "Open Setting") {
+            void vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustBinaryPath");
+          }
+        });
+      },
       shouldDisableExtensions: (cwd) => shouldDisableRustExtensions(cwd),
       workspaceIsTrusted: () => vscode.workspace.isTrusted,
       extensionsMode: () => rustExtensionsMode(),

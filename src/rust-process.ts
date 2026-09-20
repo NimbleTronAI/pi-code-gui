@@ -28,7 +28,7 @@ const DRAIN_GRACE_MS = 250;
 
 /** RPC command names PiService sends to the Rust subprocess. Centralized so a
  *  typo is a compile error rather than a silent timeout, and so call sites are
- *  greppable/refactorable. All 20 values verified present on rust-pi 0.3.0 by
+ *  greppable/refactorable. All 20 values verified present on the pinned rust-pi 0.3.0 by
  *  probing the wire; `clear_queue` is correctly absent — the queue is the extension's own
  *  synthetic one, so `clearQueue` being local-only is by design, not a missed call. */
 export const RUST_RPC = {
@@ -112,6 +112,19 @@ export class RustProcess {
     child.stdout.on("data", (chunk: string) => this.onStdout(chunk));
     child.stderr.on("data", (chunk: string) => this.onStderr(chunk));
 
+    // A stream "error" with NO listener is an unhandled 'error' event, which takes the whole
+    // extension host down — not a failed session. This is reachable, not theoretical: when the
+    // binary cannot exec (glibc floor above the host's) it dies before the readiness probe is
+    // written, and that write raises EPIPE on stdin. Measured: an uncaught EPIPE crash instead of
+    // a clean "this binary will not run" error. Route all three streams into the normal failure
+    // path, where stderrHint() can still explain what happened.
+    for (const [name, stream] of [["stdin", child.stdin], ["stdout", child.stdout], ["stderr", child.stderr]] as const) {
+      stream?.on("error", (err: Error) => {
+        piWarn(`RustProcess: ${name} error: ${err.message}`);
+        this.failAllPending(new Error(`Rust process ${name} failed: ${err.message}${this.stderrHint()}`));
+      });
+    }
+
     child.on("error", (err: Error) => {
       piWarn(`RustProcess: error: ${err.message}`);
       this.failAllPending(err);
@@ -146,7 +159,20 @@ export class RustProcess {
       });
       if (this.opts.readyCommand) {
         this.request(this.opts.readyCommand, {}, this.opts.readyTimeoutMs ?? 15000)
-          .then(settleResolve, (e: unknown) => settleReject(e instanceof Error ? e : new Error(String(e))));
+          .then(settleResolve, (e: unknown) => {
+            // ATTACH THE CHILD'S STDERR. The probe timing out says only that no answer came; the
+            // reason is almost always sitting in stderr already, and we used to throw it away.
+            // Three unrelated faults reached the user as the same sentence, "RPC 'get_state'
+            // timed out after 15000ms": a binary that could not exec (stderr:
+            // "libm.so.6: version `GLIBC_2.43' not found"), an extension package the runtime
+            // cannot load (stderr: "Unsupported module specifier: node:async_hooks"), and a cold
+            // package cache. Each names itself on stderr. The exit path already appended
+            // stderrHint(); this path did not, which is why diagnosing it took an afternoon.
+            const base = e instanceof Error ? e : new Error(String(e));
+            this.afterStderrDrained(child, () => {
+              settleReject(new Error(`${base.message}${this.stderrHint()}`));
+            });
+          });
       } else {
         setTimeout(settleResolve, 400);
       }
