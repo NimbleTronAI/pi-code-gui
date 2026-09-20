@@ -28,7 +28,7 @@ const DRAIN_GRACE_MS = 250;
 
 /** RPC command names PiService sends to the Rust subprocess. Centralized so a
  *  typo is a compile error rather than a silent timeout, and so call sites are
- *  greppable/refactorable. All 20 values verified present on the pinned rust-pi 0.3.0 by
+ *  greppable/refactorable. All 20 values verified present on rust-pi 0.3.0 by
  *  probing the wire; `clear_queue` is correctly absent — the queue is the extension's own
  *  synthetic one, so `clearQueue` being local-only is by design, not a missed call. */
 export const RUST_RPC = {

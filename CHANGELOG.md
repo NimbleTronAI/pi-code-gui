@@ -3,8 +3,9 @@
 ## [0.2.4]
 
 ### Changed
+- **Rust Pi is now pinned to v0.5.1** (was v0.3.0). It's the first upstream release since 0.3.0 — v0.4.0 was tagged but never published — and it fixes a startup failure this extension kept running into, where one expired OAuth credential aborted startup for *every* provider. An existing binary keeps working and is not replaced; you'll get a one-time notice that it differs from the tested version. **Linux note:** the v0.5.1 binaries need glibc 2.43, which is newer than Debian 13 or Ubuntu 24.04 — on those hosts keep your existing 0.3.0 binary rather than letting the managed install replace it.
 - **Model catalog refreshed to pi-ai 0.86.1** — now 1,128 models. Two new providers: **Meta** (`muse-spark`) and **Radius**, Pi's own gateway. 67 models repriced, and Moonshot's `kimi-k2*` line and Z.ai's `glm-4.7`/`glm-5.x` coding models are withdrawn.
-- **Radius is not offered on the Rust runtime.** It speaks a protocol Rust Pi 0.3.0 doesn't implement, so it's left out rather than risking your `models.json`. It works normally on the TypeScript runtime.
+- **Radius is not offered on the Rust runtime.** It speaks a protocol no Rust Pi release implements yet, so it's left out rather than risking your `models.json`. It works normally on the TypeScript runtime.
 - **The fallback model list is current again** — Claude Opus 5, Sonnet 5, Haiku 4.5, GPT-5.5, Gemini 3.5 Flash and DeepSeek V4 Pro. It had still been offering GPT-4o and a DeepSeek model that no longer exists. (This list only appears when no model catalog is available.)
 
 ### Fixed
