@@ -2,6 +2,11 @@
 //
 //   node scripts/check-currency.mjs            ← advisory; always exits 0
 //   node scripts/check-currency.mjs --strict   ← exits 1 on any drift (use at release time)
+//   node scripts/check-currency.mjs --json     ← machine-readable; same exit codes
+//
+// --json exists for .github/workflows/upstream-currency.yml, which turns drift into a GitHub
+// ISSUE. That workflow is the point: this script has correctly reported rust-pi v0.3.0 against
+// v0.5.1 since 12 September, into CI logs nobody reads. Detection was never the gap.
 //
 // WHY THIS EXISTS: three upstream projects move independently and nothing told us when they
 // did. We found out by breakage — pi-ai removed getProviders()/getModels() at 0.81.0 and the
@@ -26,6 +31,7 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STRICT = process.argv.includes("--strict");
+const JSON_OUT = process.argv.includes("--json");
 const NET_TIMEOUT_MS = 10_000;
 
 const read = (p) => JSON.parse(readFileSync(join(root, p), "utf8"));
@@ -55,11 +61,21 @@ const rows = [];
 const notes = [];
 let drift = 0, unreachable = 0;
 
+/** Structured mirror of `rows`, for --json. Same data, without the column padding. */
+const items = [];
+
 function record(name, ours, latest, extra) {
-  if (latest === null) { unreachable++; rows.push([name, ours, "(unreachable)", "?"]); return; }
+  if (latest === null) {
+    unreachable++;
+    rows.push([name, ours, "(unreachable)", "?"]);
+    items.push({ name, ours: String(ours), latest: null, state: "unreachable" });
+    return;
+  }
   const stale = older(ours, latest);
   if (stale) { drift++; }
   rows.push([name, ours, latest, stale ? "STALE" : "current"]);
+  items.push({ name, ours: String(ours), latest: String(latest), state: stale ? "stale" : "current",
+               action: stale && extra ? extra.replace(/^\s*->\s*/m, "").trim() : undefined });
   if (stale && extra) { notes.push(extra); }
 }
 
@@ -103,7 +119,12 @@ if (registry.modelDataGeneratedAt) {
 // ── 3. pi-coding-agent (the TypeScript backend) ─────────────────────
 // Not a package dependency — it is installed globally and the devcontainer takes @latest — so
 // the only local evidence of what we work against is whatever is installed right now.
-let sdkInstalled = "(not installed)";
+// On a CI runner there is no global install, so "ours" used to read "(not installed)" — which
+// carries no version triple, so the comparison silently could not flag anything. Drift in the
+// TypeScript backend was therefore invisible in exactly the place we now want it reported. Fall
+// back to the version we record as tested against, so the check means something off-machine.
+const sdkTested = read("src/pi-sdk-version.json").testedAgainst;
+let sdkInstalled = null;
 for (const p of [
   join(process.env.HOME ?? "", ".npm-global/lib/node_modules/@earendil-works/pi-coding-agent/package.json"),
   "/usr/lib/node_modules/@earendil-works/pi-coding-agent/package.json",
@@ -111,12 +132,19 @@ for (const p of [
 ]) {
   if (existsSync(p)) { sdkInstalled = JSON.parse(readFileSync(p, "utf8")).version; break; }
 }
+// Prefer the recorded value: it is what this repo claims to work against, and it is the same
+// number on every machine. A local install that has drifted from it is its own note below.
+const sdkOurs = sdkTested ?? sdkInstalled ?? "(not installed)";
+if (sdkInstalled && sdkTested && sdkInstalled !== sdkTested) {
+  notes.push(`  ! the globally installed pi-coding-agent is ${sdkInstalled}, but src/pi-sdk-version.json\n` +
+             `    records ${sdkTested} as tested. Bump that file once you have run the TS side against it.`);
+}
 let sdkLatest = null;
 try { sdkLatest = (await getJson("https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest")).version; }
 catch (e) { notes.push(`  ! could not reach npm for pi-coding-agent: ${e.message}`); }
-record("pi-coding-agent (TS backend)", sdkInstalled, sdkLatest,
-  `  -> npm install -g @earendil-works/pi-coding-agent@latest, then re-run the TS side of the\n` +
-  `     side-by-side. This one is NOT pinned in-repo, so drift here is invisible until it breaks.`);
+record("pi-coding-agent (TS backend)", sdkOurs, sdkLatest,
+  `  -> npm install -g @earendil-works/pi-coding-agent@latest, run the TS side of the\n` +
+  `     side-by-side, then bump "testedAgainst" in src/pi-sdk-version.json.`);
 
 // ── 4. supply chain ─────────────────────────────────────────────────
 // Currency alone does not protect you: the ChainDrop campaign shipped MALICIOUS versions of
@@ -126,6 +154,21 @@ const critical = sc.findings.filter((f) => f.severity === "CRITICAL");
 const review = sc.findings.filter((f) => f.severity === "REVIEW");
 
 // ── report ──────────────────────────────────────────────────────────
+// --json short-circuits the pretty report: one object on stdout, so a workflow can build an
+// issue body from it without parsing columns. Exit codes are identical either way.
+if (JSON_OUT) {
+  console.log(JSON.stringify({
+    checkedAt: new Date().toISOString(),
+    drift, unreachable,
+    items,
+    notes: notes.map((n) => n.replace(/^\s+/gm, "").trim()),
+    supplyChain: { scanned: sc.scanned, critical: critical.map((f) => f.what), review: review.map((f) => f.what) },
+  }, null, 2));
+  if (critical.length) { process.exit(1); }
+  if (unreachable && STRICT) { process.exit(1); }
+  process.exit(drift && STRICT ? 1 : 0);
+}
+
 const w = rows.reduce((m, r) => Math.max(m, r[0].length), 0);
 console.log("\nUpstream currency\n");
 for (const [name, ours, latest, state] of rows) {
