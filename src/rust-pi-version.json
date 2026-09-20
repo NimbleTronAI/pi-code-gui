@@ -1,6 +1,7 @@
 {
-  "_comment": "External dependency: the pi_agent_rust GitHub release this extension is built and tested against. `tag` is the SINGLE pinned value — bump only it to move the supported floor. The managed download (src/rust-install.ts) fetches this tag; the README 'Rust Pi (tested)' badge reads it; a user-supplied binary of a different version gets a one-time warning (src/extension.ts). Dependabot can't track GitHub releases natively (tracking is future/aspirational) — but `datasource` + `repo` + `tag` below are exactly what a Renovate customManager or a scheduled bump action needs to identify and update it.",
+  "_comment": "External dependency: the pi_agent_rust GitHub release this extension is built and tested against. `tag` is the SINGLE pinned value — bump only it to move the supported floor. The managed download (src/rust-install.ts) fetches this tag; the README 'Rust Pi (tested)' badge reads it; a user-supplied binary of a different version gets a one-time warning (src/extension.ts). Dependabot can't track GitHub releases natively — .github/workflows/upstream-currency.yml opens an issue when a newer release appears, using the `datasource`/`repo`/`tag` fields below.",
   "datasource": "github-releases",
   "repo": "Dicklesworthstone/pi_agent_rust",
-  "tag": "v0.3.0"
+  "tag": "v0.5.1",
+  "_glibcWarning": "LINUX GLIBC FLOOR — CHECK BEFORE RELEASING A BUMP. The v0.5.1 Linux binaries require GLIBC_2.43 (measured with objdump -T on pi-linux-arm64); v0.3.0 required only 2.39. 2.43 is newer than Debian 13 (2.41) and Ubuntu 24.04 (2.39), so the managed install on those hosts downloads a binary that cannot exec — it fails with a dynamic-linker error, not a version warning. macOS and Windows are unaffected. Verify the floor against the platforms we claim to support before shipping a pin bump to users."
 }

@@ -264,7 +264,8 @@ function managedEntry(m: RegistryModel, contextBudget: number): { entry: any; om
  * `session_info` key we appended made older builds reject an entire session file.
  *
  * pi-ai 0.86.1 introduced `pi-messages` (the `radius` provider, Pi's own gateway) — a protocol
- * that postdates rust-pi 0.3.0, which 0.2.x pins. Rather than find out the hard way, describe
+ * that postdates every rust-pi release to date (nothing in 0.5.x mentions it, and upstream's
+ * own pi-ai vendoring is still 0.85.1, which predates radius). Rather than find out the hard way, describe
  * only what the binary can act on and leave the rest to its native handling, which is what
  * already happens for Bedrock, Vertex and Copilot.
  *
