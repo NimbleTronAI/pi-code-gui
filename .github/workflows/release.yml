@@ -41,12 +41,29 @@ jobs:
                 | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(JSON.parse(s).version)}catch{process.stdout.write('')}})" \
                 || echo "")
           echo "version=$new" >> "$GITHUB_OUTPUT"
-          if [ -n "$new" ] && [ "$new" != "$old" ] && ! git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+          # The release condition is the absence of the TAG, not a difference from HEAD~1.
+          #
+          # It used to require both, and that made every refusal below permanent. v0.2.4 was
+          # bumped on main, the stale-catalog gate correctly refused to tag it, and the fix
+          # landed one commit later — by which point HEAD~1 already carried 0.2.4, so
+          # `new != old` was false and the tag was never re-attempted. The version sat on main,
+          # untagged, unreleased, and unreachable by any future push: a gate that consumed the
+          # version it declined to ship.
+          #
+          # Keying on the tag alone makes a refusal RETRYABLE. Any later push touching
+          # package.json re-attempts an untagged version, so fixing what the gate objected to
+          # is all it takes. The HEAD~1 comparison is kept for the log line, where being
+          # approximate is harmless.
+          if [ -n "$new" ] && ! git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
             echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "Releasing v$new (was: ${old:-none})."
+            if [ "$new" = "$old" ]; then
+              echo "Releasing v$new — unchanged since HEAD~1 but never tagged (a retry)."
+            else
+              echo "Releasing v$new (was: ${old:-none})."
+            fi
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "No new version to release (old=${old:-none}, new=$new) or tag already exists."
+            echo "Nothing to release: v$new is already tagged (old=${old:-none})."
           fi
 
       # Refuse to TAG a stale catalog, rather than discovering it at publish.
@@ -56,6 +73,11 @@ jobs:
       # so the version was stranded and could only be recovered by cutting another one. CI cannot
       # cover this, because ci.yml and this workflow trigger on the same push and run
       # concurrently. Checking here is the only point that precedes the tag.
+      #
+      # A refusal here is retryable BY DESIGN — see the tag-keyed condition above. Refresh the
+      # catalog, merge, and the next push touching package.json re-attempts the same version.
+      # That property is what makes gating before the tag safe; without it a refusal would
+      # strand the version just as surely as the late gate did, only earlier and more quietly.
       - name: Refuse to release a stale model catalog
         if: ${{ steps.ver.outputs.release == 'true' }}
         env:

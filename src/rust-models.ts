@@ -253,7 +253,44 @@ function managedEntry(m: RegistryModel, contextBudget: number): { entry: any; om
  * provider's route shape changes (measured — the models vanish with no warning to the client), so
  * every model we need is written here regardless.
  */
-export function mergeModelsJson(file: string, contextBudget: number, only?: Set<string>): { written: number; omitted: number; userOwned: number } {
+/**
+ * Provider `api` values the pinned Rust binary is known to implement.
+ *
+ * models.json is deserialized by the binary, and its `api` field selects a protocol
+ * implementation — an unknown value is not a row we lose, it is a file the binary may reject
+ * whole, taking every managed entry for every provider with it. That failure is silent: the
+ * session starts, the picker falls back to the binary's built-ins, and nothing says why the
+ * catalog vanished. This repo has already been bitten by exactly that shape once, when a
+ * `session_info` key we appended made older builds reject an entire session file.
+ *
+ * pi-ai 0.86.1 introduced `pi-messages` (the `radius` provider, Pi's own gateway) — a protocol
+ * that postdates rust-pi 0.3.0, which 0.2.x pins. Rather than find out the hard way, describe
+ * only what the binary can act on and leave the rest to its native handling, which is what
+ * already happens for Bedrock, Vertex and Copilot.
+ *
+ * The asymmetry is the whole argument: withholding a provider the binary probably cannot reach
+ * anyway costs that one provider on the Rust runtime, while writing an api it rejects costs the
+ * entire catalog. Note this is a RUST-runtime concern only — the bundled catalog still carries
+ * these providers, so pricing, context windows and thinking levels resolve for them under the
+ * TypeScript runtime as usual.
+ *
+ * When the pinned rust-pi gains a protocol, add it here; the debug log names what was withheld so
+ * a stale list is discoverable rather than permanent.
+ */
+const RUST_SUPPORTED_APIS = new Set([
+  "openai-completions", "anthropic-messages", "google-generative-ai", "openai-responses",
+  "mistral-conversations",
+]);
+
+/** Provider ids the bundled catalog carries but we decline to describe to the Rust binary,
+ *  with the api that disqualified each. Empty when the binary understands everything we bundle. */
+export function apisUnsupportedByRust(): Array<{ provider: string; api: string }> {
+  return Object.entries(registry.providers)
+    .filter(([, prov]) => !RUST_SUPPORTED_APIS.has(prov.api))
+    .map(([provider, prov]) => ({ provider, api: prov.api }));
+}
+
+export function mergeModelsJson(file: string, contextBudget: number, only?: Set<string>): { written: number; omitted: number; userOwned: number; skippedApis: string[] } {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let doc: any = { providers: {} };
   try {
@@ -263,9 +300,12 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
   if (!doc.providers || typeof doc.providers !== "object") { doc.providers = {}; }
 
   let written = 0, omitted = 0, userOwned = 0;
+  const skippedApis: string[] = [];
   for (const [provId, prov] of Object.entries(registry.providers)) {
     // Only describe providers the user can authenticate to — see credentialedProviders.
     if (only && !only.has(provId)) { continue; }
+    // ...and only protocols the binary implements — see RUST_SUPPORTED_APIS.
+    if (!RUST_SUPPORTED_APIS.has(prov.api)) { skippedApis.push(`${provId} (${prov.api})`); continue; }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const existing: any = doc.providers[provId];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -292,11 +332,11 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
   const payload = JSON.stringify(doc, null, 2) + "\n";
   // Skip the write when nothing changed — this runs on EVERY Rust session init, and the content
   // only moves on an extension update or a contextBudget change.
-  try { if (fs.readFileSync(file, "utf-8") === payload) { return { written, omitted, userOwned }; } }
+  try { if (fs.readFileSync(file, "utf-8") === payload) { return { written, omitted, userOwned, skippedApis }; } }
   catch { /* absent/unreadable → write below */ }
   try { fs.writeFileSync(file, payload); }
   catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. The Rust model catalog won't be available.`); }
-  return { written, omitted, userOwned };
+  return { written, omitted, userOwned, skippedApis };
 }
 
 /**
@@ -341,6 +381,10 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   const w = checkAuthAvailable(dir);
   if (w) { warnings.push(w); }
   piDebug(`Rust model catalog: merged ${merged.written} managed entries for ${scope.size} credentialed provider(s) [${[...scope].join(", ") || "none"}] into ${dir}/models.json (budget=${budget}, ${merged.omitted} placeholder maxTokens omitted, ${merged.userOwned} left to the user)`);
+  // Name what was withheld, so an outgrown RUST_SUPPORTED_APIS list is discoverable.
+  if (merged.skippedApis.length) {
+    piDebug(`Rust model catalog: withheld ${merged.skippedApis.length} credentialed provider(s) the pinned binary has no protocol for [${merged.skippedApis.join(", ")}] — they stay on its native handling. See RUST_SUPPORTED_APIS in rust-models.ts.`);
+  }
   // PI_MAX_TOOL_ITERATIONS: rust-pi stops a turn at 50 tool calls by default and reports
   // `stopReason: "error"`, cutting long work off mid-task. 0 leaves the binary's default alone
   // rather than pinning us to a number that could drift out from under the setting.
