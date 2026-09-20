@@ -72,6 +72,11 @@ export function initLogger(channel: vscode.LogOutputChannel): void {
  * late log (e.g. from the process-level unhandledRejection handler) can't throw
  * "Channel has been closed" and turn a benign rejection into a crash.
  */
+/** Reveal the output channel. A warning that tells the user to "check the log" is useless if
+ *  nothing opens it — and a button wired to a command that does not exist is worse, because it
+ *  fails silently. This goes through the channel we already own. */
+export function revealLog(): void { _channel?.show(true); }
+
 export function disposeLogger(): void {
   _disposed = true;
   _channel = null;

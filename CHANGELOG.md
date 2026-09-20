@@ -9,6 +9,8 @@
 - **The fallback model list is current again** — Claude Opus 5, Sonnet 5, Haiku 4.5, GPT-5.5, Gemini 3.5 Flash and DeepSeek V4 Pro. It had still been offering GPT-4o and a DeepSeek model that no longer exists. (This list only appears when no model catalog is available.)
 
 ### Fixed
+- **A Rust session that won't start now tells you why.** Three unrelated faults all reported the same thing — `RPC 'get_state' timed out after 15000ms` — while the actual reason sat unread in the binary's own output. The error now carries it, so you see `GLIBC_2.43 not found` or `Unsupported module specifier: node:async_hooks` instead of a bare timeout.
+- **A managed Rust Pi download that can't run on your machine is no longer installed.** The install checked whether *any* Rust Pi worked rather than the one it just downloaded, so on Linux hosts whose system libraries are older than the release needs it reported success, named a different binary's version, and left the unusable one configured. It now tests the downloaded binary, removes it if it won't run, tells you which glibc the release needs, and leaves your existing setup alone. If a configured binary can't run and a different one is used instead, you're told rather than left guessing.
 - **Native DeepSeek costs show `$??` again.** DeepSeek bills by time of day, which the price catalog can't express, so the extension withholds the number rather than state a wrong one — but an upstream rename (`deepseek-v4-flash` → `deepseek-flash`) slipped past that rule and a wrong figure was shown instead. Gateways that resell DeepSeek at flat rates still show real costs.
 
 ## [0.2.3]

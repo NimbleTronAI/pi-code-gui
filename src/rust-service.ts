@@ -113,6 +113,9 @@ export interface RustSessionConfig {
  *  complex code in the Rust subsystem — headlessly testable. */
 export interface RustDeps {
   detectBinary(): RustInstallStatus;
+  /** Tell the user their configured `rustBinaryPath` could not be used and which binary the
+   *  session fell back to. Optional so existing test stubs stay valid. */
+  warnConfiguredBinaryUnusable?(why: string, usingPath: string, usingVersion?: string): void;
   shouldDisableExtensions(cwd: string): boolean;
   /** VS Code's own workspace-trust verdict for this folder. rust-pi 0.3.0 gates
    *  project-local `.pi/settings.json` packages and `.pi/extensions/` behind trust and
@@ -240,7 +243,24 @@ export class RustService implements PiBackend {
 
     const status = this.deps.detectBinary();
     if (!status.installed || !status.binaryPath) {
-      return { success: false, error: status.error ?? "Rust Pi binary not found." };
+      // FAIL FAST AND NAME THE REASON. When `rustBinaryPath` points at something that cannot
+      // run, "binary not found" is not the useful half of the story — the linker's complaint is.
+      return {
+        success: false,
+        error: status.configuredPathError
+          ? `The Rust Pi binary configured in "pi-code-gui.rustBinaryPath" cannot be used: ${status.configuredPathError}. ` +
+            `No other Rust Pi binary was found. If this is a managed download, the release may need a newer ` +
+            `system library than this machine has (check \`ldd --version\` against the release's requirement); ` +
+            `install via the official installer, or point the setting at a working binary.`
+          : status.error ?? "Rust Pi binary not found.",
+      };
+    }
+    // The configured binary was unusable but ANOTHER one was found, so the session will run on a
+    // binary the user did not choose. That substitution is silent otherwise, and it is how an
+    // unrunnable managed download got reported as a successful install of an unrelated older
+    // binary. Say it once per session start; the session itself proceeds.
+    if (status.configuredPathError) {
+      this.deps.warnConfiguredBinaryUnusable?.(status.configuredPathError, status.binaryPath, status.version);
     }
 
     const cwd = this.deps.workspaceCwd();

@@ -10,9 +10,9 @@ import * as https from "node:https";
 import * as crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { piLog, piWarn } from "./logger.js";
+import { piLog, piWarn, revealLog } from "./logger.js";
 import { refreshRuntimeContext } from "./runtime-detection.js";
-import { detectRustBinary, invalidateRustBinaryCache } from "./rust-resolver.js";
+import { detectRustBinary, invalidateRustBinaryCache, firstLine } from "./rust-resolver.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import pinnedRust from "./rust-pi-version.json";
 
@@ -129,6 +129,43 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         const dest = path.join(binDir, asset.binName);
         fs.copyFileSync(extracted, dest);
         fs.chmodSync(dest, 0o755);
+
+        // Verify THE BINARY WE JUST WROTE before pointing the setting at it.
+        //
+        // This is not an edge case on Linux. Upstream builds on a bleeding-edge toolchain and the
+        // glibc floor moves between releases: v0.3.0 needs GLIBC_2.39, v0.5.1 needs 2.43
+        // (measured with objdump -T). 2.39 already excludes Ubuntu 22.04 LTS (2.35) and Debian 12
+        // (2.36); 2.43 excludes nearly every shipping distro. A user on one of those gets a
+        // binary that cannot exec, and before this check the failure surfaced two steps later as
+        // a 15-second RPC timeout naming get_state.
+        //
+        // This used to set rustBinaryPath first and then call detectRustBinary() to check it,
+        // which cannot work: detection walks every candidate and SKIPS one whose `--version`
+        // fails, so it answered "is any working binary findable?" — and happily found an
+        // unrelated older `pi` elsewhere on the box. Live consequence, measured: v0.5.1's Linux
+        // binaries need GLIBC_2.43 (v0.3.0 needed 2.39). On a glibc-2.41 host the download could
+        // not exec at all, yet the install reported "Rust Pi 0.3.0 installed" — the version of a
+        // DIFFERENT binary — left rustBinaryPath pointing at the unrunnable one, and the
+        // "may need a newer system library" warning never fired. Probe `dest` itself.
+        try {
+          await execFileP(dest, ["--version"], { timeout: 10_000 });
+        } catch (e: unknown) {
+          const why = e instanceof Error ? e.message : String(e);
+          piWarn(`Managed Rust install: ${dest} will not run: ${why}`);
+          try { fs.rmSync(dest, { force: true }); } catch { /* best effort */ }
+          const detail = firstLine(why);
+          const glibc = /GLIBC_([0-9.]+)/.exec(detail)?.[1];
+          void vscode.window.showWarningMessage(
+            `Rust Pi ${tag} downloaded but will not run on this machine: ${detail}` +
+            (glibc
+              ? ` This release needs glibc ${glibc} or newer; run \`ldd --version\` to see what you have. ` +
+                `A newer distribution, or building from source, are the only ways to run this release.`
+              : ""),
+            "Show Log",
+          ).then((pick) => { if (pick === "Show Log") { revealLog(); } });
+          piWarn(`Managed Rust install: removed ${dest}; it cannot exec on this host (${detail})`);
+          return false;
+        }
 
         await vscode.workspace.getConfiguration("pi-code-gui").update("rustBinaryPath", dest, vscode.ConfigurationTarget.Global);
         piLog(`Managed Rust install: placed binary at ${dest}`);

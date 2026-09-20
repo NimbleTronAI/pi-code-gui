@@ -23,6 +23,12 @@ export interface RustInstallStatus {
   binaryPath?: string;
   version?: string;
   error?: string;
+  /** Set when `pi-code-gui.rustBinaryPath` names a binary that exists but would NOT run, and
+   *  detection therefore fell through to a different one. Silent substitution is how an
+   *  unrunnable managed download (glibc floor too high) got reported as a successful install of
+   *  whatever older binary happened to be elsewhere on the box. Whoever surfaces status must say
+   *  this out loud. */
+  configuredPathError?: string;
 }
 
 /**
@@ -123,18 +129,27 @@ export function detectRustBinary(): RustInstallStatus {
 
 function detectRustBinaryUncached(): RustInstallStatus {
   const seen = new Set<string>();
+  const configured = vscode.workspace.getConfiguration("pi-code-gui").get<string>("rustBinaryPath")?.trim() || null;
+  let configuredPathError: string | undefined;
+  const noteIfConfigured = (cand: string, why: string): void => {
+    if (configured && cand === configured && !configuredPathError) { configuredPathError = why; }
+  };
   for (const cand of candidatePaths()) {
     let resolved: string;
     try {
       resolved = fs.realpathSync(cand);
     } catch {
+      noteIfConfigured(cand, "the file does not exist (or is a broken symlink)");
       continue; // missing / broken symlink
     }
     if (seen.has(resolved)) { continue; }
     seen.add(resolved);
 
     // Guard: the TS CLI's `pi` is a node script — reject anything non-native.
-    if (!isNativeExecutable(resolved)) { continue; }
+    if (!isNativeExecutable(resolved)) {
+      noteIfConfigured(cand, "it is not a native executable (a shebang script — probably the TypeScript `pi`)");
+      continue;
+    }
 
     try {
       const version = execFileSync(resolved, ["--version"], {
@@ -143,13 +158,23 @@ function detectRustBinaryUncached(): RustInstallStatus {
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
       piDebug(`detectRustBinary: found Rust pi at ${resolved} (${version})`);
-      return { installed: true, binaryPath: resolved, version };
+      return { installed: true, binaryPath: resolved, version, configuredPathError };
     } catch (e: unknown) {
-      piWarn(`detectRustBinary: ${resolved} failed --version: ${e instanceof Error ? e.message : String(e)}`);
+      const why = e instanceof Error ? e.message : String(e);
+      piWarn(`detectRustBinary: ${resolved} failed --version: ${why}`);
+      noteIfConfigured(cand, `it will not run: ${firstLine(why)}`);
       continue;
     }
   }
-  return { installed: false, error: "No Rust Pi binary found on PATH or common locations." };
+  return { installed: false, error: "No Rust Pi binary found on PATH or common locations.", configuredPathError };
+}
+
+/** The most useful single line of a child-process failure: the dynamic linker's complaint is on
+ *  its own line inside a multi-line "Command failed" blob, and it is the line that names glibc. */
+export function firstLine(msg: string): string {
+  const lines = msg.split("\n").map((l) => l.trim()).filter(Boolean);
+  const linker = lines.find((l) => /GLIBC_|not found|cannot execute|No such file or directory|Exec format/i.test(l));
+  return (linker ?? lines[0] ?? msg).slice(0, 300);
 }
 
 /**
