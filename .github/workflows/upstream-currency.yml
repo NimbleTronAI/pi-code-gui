@@ -1,0 +1,73 @@
+name: Upstream currency
+
+# Watch the projects this extension targets and open a GITHUB ISSUE when one releases.
+#
+# WHY THIS EXISTS: scripts/check-currency.mjs already detected all of this. It runs in ci.yml
+# and publish.yml, and it had been correctly reporting rust-pi v0.3.0 against v0.5.1 since
+# 12 September — into build logs, where nobody read it. We found out two minor versions later by
+# searching upstream's issue tracker for something else. Detection was never the gap; being TOLD
+# was. So this workflow exists purely to move that finding somewhere it cannot be missed.
+#
+# WHY NOT DEPENDABOT: it reads manifests, and neither thing we need watched is one.
+#   - pi_agent_rust is a GitHub RELEASE pinned in src/rust-pi-version.json. Dependabot has no
+#     ecosystem for GitHub releases. (Renovate does; that JSON's datasource/repo/tag fields were
+#     written for a Renovate customManager. This achieves the same thing without a second bot.)
+#   - @earendil-works/pi-coding-agent is installed GLOBALLY and is deliberately not a dependency
+#     of this package. Adding it to package.json just to make Dependabot see it would install a
+#     copy we never load, to track a number — a second store for one fact.
+#   - @earendil-works/pi-ai IS a devDependency and Dependabot could bump it, which is why
+#     .github/dependabot.yml ignores it BY NAME: the bump is incomplete without
+#     `pnpm run gen:model-registry`, and the repriced models want a human look.
+#
+# WHY AN ISSUE AND NOT A PR: see the header of scripts/report-currency-issue.mjs. Neither pin can
+# be moved mechanically, and a PR that looks mergeable but isn't is worse than no PR.
+
+on:
+  schedule:
+    # Mondays, 07:00 UTC — ahead of the Dependabot runs configured for the same day, so a week's
+    # upstream news lands together rather than trickling in.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# A scheduled run and a manual one must not both edit the issue.
+concurrency:
+  group: upstream-currency
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: corepack enable
+      # check-currency.mjs also runs the supply-chain scan over installed packages, so the
+      # dependencies have to be present. That is deliberate: a CRITICAL finding is worth an
+      # issue on exactly the same footing as a stale pin.
+      - run: pnpm install --frozen-lockfile
+
+      # `|| true`: a non-zero exit here means drift or a finding, which is the normal case this
+      # workflow exists to report — not a reason to fail before reporting it. The reporter reads
+      # the JSON, and a genuinely broken check produces no JSON and fails the next step.
+      - name: Check upstream currency
+        run: node scripts/check-currency.mjs --json > currency.json || true
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/report-currency-issue.mjs currency.json
+
+      # Keep the raw report for 90 days: when a pin is finally bumped it is useful to see when
+      # upstream actually shipped it, and the issue body only ever holds the latest check.
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: currency-report
+          path: currency.json
+          retention-days: 90

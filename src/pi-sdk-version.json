@@ -1,0 +1,6 @@
+{
+  "_comment": "External dependency: the @earendil-works/pi-coding-agent release the TypeScript runtime is tested against. Unlike rust-pi-version.json this pins NOTHING at runtime — the SDK backend loads whatever the user has installed globally (see src/sdk-service.ts), and the devcontainer takes @latest. Its only job is to give scripts/check-currency.mjs something to compare npm's latest against, because on a CI runner no global install exists and drift here was therefore invisible. Bump `testedAgainst` when you have actually run the TypeScript side against that version.",
+  "datasource": "npm",
+  "package": "@earendil-works/pi-coding-agent",
+  "testedAgainst": "0.86.1"
+}
