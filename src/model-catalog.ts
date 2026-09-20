@@ -212,11 +212,12 @@ export function findCatalogThinkingModel(
  * weekdays; weekends always off-peak). A single scalar cannot be right at both ends of that, and
  * the catalog has no field for it. Two independent facts make this worse than a rounding error:
  *
- *   - pi-ai 0.84.3 (latest at the time of writing) still ships the PRE-August-16 rates, so the
- *     figures are stale AND unexpressible. Measured against DeepSeek's published page,
- *     deepseek-v4-pro output is listed at $0.87 against a real $1.98 off-peak / $3.96 peak —
- *     understating by 2.3x to 4.6x. Bumping pi-ai does not fix it; 0.84.1 and 0.84.3 are byte-
- *     identical here.
+ *   - The single figure the catalog can carry is wrong half the time whichever end it picks, and
+ *     which end it picks has already moved under us. Through 0.85.1 it shipped the pre-August-16
+ *     rates: deepseek-v4-pro output at $0.87 against a real $1.98 off-peak / $3.96 peak,
+ *     understating by 2.3x to 4.6x. pi-ai 0.86.1 moved it to $3.96 — now exact at peak and 2x
+ *     OVER off-peak, i.e. no longer stale and still not right. Bumping pi-ai cannot fix this;
+ *     only a catalog field for the clock could.
  *   - The provider does not report cost. Verified against api.deepseek.com: the usage object
  *     carries token counts only (prompt_tokens, completion_tokens, prompt_cache_hit_tokens,
  *     prompt_cache_miss_tokens) with no cost field and no billing headers, so there is nothing
@@ -230,9 +231,18 @@ export function findCatalogThinkingModel(
  * Deliberately keyed to the NATIVE `deepseek` provider. The same models reached through a
  * gateway (openrouter, vercel-ai-gateway, opencode) are billed and priced by that gateway under
  * its own provider id and its own rates, which are not affected by DeepSeek's clock.
+ *
+ * Keyed to the provider ALONE, deliberately: the clock is a property of DeepSeek's billing, not
+ * of any one model id. This used to also match `/^deepseek-v4/`, and pi-ai 0.86.1 renamed
+ * `deepseek-v4-flash` to `deepseek-flash` — which silently dropped it out of the match and put a
+ * confidently wrong number back on screen. A model-name pattern cannot survive upstream renames,
+ * and the failure is invisible when it happens, so there is nothing to pattern-match on. If
+ * DeepSeek ever ships a flat-rate model we will over-withhold on it; that error is visible and
+ * harmless, which the other direction is not.
  */
 export function catalogRatesAreUnexpressible(provider: string | undefined, modelId: string | undefined): boolean {
-  return provider === "deepseek" && /^deepseek-v4/.test(modelId ?? "");
+  void modelId;   // intentionally unused — see above
+  return provider === "deepseek";
 }
 
 /** Why a cost is being withheld, for the status chip's tooltip. Null when it is not. */

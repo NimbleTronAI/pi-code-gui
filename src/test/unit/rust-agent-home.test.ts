@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-import { mergeModelsJson, checkAuthAvailable, defaultRustAgentDir, credentialedProviders, readApprovalMode, writeApprovalMode, MANAGED_BY } from "../../rust-models.js";
+import { mergeModelsJson, checkAuthAvailable, defaultRustAgentDir, credentialedProviders, readApprovalMode, writeApprovalMode, apisUnsupportedByRust, MANAGED_BY } from "../../rust-models.js";
+import registry from "../../model-registry.generated.json";
 
 function tmpFile(contents?: string): string {
   const dir = mkdtempSync(join(tmpdir(), "models-merge-"));
@@ -19,6 +20,15 @@ function tmpFile(contents?: string): string {
 }
 function read(file: string): any { return JSON.parse(readFileSync(file, "utf-8")); }
 function modelsOf(doc: any, prov: string): any[] { return doc.providers?.[prov]?.models ?? []; }
+
+/** A model id the bundled catalog actually carries for `prov`, rather than a literal.
+ *  Hardcoding one couples the test to upstream naming: pi-ai 0.86.1 renamed
+ *  `deepseek-v4-flash` to `deepseek-flash` and broke two of these tests for no real reason. */
+function anyBundledId(prov: string): string {
+  const models = (registry.providers as Record<string, { models: Array<{ id: string }> }>)[prov]?.models ?? [];
+  assert.ok(models.length > 0, `the bundled catalog must carry ${prov}`);
+  return models[0].id;
+}
 
 test("mergeModelsJson: writes managed entries, each stamped with name and version", () => {
   const file = tmpFile();
@@ -42,12 +52,13 @@ test("mergeModelsJson: a user's own provider survives untouched", () => {
 
 test("mergeModelsJson: a hand-written entry for a model we manage WINS", () => {
   // The promise: no marker means it is theirs, even where the id collides with ours.
+  const id = anyBundledId("deepseek");
   const file = tmpFile(JSON.stringify({ providers: { deepseek: { baseUrl: "https://my-proxy.invalid/v1",
-    api: "openai-completions", models: [{ id: "deepseek-v4-flash", name: "MINE", contextWindow: 4096 }] } } }));
+    api: "openai-completions", models: [{ id, name: "MINE", contextWindow: 4096 }] } } }));
   const before = read(file);
   const r = mergeModelsJson(file, 0);
   const after = read(file);
-  const flash = modelsOf(after, "deepseek").find((m) => m.id === "deepseek-v4-flash");
+  const flash = modelsOf(after, "deepseek").find((m) => m.id === id);
   assert.equal(flash.name, "MINE", "not overwritten");
   assert.equal(flash.contextWindow, 4096, "their value kept");
   assert.equal(flash._managedBy, undefined, "and it stays unmanaged");
@@ -56,15 +67,16 @@ test("mergeModelsJson: a hand-written entry for a model we manage WINS", () => {
 });
 
 test("mergeModelsJson: OUR entry is refreshed in place on the next run", () => {
+  const id = anyBundledId("deepseek");
   const file = tmpFile();
   mergeModelsJson(file, 0);
   const doc = read(file);
-  const flash = modelsOf(doc, "deepseek").find((m) => m.id === "deepseek-v4-flash");
+  const flash = modelsOf(doc, "deepseek").find((m) => m.id === id);
   flash.contextWindow = 1; flash._managedBy = "pi-code-gui@0.0.1";   // stale, from an older release
   writeFileSync(file, JSON.stringify(doc, null, 2));
 
   mergeModelsJson(file, 0);
-  const after = modelsOf(read(file), "deepseek").find((m) => m.id === "deepseek-v4-flash");
+  const after = modelsOf(read(file), "deepseek").find((m) => m.id === id);
   assert.notEqual(after.contextWindow, 1, "refreshed");
   assert.equal(after._managedBy, MANAGED_BY, "re-stamped with the current version");
 });
@@ -265,4 +277,41 @@ test("nothing is written unless the user picks a posture", () => {
   if (wanted) { writeApprovalMode(dir, wanted); }   // mirrors the guard at the spawn site
   assert.equal(readFileSync(join(dir, "settings.json"), "utf8"), before, "untouched");
   assert.equal(readApprovalMode(dir), "yolo", "the CLI's choice stands");
+});
+
+// ── protocols the pinned binary cannot act on ───────────────────────
+test("mergeModelsJson: a provider whose api the binary has no protocol for is withheld", () => {
+  // An unknown `api` is not a row the binary skips — it is a file it may reject whole, dropping
+  // every managed entry for every provider with no error anywhere. pi-ai 0.86.1 added
+  // `pi-messages` (radius), which postdates the rust-pi 0.3.0 that 0.2.x pins.
+  const file = tmpFile();
+  const r = mergeModelsJson(file, 0);
+  const after = read(file);
+  for (const { provider, api } of apisUnsupportedByRust()) {
+    assert.equal(after.providers?.[provider], undefined, `${provider} (${api}) must not be described`);
+    assert.ok(r.skippedApis.some((s) => s.includes(provider)), `${provider} must be reported as withheld`);
+  }
+  // Withholding is narrow: the providers we CAN describe are still all there.
+  assert.ok(modelsOf(after, "deepseek").length > 0, "supported providers unaffected");
+});
+
+test("every api the bundled catalog carries is either supported or reported", () => {
+  // The guard must never widen silently. Whatever a pi-ai bump introduces, it is listed as
+  // supported on purpose or it shows up here — there is no third, quiet outcome.
+  const withheld = new Set(apisUnsupportedByRust().map((x) => x.provider));
+  const apis = new Set<string>();
+  for (const [provId, prov] of Object.entries(registry.providers as Record<string, { api: string }>)) {
+    if (!withheld.has(provId)) { apis.add(prov.api); }
+  }
+  // Fails loudly if a NEW api slips into the supported set without a decision being recorded.
+  assert.deepEqual([...apis].sort(), [
+    "anthropic-messages", "google-generative-ai", "mistral-conversations",
+    "openai-completions", "openai-responses",
+  ], "an unrecognised api reached the Rust catalog — see RUST_SUPPORTED_APIS");
+});
+
+test("the withheld set is exactly what pi-ai 0.86.1 introduced", () => {
+  // Documents the current state rather than asserting emptiness: when the pinned rust-pi learns
+  // `pi-messages`, this test is the reminder to move radius across.
+  assert.deepEqual(apisUnsupportedByRust(), [{ provider: "radius", api: "pi-messages" }]);
 });

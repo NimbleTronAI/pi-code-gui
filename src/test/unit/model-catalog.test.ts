@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, catalogRatesAreUnexpressible, costWithheldReason } from "../../model-catalog.js";
+import registry from "../../model-registry.generated.json";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -274,7 +275,7 @@ test("findCatalogThinkingModel: returns null for an unknown provider or model", 
 
 
 // ── unexpressible catalog rates ─────────────────────────────────────
-test("native DeepSeek V4 rates are treated as unexpressible; gateways are not", () => {
+test("native DeepSeek rates are treated as unexpressible; gateways are not", () => {
   assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-pro"), true);
   assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-flash"), true);
   assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-flash-vision-exp"), true);
@@ -282,9 +283,21 @@ test("native DeepSeek V4 rates are treated as unexpressible; gateways are not", 
   // which the catalog CAN express — suppressing those would hide costs we actually know.
   assert.equal(catalogRatesAreUnexpressible("openrouter", "deepseek-v4-pro"), false);
   assert.equal(catalogRatesAreUnexpressible("vercel-ai-gateway", "deepseek-v4-pro"), false);
-  // Older flat-priced DeepSeek models are unaffected.
-  assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-chat"), false);
   assert.equal(catalogRatesAreUnexpressible(undefined, undefined), false);
+});
+
+test("no DeepSeek model id escapes the rule, whatever upstream renames it to", () => {
+  // The rule keys on the provider alone BECAUSE it once keyed on /^deepseek-v4/: pi-ai 0.86.1
+  // renamed deepseek-v4-flash to deepseek-flash, which fell out of that pattern and put a
+  // confidently wrong number back on screen with nothing to notice it by. Every id the native
+  // provider carries must be covered, and so must any id it is renamed to next.
+  for (const id of ["deepseek-flash", "deepseek-chat", "deepseek-reasoner", "deepseek-v5", "anything"]) {
+    assert.equal(catalogRatesAreUnexpressible("deepseek", id), true, `${id} must be withheld`);
+  }
+  // Pin it against the catalog we actually ship, so a future rename cannot quietly re-open a gap.
+  for (const m of (registry.providers as Record<string, { models: Array<{ id: string }> }>)["deepseek"].models) {
+    assert.equal(catalogRatesAreUnexpressible("deepseek", m.id), true, `bundled ${m.id} must be withheld`);
+  }
 });
 
 test("the withheld reason is present exactly when the rates are withheld", () => {

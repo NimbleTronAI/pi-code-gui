@@ -1,5 +1,15 @@
 # Change Log
 
+## [0.2.4]
+
+### Changed
+- **Refreshed the bundled model catalog from pi-ai 0.86.1** (was 0.85.1; model data 20 Sep). Two new providers (**Meta** — the `muse-spark` family; **Radius**, Pi's own gateway), 102 models added, 50 withdrawn, and **67 repriced**, several sharply: `openrouter/moonshotai/kimi-k3` input fell 3.00 → 1.70 and `openrouter/z-ai/glm-5.3` 1.40 → 0.90, while `opencode/gpt-5.6-sol` doubled to 4.00/20.00 and `openrouter/openai/gpt-oss-120b` went 0.037 → 0.15 (+305%). Moonshot's `kimi-k2*` line and Z.ai's `glm-4.7`/`glm-5.x` coding models are withdrawn; withdrawn models show `$??` rather than a stale figure, as before.
+
+### Fixed
+- **Native DeepSeek costs are withheld again after an upstream rename silently un-withheld them.** DeepSeek bills on a clock (peak is 2× off-peak) and reports no cost, so the extension shows `$??` rather than a number it knows to be wrong. That rule matched model ids beginning `deepseek-v4`, and pi-ai 0.86.1 renamed `deepseek-v4-flash` to `deepseek-flash` — which fell out of the pattern and put a confident, wrong figure back on the status chip with nothing to notice it by. The rule now keys on the **provider** alone, because the clock is a property of DeepSeek's billing rather than of any model name, and a name pattern cannot survive a rename it isn't told about. Gateways that resell DeepSeek at their own flat rates are unaffected and still show real costs. Separately, 0.86.1 moved the listed `deepseek-v4-pro` output rate 0.87 → 3.96: no longer stale, now exactly right at peak and 2× over off-peak — still a number the catalog cannot express, which is the point.
+- **A provider whose protocol Rust Pi doesn't implement is no longer described to it.** `models.json` is deserialized by the binary and its `api` field selects a protocol, so an unknown value risks the binary rejecting the *whole file* — losing every managed entry for every provider, silently, with the picker quietly falling back to built-ins. pi-ai 0.86.1's Radius provider uses `pi-messages`, which postdates the Rust Pi 0.3.0 this release pins, so it is left to the binary's native handling alongside Bedrock, Vertex and Copilot, and the output channel names what was withheld. This is a Rust-runtime restriction only: Radius still resolves pricing, context windows and thinking levels normally under the TypeScript runtime.
+- **A release the catalog gate refuses can now be retried.** 0.2.3 added a check that refuses to *tag* a stale catalog, so a version is never stranded the way 0.2.2 was — but the release condition also required the version to differ from the previous commit. So when the gate refused 0.2.4 and the catalog was refreshed one commit later, the version matched its predecessor and the tag was never re-attempted: the gate had consumed the version it declined to ship. The condition now keys on the absence of the tag alone, which makes any refusal retryable — fix what the gate objected to, merge, and the same version is tagged.
+
 ## [0.2.3]
 
 ### Changed
