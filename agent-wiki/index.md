@@ -11,6 +11,8 @@ reference; follow the links for depth.
 - [Verify, Don't Assume](discipline/verify-dont-assume.md) — Verification patterns, error handling conventions, failure modes
 - [Research, Don't Guess](discipline/research-dont-guess.md) — Research patterns, uncertainty labeling, when to stop
 - [Wiki Maintenance](discipline/wiki-maintenance.md) — Karpathy LLM Wiki pattern: ingest, update, lint; page conventions; log.md format
+- [Agent Coordination](discipline/agent-coordination.md) — the coordinator/member protocol: briefs, contracts notes, worktrees, review-in-the-loop, token discipline, landing
+- [Documentation Discipline](discipline/documentation-discipline.md) — CHANGELOG is user-facing only; why entries regrow and how to cut them back
 
 ## Architecture
 

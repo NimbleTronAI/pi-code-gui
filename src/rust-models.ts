@@ -264,8 +264,8 @@ function managedEntry(m: RegistryModel, contextBudget: number): { entry: any; om
  * `session_info` key we appended made older builds reject an entire session file.
  *
  * pi-ai 0.86.1 introduced `pi-messages` (the `radius` provider, Pi's own gateway) — a protocol
- * that postdates rust-pi 0.3.0, which 0.2.x pins — and every later release too: nothing in 0.5.x
- * mentions it, and upstream's own pi-ai vendoring is still 0.85.1, which predates radius.
+ * that postdates every rust-pi release including v0.5.1, which 0.2.x pins: nothing in the 0.5.x
+ * notes mentions it, and upstream's own pi-ai vendoring is still 0.85.1, which predates radius.
  * Rather than find out the hard way, describe
  * only what the binary can act on and leave the rest to its native handling, which is what
  * already happens for Bedrock, Vertex and Copilot.
@@ -292,7 +292,7 @@ export function apisUnsupportedByRust(): Array<{ provider: string; api: string }
     .map(([provider, prov]) => ({ provider, api: prov.api }));
 }
 
-export function mergeModelsJson(file: string, contextBudget: number, only?: Set<string>): { written: number; omitted: number; userOwned: number; skippedApis: string[] } {
+export function mergeModelsJson(file: string, contextBudget: number, only?: Set<string>): { written: number; omitted: number; userOwned: number; retired: number; skippedApis: string[] } {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let doc: any = { providers: {} };
   try {
@@ -301,7 +301,7 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
   } catch { /* absent or unparseable — start fresh rather than fail the session */ }
   if (!doc.providers || typeof doc.providers !== "object") { doc.providers = {}; }
 
-  let written = 0, omitted = 0, userOwned = 0;
+  let written = 0, omitted = 0, userOwned = 0, retired = 0;
   const skippedApis: string[] = [];
   for (const [provId, prov] of Object.entries(registry.providers)) {
     // Only describe providers the user can authenticate to — see credentialedProviders.
@@ -319,6 +319,26 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
     if (!target.baseUrl) { target.baseUrl = prov.baseUrl; }
     if (!target.api) { target.api = prov.api; }
 
+    // RETIRE MODELS WE USED TO MANAGE AND NO LONGER DO.
+    //
+    // Refreshing only what is currently bundled leaves withdrawn models behind forever, because
+    // nothing ever deletes them. Measured after the pi-ai 0.86.1 bump: DeepSeek withdrew
+    // `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`, and both stayed in the user's
+    // models.json stamped `pi-code-gui@0.2.1` — so the picker still offered them, a session
+    // resumed onto one, and their frozen prices were two releases out of date. A model the
+    // catalog has dropped is not a model the user can run.
+    //
+    // Only OUR entries go: an entry without the marker is the user's and is untouchable, which is
+    // the same promise the refresh path makes. Scoped to providers we are describing on this pass,
+    // so a provider skipped for want of a credential or an unsupported api keeps whatever it has.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bundledIds = new Set(prov.models.map((m: any) => m.id));
+    const before = target.models.length;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    target.models = target.models.filter((m: any) =>
+      !(m && typeof m.id === "string" && m[MANAGED_KEY] !== undefined && !bundledIds.has(m.id)));
+    retired += before - target.models.length;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const byId = new Map<string, any>(target.models.filter((m: any) => m && typeof m.id === "string").map((m: any) => [m.id, m]));
     for (const m of prov.models) {
@@ -334,11 +354,11 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
   const payload = JSON.stringify(doc, null, 2) + "\n";
   // Skip the write when nothing changed — this runs on EVERY Rust session init, and the content
   // only moves on an extension update or a contextBudget change.
-  try { if (fs.readFileSync(file, "utf-8") === payload) { return { written, omitted, userOwned, skippedApis }; } }
+  try { if (fs.readFileSync(file, "utf-8") === payload) { return { written, omitted, userOwned, retired, skippedApis }; } }
   catch { /* absent/unreadable → write below */ }
   try { fs.writeFileSync(file, payload); }
   catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. The Rust model catalog won't be available.`); }
-  return { written, omitted, userOwned, skippedApis };
+  return { written, omitted, userOwned, retired, skippedApis };
 }
 
 /**
@@ -382,7 +402,7 @@ export function setupRustModels(): { piEnv: Record<string, string>; warnings: st
   const merged = mergeModelsJson(path.join(dir, "models.json"), budget, scope);
   const w = checkAuthAvailable(dir);
   if (w) { warnings.push(w); }
-  piDebug(`Rust model catalog: merged ${merged.written} managed entries for ${scope.size} credentialed provider(s) [${[...scope].join(", ") || "none"}] into ${dir}/models.json (budget=${budget}, ${merged.omitted} placeholder maxTokens omitted, ${merged.userOwned} left to the user)`);
+  piDebug(`Rust model catalog: merged ${merged.written} managed entries for ${scope.size} credentialed provider(s) [${[...scope].join(", ") || "none"}] into ${dir}/models.json (budget=${budget}, ${merged.omitted} placeholder maxTokens omitted, ${merged.userOwned} left to the user, ${merged.retired} withdrawn model(s) retired)`);
   // Name what was withheld, so an outgrown RUST_SUPPORTED_APIS list is discoverable.
   if (merged.skippedApis.length) {
     piDebug(`Rust model catalog: withheld ${merged.skippedApis.length} credentialed provider(s) the pinned binary has no protocol for [${merged.skippedApis.join(", ")}] — they stay on its native handling. See RUST_SUPPORTED_APIS in rust-models.ts.`);

@@ -40,6 +40,51 @@ test("mergeModelsJson: writes managed entries, each stamped with name and versio
   assert.match(MANAGED_BY, /^pi-code-gui@\d+\.\d+\.\d+/, "name@version");
 });
 
+test("mergeModelsJson: retires a managed model the catalog has withdrawn", () => {
+  // Real case: pi-ai 0.86.1 withdrew `deepseek-v4-flash`, and it stayed in the user's models.json
+  // stamped by an older extension version — still offered by the picker, still carrying prices
+  // frozen two releases back, for a model DeepSeek had removed.
+  const file = tmpFile();
+  writeFileSync(file, JSON.stringify({ providers: { deepseek: { baseUrl: "https://api.deepseek.com",
+    api: "openai-completions", models: [
+      { id: "withdrawn-model", name: "Gone Upstream", contextWindow: 1, _managedBy: "pi-code-gui@0.2.1" },
+    ] } } }));
+  const r = mergeModelsJson(file, 0);
+  const ids = modelsOf(read(file), "deepseek").map((m) => m.id);
+  assert.ok(!ids.includes("withdrawn-model"), "a managed entry absent from the bundle is removed");
+  assert.equal(r.retired, 1, "and it is counted, so the debug log can say so");
+  assert.ok(ids.includes(anyBundledId("deepseek")), "current models are still written");
+});
+
+test("mergeModelsJson: retiring NEVER touches an entry the user owns", () => {
+  // The marker is the whole contract: no marker means hands off, even for an id the catalog
+  // does not carry. Deleting a hand-written entry would be the worst possible outcome here.
+  const file = tmpFile();
+  writeFileSync(file, JSON.stringify({ providers: { deepseek: { baseUrl: "https://api.deepseek.com",
+    api: "openai-completions", models: [
+      { id: "my-hand-written", name: "Mine", contextWindow: 4096 },
+      { id: "stale-managed", name: "Ours", contextWindow: 1, _managedBy: "pi-code-gui@0.1.0" },
+    ] } } }));
+  const r = mergeModelsJson(file, 0);
+  const ids = modelsOf(read(file), "deepseek").map((m) => m.id);
+  assert.ok(ids.includes("my-hand-written"), "an unmarked entry survives even when unbundled");
+  assert.ok(!ids.includes("stale-managed"), "a marked one does not");
+  assert.equal(r.retired, 1);
+});
+
+test("mergeModelsJson: a provider skipped this pass keeps its entries", () => {
+  // Scoping matters: out-of-scope providers (no credential, or an api the binary cannot speak)
+  // are not being described, so retiring inside them would delete entries we are not replacing.
+  const file = tmpFile();
+  writeFileSync(file, JSON.stringify({ providers: { openai: { baseUrl: "https://api.openai.com/v1",
+    api: "openai-responses", models: [
+      { id: "some-old-openai-model", name: "Old", contextWindow: 1, _managedBy: "pi-code-gui@0.2.1" },
+    ] } } }));
+  mergeModelsJson(file, 0, new Set(["deepseek"]));   // openai deliberately out of scope
+  const ids = modelsOf(read(file), "openai").map((m) => m.id);
+  assert.deepEqual(ids, ["some-old-openai-model"], "untouched when the provider is not described");
+});
+
 test("mergeModelsJson: a user's own provider survives untouched", () => {
   const mine = { providers: { myprivate: { baseUrl: "https://example.invalid/v1", api: "openai-completions",
     models: [{ id: "my-local-model", name: "My Local Model", contextWindow: 8192 }] } } };

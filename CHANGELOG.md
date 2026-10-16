@@ -3,15 +3,13 @@
 ## [0.2.4]
 
 ### Changed
-- **Rust Pi is now pinned to v0.5.1** (was v0.3.0). It's the first upstream release since 0.3.0 — v0.4.0 was tagged but never published — and it fixes a startup failure this extension kept running into, where one expired OAuth credential aborted startup for *every* provider. An existing binary keeps working and is not replaced; you'll get a one-time notice that it differs from the tested version. **Linux note:** the v0.5.1 binaries need glibc 2.43, which is newer than Debian 13 or Ubuntu 24.04 — on those hosts keep your existing 0.3.0 binary rather than letting the managed install replace it.
-- **Model catalog refreshed to pi-ai 0.86.1** — now 1,128 models. Two new providers: **Meta** (`muse-spark`) and **Radius**, Pi's own gateway. 67 models repriced, and Moonshot's `kimi-k2*` line and Z.ai's `glm-4.7`/`glm-5.x` coding models are withdrawn.
-- **Radius is not offered on the Rust runtime.** It speaks a protocol no Rust Pi release implements yet, so it's left out rather than risking your `models.json`. It works normally on the TypeScript runtime.
-- **The fallback model list is current again** — Claude Opus 5, Sonnet 5, Haiku 4.5, GPT-5.5, Gemini 3.5 Flash and DeepSeek V4 Pro. It had still been offering GPT-4o and a DeepSeek model that no longer exists. (This list only appears when no model catalog is available.)
+- **Rust Pi is now pinned to v0.5.1** (was v0.3.0). **Linux:** this release needs glibc 2.43, which is newer than most distributions ship — if yours is older the extension keeps your existing binary and tells you why, rather than installing one that can't run.
+- **Model catalog refreshed to pi-ai 0.86.1** — 1,128 models, two new providers (Meta, Radius), 67 repriced, and Moonshot's `kimi-k2*` and Z.ai's `glm-4.7`/`glm-5.x` withdrawn. Radius is offered on the TypeScript runtime only; no Rust Pi release speaks its protocol yet.
 
 ### Fixed
-- **A Rust session that won't start now tells you why.** Three unrelated faults all reported the same thing — `RPC 'get_state' timed out after 15000ms` — while the actual reason sat unread in the binary's own output. The error now carries it, so you see `GLIBC_2.43 not found` or `Unsupported module specifier: node:async_hooks` instead of a bare timeout.
-- **A managed Rust Pi download that can't run on your machine is no longer installed.** The install checked whether *any* Rust Pi worked rather than the one it just downloaded, so on Linux hosts whose system libraries are older than the release needs it reported success, named a different binary's version, and left the unusable one configured. It now tests the downloaded binary, removes it if it won't run, tells you which glibc the release needs, and leaves your existing setup alone. If a configured binary can't run and a different one is used instead, you're told rather than left guessing.
-- **Native DeepSeek costs show `$??` again.** DeepSeek bills by time of day, which the price catalog can't express, so the extension withholds the number rather than state a wrong one — but an upstream rename (`deepseek-v4-flash` → `deepseek-flash`) slipped past that rule and a wrong figure was shown instead. Gateways that resell DeepSeek at flat rates still show real costs.
+- **A Rust session that won't start now tells you why**, instead of only `RPC 'get_state' timed out after 15000ms`.
+- **Withdrawn models no longer linger in your `models.json`.** Models dropped upstream stayed in the picker with stale prices; they're now removed. Anything you added by hand is left alone.
+- **Native DeepSeek costs show `$??` again.** An upstream rename let a wrong figure through, where the extension should withhold one — DeepSeek's time-of-day billing can't be expressed as a single rate. Gateways reselling DeepSeek at flat rates still show real costs.
 
 ## [0.2.3]
 

@@ -61,20 +61,37 @@ fi
 # The extension resolves rust-pi at ~/.local/bin/rust-pi, which lives on the
 # container layer and is WIPED on every rebuild — so it is installed here.
 #
-# This block used to restore a locally-built 87b70f74 (0.1.20) from the persistent
-# ~/.pi volume, from before upstream shipped those fixes. It now installs the
-# version the extension is actually pinned to (src/rust-pi-version.json), because
-# 0.2.0 targets the rust-pi 0.3.0 RPC contract and does not support older binaries.
-# Restoring 0.1.20 on every container start silently reverted the pin and made
-# 0.3.0-only behaviour untestable — including a probe run that reported a command
-# surface belonging to the wrong binary.
+# TWO SOURCES, in this order:
+#   1. A locally BUILT binary cached at ~/.pi/rust-pi-build/pi-<version>. That path is an
+#      external docker volume, so it survives rebuilds. Built by .devcontainer/build-rust-pi.sh.
+#   2. The released asset for the pinned tag, checksum-verified.
+#
+# The cache comes first because of glibc. Upstream's Linux binaries are built on a nightly
+# toolchain and their glibc floor climbs between releases — v0.3.0 needs GLIBC_2.39, v0.5.1 needs
+# 2.43 — while this container is Debian 13 with 2.41 and apt sources pinned to a snapshot. So the
+# released v0.5.1 asset downloads fine and then cannot exec at all. A binary compiled in this
+# container links against its own glibc and just works.
+#
+# AND NOTHING IS INSTALLED WITHOUT BEING RUN FIRST. This block used to `install` whatever it
+# extracted and then print the version, so an asset that could not exec REPLACED a working binary
+# and left the container with a broken rust-pi — the extension then failed sessions with
+# "RPC 'get_state' timed out after 15000ms", naming nothing. Every candidate is now probed with
+# --version before it is allowed to overwrite what works.
 PIN_TAG="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /workspaces/pi-vscode-gui/src/rust-pi-version.json 2>/dev/null)"
 if [ -n "$PIN_TAG" ]; then
     echo "==> rust-pi (pinned $PIN_TAG)"
     WANT="${PIN_TAG#v}"
-    HAVE="$(/home/node/.local/bin/rust-pi --version 2>/dev/null | sed -n 's/^pi \([0-9.]*\).*/\1/p')"
-    if [ "$HAVE" = "$WANT" ]; then
-        echo "    already on $HAVE"
+    TARGET=/home/node/.local/bin/rust-pi
+    CACHED="/home/node/.pi/rust-pi-build/pi-$WANT"
+
+    rust_pi_version() { "$1" --version 2>/dev/null | sed -n 's/^pi \([0-9.]*\).*/\1/p'; }
+
+    if [ "$(rust_pi_version "$TARGET")" = "$WANT" ]; then
+        echo "    already on $WANT"
+    elif [ -x "$CACHED" ] && [ "$(rust_pi_version "$CACHED")" = "$WANT" ]; then
+        mkdir -p /home/node/.local/bin
+        install -m 0755 "$CACHED" "$TARGET"
+        echo "    restored locally built $WANT from ~/.pi cache"
     else
         case "$(uname -m)" in
             aarch64|arm64) ASSET="pi-linux-arm64.tar.xz" ;;
@@ -82,18 +99,25 @@ if [ -n "$PIN_TAG" ]; then
         esac
         BASE="https://github.com/Dicklesworthstone/pi_agent_rust/releases/download/$PIN_TAG"
         TMP="$(mktemp -d)"
-        # Checksum-verified, like the extension's own managed install. A failure here
-        # leaves whatever was already installed rather than breaking container start.
+        # Checksum-verified, like the extension's own managed install. Any failure here leaves
+        # whatever was already installed rather than breaking container start.
         if curl -fsSL -o "$TMP/$ASSET" "$BASE/$ASSET" && curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"; then
             if (cd "$TMP" && grep " $ASSET\$" SHA256SUMS | sha256sum -c - >/dev/null 2>&1); then
-                mkdir -p /home/node/.local/bin
                 tar -xJf "$TMP/$ASSET" -C "$TMP"
                 BIN="$(find "$TMP" -type f -name pi -perm -u+x | head -1)"
-                if [ -n "$BIN" ]; then
-                    install -m 0755 "$BIN" /home/node/.local/bin/rust-pi
-                    echo "    installed $(/home/node/.local/bin/rust-pi --version 2>/dev/null | head -1)"
-                else
+                if [ -z "$BIN" ]; then
                     echo "    WARNING: no pi binary in $ASSET — left existing install alone"
+                elif WHY="$("$BIN" --version 2>&1 >/dev/null)"; [ "$(rust_pi_version "$BIN")" != "$WANT" ]; then
+                    # Downloaded and verified, but will not run here. Say why, and say what to do.
+                    echo "    WARNING: the released $PIN_TAG binary will not run in this container:"
+                    echo "             ${WHY:-unknown error}"
+                    echo "             Keeping $(rust_pi_version "$TARGET" || echo none). To get $WANT, build it locally:"
+                    echo "               bash .devcontainer/build-rust-pi.sh"
+                    echo "             (caches to ~/.pi, which survives rebuilds)"
+                else
+                    mkdir -p /home/node/.local/bin
+                    install -m 0755 "$BIN" "$TARGET"
+                    echo "    installed $("$TARGET" --version 2>/dev/null | head -1)"
                 fi
             else
                 echo "    WARNING: checksum mismatch for $ASSET — left existing install alone"

@@ -28,7 +28,7 @@ const DRAIN_GRACE_MS = 250;
 
 /** RPC command names PiService sends to the Rust subprocess. Centralized so a
  *  typo is a compile error rather than a silent timeout, and so call sites are
- *  greppable/refactorable. All 20 values verified present on the pinned rust-pi 0.3.0 by
+ *  greppable/refactorable. All 20 values verified present on rust-pi 0.3.0 by
  *  probing the wire; `clear_queue` is correctly absent — the queue is the extension's own
  *  synthetic one, so `clearQueue` being local-only is by design, not a missed call. */
 export const RUST_RPC = {
@@ -170,7 +170,16 @@ export class RustProcess {
             // stderrHint(); this path did not, which is why diagnosing it took an afternoon.
             const base = e instanceof Error ? e : new Error(String(e));
             this.afterStderrDrained(child, () => {
-              settleReject(new Error(`${base.message}${this.stderrHint()}`));
+              // When stderr IS empty the timeout is all the user gets, and "it said nothing" is
+              // itself the diagnosis — the binary started, stayed alive and never answered. In
+              // that case name the exact command, because the cause is then in the ARGUMENTS
+              // (a session pool being indexed, a flag this build treats differently), and
+              // reproducing it by hand is the only way forward. Measured: a silent 15s hang
+              // whose args could not be recovered from the log at default log level.
+              const hint = this.stderrHint();
+              settleReject(new Error(hint
+                ? `${base.message}${hint}`
+                : `${base.message} — the binary produced no output. Command: ${binaryPath} ${args.join(" ")}`));
             });
           });
       } else {

@@ -277,7 +277,8 @@ export class RustService implements PiBackend {
     // its file; overriding with the setting would silently switch its model on
     // reopen (e.g. a deepseek-v4-pro session reopening as deepseek-chat).
     const restoring = !!openPath || !fresh;
-    // No clamp: 0.2.0 requires rust-pi 0.3.0, which accepts every level including `max`
+    // No clamp: 0.2.x requires the pinned rust-pi (src/rust-pi-version.json, v0.3.0 or newer),
+    // which accepts every level including `max`
     // (probed: `--thinking max` starts cleanly and RPC comes up). The version-gated clamp that
     // used to live here guarded pre-#139 builds that rejected `max` during argument parsing and
     // exited 2 before any RPC existed; it was removed with the rest of the back-compat.
@@ -559,13 +560,41 @@ export class RustService implements PiBackend {
     // non-existent "deepseek-v4-pro") leaves the Rust session with no active model
     // and otherwise SILENTLY inert — every prompt/command no-ops. Surface it.
     if (!this._model) {
-      const valid = this.host.getCycleModels().slice(0, 8).map((m) => m.id).join(", ");
-      const want = restoring
-        ? "this session's recorded model"
-        : (modelId ? `"${modelId}"${provider ? ` (provider "${provider}")` : ""}` : "your configured model");
-      const content = `⚠ No model is active — ${want} could not be resolved, so this Rust session can't run. Pick a valid model with \`/model\`${valid ? ` (e.g. ${valid})` : ""}, or fix the \`pi-code-gui.defaultModelId\` setting.`;
       piWarn(`Rust session has no resolved model (configured: ${provider ?? "?"}/${modelId ?? "?"})`);
-      this.host.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
+      const choices = this.host.getCycleModels();
+
+      // RECOVER A RESUMED SESSION RATHER THAN LEAVING IT INERT.
+      //
+      // A session records the model it ran on, and that model can simply cease to exist —
+      // withdrawn upstream and retired from models.json, or its provider's credential removed.
+      // The session then reopens with no active model and every prompt silently no-ops. Measured
+      // after DeepSeek withdrew deepseek-v4-flash-vision-exp: a previously working session
+      // reopened dead, and the only way out was for the user to know to run /model.
+      //
+      // Prefer the same provider, so the substitute bills and behaves as much like the original
+      // as possible; otherwise take the first model that is actually available. We SAY what
+      // happened — silently swapping the model of a resumed conversation would change what the
+      // user is paying for without telling them.
+      const substitute = choices.find((m) => m.provider === provider) ?? choices[0];
+      let recovered = false;
+      if (restoring && substitute) {
+        const picked = await this.setModel(substitute.provider, substitute.id).catch(() => null);
+        if (picked) {
+          recovered = true;
+          const content = `⚠ This session's recorded model (\`${modelId ?? "unknown"}\`) is no longer available — it may have been withdrawn by the provider. Switched to **${picked.name ?? picked.id}** so the session can run. Use \`/model\` to pick a different one.`;
+          piWarn(`Substituted ${substitute.provider}/${substitute.id} for the session's unavailable ${provider ?? "?"}/${modelId ?? "?"}`);
+          this.host.emit({ type: "custom-message", data: { customType: "warning", content, timestamp: Date.now() } });
+        }
+      }
+
+      if (!recovered) {
+        const valid = choices.slice(0, 8).map((m) => m.id).join(", ");
+        const want = restoring
+          ? "this session's recorded model"
+          : (modelId ? `"${modelId}"${provider ? ` (provider "${provider}")` : ""}` : "your configured model");
+        const content = `⚠ No model is active — ${want} could not be resolved, so this Rust session can't run. Pick a valid model with \`/model\`${valid ? ` (e.g. ${valid})` : ""}, or fix the \`pi-code-gui.defaultModelId\` setting.`;
+        this.host.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
+      }
     }
 
     // Proactively surface missing external tool prerequisites (fd/ripgrep) once per

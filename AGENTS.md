@@ -131,7 +131,8 @@ a monolith. Start at `agent-wiki/index.md` for the catalog.
 own categories as the project grows:
 - `architecture/` — system design, decision flow, key abstractions
 - `operations/` — build, deploy, CI/CD, release process
-- `discipline/` — think-before-acting, TDD, strong-opinions, verify, research
+- `discipline/` — think-before-acting, TDD, strong-opinions, verify, research,
+  agent-coordination (delegated work), documentation-discipline
 - (add more as needed — patterns, domain-models, api, etc.)
 
 ### Wiki Maintenance
@@ -203,6 +204,8 @@ you name the next action.
 | How TUI extensions render in webview | `agent-wiki/architecture/extension-ui-bridge.md` |
 | How the build pipeline works | `agent-wiki/operations/build-pipeline.md` |
 | How the SDK is found and initialized | `agent-wiki/operations/sdk-resolution.md` |
+| How delegated agent work is run | `agent-wiki/discipline/agent-coordination.md` |
+| What belongs in the CHANGELOG | `agent-wiki/discipline/documentation-discipline.md` |
 | How to think before acting | `agent-wiki/discipline/think-before-acting.md` |
 | How TDD works here | `agent-wiki/discipline/tdd.md` |
 | How the wiki is maintained | `agent-wiki/discipline/wiki-maintenance.md` |

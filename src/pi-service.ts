@@ -402,6 +402,10 @@ export class PiService {
     return {
       detectBinary: () => detectRustBinary(),
       warnConfiguredBinaryUnusable: (why, usingPath, usingVersion) => {
+        // Log it too. This was notification-only, which made it impossible to tell from the log
+        // whether a reported warning was firing now or was a stale item still sitting in the
+        // Notification Center — a user-visible warning that leaves no trace is not diagnosable.
+        piWarn(`Configured rustBinaryPath unusable (${why}); using ${usingPath}${usingVersion ? ` (${usingVersion})` : ""}`);
         void vscode.window.showWarningMessage(
           `The Rust Pi binary set in "pi-code-gui.rustBinaryPath" could not be used (${why}). ` +
           `This session is running ${usingPath}${usingVersion ? ` (${usingVersion})` : ""} instead.`,
@@ -1337,7 +1341,8 @@ export class PiService {
    *  which carries its own post-#139 pi-ai and clamps rather than rejecting. */
   private backendHonorsMax(): boolean {
     // Always. The gate existed for pre-#139 rust-pi builds that rejected
-    // set_thinking_level("max") outright; 0.2.0 requires rust-pi 0.3.0, so there is no
+    // set_thinking_level("max") outright; 0.2.x requires the pinned rust-pi (src/rust-pi-version.json,
+    // v0.3.0 or newer), so there is no
     // supported binary that refuses it. It also re-probed detectRustBinary() from here — a
     // version check standing in for a capability, which the backend seam exists to avoid.
     return true;
