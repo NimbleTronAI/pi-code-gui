@@ -1,6 +1,6 @@
 # Change Log
 
-## [0.2.4]
+## [0.2.8]
 
 ### Changed
 - **Rust Pi is now pinned to v0.5.1** (was v0.3.0). **Linux:** this release needs glibc 2.43, which is newer than most distributions ship — if yours is older the extension keeps your existing binary and tells you why, rather than installing one that can't run.
