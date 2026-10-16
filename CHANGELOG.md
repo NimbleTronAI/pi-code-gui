@@ -3,13 +3,14 @@
 ## [0.2.8]
 
 ### Changed
-- **Rust Pi is now pinned to v0.5.1** (was v0.3.0). **Linux:** this release needs glibc 2.43, which is newer than most distributions ship — if yours is older the extension keeps your existing binary and tells you why, rather than installing one that can't run.
-- **Model catalog refreshed to pi-ai 0.86.1** — 1,128 models, two new providers (Meta, Radius), 67 repriced, and Moonshot's `kimi-k2*` and Z.ai's `glm-4.7`/`glm-5.x` withdrawn. Radius is offered on the TypeScript runtime only; no Rust Pi release speaks its protocol yet.
+- **Rust Pi is now pinned to v0.8.0.** Its Linux builds need only glibc 2.28, so the managed install works again on Ubuntu 22.04 and Debian 12.
+- **Model catalog refreshed** to the latest upstream release: 1,242 models with current pricing. Radius is offered on the TypeScript runtime only.
 
 ### Fixed
-- **A Rust session that won't start now tells you why**, instead of only `RPC 'get_state' timed out after 15000ms`.
-- **Withdrawn models no longer linger in your `models.json`.** Models dropped upstream stayed in the picker with stale prices; they're now removed. Anything you added by hand is left alone.
-- **Native DeepSeek costs show `$??` again.** An upstream rename let a wrong figure through, where the extension should withhold one — DeepSeek's time-of-day billing can't be expressed as a single rate. Gateways reselling DeepSeek at flat rates still show real costs.
+- **Rust: an OpenRouter key no longer empties the model list.** Providers whose endpoint moved are updated in place; delete a provider's `_managedBy` line in `models.json` to keep your own.
+- **A Rust session that won't start now tells you why**, and a resumed session whose model was withdrawn switches to a working one and says so.
+- **TypeScript runtime:** messages and compaction summaries added by extensions now appear in the chat instead of the "Unhandled agent event" card.
+- **Native DeepSeek costs show `$??`** — its time-of-day billing can't be expressed as one rate.
 
 ## [0.2.3]
 
