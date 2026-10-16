@@ -276,6 +276,13 @@ function managedEntry(m: RegistryModel, contextBudget: number): { entry: any; om
  * these providers, so pricing, context windows and thinking levels resolve for them under the
  * TypeScript runtime as usual.
  *
+ * MEASURED on rust-pi 0.8.0 (black-box, a scratch agent dir holding one radius provider): the
+ * binary does NOT reject the file for an unknown api — it lists the provider's models — but
+ * `set_model` onto one fails "Provider not implemented (api: pi-messages)", exactly as it does for
+ * an invented api. So 0.8.0 still has no pi-messages protocol, and describing radius would put
+ * models in the picker that cannot be selected. Withholding stays. (What DOES reject the whole
+ * file is two ids for one model identity — see the dedupe in mergeModelsJson.)
+ *
  * When the pinned rust-pi gains a protocol, add it here; the debug log names what was withheld so
  * a stale list is discoverable rather than permanent.
  */
@@ -290,6 +297,53 @@ export function apisUnsupportedByRust(): Array<{ provider: string; api: string }
   return Object.entries(registry.providers)
     .filter(([, prov]) => !RUST_SUPPORTED_APIS.has(prov.api))
     .map(([provider, prov]) => ({ provider, api: prov.api }));
+}
+
+/**
+ * The exact (api, baseUrl) pairs an EARLIER release bundled for a provider whose connection
+ * details have since moved. A provider object written before 0.2.8 carries no stamp, so this is
+ * the only way to tell one we wrote from one the user wrote: an exact match on a pair we shipped.
+ *
+ * pi-ai 1.3.0 moved kimi-coding to openai-completions on a /v1 endpoint, and opencode/opencode-go
+ * to /inference. Earlier history also has opencode/opencode-go on openai-completions and
+ * openrouter/xai on other apis; those are deliberately NOT listed — each would migrate a user
+ * onto a provider api the catalog generator flattens from a multi-api provider, which is a
+ * separate, unresolved problem, and rewriting a working connection onto it is not a repair.
+ * Add a pair here only when a catalog bump moves a provider and the old pair is known.
+ */
+const LEGACY_PROVIDER_CONNECTIONS: Record<string, Array<{ api: string; baseUrl: string }>> = {
+  "kimi-coding": [{ api: "anthropic-messages", baseUrl: "https://api.kimi.com/coding" }],
+  "opencode": [{ api: "anthropic-messages", baseUrl: "https://opencode.ai/zen" }],
+  "opencode-go": [{ api: "anthropic-messages", baseUrl: "https://opencode.ai/zen/go" }],
+};
+
+/**
+ * Bring a provider object's connection details (baseUrl, api) in line with the catalog — when,
+ * and only when, it is ours.
+ *
+ * These used to be filled only when ABSENT, with nothing at provider level telling ours from the
+ * user's. So a catalog bump that moved an endpoint reached nobody who already had the provider:
+ * their MODEL entries (stamped, so refreshed) took the new compat while the provider kept the old
+ * endpoint and protocol — a mixed entry describing neither release. The stamp fixes that going
+ * forward; the legacy table recognises the objects older releases wrote unstamped. Anything else
+ * is the user's, and is left exactly as found apart from filling a missing field.
+ *
+ * Like a stamped model, a stamped provider is rewritten on every session start: to keep your own
+ * endpoint on a provider we created, delete its `_managedBy`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function refreshConnection(provId: string, target: any, prov: { api: string; baseUrl: string }): void {
+  const ours = target[MANAGED_KEY] !== undefined
+    || (LEGACY_PROVIDER_CONNECTIONS[provId] ?? []).some((l) => l.api === target.api && l.baseUrl === target.baseUrl);
+  if (ours) {
+    target.baseUrl = prov.baseUrl;
+    target.api = prov.api;
+    target[MANAGED_KEY] = MANAGED_BY;
+    return;
+  }
+  // The user's provider: fill only what is missing, never rewrite what they set.
+  if (!target.baseUrl) { target.baseUrl = prov.baseUrl; }
+  if (!target.api) { target.api = prov.api; }
 }
 
 export function mergeModelsJson(file: string, contextBudget: number, only?: Set<string>): { written: number; omitted: number; userOwned: number; retired: number; skippedApis: string[] } {
@@ -313,11 +367,36 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const target: any = existing && typeof existing === "object"
       ? existing
-      : (doc.providers[provId] = { baseUrl: prov.baseUrl, api: prov.api, models: [] });
+      : (doc.providers[provId] = { baseUrl: prov.baseUrl, api: prov.api, [MANAGED_KEY]: MANAGED_BY, models: [] });
     if (!Array.isArray(target.models)) { target.models = []; }
-    // Only fill in connection details we invented; never rewrite a user's own baseUrl/api.
-    if (!target.baseUrl) { target.baseUrl = prov.baseUrl; }
-    if (!target.api) { target.api = prov.api; }
+    refreshConnection(provId, target, prov);
+
+    // ONE ENTRY PER MODEL IDENTITY. The binary canonicalises a bare id to its provider-prefixed
+    // form, so `X` and `<provider>/X` describe one model — and the binary rejects the WHOLE file
+    // when both are present ("duplicate canonical model identity"), measured on 0.5.1 and 0.8.0
+    // with openrouter's `auto` / `openrouter/auto`. Only a bare (slash-free) id is canonicalised:
+    // `vendor/model` and `openrouter/vendor/model` are two identities there (probed on 0.8.0).
+    // Two sources of a twin:
+    //   - the catalog carries both: keep the prefixed id (what the binary reports either way) and
+    //     drop the bare alias;
+    //   - the user wrote one by hand (unstamped): theirs is untouchable, so ours yields.
+    // A dropped id is absent from `bundledIds`, so the retire pass below also removes a copy an
+    // earlier release wrote.
+    const bare = (id: string): boolean => !id.includes("/");
+    const twin = (id: string): string | null =>
+      id.startsWith(`${provId}/`) ? (bare(id.slice(provId.length + 1)) ? id.slice(provId.length + 1) : null)
+      : bare(id) ? `${provId}/${id}` : null;
+    const allIds = new Set(prov.models.map((m) => m.id));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userIds = new Set(target.models.filter((m: any) => m && typeof m.id === "string" && m[MANAGED_KEY] === undefined).map((m: any) => m.id as string));
+    let yielded = 0;
+    const models = prov.models.filter((m) => {
+      if (bare(m.id) && allIds.has(`${provId}/${m.id}`)) { return false; }
+      const t = twin(m.id);
+      if (t !== null && userIds.has(t)) { yielded++; return false; }
+      return true;
+    });
+    userOwned += yielded;
 
     // RETIRE MODELS WE USED TO MANAGE AND NO LONGER DO.
     //
@@ -332,7 +411,7 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
     // the same promise the refresh path makes. Scoped to providers we are describing on this pass,
     // so a provider skipped for want of a credential or an unsupported api keeps whatever it has.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bundledIds = new Set(prov.models.map((m: any) => m.id));
+    const bundledIds = new Set(models.map((m: any) => m.id));
     const before = target.models.length;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     target.models = target.models.filter((m: any) =>
@@ -341,7 +420,7 @@ export function mergeModelsJson(file: string, contextBudget: number, only?: Set<
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const byId = new Map<string, any>(target.models.filter((m: any) => m && typeof m.id === "string").map((m: any) => [m.id, m]));
-    for (const m of prov.models) {
+    for (const m of models) {
       const current = byId.get(m.id);
       if (current && current[MANAGED_KEY] === undefined) { userOwned++; continue; }   // theirs — hands off
       const { entry, omitted: om } = managedEntry(m, contextBudget);

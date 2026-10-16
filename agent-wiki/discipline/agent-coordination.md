@@ -121,6 +121,18 @@ operator before starting.
 | Same-tier critic (Roles) | **Top tier** — briefs and forensics. Reviews are never downgraded to save tokens. |
 | Worktrees (§4) | Plain `git worktree add`. There is no worktree script in this repo. |
 
+**Learned in practice** — seams found in the first batch run (0.2.8, 2026-10-16), now standing:
+
+- **Members do not rebase.** Rule 11 ("rebase onto the moving batch tree") collides with rule 7
+  (members never touch git history). Members deliver the diff against the base commit named in their
+  brief; the coordinator applies it onto the moving tip and resolves drift.
+- **The rule-10 reviewer runs in the foreground, and the member waits for it.** A member that spawns
+  its reviewer in the background can hand back before the review arrives — it happened. A hand-back
+  with its review outstanding does not satisfy rule 10 and is not landed.
+- **The coordinator runs its own delta review of record on every unit before landing.** In the first
+  batch this caught real defects in two units that each member's own reviewer had approved: a
+  feature check reading the wrong package, and a fix that silently discarded user-visible messages.
+
 **Deliberately unbound** — asked and declined on 2026-10-06 as belonging to another project. Do
 not invent a local substitute for these; ask the founder when a batch first needs one:
 
@@ -146,4 +158,5 @@ read the same copy.
 - [Research, Don't Guess](research-dont-guess.md) — §25's raw-source rule
 - [Documentation Discipline](documentation-discipline.md) — what §24's reporting may and may not say in user-facing docs
 
-> **Last updated:** 2026-10-06 — ingested; model tiers bound by capability (top / mid / top) rather than vendor name, worktrees to `git worktree add`; §20, §24 and the ceremony threshold recorded as deliberately unbound
+> **Last updated:** 2026-10-16 — three standing lessons from the first batch run (0.2.8) added under the bindings
+> **Earlier:** 2026-10-06 — ingested; model tiers bound by capability (top / mid / top) rather than vendor name, worktrees to `git worktree add`; §20, §24 and the ceremony threshold recorded as deliberately unbound

@@ -36,6 +36,26 @@ per-model entries into it, each stamped `_managedBy: "pi-code-gui@<version>"`:
   id collides with one we manage — deleting the marker takes an entry out of
   management permanently.
 
+**Provider objects carry the same stamp (0.2.8).** A provider's `baseUrl` and `api` used
+to be filled only when absent, so a catalog bump that moved an endpoint never reached a
+user who already had the provider: the stamped models were refreshed with the new compat
+while the provider kept the old endpoint — a mixed entry. Now a provider object we create
+is stamped; a stamped one has `baseUrl`/`api` rewritten from the catalog on every session
+start; an unstamped one is migrated (and stamped) only when its `(api, baseUrl)` exactly
+equals a pair an earlier release bundled (`LEGACY_PROVIDER_CONNECTIONS` — kimi-coding,
+opencode, opencode-go, moved by pi-ai 1.3.0). Any other unstamped provider is the user's.
+To keep your own endpoint on a provider we created, delete its `_managedBy` — like a
+stamped model, a stamped provider is rewritten on every session start.
+
+**One entry per model identity.** rust-pi canonicalises a bare (slash-free) id to its
+provider-prefixed form and rejects the **whole** file — every provider, with only a
+stderr warning — when both are present ("duplicate canonical model identity"). The
+bundled openrouter catalog carries both `auto` and `openrouter/auto`; the merge keeps the
+prefixed one and retires the bare alias; when the *user* has written one of the pair by
+hand, theirs is kept and ours is not written. Only a bare (slash-free) id is a twin:
+`vendor/model` and `openrouter/vendor/model` are two identities and both are written.
+Measured on 0.5.1 and 0.8.0.
+
 Entries are written only for providers the user can authenticate to
 (`credentialedProviders`): env keys derived as `<ID>_API_KEY`, with five irregular
 ones mirroring `pi --list-providers`, plus any OAuth entry in the shared `auth.json`.
@@ -56,6 +76,8 @@ live `--fetch-models` cannot supply: `contextWindow` clamped to the context budg
 - [Session Modes](session-modes.md) — approval mode also lives in this shared home
 - [Runtime Debugging](../operations/runtime-debugging.md) — what to check when a model is missing
 
-> **Last updated:** 2026-08-31 — new page. The catalog and agent-home rules were
+> **Last updated:** 2026-10-16 — provider-level stamp, refresh and legacy migration;
+> duplicate-identity dedupe (0.2.8, rust-pi v0.8.0).
+> **Earlier:** 2026-08-31 — new page. The catalog and agent-home rules were
 > undocumented, and the one place that mentioned them (runtime-selection.md)
 > described the relocated home and linked auth.json that 0.2.0 removed.

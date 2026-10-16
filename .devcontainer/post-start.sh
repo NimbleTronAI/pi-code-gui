@@ -62,15 +62,15 @@ fi
 # container layer and is WIPED on every rebuild — so it is installed here.
 #
 # TWO SOURCES, in this order:
-#   1. A locally BUILT binary cached at ~/.pi/rust-pi-build/pi-<version>. That path is an
-#      external docker volume, so it survives rebuilds. Built by .devcontainer/build-rust-pi.sh.
-#   2. The released asset for the pinned tag, checksum-verified.
+#   1. The released asset for the pinned tag, checksum-verified.
+#   2. A locally BUILT binary cached at ~/.pi/rust-pi-build/pi-<version> (an external docker
+#      volume, so it survives rebuilds), built by .devcontainer/build-rust-pi.sh.
 #
-# The cache comes first because of glibc. Upstream's Linux binaries are built on a nightly
-# toolchain and their glibc floor climbs between releases — v0.3.0 needs GLIBC_2.39, v0.5.1 needs
-# 2.43 — while this container is Debian 13 with 2.41 and apt sources pinned to a snapshot. So the
-# released v0.5.1 asset downloads fine and then cannot exec at all. A binary compiled in this
-# container links against its own glibc and just works.
+# The release comes first because it is what users run: since v0.6.0 upstream builds Linux assets
+# against a glibc 2.28 floor (v0.8.0 measured with objdump -T), so it execs on this Debian 13
+# (2.41). The local build is a FALLBACK for a release whose floor climbs again — v0.3.0 needed
+# 2.39 and v0.5.1 needed 2.43, which could not exec here at all — and it is built with a lighter
+# profile than upstream's (see build-rust-pi.sh), so it should not displace a release that runs.
 #
 # AND NOTHING IS INSTALLED WITHOUT BEING RUN FIRST. This block used to `install` whatever it
 # extracted and then print the version, so an asset that could not exec REPLACED a working binary
@@ -86,12 +86,10 @@ if [ -n "$PIN_TAG" ]; then
 
     rust_pi_version() { "$1" --version 2>/dev/null | sed -n 's/^pi \([0-9.]*\).*/\1/p'; }
 
+    INSTALLED=0
     if [ "$(rust_pi_version "$TARGET")" = "$WANT" ]; then
         echo "    already on $WANT"
-    elif [ -x "$CACHED" ] && [ "$(rust_pi_version "$CACHED")" = "$WANT" ]; then
-        mkdir -p /home/node/.local/bin
-        install -m 0755 "$CACHED" "$TARGET"
-        echo "    restored locally built $WANT from ~/.pi cache"
+        INSTALLED=1
     else
         case "$(uname -m)" in
             aarch64|arm64) ASSET="pi-linux-arm64.tar.xz" ;;
@@ -106,25 +104,34 @@ if [ -n "$PIN_TAG" ]; then
                 tar -xJf "$TMP/$ASSET" -C "$TMP"
                 BIN="$(find "$TMP" -type f -name pi -perm -u+x | head -1)"
                 if [ -z "$BIN" ]; then
-                    echo "    WARNING: no pi binary in $ASSET — left existing install alone"
+                    echo "    WARNING: no pi binary in $ASSET"
                 elif WHY="$("$BIN" --version 2>&1 >/dev/null)"; [ "$(rust_pi_version "$BIN")" != "$WANT" ]; then
                     # Downloaded and verified, but will not run here. Say why, and say what to do.
                     echo "    WARNING: the released $PIN_TAG binary will not run in this container:"
                     echo "             ${WHY:-unknown error}"
-                    echo "             Keeping $(rust_pi_version "$TARGET" || echo none). To get $WANT, build it locally:"
-                    echo "               bash .devcontainer/build-rust-pi.sh"
-                    echo "             (caches to ~/.pi, which survives rebuilds)"
+                    echo "             Trying the local build cache instead (bash .devcontainer/build-rust-pi.sh makes one)."
                 else
                     mkdir -p /home/node/.local/bin
                     install -m 0755 "$BIN" "$TARGET"
                     echo "    installed $("$TARGET" --version 2>/dev/null | head -1)"
+                    INSTALLED=1
                 fi
             else
-                echo "    WARNING: checksum mismatch for $ASSET — left existing install alone"
+                echo "    WARNING: checksum mismatch for $ASSET"
             fi
         else
-            echo "    WARNING: could not download $PIN_TAG (offline?) — left existing install alone"
+            echo "    WARNING: could not download $PIN_TAG (offline?)"
         fi
         rm -rf "$TMP"
+    fi
+    if [ "$INSTALLED" = 0 ]; then
+        if [ -x "$CACHED" ] && [ "$(rust_pi_version "$CACHED")" = "$WANT" ]; then
+            mkdir -p /home/node/.local/bin
+            install -m 0755 "$CACHED" "$TARGET"
+            echo "    restored locally built $WANT from ~/.pi cache"
+        else
+            echo "    Keeping $(rust_pi_version "$TARGET" | grep . || echo none). To get $WANT, build it locally:"
+            echo "      bash .devcontainer/build-rust-pi.sh   (caches to ~/.pi, which survives rebuilds)"
+        fi
     fi
 fi

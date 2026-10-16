@@ -946,8 +946,11 @@ export class RustService implements PiBackend {
       return;
     }
     const answers: Array<{ questionId: string; selected: string[] }> = [];
-    for (const q of questions) {
-      const questionId = String(q.id ?? "");
+    for (const [index, q] of questions.entries()) {
+      // `id` is optional in the ask tool's arguments. Without one the binary matches an answer by
+      // the question's zero-based position as a string — probed on 0.5.1 and 0.8.0. An empty
+      // questionId matches nothing: the model is told "(unanswered)" and the choice is lost.
+      const questionId = q.id !== undefined && q.id !== null && String(q.id) !== "" ? String(q.id) : String(index);
       const prompt = String(q.question ?? q.header ?? "");
       const options = Array.isArray(q.options)
         ? (q.options as Array<Record<string, unknown>>).map((o) => String(o?.label ?? ""))

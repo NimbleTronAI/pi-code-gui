@@ -342,6 +342,23 @@ test("ask_request: a chosen option answers on the wire in the binary's AskAnswer
   rust.dispose();
 });
 
+test("ask_request: a question with no id is answered by its position, not by an empty id", async () => {
+  // `id` is optional in the ask tool's arguments, and the model often leaves it out. Probed on
+  // rust-pi 0.5.1 and 0.8.0: the binary then matches an answer whose questionId is the question's
+  // zero-based index as a string ("0", "1", …). An empty questionId matches nothing, and the
+  // binary reports the question as "(unanswered)" to the model — the user's choice silently lost.
+  const { rust, sent } = makeAskHarness("Option A");
+  const q = (question: string): Any => ({ question, multi: false, options: [{ label: "Option A" }, { label: "Option B" }] });
+  (rust as Any).handleEvent({ type: "ask_request", id: "req-3", questions: [q("First?"), { ...q("Second?"), id: "named" }, q("Third?")] });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent[0].payload, { id: "req-3", answers: [
+    { questionId: "0", selected: ["Option A"] },
+    { questionId: "named", selected: ["Option A"] },
+    { questionId: "2", selected: ["Option A"] },
+  ] });
+  rust.dispose();
+});
+
 test("ask_request: cancelling sends dismissed — omitting it would leave the turn blocked", async () => {
   // `{id}` alone is rejected by the binary ("Missing answers field (or dismissed: true)"), so a
   // cancelled card MUST say so explicitly; staying silent is the stall this whole path fixes.

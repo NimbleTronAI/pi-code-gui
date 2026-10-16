@@ -10,10 +10,15 @@
 # not found"). A binary compiled HERE links against this machine's glibc, so the floor stops
 # mattering. Upstream ships no musl/static asset, so this is the only way to run it locally.
 #
+# SINCE v0.6.0 upstream builds Linux assets against a glibc 2.28 floor (measured on v0.8.0 with
+# objdump -T: max GLIBC_2.28 on arm64 and amd64), so the released binary runs here too. This
+# script stays as the fallback for a release whose floor climbs again, and to test a pin offline.
+#
 # The result is cached at ~/.pi/rust-pi-build/pi-<version>, which is an EXTERNAL docker volume
-# (see docker-compose.yml) and therefore survives container rebuilds. post-start.sh prefers that
-# cache over the released asset, so a rebuild reinstates the working binary in a second rather
-# than recompiling for twenty minutes.
+# (see docker-compose.yml) and therefore survives container rebuilds. post-start.sh installs the
+# released asset first and falls back to this cache only when the release will not run here, so a
+# rebuild on a too-new glibc floor reinstates the working binary in a second rather than
+# recompiling for twenty minutes.
 #
 # Re-run this when the pin moves, or if the ~/.pi volume is ever recreated.
 #
@@ -24,10 +29,11 @@
 set -euo pipefail
 
 REPO="https://github.com/Dicklesworthstone/pi_agent_rust"
-ROOT="/workspaces/pi-vscode-gui"
+# The checkout this script lives in, so a worktree builds ITS pin rather than the main checkout's.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="/home/node/.pi/rust-pi-build"
-# Upstream states the toolchain each release was built with in its release notes; v0.5.x used
-# this one. Pinning it avoids a future nightly breaking a build that has nothing to do with us.
+# Upstream states the toolchain each release was built with in its release notes; v0.5.x through
+# v0.8.0 use this one (v0.8.0's notes: "the repository pins nightly-2026-08-31"). Pinning it avoids a future nightly breaking a build that has nothing to do with us.
 TOOLCHAIN="nightly-2026-08-31"
 
 PIN_TAG="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/src/rust-pi-version.json")"
@@ -55,6 +61,16 @@ CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 BUILD_ROOT="$(mktemp -d)"
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
+# MEMORY. The crate's own `release` profile is fat LTO with one codegen unit. Measured building
+# v0.8.0 here (8 cores, ~5-7 GB free): the final link was SIGKILLed by the OOM killer, and with LTO
+# off but optimization kept, the library alone ran past ten minutes. This profile finished in
+# 2m31s once dependencies were built. It is a LOCAL testing binary — the released assets are
+# what users download — so trade size and peak speed for a build that completes. Override any of
+# these from the environment to get the upstream profile back.
+export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-off}"
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-256}"
+export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-1}"
+
 echo "==> building rust-pi $PIN_TAG from source (this takes a while)"
 # The crate is `pi_agent_rust` (the repo also contains a `pi_agent_rust-fuzz` binary crate, so
 # cargo refuses to guess); the binary it produces is named `pi`.
@@ -71,4 +87,9 @@ mkdir -p "$CACHE_DIR"
 install -m 0755 "$BUILT" "$DEST"
 echo "==> cached $DEST"
 echo "    $("$DEST" --version | head -1)"
-echo "    post-start.sh will install this into ~/.local/bin/rust-pi on every container start."
+echo "    post-start.sh falls back to this when the released $PIN_TAG binary will not run here."
+
+# CLEAN ROOM: cargo left the pinned tag's SOURCE in ~/.cargo/git (and crate sources in
+# ~/.cargo/registry/{src,cache}). Remove them unopened so
+# it cannot be read into an agent context later (AGENTS.md §"pi clean-room").
+rm -rf "$HOME/.cargo/git" "$HOME/.cargo/registry/src" "$HOME/.cargo/registry/cache"

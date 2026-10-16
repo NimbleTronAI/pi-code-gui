@@ -75,6 +75,11 @@ alternative and is what a **cancelled** card must send: replying `{id}` alone is
 rejected and leaves the turn blocked, so silence on cancel reproduces the original bug
 through another door.
 
+A question's `id` is **optional** — the model often omits it. The binary then matches an
+answer by the question's zero-based position as a string (`"0"`, `"1"`, …), probed on
+0.5.1 and 0.8.0. An empty `questionId` matches nothing and the model is told
+"(unanswered)", so the handler falls back to the index.
+
 Unrouted, an `ask_request` is not a dropped event but a five-minute stall —
 `tool_execution_start` with no end, no `turn_end`, no `agent_end`.
 
@@ -91,5 +96,6 @@ and scroll for the rest of the session.
 The lesson that generalises: `safe()` exists for content that has already been escaped
 once, and a component that mounts into a wrapper must own that wrapper's removal.
 
-> **Last updated:** 2026-08-31 — added the `ask_request`/`ask_response` contract and
+> **Last updated:** 2026-10-16 — an id-less question is answered by its index (0.2.8).
+> **Earlier:** 2026-08-31 — added the `ask_request`/`ask_response` contract and
 > the dialog faults it exposed (0.1.11-0.2.0).

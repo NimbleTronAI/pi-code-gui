@@ -126,6 +126,174 @@ test("mergeModelsJson: OUR entry is refreshed in place on the next run", () => {
   assert.equal(after._managedBy, MANAGED_BY, "re-stamped with the current version");
 });
 
+// ── provider connection details (baseUrl/api) ─────────────────────────
+// pi-ai 1.3.0 moved three providers: kimi-coding changed api AND baseUrl, opencode and
+// opencode-go changed baseUrl. Connection details used to be filled only when ABSENT, so a user
+// whose models.json predates the bump kept the old endpoint while their refreshed MODEL entries
+// carried the new compat — a mixed provider entry. The provider object now carries the same
+// stamp the models do, and the stamp is what licenses a rewrite.
+function bundledConn(prov: string): { api: string; baseUrl: string } {
+  const p = (registry.providers as Record<string, { api: string; baseUrl: string }>)[prov];
+  assert.ok(p, `the bundled catalog must carry ${prov}`);
+  return { api: p.api, baseUrl: p.baseUrl };
+}
+/** The exact (api, baseUrl) each provider was bundled with before pi-ai 1.3.0. */
+const LEGACY_CONN: Array<[string, { api: string; baseUrl: string }]> = [
+  ["kimi-coding", { api: "anthropic-messages", baseUrl: "https://api.kimi.com/coding" }],
+  ["opencode", { api: "anthropic-messages", baseUrl: "https://opencode.ai/zen" }],
+  ["opencode-go", { api: "anthropic-messages", baseUrl: "https://opencode.ai/zen/go" }],
+];
+
+test("mergeModelsJson: a provider object we create is stamped like the models in it", () => {
+  const file = tmpFile();
+  mergeModelsJson(file, 0);
+  const ds = read(file).providers.deepseek;
+  assert.equal(ds._managedBy, MANAGED_BY, "the provider entry is attributable, not just its models");
+});
+
+test("mergeModelsJson: a STAMPED provider's baseUrl and api follow the catalog", () => {
+  for (const [prov, old] of LEGACY_CONN) {
+    const file = tmpFile(JSON.stringify({ providers: { [prov]: {
+      ...old, _managedBy: "pi-code-gui@0.2.7", models: [] } } }));
+    mergeModelsJson(file, 0);
+    const after = read(file).providers[prov];
+    assert.deepEqual({ api: after.api, baseUrl: after.baseUrl }, bundledConn(prov), `${prov} refreshed`);
+    assert.equal(after._managedBy, MANAGED_BY, `${prov} re-stamped with the current version`);
+  }
+});
+
+test("mergeModelsJson: a stamped provider is refreshed even on a value we never bundled", () => {
+  // The stamp, not the value, is the licence: ours is ours wherever it points.
+  const file = tmpFile(JSON.stringify({ providers: { deepseek: {
+    api: "openai-responses", baseUrl: "https://stale.invalid", _managedBy: "pi-code-gui@0.2.7", models: [] } } }));
+  mergeModelsJson(file, 0);
+  const after = read(file).providers.deepseek;
+  assert.deepEqual({ api: after.api, baseUrl: after.baseUrl }, bundledConn("deepseek"));
+});
+
+test("mergeModelsJson: an UNSTAMPED provider on a known earlier bundled value is migrated", () => {
+  // Every models.json written before this release has unstamped provider objects, so the users
+  // the bump actually hurts are exactly these. Only the exact (api, baseUrl) pair we used to
+  // write counts as ours.
+  for (const [prov, old] of LEGACY_CONN) {
+    const file = tmpFile(JSON.stringify({ providers: { [prov]: { ...old, models: [] } } }));
+    mergeModelsJson(file, 0);
+    const after = read(file).providers[prov];
+    assert.deepEqual({ api: after.api, baseUrl: after.baseUrl }, bundledConn(prov), `${prov} migrated`);
+    assert.equal(after._managedBy, MANAGED_BY, `${prov} stamped, so the next bump refreshes it too`);
+  }
+});
+
+test("mergeModelsJson: an UNSTAMPED provider on any other value is left exactly as found", () => {
+  for (const [prov, old] of LEGACY_CONN) {
+    const variants = [
+      { api: old.api, baseUrl: "https://my-proxy.invalid/v1" },      // our api, their endpoint
+      { api: "openai-responses", baseUrl: old.baseUrl },              // our endpoint, their api
+      { api: "openai-completions", baseUrl: "https://elsewhere.invalid" },
+    ];
+    for (const v of variants) {
+      const file = tmpFile(JSON.stringify({ providers: { [prov]: { ...v, models: [] } } }));
+      mergeModelsJson(file, 0);
+      const after = read(file).providers[prov];
+      assert.deepEqual({ api: after.api, baseUrl: after.baseUrl }, v, `${prov} ${JSON.stringify(v)} kept`);
+      assert.equal(after._managedBy, undefined, `${prov} ${JSON.stringify(v)} stays the user's`);
+    }
+  }
+  // ...and a legacy pair on a provider it was never bundled for is not ours either.
+  const file = tmpFile(JSON.stringify({ providers: { deepseek: { ...LEGACY_CONN[0][1], models: [] } } }));
+  mergeModelsJson(file, 0);
+  const ds = read(file).providers.deepseek;
+  assert.deepEqual({ api: ds.api, baseUrl: ds.baseUrl }, LEGACY_CONN[0][1], "a pair counts only for its own provider");
+  assert.equal(ds._managedBy, undefined);
+});
+
+test("mergeModelsJson: never writes two ids the binary treats as ONE model", () => {
+  // Measured against rust-pi 0.5.1 and 0.8.0: the bundled openrouter catalog carries both `auto`
+  // and `openrouter/auto`; the binary canonicalises `auto` to `openrouter/auto`, calls the pair a
+  // "duplicate canonical model identity", and rejects models.json WHOLE — every managed entry for
+  // every provider, 1200+ models, with only a stderr warning. Any user with an OpenRouter
+  // credential lost the entire catalog on the Rust runtime.
+  const file = tmpFile();
+  mergeModelsJson(file, 0);
+  const doc = read(file);
+  for (const [prov, p] of Object.entries(doc.providers as Record<string, { models: Array<{ id: string }> }>)) {
+    const ids = new Set(p.models.map((m) => m.id));
+    const dupes = [...ids].filter((id) => ids.has(`${prov}/${id}`));
+    assert.deepEqual(dupes, [], `${prov}: an id and its provider-prefixed twin are written side by side`);
+  }
+  assert.ok(modelsOf(doc, "openrouter").some((m) => m.id === "openrouter/auto"), "the canonical one is kept");
+});
+
+test("mergeModelsJson: a managed alias written by an earlier release is retired", () => {
+  const file = tmpFile(JSON.stringify({ providers: { openrouter: { api: "anthropic-messages",
+    baseUrl: "https://openrouter.ai/api", models: [
+      { id: "auto", name: "Auto", contextWindow: 1, _managedBy: "pi-code-gui@0.2.7" },
+    ] } } }));
+  mergeModelsJson(file, 0);
+  const ids = modelsOf(read(file), "openrouter").map((m) => m.id);
+  assert.ok(!ids.includes("auto"), "the alias that broke the file is removed");
+  assert.ok(ids.includes("openrouter/auto"));
+});
+
+test("mergeModelsJson: a stamped provider OUT of scope is not refreshed", () => {
+  // No credential this pass means we are not describing the provider at all — its connection
+  // details stay as they are until it is in scope again.
+  const [prov, old] = LEGACY_CONN[0];
+  const file = tmpFile(JSON.stringify({ providers: { [prov]: { ...old, _managedBy: "pi-code-gui@0.2.7", models: [] } } }));
+  mergeModelsJson(file, 0, new Set(["deepseek"]));
+  const after = read(file).providers[prov];
+  assert.deepEqual({ api: after.api, baseUrl: after.baseUrl }, old);
+  assert.equal(after._managedBy, "pi-code-gui@0.2.7");
+});
+
+test("mergeModelsJson: a user's own bare alias wins over our prefixed twin", () => {
+  // The same rejection, through the user's hand: their unstamped `auto` beside our managed
+  // `openrouter/auto` is still one identity written twice. Theirs is untouchable, so ours yields
+  // — including a twin an earlier release already wrote.
+  const file = tmpFile(JSON.stringify({ providers: { openrouter: { api: "anthropic-messages",
+    baseUrl: "https://openrouter.ai/api", models: [
+      { id: "auto", name: "My Auto", contextWindow: 4096 },
+      { id: "openrouter/auto", name: "Ours", contextWindow: 1, _managedBy: "pi-code-gui@0.2.7" },
+    ] } } }));
+  const r = mergeModelsJson(file, 0);
+  const models = modelsOf(read(file), "openrouter");
+  const ids = models.map((m) => m.id);
+  assert.ok(ids.includes("auto"), "the user's entry is kept");
+  assert.equal(models.find((m) => m.id === "auto").name, "My Auto", "exactly as found");
+  assert.ok(!ids.includes("openrouter/auto"), "our twin is not written beside it");
+  assert.ok(r.userOwned >= 1, "and the yield is counted as user-owned");
+});
+
+test("mergeModelsJson: a slash id is not the twin of its provider-prefixed form", () => {
+  // The binary canonicalises only a BARE (slash-free) id. `vendor/model` and
+  // `openrouter/vendor/model` are two identities there (probed on 0.8.0: both listed, no
+  // warning), so a user's hand-written `openrouter/vendor/model` must not make us withhold the
+  // real catalog model `vendor/model`.
+  const slashId = (registry.providers as Record<string, { models: Array<{ id: string }> }>).openrouter
+    .models.map((m) => m.id).find((id) => id.includes("/") && !id.startsWith("openrouter/"));
+  assert.ok(slashId, "the bundled openrouter catalog carries a vendor-prefixed id");
+  const file = tmpFile(JSON.stringify({ providers: { openrouter: { api: "anthropic-messages",
+    baseUrl: "https://openrouter.ai/api", models: [
+      { id: `openrouter/${slashId}`, name: "Mine", contextWindow: 4096 },
+    ] } } }));
+  mergeModelsJson(file, 0);
+  const models = modelsOf(read(file), "openrouter");
+  assert.ok(models.some((m) => m.id === slashId && m._managedBy !== undefined), "our real catalog model is written");
+  assert.equal(models.find((m) => m.id === `openrouter/${slashId}`).name, "Mine", "and the user's is kept as found");
+});
+
+test("mergeModelsJson: a stamped provider whose api is withheld is not refreshed", () => {
+  // Guards the skip: radius (`pi-messages`) is withheld, so even a STAMPED radius entry must
+  // survive a merge untouched — withheld api means we are not describing it, not "refresh it".
+  const bogus = { api: "pi-messages", baseUrl: "https://bogus.invalid/v1", _managedBy: "pi-code-gui@0.2.7", models: [] };
+  const file = tmpFile(JSON.stringify({ providers: { radius: bogus } }));
+  mergeModelsJson(file, 0);
+  const after = read(file).providers.radius;
+  assert.equal(after.baseUrl, "https://bogus.invalid/v1");
+  assert.equal(after.api, "pi-messages");
+  assert.equal(after._managedBy, "pi-code-gui@0.2.7");
+});
+
 test("mergeModelsJson: contextBudget clamps what we write", () => {
   const file = tmpFile();
   mergeModelsJson(file, 50_000);

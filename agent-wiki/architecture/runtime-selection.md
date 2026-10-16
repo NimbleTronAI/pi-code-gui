@@ -1,7 +1,8 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-08-31 — corrected the `_backendKind` list (getAllSlashCommands no longer branches), dropped the stale count, noted `sessionModes`.
+> **Last updated:** 2026-10-16 — pin moved to rust-pi v0.8.0; RPC surface re-probed; resumed-session workdir and attachment sidecar noted.
+> **Earlier:** 2026-08-31 — corrected the `_backendKind` list (getAllSlashCommands no longer branches), dropped the stale count, noted `sessionModes`.
 > `~/.pi/agent` and merges the catalog; the relocated home and linked `auth.json`
 > described here were removed), re-verified the RPC flags against v0.3.0, and noted
 > the inert approval flags and the blocking `ask` tool.
@@ -179,6 +180,15 @@ Two flags exist but do **not** work over RPC: `--approval-mode` and `--yolo` are
 inert, leaving every session in `always-ask`. Approval is settable only through
 `approval.mode` in the agent home's `settings.json` — see
 [Session Modes](session-modes.md).
+
+**Re-probed on v0.8.0 (the 0.2.8 pin).** All 21 `RUST_RPC` commands are still
+accepted (an unknown command answers `Unknown command: <name>`; none of ours does).
+v0.8.0 adds one behaviour a client meets: a resumed session (`--session`) runs in the
+workspace it was **saved** in, and if that directory is gone startup exits 1 with
+`PI_SESSION_WORKDIR_UNAVAILABLE` (the spawn rejection carries the binary's message;
+`--session-workdir <PATH>` re-attaches). Images, audio and video over 64 KiB are now
+saved beside the session in `<session>.jsonl.blobs/`. Linux release assets need glibc
+2.28 since v0.6.0 (v0.5.1 needed 2.43).
 
 0.3.0 also enables ten more tools by default (18, up from 8), including `ask`,
 which BLOCKS the turn until the client answers `ask_request`. An unrouted

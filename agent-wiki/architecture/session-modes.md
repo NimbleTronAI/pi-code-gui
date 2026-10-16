@@ -9,7 +9,10 @@ what the *next* message will do, and changes it before submitting.
 
 ## Plan mode
 
-Verified wire contract — undocumented upstream, established by probing the binary:
+Verified wire contract — undocumented upstream, established by probing the binary
+(re-probed end to end on v0.8.0: enter, submit, reject, resubmit, approve, leave;
+`get_state` still carries no plan field, and `approve_plan` still does not resume the
+agent):
 
 | Step | Command | Result |
 | --- | --- | --- |
@@ -53,4 +56,5 @@ through the same two-row "save as default?" step the model picker uses.
 - [PiBackend](pi-backend.md) — the capability seam these flow through
 - [Extension UI Bridge](extension-ui-bridge.md) — the `ask` card, the other blocking RPC
 
-> **Last updated:** 2026-08-31 — new page for 0.2.0.
+> **Last updated:** 2026-10-16 — plan-mode contract re-verified against rust-pi v0.8.0.
+> **Earlier:** 2026-08-31 — new page for 0.2.0.
