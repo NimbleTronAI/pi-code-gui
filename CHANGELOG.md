@@ -17,12 +17,6 @@
 ### Changed
 - **Refreshed the bundled model catalog from pi-ai 0.85.1** (was 0.84.4; model data 5 Sep). 82 models added, 20 withdrawn, and **38 repriced** — several sharply: `openrouter/deepseek/deepseek-v4-pro-0813` output went 1.98 → 3.36 (+70%), `opencode-go/hy3` output 0.0725 → 0.58 (+700%), while `openrouter/meta-llama/llama-3.3-70b-instruct` fell 0.71 → 0.32. Native DeepSeek pricing is unchanged, and `claude-fable-5-1` is now in the catalog. Withdrawn models show `$??` rather than a stale figure, as before.
 
-## [0.2.2]
-
-Tagged and released, but never reached either marketplace — the publish refused to ship a
-catalog three releases behind upstream, which is what that gate is for. Its contents (the
-advisory-currency fix) are carried by 0.2.3. Nothing to install here.
-
 ## [0.2.1]
 
 ### Fixed
