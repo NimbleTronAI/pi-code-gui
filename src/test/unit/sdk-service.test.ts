@@ -64,8 +64,10 @@ function makeEnv(opts: {
   piRoot?: string | (() => string);
   modules?: (absPath: string) => Any;   // override module resolution
   config?: Partial<SdkConfig>;
-} = {}): { host: SdkHost; deps: SdkDeps; notified: string[] } {
+  piAiPackageJson?: string;              // installed pi-ai package.json (undefined ⇒ version check skipped)
+} = {}): { host: SdkHost; deps: SdkDeps; notified: string[]; notices: Array<[string, string, boolean]> } {
   const notified: string[] = [];
+  const notices: Array<[string, string, boolean]> = [];
   const host: SdkHost = {
     emit: () => {},
     resolvePiRoot: typeof opts.piRoot === "function" ? opts.piRoot : () => (opts.piRoot as string) ?? "/fake/piroot",
@@ -82,13 +84,13 @@ function makeEnv(opts: {
     config: () => ({ ...baseConfig, ...opts.config }),
     importModule: async (absPath) => (opts.modules ?? defaultModules)(absPath),
     fileExists: () => false,
-    readFileUtf8: async () => { throw new Error("no pkg (skip version check)"); },
-    notifyOutdatedPiAi: (installed) => notified.push(installed),
+    readFileUtf8: async () => { if (opts.piAiPackageJson === undefined) { throw new Error("no pkg (skip version check)"); } return opts.piAiPackageJson; },
+    notifyOutdatedPiAi: (installed, supported, belowFloor) => { notified.push(installed); notices.push([installed, supported, belowFloor]); },
     buildBridgeTools: () => [],
     catalogProviders: () => ({}),
     confirmRendererConsent: async () => true,
   };
-  return { host, deps, notified };
+  return { host, deps, notified, notices };
 }
 
 // ── PiBackend primitives (post-init session operations) ──────────────
@@ -255,6 +257,24 @@ test("pi-coding-agent module import failure → 'Failed to load pi-coding-agent'
   const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
   assert.equal(out.success, false);
   assert.match(out.error ?? "", /Failed to load pi-coding-agent/);
+});
+
+// pi-coding-agent < 0.80.8 has no ModelRuntime. The pi-ai floor check cannot catch this reliably
+// (a caret range nests a newer pi-ai under an old pi-coding-agent), so Step 3 feature-detects it.
+test("pi-coding-agent without ModelRuntime (<0.80.8) → actionable error naming 0.80.8, not a raw TypeError", async () => {
+  const { host, deps } = makeEnv({
+    modules: (p) => {
+      if (p.includes("pi-ai/dist/index.js")) { return fakeAi(); }
+      if (p.includes("typebox")) { return { Type: {} }; }
+      if (p.endsWith("dist/index.js")) { return fakeSdk({ ModelRuntime: undefined }); }
+      return {};
+    },
+  });
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.equal(out.success, false);
+  assert.match(out.error ?? "", /0\.80\.8/);
+  assert.match(out.error ?? "", /npm install -g @earendil-works\/pi-coding-agent/);
+  assert.doesNotMatch(out.error ?? "", /Cannot read properties/);
 });
 
 test("pi-ai >=0.80 (no getModel) + providers/all import fails → actionable error", async () => {
@@ -497,4 +517,17 @@ test("readSessionSettings returns undefined rather than guessing when the SDK is
   assert.deepEqual(svc.readSessionSettings(), { autoCompaction: undefined, autoRetry: undefined });
   (svc as Any).session = null;
   assert.deepEqual(svc.readSessionSettings(), {});
+});
+
+// ── pi-ai floor (the outdated-SDK nudge) ─────────────────────────────
+// Step 3 calls SDK.ModelRuntime.create() unconditionally and pi-coding-agent exports ModelRuntime
+// only from 0.80.8 (0.80.7 and 0.79.x tarballs have none). A pi-ai below 0.80.8 is a best-effort
+// early sign of that (a caret range can nest a newer pi-ai under an old pi-coding-agent; Step 3's
+// feature-detect is the hard stop), so it gets the below-FLOOR warning, not the soft
+// "newer version available" nudge it used to get. NOTE: the nudge latches once per module
+// (_piAiVersionWarned) — this must stay the only test in this file that reaches notifyOutdatedPiAi.
+test("initialize: pi-ai 0.80.7 (no ModelRuntime upstream) gets the below-floor warning naming 0.80.8", async () => {
+  const { host, deps, notices } = makeEnv({ piAiPackageJson: JSON.stringify({ version: "0.80.7" }) });
+  await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.deepEqual(notices, [["0.80.7", "0.80.8", true]]);
 });

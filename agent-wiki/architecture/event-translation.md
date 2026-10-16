@@ -61,6 +61,7 @@ The translation layer:
 | `thinking_level_changed` | `thinking-level-changed` + `status-update` |
 | `queue_update` | `queue-update` |
 | `message_end` (custom) | `custom-message` (with `display`, `details` fields forwarded) |
+| `entry_appended` | `custom-message` for a `custom_message` entry with `display: true`; `compaction-summary-message` for a `compaction` entry (1.3.0 boundary drafts — their only live signal); otherwise a recognised no-op *(custom_message (display) and compaction entries are rendered; custom / usage / context_edit entries have no UI here, and replay does not show custom or custom_message entries either)* |
 | *unknown/any other* | `custom-message` diagnostic notification (visible in webview) |
 
 **Diagnostic default:** Unknown SDK event types emit a `custom-message` with
@@ -82,6 +83,7 @@ three `tool-start` emit sites — the two live ones and the replay loop in
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical/Rust replay)
+> **Last updated:** 2026-10-16 — `entry_appended` renders displayed `custom_message` and `compaction` entries and is otherwise a recognised no-op; it used to fall to the diagnostic default and put a visible "Unhandled agent event" card in the chat on every extension `appendEntry` (verified against pi-coding-agent 1.3.0)
+> **Earlier:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical/Rust replay)
 > **Earlier:** 2026-06-24 — extracted the decision logic into the pure `translateAgentEvent` (`src/agent-events.ts`) with a per-event-type unit suite; `handleAgentEvent` is now a thin apply-mutations/emit/effects shell
 > **Earlier:** 2026-05-27 — added turn-end, message_update error, clarified user message_end

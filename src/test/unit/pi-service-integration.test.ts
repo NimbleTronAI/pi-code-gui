@@ -319,3 +319,13 @@ test("setSessionName delegates on the TypeScript runtime too — one path, not t
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(backend.namedAs, "TS Session");
 });
+
+// The outdated-SDK notice's text is decided (and pinned verbatim) in version-compare.ts's
+// piAiNoticeMessage; this pins that the production vscode call site actually uses it.
+test("notifyOutdatedPiAi shows piAiNoticeMessage's text, not an inline copy", () => {
+  const src = readFileSync(join(SRC, "pi-service.ts"), "utf-8");
+  const body = src.slice(src.indexOf("notifyOutdatedPiAi: (installed, supported, belowFloor) =>"));
+  const decl = body.slice(0, body.indexOf("\n      },"));
+  assert.match(decl, /piAiNoticeMessage\(installed, supported, belowFloor\)/);
+  assert.doesNotMatch(decl, /legacy path/);
+});

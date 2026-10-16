@@ -32,10 +32,15 @@ import { backendCapabilityDefaults, type BackendCapabilities, type BackendUsage,
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
 export type CatalogProviders = Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }>;
 
-/** The pi-ai SDK version this extension targets (the 0.80 model-API redesign:
- *  createModels()/providers-all). Below this we still run via a legacy fallback,
- *  but warn the user once per host to update. */
-const SUPPORTED_PI_AI_VERSION = "0.80.0";
+/** The oldest pi-ai SDK the TypeScript runtime can start on. initialize() Step 3 needs
+ *  SDK.ModelRuntime, and pi-coding-agent exports ModelRuntime only from 0.80.8 (the pi-ai check
+ *  is a best-effort early warning: caret ranges can nest a newer pi-ai under an old
+ *  pi-coding-agent; Step 3 feature-detects ModelRuntime for the hard error).
+ *  Below this the session cannot start; the user is warned once per host to update. */
+const SUPPORTED_PI_AI_VERSION = "0.80.8";
+
+/** The oldest pi-coding-agent that exports ModelRuntime (absent from 0.80.7 and 0.79.x). */
+const MIN_CODING_AGENT_VERSION = "0.80.8";
 
 /** The pi-ai version this build of the extension is actually current with — taken from the
  *  bundled catalog, which is generated from it. Self-maintaining: every `pnpm run
@@ -301,9 +306,9 @@ export interface SdkDeps {
   importModule(absPath: string): Promise<any>;
   fileExists(p: string): boolean;
   readFileUtf8(p: string): Promise<string>;
-  /** Surface the "installed pi-ai is older than supported" nudge (UI; no-op in tests). */
-  /** `belowFloor` distinguishes "we fall back to a legacy code path" (a real compatibility
-   *  problem) from "a newer tested version exists" (a nudge). */
+  /** Surface the "installed pi-ai is older than supported" nudge (UI; no-op in tests).
+   *  `belowFloor` distinguishes "the TypeScript runtime cannot start" (breakage) from "a
+   *  newer tested version exists" (a nudge). */
   notifyOutdatedPiAi(installed: string, supported: string, belowFloor: boolean): void;
   /** Build the vscode_* bridge tools (keeps the vscode-coupled bridge-tools module
    *  out of this file, so SdkService stays headlessly importable). */
@@ -434,8 +439,9 @@ export class SdkService implements PiBackend {
     // so on a 0.80+ SDK every AI.getModel(...) threw "is not a function". When the
     // root entrypoint lacks getModel, adapt AI to the durable providers/all
     // entrypoint (getBuiltinModel + a builtinModels() instance) — NOT the
-    // deprecated /compat surface, which upstream will delete. Purely additive: on
-    // 0.79.x getModel/complete are already present and this branch is skipped.
+    // deprecated /compat surface, which upstream will delete. Purely additive: an SDK whose
+    // root still has getModel skips this branch (below the 0.80.8 floor the runtime fails at
+    // Step 3 anyway).
     await this.warnIfPiAiOutdated();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof (this.AI as any).getModel !== "function") {
@@ -452,7 +458,7 @@ export class SdkService implements PiBackend {
         } as PiAi;
         piDebug("pi-ai >=0.80 detected — adapted AI to the providers/all entrypoint (getBuiltinModel + builtinModels()).");
       } catch (e: unknown) {
-        return { success: false, error: `pi-ai >=0.80 is installed but its providers/all entrypoint could not load (${e instanceof Error ? e.message : String(e)}). Update @earendil-works/pi-coding-agent, or pin it to a 0.79.x release.` };
+        return { success: false, error: `pi-ai >=0.80 is installed but its providers/all entrypoint could not load (${e instanceof Error ? e.message : String(e)}). Update @earendil-works/pi-coding-agent (needs pi-ai ${SUPPORTED_PI_AI_VERSION}+).` };
       }
     }
 
@@ -477,6 +483,11 @@ export class SdkService implements PiBackend {
     // the single async ModelRuntime (0.80.8 CHANGELOG "Unified model runtime and provider
     // authentication"). It owns credentials (auth.json), the dynamic catalog, and request
     // auth; create it once and pass it to createAgentSession via the `modelRuntime` option.
+    // Feature-detect: the pi-ai floor check above is only an early warning (a caret range can nest
+    // a newer pi-ai under an old pi-coding-agent), so this is the hard, actionable stop.
+    if (typeof SDK.ModelRuntime?.create !== "function") {
+      return { success: false, error: `The installed @earendil-works/pi-coding-agent is too old for the TypeScript runtime (needs ${MIN_CODING_AGENT_VERSION}+, which provides ModelRuntime). Update it: npm install -g @earendil-works/pi-coding-agent` };
+    }
     try {
       this.modelRuntime = await SDK.ModelRuntime.create();
 
@@ -790,9 +801,9 @@ export class SdkService implements PiBackend {
     };
   }
 
-  /** Once-per-host nudge when the installed pi-ai predates the version this
-   *  extension targets. We still run on older SDKs (legacy getModel path), but the
-   *  0.80 model-API redesign is what we're built against, so nudge the user. */
+  /** Once-per-host notice when the installed pi-ai predates this build: a warning below the
+   *  floor (the TypeScript runtime cannot start there), a nudge when merely behind the target
+   *  (the pi-ai version the bundled catalog was generated from). */
   private async warnIfPiAiOutdated(): Promise<void> {
     if (_piAiVersionWarned || !this.piRoot) { return; }
     try {

@@ -399,6 +399,25 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       effects.reportStatus = true;
       break;
 
+    case "entry_appended": {
+      // SDK session event: a persisted entry was appended outside the message stream — an
+      // extension's pi.appendEntry, the cache warmer, and (pi-coding-agent 1.3.0) virtual-model
+      // route state, turn_end/agent_before_settle boundary drafts and recovery context edits.
+      // A known event, NOT protocol drift: in the default branch below every occurrence put a
+      // visible "Unhandled agent event" card in the chat panel. Boundary drafts' custom_message
+      // and compaction entries have no other live signal, so those two are rendered here (data
+      // shapes copy the message_end-custom and replay-compaction emitters).
+      // custom_message (display) and compaction entries are rendered; custom / usage / context_edit
+      // entries have no UI here, and replay does not show custom or custom_message entries either.
+      const e = event.entry;
+      if (e?.type === "custom_message" && e.display === true) {
+        events.push({ type: "custom-message", data: { customType: e.customType, content: e.content, display: true, details: e.details, timestamp: Date.parse(e.timestamp) || state.now, entryId: e.id } });
+      } else if (e?.type === "compaction") {
+        events.push({ type: "compaction-summary-message", data: { summary: e.summary ?? "", tokensBefore: e.tokensBefore ?? 0, timestamp: Date.parse(e.timestamp) || state.now, entryId: e.id } });
+      }
+      break;
+    }
+
     default:
       // Surface unknown events so they aren't silently lost — an unhandled type
       // usually means upstream protocol drift. The shell warns once per type.

@@ -344,6 +344,41 @@ test("agent_settled on the SDK path: clears streaming + reports, but doesn't tou
   assert.equal(r.effects.reportStatus, true);
 });
 
+// ── entry_appended (SDK session event: a persisted entry was appended) ─
+// The SDK emits this when an extension calls pi.appendEntry, and (1.3.0) for virtual-model route
+// state, turn_end/agent_before_settle boundary drafts and recovery context edits. It is a known
+// event, not protocol drift: before this case existed every occurrence put a visible
+// "Unhandled agent event: entry_appended" card in the chat panel.
+test("entry_appended: recognized no-op (no drift warning, no diagnostic card)", () => {
+  const r = translateAgentEvent({ type: "entry_appended", entry: { type: "custom", customType: "x", data: {} } }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, []);
+  assert.equal(r.effects.reportStatus, undefined);
+});
+
+// 1.3.0 boundary drafts (an extension's turn_end / agent_before_settle handler) commit
+// custom_message and compaction entries whose ONLY live signal is entry_appended; the 1.3.0 TUI
+// renders both, so we must too.
+test("entry_appended: a displayed custom_message entry renders as one custom-message", () => {
+  const entry = { type: "custom_message", id: "e-cm", parentId: null, timestamp: "2026-10-16T00:00:01.000Z", customType: "ext-note", content: "hello", display: true, details: { k: 1 } };
+  const r = translateAgentEvent({ type: "entry_appended", entry }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, [{ type: "custom-message", data: { customType: "ext-note", content: "hello", display: true, details: { k: 1 }, timestamp: Date.parse(entry.timestamp), entryId: "e-cm" } }]);
+});
+
+test("entry_appended: a custom_message entry with display:false stays a no-op", () => {
+  const r = translateAgentEvent({ type: "entry_appended", entry: { type: "custom_message", id: "e-h", timestamp: "x", customType: "c", content: "c", display: false } }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, []);
+});
+
+test("entry_appended: a compaction entry renders as one compaction-summary-message", () => {
+  const entry = { type: "compaction", id: "e-cp", parentId: null, timestamp: "2026-10-16T00:00:02.000Z", summary: "sum", firstKeptEntryId: "e1", tokensBefore: 1234 };
+  const r = translateAgentEvent({ type: "entry_appended", entry }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, [{ type: "compaction-summary-message", data: { summary: "sum", tokensBefore: 1234, timestamp: Date.parse(entry.timestamp), entryId: "e-cp" } }]);
+});
+
 // ── unknown ──────────────────────────────────────────────────────────
 test("unknown event: flags unknownType and emits a hidden diagnostic custom-message", () => {
   const r = translateAgentEvent({ type: "totally_new_event" }, makeState());

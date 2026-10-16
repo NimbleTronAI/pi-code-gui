@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn, registerSecret } from "./logger.js";
+import { piAiNoticeMessage } from "./version-compare.js";
 import { getApiKey } from "./secrets.js";
 import { confirmRendererConsent } from "./renderer-consent.js";
 
@@ -496,12 +497,10 @@ export class PiService {
       confirmRendererConsent: (customType) => confirmRendererConsent(customType),
       notifyOutdatedPiAi: (installed, supported, belowFloor) => {
         const UPDATE = "Update";
-        // Below the floor is a compatibility problem (we drop to a legacy code path); merely
+        // Below the floor the TypeScript runtime cannot start (breakage); merely
         // behind this build's target is a nudge. Same one-click offer either way, different
         // severity and wording, so a routine "newer version exists" doesn't read as breakage.
-        const message = belowFloor
-          ? `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${supported}+. It still works via a legacy path, but update for full compatibility.`
-          : `A newer Pi (TypeScript) SDK is available: you have pi-ai ${installed}, this extension is built against ${supported}. Updating keeps model support and pricing in step.`;
+        const message = piAiNoticeMessage(installed, supported, belowFloor);
         const show = belowFloor ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
         void show(message, UPDATE).then((choice) => {
           if (choice === UPDATE) {
