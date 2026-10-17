@@ -161,3 +161,16 @@ test("a ready session clears the limited mode", () => {
   assert.equal(stateMod.state.sessionUnavailable, false);
   assert.equal(stateMod.state.promptInput.disabled, false);
 });
+
+test("summarization auto-retry-start shows the indicator and leaves a running tool block alone; compaction-end clears a leftover indicator", () => {
+  const doc = (globalThis as any).document;
+  toolsMod.handleToolStart({ toolCallId: "t-sum", toolName: "write", args: { path: "b.ts", content: "x" }, fromMessage: false });
+  handlers.handleAutoRetryStart({ attempt: 1, maxAttempts: 3, delayMs: 60000, summarization: true });
+  assert.ok(doc.getElementById("retry-indicator"), "retry indicator shown");
+  assert.ok(!doc.body.innerHTML.includes("retried"), "no tool block was marked retried");
+  assert.ok(stateMod.state.currentToolBlocks["t-sum"], "live tool correlation untouched");
+  handlers.handleCompactionEnd({ reason: "manual", aborted: false, willRetry: false, errorMessage: "boom" });
+  assert.equal(doc.getElementById("retry-indicator"), null, "compaction-end clears the leftover indicator");
+  assert.equal(stateMod.state.isRetrying, false);
+  toolsMod.handleToolEnd({ toolCallId: "t-sum", toolName: "write", result: { content: [] }, isError: false });
+});

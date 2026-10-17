@@ -270,6 +270,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       maxAttempts: z.number(),
       delayMs: z.number(),
       errorMessage: z.string().optional(),
+      /** Summarization (compaction/branch-summary) retry: no turn re-run, so tool blocks stay untouched. */
+      summarization: z.literal(true).optional(),
     }),
   }),
   z.object({

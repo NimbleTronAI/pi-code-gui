@@ -58,6 +58,8 @@ The translation layer:
 | `tool_execution_end` | `tool-end` or `bash-end` |
 | `compaction_start` / `compaction_end` | `compaction-start` / `compaction-end` + `compaction-summary-message` |
 | `auto_retry_start` / `auto_retry_end` | corresponding events |
+| `summarization_retry_scheduled` (1.3.0) | `auto-retry-start` with `summarization: true` (webview `handleAutoRetryStart` shows the countdown indicator, leaves tool blocks alone) |
+| `summarization_retry_attempt_start` / `_finished` (1.3.0) | `auto-retry-end` `{success:true, attempt:0}` (webview `handleAutoRetryEnd` clears the indicator; the outcome comes from `compaction_end`, whose handler also clears a leftover indicator) |
 | `thinking_level_changed` | `thinking-level-changed` + `status-update` |
 | `queue_update` | `queue-update` |
 | `message_end` (custom) | `custom-message` (with `display`, `details` fields forwarded) |
@@ -83,7 +85,8 @@ three `tool-start` emit sites — the two live ones and the replay loop in
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-10-16 — `entry_appended` renders displayed `custom_message` and `compaction` entries and is otherwise a recognised no-op; it used to fall to the diagnostic default and put a visible "Unhandled agent event" card in the chat on every extension `appendEntry` (verified against pi-coding-agent 1.3.0)
+> **Last updated:** 2026-10-17 — `summarization_retry_*` (provider error mid-compaction) mapped to the retry indicator instead of the "Unhandled agent event" card (verified against pi-coding-agent 1.3.0)
+> **Earlier:** 2026-10-16 — `entry_appended` renders displayed `custom_message` and `compaction` entries and is otherwise a recognised no-op; it used to fall to the diagnostic default and put a visible "Unhandled agent event" card in the chat on every extension `appendEntry` (verified against pi-coding-agent 1.3.0)
 > **Earlier:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical/Rust replay)
 > **Earlier:** 2026-06-24 — extracted the decision logic into the pure `translateAgentEvent` (`src/agent-events.ts`) with a per-event-type unit suite; `handleAgentEvent` is now a thin apply-mutations/emit/effects shell
 > **Earlier:** 2026-05-27 — added turn-end, message_update error, clarified user message_end

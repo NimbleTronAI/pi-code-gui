@@ -387,6 +387,19 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       events.push({ type: "auto-retry-end", data: { success: event.success, attempt: event.attempt, finalError: event.finalError } });
       break;
 
+    // SDK 1.3.0 (agent-session.d.ts:91-104): a provider error while summarizing (compaction or branch
+    // summary) is retried with backoff. Shown with the auto-retry indicator (flagged `summarization` so
+    // the webview does not touch tool blocks — no tools re-run). attempt_start/finished end the wait; the
+    // real outcome arrives as compaction_end. Previously these fell to the default "Unhandled" card.
+    case "summarization_retry_scheduled":
+      events.push({ type: "auto-retry-start", data: { attempt: event.attempt ?? 0, maxAttempts: event.maxAttempts ?? 0, delayMs: event.delayMs ?? 0, errorMessage: event.errorMessage, summarization: true } });
+      break;
+
+    case "summarization_retry_attempt_start":
+    case "summarization_retry_finished":
+      events.push({ type: "auto-retry-end", data: { success: true, attempt: 0 } });
+      break;
+
     case "agent_settled":
       // rust-pi terminal "run fully settled" event (added to the protocol after the agent_end
       // pair — v0.1.22). Not a UI event of its own; used as a safety net so the streaming/active

@@ -417,3 +417,30 @@ test("normalizeToolArgs: non-record junk (array, primitive) → {}", () => {
   assert.deepEqual(normalizeToolArgs(42), {});
   assert.deepEqual(normalizeToolArgs(true), {});
 });
+
+// ── summarization_retry_* (SDK 1.3.0: provider error mid-compaction / branch summary) ─
+// Each used to fall to the default branch and put a visible "Unhandled agent event" card in chat.
+function assertNoJunk(r: ReturnType<typeof translateAgentEvent>): void {
+  assert.equal(r.effects.unknownType, undefined);
+  assert.ok(!r.events.some((e: any) => e.type === "custom-message"), "no diagnostic custom-message card");
+}
+
+test("summarization_retry_scheduled: shows the retry indicator (auto-retry-start, summarization-flagged, no tool-call reset)", () => {
+  const r = translateAgentEvent({ type: "summarization_retry_scheduled", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "overloaded" }, makeState());
+  assertNoJunk(r);
+  assert.deepEqual(r.events, [{ type: "auto-retry-start", data: { attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "overloaded", summarization: true } }]);
+  assert.notEqual(r.clearToolCalls, true);
+});
+
+test("summarization_retry_attempt_start (compaction + branchSummary) and _finished clear the indicator via auto-retry-end success", () => {
+  const evs = [
+    { type: "summarization_retry_attempt_start", source: "compaction", reason: "manual" },
+    { type: "summarization_retry_attempt_start", source: "branchSummary" },
+    { type: "summarization_retry_finished" },
+  ];
+  for (const ev of evs) {
+    const r = translateAgentEvent(ev, makeState());
+    assertNoJunk(r);
+    assert.deepEqual(r.events, [{ type: "auto-retry-end", data: { success: true, attempt: 0 } }]);
+  }
+});

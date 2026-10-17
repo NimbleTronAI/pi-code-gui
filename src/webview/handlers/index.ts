@@ -863,6 +863,9 @@ export function handleCompactionStart(data: MsgData<"compaction-start">): void {
 export function handleCompactionEnd(data: MsgData<"compaction-end">): void {
     state.isCompacting = false;
     removeCompactionIndicator();
+    // A summarization retry whose attempt_start/finished never arrived must not leave its indicator up.
+    state.isRetrying = false;
+    removeRetryIndicator();
     if (data.aborted) {
       addStatusMessage(data.reason === "manual" ? "Compaction cancelled" : "Auto-compaction cancelled");
     } else if (data.errorMessage) {
@@ -881,7 +884,7 @@ export function handleAutoRetryStart(data: MsgData<"auto-retry-start">): void {
     // instead of reconciling against a stale entry (a wrong/partial file path from the aborted
     // attempt sticking on screen). Mirrors the translate-side clearToolCalls on auto_retry_start
     // so both sides reset in lockstep. Rendered blocks stay as muted history.
-    finalizeInFlightBlocksForRetry();
+    if (!data.summarization) { finalizeInFlightBlocksForRetry(); }
     removeRetryIndicator();
     addRetryIndicator(data.attempt, data.maxAttempts, data.delayMs);
     updateStreamingState();
