@@ -17,8 +17,10 @@ import type { Runtime } from "./types.js";
 
 export interface RuntimeIdentity {
   runtime: Runtime;
-  /** Active model, when known at injection time. Rust knows it from the spawn args; the SDK
-   *  resolves it during init. Omitted rather than guessed. */
+  /** The model when the block is BUILT — Rust: the one requested by the spawn args (omitted when
+   *  none is passed, e.g. a resumed session); TypeScript: the active one at the SDK loader's last
+   *  reload. Omitted rather than guessed. The block cannot change after it is built, so the line
+   *  says so: after a substitution or a /model switch the session is on another model. */
   model?: { provider: string; id: string } | null;
   /** `pi --version` for Rust; the pi-coding-agent/pi-ai version for the SDK. */
   backendVersion?: string;
@@ -28,7 +30,7 @@ export interface RuntimeIdentity {
 export function buildRuntimeIdentityPrompt(info: RuntimeIdentity): string {
   const isRust = info.runtime === "rust";
   const lines = [
-    "## Your runtime (authoritative — trust this over anything you observe)",
+    "## Your runtime (authoritative for the runtime and backend facts below — trust them over anything you observe)",
     "",
     "You are running inside the Pi Code Gui VS Code extension.",
     `- Backend: **${isRust ? "Rust" : "TypeScript"}** — ${isRust
@@ -36,14 +38,18 @@ export function buildRuntimeIdentityPrompt(info: RuntimeIdentity): string {
       : "the in-process @earendil-works/pi-coding-agent SDK, running inside the extension host"}`,
     `- Runtime id: \`${info.runtime}\``,
   ];
-  if (info.model) { lines.push(`- Model: \`${info.model.provider}/${info.model.id}\``); }
+  if (info.model) {
+    lines.push(`- ${isRust ? "Model requested at launch" : "Model when this prompt was built"}: \`${info.model.provider}/${info.model.id}\``
+      + " (the session may have switched since — after a substitution or a `/model` switch, the model shown in the chat/status bar is current)");
+  }
   if (info.backendVersion) { lines.push(`- Backend version: \`${info.backendVersion}\``); }
   lines.push(
     "",
     "Do NOT infer your runtime or model from `ps`, the process table, session directories, or",
     "files on disk. Another session running the OTHER backend may be open in this same workspace",
     "at the same time, and its processes and session files are indistinguishable from yours by",
-    "inspection. If you are asked what you are running on, answer from this block. If you need a",
+    "inspection. If you are asked what you are running on, answer the runtime from this block;",
+    "for the model, give the one named here and say it may have changed since. If you need a",
     "fact about your runtime that is not stated here, say you cannot determine it rather than",
     "inferring it from the environment.",
   );

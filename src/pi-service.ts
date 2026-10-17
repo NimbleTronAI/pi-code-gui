@@ -533,7 +533,43 @@ export class PiService {
       setCycleModels: (list) => { this.cycleModels = list; },
       setAutoCompactionEnabled: (v) => { this._autoCompactionEnabled = v; },
       setAutoRetryEnabled: (v) => { this._autoRetryEnabled = v; },
+      // Init's substitution bypasses PiService.setModel, so do its cycle-index step here (status
+      // was already re-reported by RustService's refreshState); then OFFER — never write — a
+      // default update, only for a new session's stale default.
+      modelSubstituted: (info) => {
+        this.cycleIndex = Math.max(0, this.cycleModels.findIndex((m) => m.provider === info.substitute.provider && m.id === info.substitute.id));
+        if (info.offerDefault && info.stale.id) { void this.offerDefaultModelUpdate(info.stale, info.substitute); }
+      },
     };
+  }
+
+  /** The configured default names a model this session couldn't resolve, and init substituted
+   *  one. The default is the user's: offer the existing ★ save choice as one click, and write
+   *  nothing on Keep or dismiss. Writes the model NAMED ON THE BUTTON (not whatever the session
+   *  runs by the time of the click), only if the default is still the stale one, and at the scope
+   *  that holds it (Workspace if either key has a workspace value, else Global). */
+  private async offerDefaultModelUpdate(stale: { provider?: string; id?: string }, sub: { provider: string; id: string }): Promise<void> {
+    const staleLabel = `${stale.provider ? `${stale.provider}/` : ""}${stale.id}`;
+    const subLabel = `${sub.provider}/${sub.id}`;
+    const [save, keep] = buildDefaultChoiceItems(subLabel, staleLabel);
+    const pick = await vscode.window.showWarningMessage(
+      `Your default model ${staleLabel} isn't available, so this session is using ${subLabel}. Update your default for future sessions?`,
+      save.label, keep.label,
+    );
+    if (pick !== save.label) { return; }
+    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const curProvider = cfg.get<string>("defaultModelProvider")?.trim() || undefined;
+    const curId = cfg.get<string>("defaultModelId")?.trim() || undefined;
+    if (curProvider !== (stale.provider || undefined) || curId !== stale.id) {
+      piWarn(`Default model changed to ${curProvider ?? "?"}/${curId ?? "?"} before the update offer was answered — not overwriting it with ${subLabel}`);
+      return;
+    }
+    // Both keys, one scope: a workspace value on EITHER key would otherwise override a Global
+    // write and leave a mixed provider/id pair. No WorkspaceFolder arm — this configuration has
+    // no resource to target, so such a write would reject.
+    const inWorkspace = ["defaultModelProvider", "defaultModelId"].some((k) => cfg.inspect<string>(k)?.workspaceValue !== undefined);
+    const scope = inWorkspace ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+    this.saveDefaultModel(sub, scope);
   }
 
   /** Runtime-agnostic session entries for the Open Sessions tree. The TS SDK
@@ -1196,14 +1232,14 @@ export class PiService {
   // ── Default model / thinking persistence ──────────────
 
   /** Save the current model as the default for future sessions. */
-  saveDefaultModel(): void {
-    if (!this._model?.provider || !this._model?.id) {
+  saveDefaultModel(target: { provider?: string; id?: string } | null = this._model, scope: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global): void {
+    if (!target?.provider || !target?.id) {
       piWarn("saveDefaultModel() called but no model is active — ignoring");
       return;
     }
     const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    cfg.update("defaultModelProvider", this._model.provider, vscode.ConfigurationTarget.Global);
-    cfg.update("defaultModelId", this._model.id, vscode.ConfigurationTarget.Global);
+    cfg.update("defaultModelProvider", target.provider, scope);
+    cfg.update("defaultModelId", target.id, scope);
   }
 
   /** Save the current thinking level as the default for future sessions. */

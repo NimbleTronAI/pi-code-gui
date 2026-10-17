@@ -46,7 +46,7 @@ Decision logic, no `vscode` import, directly unit-tested:
 | `panel-restore.ts` | reviving a panel from serialized state | `panel serializer` |
 | `runtime-pick.ts` | which runtime a new session gets | `runtime-detection.ts` |
 | `version-compare.ts` | semver-ish compare; which SDK notice to show | `sdk-service.ts` |
-| `runtime-identity.ts` | the authoritative "what am I running on" block | both backends |
+| `runtime-identity.ts` | the "what am I running on" block (authoritative for runtime/backend; the model line is as of launch/last reload) | both backends |
 | `rpc-behavior.ts` | streaming tool-call contract over the Rust RPC | `rust-service.ts` |
 | `rust-events.ts` | normalising + routing raw Rust events, drift probes | `rust-service.ts` |
 | `agent-events.ts` | agent event → `PiServiceEvent` translation | shared |
@@ -87,5 +87,6 @@ vs large files. It is not application code; edit freely.
 - [PiBackend](pi-backend.md) — the runtime seam
 - [TDD discipline](../discipline/tdd.md) — how these are tested
 
-> **Last updated:** 2026-08-05 — new page. 29 modules had no mention anywhere in the
+> **Last updated:** 2026-10-17 — `runtime-identity.ts` row: the model line is no longer "authoritative" (fixed when built)
+> **Earlier:** 2026-08-05 — new page. 29 modules had no mention anywhere in the
 > wiki; this indexes all of them and records the extraction pattern they follow.

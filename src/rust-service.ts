@@ -56,6 +56,54 @@ export interface RustInitResult {
 }
 
 /**
+ * The get_state fields whose ABSENCE means the RPC shape drifted — judged by key presence, not
+ * value. `model: null` is NOT drift: rust-pi 0.8.0 sends exactly that (with every other key,
+ * thinkingLevel included) when `--model` names nothing it knows (black-box probe, 2026-10-17).
+ * The unresolved-model step in initialize() owns that case and says what is actually wrong.
+ * `modelId` counts as present because applyState accepts it as a fallback.
+ */
+export function getStateMissingFields(data: unknown): string[] {
+  const d = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const missing: string[] = [];
+  const m = d.model ?? d.activeModel;
+  const hasModelKey = "model" in d || "activeModel" in d || typeof d.modelId === "string";
+  const wrongShape = m !== null && m !== undefined && !(typeof m === "object" && typeof (m as { id?: unknown }).id === "string");
+  if (!hasModelKey || wrongShape) { missing.push("model"); }
+  if ((d.thinkingLevel ?? d.thinking) === undefined) { missing.push("thinkingLevel"); }
+  return missing;
+}
+
+export type StaleDefaultExit = "missing-key" | "model-not-found";
+
+/**
+ * Did the binary exit at startup BECAUSE of the configured default model? rust-pi 0.8.0 (black-box
+ * probe, 2026-10-17, scratch agent home) exits rc 1 before any RPC with exactly one of two lines:
+ * `No API key found for provider P. Set env var or use --api-key.` (the default's provider has no
+ * key; checked before the model) or `Model P/I not found` (`Model I not found` with no
+ * --provider). Anything else — another provider or id, a usage error (rc 2), an OAuth expiry, an
+ * exec failure, a timeout whose "Command:" argv merely contains the flags — returns null and is not
+ * retried (C25). The captured text is compared by equality: ids can contain `/` and `.`.
+ * A provider-only default (no id) returns null: nothing would choose or announce a model for it.
+ */
+export function classifyStaleDefaultExit(msg: string, provider?: string, modelId?: string): StaleDefaultExit | null {
+  if (!modelId || !/^Rust process exited(?: immediately)? \(code 1\)/.test(msg)) { return null; }
+  const lines = msg.split(" — last stderr: ").slice(1).flatMap((s) => s.split("\n")).map((s) => s.trim());
+  // The binary rejected the WHOLE models.json (probed, 0.8.0: it loads none of the file), so a
+  // default the file defined reads "not found" — the file is the cause, not the default (Unit 5b
+  // review S2). Not retried; the start fails as before and its last stderr names models.json.
+  // The `File: …/models.json` line too: RustProcess keeps only the last 500 chars of stderr, which
+  // cuts the leading Warning line first (5c review SF2).
+  if (lines.some((l) => /^Warning: models\.json error:/.test(l) || /^File: .*[\\/]models\.json$/.test(l))) { return null; }
+  for (const line of lines) {
+    const key = /^No API key found for provider (\S+?)\. Set env var or use --api-key\.$/.exec(line);
+    if (key && (!provider || key[1] === provider)) { return "missing-key"; }
+    const gone = /^Model (.+) not found$/.exec(line);
+    if (gone && gone[1] === (provider ? `${provider}/${modelId}` : modelId)) { return "model-not-found"; }
+  }
+  return null;
+}
+
+/**
  * The callback surface RustService needs from PiService. PiService supplies an
  * implementation (closures over its own fields) when it constructs the service.
  */
@@ -86,6 +134,15 @@ export interface RustHost {
   setCycleModels(list: CycleModel[]): void;
   setAutoCompactionEnabled(v: boolean): void;
   setAutoRetryEnabled(v: boolean): void;
+  /** Init swapped in a substitute because the requested model could not be resolved (a stale
+   *  default on a new session, or a resumed session's withdrawn model). PiService owns the
+   *  post-step: cycle index, and — only when `offerDefault` — OFFERING to update the user's
+   *  default. RustService never writes settings. Optional: only PiService supplies it. */
+  modelSubstituted?(info: {
+    stale: { provider?: string; id?: string };
+    substitute: { provider: string; id: string; name?: string };
+    offerDefault: boolean;
+  }): void;
 }
 
 /** The pi-code-gui settings RustService consumes, resolved to plain values. */
@@ -299,10 +356,13 @@ export class RustService implements PiBackend {
     // the workspace, session dir and process table look identical to a TypeScript session's, and
     // a reviewer that guessed from `ps` picked up ANOTHER session's rust-pi and misreported
     // itself. Same builder as the SDK path, so the two can never tell different stories.
+    const backendVersion = status.version?.match(/\d+\.\d+\.\d+/)?.[0];
     args.push("--append-system-prompt", buildRuntimeIdentityPrompt({
       runtime: "rust",
-      model: provider && modelId ? { provider, id: modelId } : null,
-      backendVersion: status.version?.match(/\d+\.\d+\.\d+/)?.[0],
+      // Only what the spawn REQUESTS: a restored/continued session passes no --provider/--model,
+      // so naming the configured default there told it a model it never asked for.
+      model: !restoring && provider && modelId ? { provider, id: modelId } : null,
+      backendVersion,
     }));
     args.push("--extension-policy", cfg.rustExtensionPolicy?.trim() || "balanced");
 
@@ -332,9 +392,15 @@ export class RustService implements PiBackend {
     if (noExtensions) { args.push("--no-extensions"); }
 
     // Inherit env + runtime API-key overrides so Rust can authenticate.
+    // These two are the ONLY keys the extension injects (SecretStorage → the binary's env;
+    // setupModels' piEnv adds no credential). The binary holds them, so credentialPredicate()
+    // must count them too: deps.hasCredential reads process.env, which never carries them
+    // (Unit 5b review S1 — the substitution called an injected key "no credential").
     const env: NodeJS.ProcessEnv = { ...process.env };
-    if (cfg.anthropicApiKey) { env.ANTHROPIC_API_KEY = cfg.anthropicApiKey; }
-    if (cfg.openaiApiKey) { env.OPENAI_API_KEY = cfg.openaiApiKey; }
+    const injected = new Set<string>();
+    if (cfg.anthropicApiKey) { env.ANTHROPIC_API_KEY = cfg.anthropicApiKey; injected.add("anthropic"); }
+    if (cfg.openaiApiKey) { env.OPENAI_API_KEY = cfg.openaiApiKey; injected.add("openai"); }
+    this._injectedCredentials = injected;
 
     // Model catalog: override the Rust binary's stale built-in model list with the
     // bundled Pi catalog (writes models.json in the relocated agent home). Never
@@ -361,8 +427,44 @@ export class RustService implements PiBackend {
     this._thinkingLevel = thinking; this.host.rememberReasoning();
 
     let warning: string | undefined;
+    // A stale default the binary REJECTS AT SPAWN (C25, Unit 5 review N8/R3): it exits before any
+    // RPC, so the unresolved-model recovery below never ran. Retry ONCE without --provider/--model
+    // and then force that recovery — with no flags the binary comes up on its OWN built-in default
+    // (probed: another provider, even with no key for it), which must never be kept silently.
+    // Every spawn below goes through here; `args` is stripped in place, so a later
+    // --no-extensions respawn stays flag-free and the once-guard cannot fire twice. An exit is not
+    // a timeout, so the failed attempt spends none of the readiness budget; the retry gets its own
+    // budget, exactly like the --no-extensions retry.
+    // (`as`, not an annotation: assigned inside the closure, so TS must not narrow it to null.)
+    let staleExit = null as StaleDefaultExit | null;
+    const binaryPath = status.binaryPath;
+    const startup = async (): Promise<void> => {
+      try {
+        await this.spawnWithinBudget(binaryPath, args, cwd, env);
+      } catch (e: unknown) {
+        const first = e instanceof Error ? e.message : String(e);
+        const kind = !restoring && !staleExit ? classifyStaleDefaultExit(first, provider, modelId) : null;
+        if (!kind) { throw e; }
+        staleExit = kind;
+        piWarn(`Rust start failed on the configured default ${provider ? `${provider}/` : ""}${modelId} (${kind}): ${first}; retrying once without --provider/--model`);
+        for (const f of ["--provider", "--model"]) {
+          const i = args.indexOf(f);
+          if (i >= 0) { args.splice(i, 2); }
+        }
+        const ip = args.indexOf("--append-system-prompt");
+        if (ip >= 0) { args[ip + 1] = buildRuntimeIdentityPrompt({ runtime: "rust", model: null, backendVersion }); }
+        this.process?.dispose();
+        this.process = null;
+        try {
+          await this.spawnWithinBudget(binaryPath, args, cwd, env);
+        } catch (e2: unknown) {
+          const retry = e2 instanceof Error ? e2.message : String(e2);
+          throw new Error(`${first} — retried once without --provider/--model, which also failed: ${retry}`);
+        }
+      }
+    };
     try {
-      await this.spawnWithinBudget(status.binaryPath, args, cwd, env);
+      await startup();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       // Recover from an extension-parse conflict OR from a package that HANGS startup, and only
@@ -395,7 +497,7 @@ export class RustService implements PiBackend {
         noExtensions = true;
         warning = "rust-extensions-auto-disabled";
         try {
-          await this.spawnWithinBudget(status.binaryPath, args, cwd, env);
+          await startup();
         } catch (e2: unknown) {
           const msg2 = e2 instanceof Error ? e2.message : String(e2);
           // dispose() BEFORE dropping the reference: spawn() rejects on the readiness-probe
@@ -432,13 +534,13 @@ export class RustService implements PiBackend {
         // names with no version negotiation. If the reply lacks the fields every
         // tested version (0.1.18–87b70f74) carries, the shape has drifted — say so
         // once instead of degrading into scattered per-capability oddities.
-        const d = (state.data ?? {}) as { model?: { id?: unknown }; activeModel?: unknown; thinkingLevel?: unknown; thinking?: unknown };
+        const missing = getStateMissingFields(state.data);
         // A drifted RPC SHAPE is a permanent structural mismatch, not a transient
         // capability degradation (which can recover and re-warn) — so it uses its own
         // one-shot flag rather than the warnDegraded/recordCapOk tracker.
-        if (!this._shapeProbeWarned && (!(d.model?.id ?? d.activeModel) || (d.thinkingLevel ?? d.thinking) === undefined)) {
+        if (!this._shapeProbeWarned && missing.length > 0) {
           this._shapeProbeWarned = true;
-          this.host.emit({ type: "custom-message", data: { customType: "error", content: "Rust Pi's get_state reply is missing expected fields (model/thinkingLevel) — the binary's RPC shape may have drifted from the version this extension was tested against. Status readouts may be wrong; consider matching the pinned Rust Pi version.", timestamp: Date.now() } });
+          this.host.emit({ type: "custom-message", data: { customType: "error", content: `Rust Pi's get_state reply is missing expected fields (${missing.join("/")}) — the binary's RPC shape may have drifted from the version this extension was tested against. Status readouts may be wrong; consider matching the pinned Rust Pi version.`, timestamp: Date.now() } });
         }
       }
     } catch (e: unknown) {
@@ -458,7 +560,7 @@ export class RustService implements PiBackend {
         warning = "rust-extensions-auto-disabled";
         this.noticeExtensionsAutoDisabled(blocking, 15);
         try {
-          await this.spawnWithinBudget(status.binaryPath, args, cwd, env);
+          await startup();
         } catch (e2: unknown) {
           const m2 = e2 instanceof Error ? e2.message : String(e2);
           this.process?.dispose();
@@ -488,9 +590,14 @@ export class RustService implements PiBackend {
       return { success: false, error: "Rust Pi exited during initialization. Check the Pi Code Gui output channel for the binary's stderr." };
     }
 
+    // The binary's whole catalog, before credential scoping — lets the unresolved-model step
+    // tell "no longer in the catalog" from "in the catalog, but its provider has no credential".
+    let catalogKeys: Set<string> | null = null;
     try {
       const models = await proc.request(RUST_RPC.getAvailableModels, {}, 15000);
-      const list = this.scopeModels(parseRustModels(models.data));
+      const all = parseRustModels(models.data);
+      if (models.success && all.length > 0) { catalogKeys = new Set(all.map((m) => `${m.provider}/${m.id}`)); }
+      const list = this.scopeModels(all);
       if (models.success && list.length > 0) { this._availableModels = list; this._modelsFetchedAt = Date.now(); this.host.setCycleModels(list); this.recordCapOk("models"); }
       else {
         // Distinguish "genuinely no models" from "entries arrived but none parsed" (a shape
@@ -559,40 +666,122 @@ export class RustService implements PiBackend {
     // Loud failure on an unresolved model. An invalid `defaultModelId` (e.g. the
     // non-existent "deepseek-v4-pro") leaves the Rust session with no active model
     // and otherwise SILENTLY inert — every prompt/command no-ops. Surface it.
-    if (!this._model) {
-      piWarn(`Rust session has no resolved model (configured: ${provider ?? "?"}/${modelId ?? "?"})`);
-      const choices = this.host.getCycleModels();
+    if (!this._model || staleExit) {
+      piWarn(staleExit
+        ? `Rust session restarted without its configured default ${provider ?? "?"}/${modelId ?? "?"} (${staleExit}); the binary's own pick is ${this._model ? `${this._model.provider}/${this._model.id}` : "none"} — substituting`
+        : `Rust session has no resolved model (configured: ${provider ?? "?"}/${modelId ?? "?"})`);
+      // After a stale exit, never the default the binary just rejected; after a missing-key exit,
+      // never the provider the binary said has no key, and never a fail-open (unscoped) list —
+      // the substitute must be one the user can authenticate to.
+      const has = this.credentialPredicate();
+      const rejected = (m: { provider: string; id: string }): boolean => m.id === modelId && (!provider || m.provider === provider);
+      const choices = !staleExit ? this.host.getCycleModels()
+        : this.host.getCycleModels().filter((m) => !rejected(m)
+          && (staleExit !== "missing-key" || (m.provider !== provider && has(m.provider))));
 
-      // RECOVER A RESUMED SESSION RATHER THAN LEAVING IT INERT.
+      // RECOVER RATHER THAN LEAVING THE SESSION INERT.
       //
-      // A session records the model it ran on, and that model can simply cease to exist —
-      // withdrawn upstream and retired from models.json, or its provider's credential removed.
-      // The session then reopens with no active model and every prompt silently no-ops. Measured
-      // after DeepSeek withdrew deepseek-v4-flash-vision-exp: a previously working session
-      // reopened dead, and the only way out was for the user to know to run /model.
+      // Two ways in. (1) A RESUMED session records the model it ran on, and that model can cease
+      // to exist — withdrawn upstream and retired from models.json, or its provider's credential
+      // removed. (2) A NEW session starts on the configured DEFAULT, which can go stale the same
+      // way: the founder's default named a model the catalog had dropped, and the session came up
+      // dead with "could not be resolved" because this recovery used to run for (1) only.
       //
       // Prefer the same provider, so the substitute bills and behaves as much like the original
       // as possible; otherwise take the first model that is actually available. We SAY what
-      // happened — silently swapping the model of a resumed conversation would change what the
-      // user is paying for without telling them.
-      const substitute = choices.find((m) => m.provider === provider) ?? choices[0];
+      // happened — a silent swap would change what the user is paying for without telling them.
+      // A new session substitutes only when a default WAS configured: with none, nothing went
+      // stale, and the error below is the honest answer.
+      // A configured default that IS listed did not go stale — get_state merely reported no
+      // model (e.g. that RPC failed). Re-select it quietly: no "stale" notice, no offer.
+      const listed = !restoring && modelId ? choices.find((m) => m.id === modelId && (!provider || m.provider === provider)) : undefined;
+      const substitute = listed ?? choices.find((m) => m.provider === provider) ?? choices[0];
       let recovered = false;
-      if (restoring && substitute) {
-        const picked = await this.setModel(substitute.provider, substitute.id).catch(() => null);
-        if (picked) {
+      let failure: string | null = null;
+      if ((restoring || modelId) && substitute) {
+        const r = await this.trySetModel(substitute.provider, substitute.id);
+        if ("error" in r) {
+          failure = r.error;
+          piWarn(`Substitution to ${substitute.provider}/${substitute.id} failed: ${r.error}`);
+        } else {
           recovered = true;
-          const content = `⚠ This session's recorded model (\`${modelId ?? "unknown"}\`) is no longer available — it may have been withdrawn by the provider. Switched to **${picked.name ?? picked.id}** so the session can run. Use \`/model\` to pick a different one.`;
-          piWarn(`Substituted ${substitute.provider}/${substitute.id} for the session's unavailable ${provider ?? "?"}/${modelId ?? "?"}`);
-          this.host.emit({ type: "custom-message", data: { customType: "warning", content, timestamp: Date.now() } });
+          const picked = r.model;
+          const label = `**${picked.name ?? picked.id}** (\`${substitute.provider}/${substitute.id}\`)`;
+          const crossProvider = provider && substitute.provider !== provider ? ` from provider \`${substitute.provider}\` instead of \`${provider}\`` : "";
+          let content: string;
+          if (listed) {
+            content = "";
+            piWarn(`Re-selected the configured default ${substitute.provider}/${substitute.id} (get_state reported no active model)`);
+          } else if (restoring) {
+            // The recorded model itself is unknowable here (get_state reports model: null), so
+            // name none rather than the configured default, which may differ.
+            content = `⚠ This session's recorded model is no longer available — it may have been withdrawn by the provider. Switched to ${label}${crossProvider} so the session can run. Use \`/model\` to pick a different one.`;
+            piWarn(`Substituted ${substitute.provider}/${substitute.id} for a resumed session's unavailable model (configured default ${provider ?? "?"}/${modelId ?? "?"})`);
+          } else {
+            const stale = `${provider ? `${provider}/` : ""}${modelId}`;
+            const inCatalog = catalogKeys !== null && [...catalogKeys].some((k) => (provider ? k === stale : k.endsWith(`/${modelId}`)));
+            const why = staleExit === "missing-key"
+              ? `can't be used here — Rust Pi found no API key for its provider${provider ? ` \`${provider}\`` : ""}`
+              : staleExit === "model-not-found" && inCatalog
+              ? "isn't available to this session — Rust Pi rejected it at startup as not found"
+              : catalogKeys === null
+              ? "isn't available to this session (it is not in the model catalog, or its provider has no credential)"
+              : inCatalog
+                ? "isn't available to this session — it is in the model catalog, but its provider has no credential"
+                : "is no longer in the model catalog";
+            content = `⚠ Your default model \`${stale}\` ${why}, so this session is using ${label}${crossProvider || " instead"} — a different model can bill differently. Use \`/model\` to pick another.`;
+            // No offer follows a missing-key exit, so this card is the only channel: say what
+            // fixes it for every session, not only this one (Unit 5b review S3).
+            if (staleExit === "missing-key") {
+              // The binary checks --provider before the model, so with a provider set changing
+              // only the id repeats the missing-key exit: name both settings (Unit 5c review SF-B).
+              content += provider
+                ? ` To use it here, add an API key for \`${provider}\`; to stop this notice, change \`pi-code-gui.defaultModelProvider\` and \`pi-code-gui.defaultModelId\`.`
+                : " To use it here, add an API key for its provider; to stop this notice, change `pi-code-gui.defaultModelId`.";
+            }
+            piWarn(`Substituted ${substitute.provider}/${substitute.id} for the configured default ${stale}`);
+          }
+          if (content) { this.host.emit({ type: "custom-message", data: { customType: "warning", content, timestamp: Date.now() } }); }
+          // Re-read state: init already reported status BEFORE this step, so the status bar would
+          // otherwise show no model until the next turn.
+          await this.refreshState();
+          // A NEW session starts at the configured thinking level. 0.8.0 keeps the level across
+          // set_model (probed: off→off, high→high), but a binary that re-picks a level for the new
+          // model would otherwise leave the session on its own (possibly "max") choice.
+          if (!restoring && this._thinkingLevel !== thinking) { await this.setThinkingLevel(thinking); }
+          // A missing-key default is not shown to be stale — only the key is missing in THIS
+          // environment (the founder's default lives in a profile shared with another machine).
+          // The catalog can't tell: 0.8.0's get_available_models omits key-based providers that
+          // have no key (probed). Announce the substitute, but never offer to overwrite that default.
+          const keyOnly = staleExit === "missing-key";
+          this.host.modelSubstituted?.({
+            stale: { provider, id: modelId },
+            substitute: { provider: substitute.provider, id: substitute.id, name: picked.name },
+            offerDefault: !restoring && !listed && !keyOnly,
+          });
         }
       }
 
+      if (!recovered && staleExit) {
+        // The session would otherwise run on the binary's own pick — a model nobody chose — under
+        // a "No model is active" card that is false. Fail loudly, as this start did before.
+        this.process?.dispose();
+        this.process = null;
+        const stale = `${provider ? `${provider}/` : ""}${modelId}`;
+        const why = failure && substitute
+          ? `switching to ${substitute.provider}/${substitute.id} failed (${failure})`
+          : staleExit === "missing-key"
+            ? `no model from a provider with a credential is available. ${provider ? `No API key found for provider \`${provider}\` — add a key, or change \`pi-code-gui.defaultModelProvider\` and \`pi-code-gui.defaultModelId\`` : "No API key found for its provider — add a key, or change `pi-code-gui.defaultModelId`"}`
+            : "no other available model was found";
+        return { success: false, error: `Failed to start Rust Pi: the binary rejected your default model \`${stale}\` (${staleExit === "missing-key" ? "no API key for its provider" : "not found"}). Retried without your default model \`${stale}\`, but ${why}.` };
+      }
       if (!recovered) {
         const valid = choices.slice(0, 8).map((m) => m.id).join(", ");
         const want = restoring
           ? "this session's recorded model"
           : (modelId ? `"${modelId}"${provider ? ` (provider "${provider}")` : ""}` : "your configured model");
-        const content = `⚠ No model is active — ${want} could not be resolved, so this Rust session can't run. Pick a valid model with \`/model\`${valid ? ` (e.g. ${valid})` : ""}, or fix the \`pi-code-gui.defaultModelId\` setting.`;
+        const failed = failure && substitute ? `, and switching to ${substitute.provider}/${substitute.id} failed (${failure})` : "";
+        const content = `⚠ No model is active — ${want} could not be resolved${failed}, so this Rust session can't run. Pick a valid model with \`/model\`${valid ? ` (e.g. ${valid})` : ""}, or fix the \`pi-code-gui.defaultModelId\` setting.`;
         this.host.emit({ type: "custom-message", data: { customType: "error", content, timestamp: Date.now() } });
       }
     }
@@ -1306,9 +1495,20 @@ export class RustService implements PiBackend {
     // made this untestable: a test could only assert scoping if the machine RUNNING it happened
     // to hold the credential, so it passed locally and failed in CI, where neither the env var
     // nor ~/.pi/agent/auth.json exists.
-    const has = this.deps.hasCredential
+    // Always keep the running model's provider: its credential may live where the predicate
+    // cannot see it (cloud config, a role), and the user must be able to /model back to it.
+    const has = this.credentialPredicate();
+    const cur = this._model?.provider;
+    return scopeModelsToCredentials(list, (p) => p === cur || has(p));
+  }
+
+  /** The credential test scopeModels uses, shared with the stale-default recovery: the deps
+   *  predicate (process.env + auth.json) OR a key this service injected into the binary's env. */
+  private credentialPredicate(): (provider: string) => boolean {
+    const base = this.deps.hasCredential
       ?? ((prov: string) => providerHasCredential(prov, process.env, oauthProviders(defaultRustAgentDir())));
-    return scopeModelsToCredentials(list, has);
+    const injected = this._injectedCredentials;
+    return (prov: string) => injected.has(prov) || base(prov);
   }
 
   /** Plan mode, tracked here because the binary does not report it.
@@ -1330,6 +1530,8 @@ export class RustService implements PiBackend {
    *  instead would show a chip that the session is not actually obeying — the same class of
    *  error as a confident wrong cost. Recorded at spawn, and only a restart moves it. */
   private _approvalAtStart: ApprovalMode = "always-ask";
+  /** Providers whose API key initialize() injected into the binary's env (from SecretStorage). */
+  private _injectedCredentials = new Set<string>();
   get approvalMode(): ApprovalMode { return this._approvalAtStart; }
   setApprovalAtStart(mode: ApprovalMode): void { this._approvalAtStart = mode; }
 
@@ -1405,6 +1607,20 @@ export class RustService implements PiBackend {
     if (!resp) { return null; }
     this.applyState({ model: resp.data });
     return this._model;
+  }
+
+  /** set_model WITHOUT emitting: the reason comes back to the caller — the init-time
+   *  substitution folds it into its own single error card instead of a second one. A throw or
+   *  timeout becomes `{ error }` too. setModel keeps its emit-on-failure for every other caller. */
+  private async trySetModel(provider: string, id: string): Promise<{ model: { id?: string; name?: string; provider?: string } } | { error: string }> {
+    try {
+      const resp = await this.request(RUST_RPC.setModel, { provider, modelId: id }, 15000);
+      if (!resp.success) { return { error: resp.error ?? "unknown error" }; }
+      this.applyState({ model: resp.data });
+      return this._model ? { model: this._model } : { error: "the binary accepted the switch but reported no model" };
+    } catch (e: unknown) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   /** Set the thinking level on the wire (RPC). Returns the OPTIMISTIC level immediately so the

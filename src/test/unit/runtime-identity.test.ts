@@ -27,11 +27,40 @@ test("carries the runtime id verbatim, so an agent can quote it without paraphra
 
 test("includes the model when known, and OMITS it rather than guessing when not", () => {
   const withModel = buildRuntimeIdentityPrompt({ runtime: "rust", model: { provider: "deepseek", id: "deepseek-v4-pro" } });
-  assert.match(withModel, /Model: `deepseek\/deepseek-v4-pro`/);
-  for (const m of [null, undefined]) {
-    assert.doesNotMatch(buildRuntimeIdentityPrompt({ runtime: "rust", model: m }), /Model:/,
-      "an unknown model must be absent, not blank or guessed");
+  assert.match(withModel, /`deepseek\/deepseek-v4-pro`/);
+  for (const runtime of ["rust", "typescript"] as const) {
+    for (const m of [null, undefined]) {
+      assert.doesNotMatch(buildRuntimeIdentityPrompt({ runtime, model: m }), /- Model/,
+        "an unknown model must be absent, not blank or guessed");
+    }
   }
+});
+
+// R1 (Unit 5 review §6, C25 option (a)): the block is fixed when it is built — at spawn for Rust,
+// at the SDK loader's reload for TypeScript — so after a substitution or a /model switch it named
+// a model the session was no longer on, under an "authoritative" header.
+test("rust: the model line is the model REQUESTED AT LAUNCH and says the chat/status bar is current", () => {
+  const p = buildRuntimeIdentityPrompt({ runtime: "rust", model: { provider: "prov-a", id: "model-x" } });
+  assert.match(p, /- Model requested at launch: `prov-a\/model-x`/);
+  assert.match(p, /may have switched since/);
+  assert.match(p, /after a substitution or a `\/model` switch/);
+  assert.match(p, /chat\/status bar is current/);
+});
+
+test("the 'authoritative' header covers runtime/backend facts only, not the model", () => {
+  for (const runtime of ["rust", "typescript"] as const) {
+    const p = buildRuntimeIdentityPrompt({ runtime, model: { provider: "prov-a", id: "model-x" } });
+    assert.match(p, /^## Your runtime \(authoritative for the runtime and backend facts below/);
+    assert.doesNotMatch(p, /authoritative — trust this over anything/, "the old blanket header must be gone");
+    assert.match(p, /for the model, give the one named here and say it may have changed since/);
+  }
+});
+
+test("typescript: the model line says when it was built and carries the same caveat", () => {
+  const p = buildRuntimeIdentityPrompt({ runtime: "typescript", model: { provider: "prov-a", id: "model-x" } });
+  assert.match(p, /- Model when this prompt was built: `prov-a\/model-x`/);
+  assert.match(p, /may have switched since/);
+  assert.match(p, /chat\/status bar is current/);
 });
 
 test("explicitly forbids the inference that caused the misreport", () => {

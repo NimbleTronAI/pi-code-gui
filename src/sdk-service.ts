@@ -579,8 +579,10 @@ export class SdkService implements PiBackend {
         cwd,
         agentDir: getAgentDir ? getAgentDir() : undefined,
         // Custom system prompt with VS Code context
-        // Resolved lazily: systemPromptOverride is called per turn, so a model switched
-        // mid-session is reflected without rebuilding the session.
+        // NOT per turn: on pi-coding-agent 1.3.0 the loader calls this only from reload() — here at
+        // init (before _model is set, so the identity block carries no model line) and on /reload
+        // — and getSystemPrompt() returns the cached text. A model named after a /reload goes
+        // stale on the next /model, which is why the identity line says so (runtime-identity.ts).
         systemPromptOverride: () => buildSystemPrompt(
           this._model?.provider && this._model?.id ? { provider: this._model.provider, id: this._model.id } : null,
         ),

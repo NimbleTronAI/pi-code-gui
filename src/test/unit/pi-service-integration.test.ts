@@ -329,3 +329,96 @@ test("notifyOutdatedPiAi shows piAiNoticeMessage's text, not an inline copy", ()
   assert.match(decl, /piAiNoticeMessage\(installed, supported, belowFloor\)/);
   assert.doesNotMatch(decl, /legacy path/);
 });
+
+
+// ── Unit 5: a stale default is OFFERED for update, never rewritten without the user's click ──
+const STALE_DEF = { provider: "deepseek", id: "deepseek-v4-flash-vision-exp" };
+const SUB = { provider: "deepseek", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" };
+function staleDefaultPi() {
+  const made = makePi("rust");
+  const m = (globalThis as Any).__vscodeMock;
+  m.config = { "pi-code-gui.defaultModelProvider": STALE_DEF.provider, "pi-code-gui.defaultModelId": STALE_DEF.id };
+  m.inspect = {};
+  m.messageChoice = [];
+  return { ...made, m };
+}
+const updates = (m: Any) => m.calls.filter((c: Any) => c.kind === "configUpdate");
+
+test("unit5 offer: dismissing the stale-default offer writes nothing", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.messageChoice = [undefined];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.equal(m.calls.filter((c: Any) => c.kind === "warn").length, 1, "the offer was shown");
+  assert.deepEqual(updates(m), []);
+});
+
+test("unit5 offer: choosing Keep writes nothing", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.messageChoice = [`Keep "deepseek/deepseek-v4-flash-vision-exp" as default`];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.deepEqual(updates(m), []);
+});
+
+test("unit5 offer: one click on Save writes exactly the substitute named on the button", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.messageChoice = [`★ Save "deepseek/deepseek-v4-pro" as default`];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.deepEqual(updates(m).map((c: Any) => [c.key, c.value, c.target]), [
+    ["defaultModelProvider", "deepseek", 1], ["defaultModelId", "deepseek-v4-pro", 1],
+  ]);
+});
+
+test("unit5 offer: Save writes at the scope that holds the stale value (a workspace value would otherwise override it)", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.inspect = { "pi-code-gui.defaultModelId": { workspaceValue: STALE_DEF.id } };
+  m.messageChoice = [`★ Save "deepseek/deepseek-v4-pro" as default`];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.deepEqual(updates(m).map((c: Any) => c.target), [2, 2]);
+});
+
+test("unit5 offer: if the default changed before the click, Save writes nothing", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.messageChoice = [`★ Save "deepseek/deepseek-v4-pro" as default`];
+  const p = (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  m.config["pi-code-gui.defaultModelId"] = "something-the-user-chose";
+  await p;
+  assert.deepEqual(updates(m).filter((c: Any) => c.value === "deepseek-v4-pro"), []);
+});
+
+test("unit5 offer: Save after the session switched model still writes the button's target", async () => {
+  const { pi, backend, m } = staleDefaultPi();
+  (backend as Any).getModel = () => ({ provider: "other-provider", id: "model-a" });
+  m.messageChoice = [`★ Save "deepseek/deepseek-v4-pro" as default`];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.deepEqual(updates(m).map((c: Any) => c.value), ["deepseek", "deepseek-v4-pro"]);
+});
+
+test("unit5 host hook: a substitution sets the cycle index and offers only when asked", async () => {
+  const { pi } = staleDefaultPi();
+  (pi as Any).cycleModels = [{ provider: "deepseek", id: "deepseek-v4-flash" }, { provider: "deepseek", id: "deepseek-v4-pro" }];
+  const offered: unknown[] = [];
+  (pi as Any).offerDefaultModelUpdate = async (...a: unknown[]) => { offered.push(a); };
+  const host = (pi as Any).makeRustHost();
+  host.modelSubstituted({ stale: STALE_DEF, substitute: SUB, offerDefault: false });
+  assert.equal((pi as Any).cycleIndex, 1);
+  assert.equal(offered.length, 0, "a resumed session's substitution never offers a default");
+  host.modelSubstituted({ stale: STALE_DEF, substitute: SUB, offerDefault: true });
+  assert.equal(offered.length, 1);
+});
+
+
+test("unit5 offer: a workspace-scoped PROVIDER alone moves both writes to Workspace (no mixed pair)", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.inspect = { "pi-code-gui.defaultModelProvider": { workspaceValue: STALE_DEF.provider } };
+  m.messageChoice = [`★ Save "deepseek/deepseek-v4-pro" as default`];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.deepEqual(updates(m).map((c: Any) => c.target), [2, 2]);
+});
+
+test("unit5 offer: a folder-scoped value never produces a WorkspaceFolder write (no resource to target)", async () => {
+  const { pi, m } = staleDefaultPi();
+  m.inspect = { "pi-code-gui.defaultModelId": { workspaceFolderValue: STALE_DEF.id } };
+  m.messageChoice = [`★ Save "deepseek/deepseek-v4-pro" as default`];
+  await (pi as Any).offerDefaultModelUpdate(STALE_DEF, SUB);
+  assert.ok(updates(m).every((c: Any) => c.target !== 3), JSON.stringify(updates(m)));
+});
