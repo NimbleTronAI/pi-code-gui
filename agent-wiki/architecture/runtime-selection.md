@@ -1,7 +1,7 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-10-16 — pin moved to rust-pi v0.8.0; RPC surface re-probed; resumed-session workdir and attachment sidecar noted.
+> **Last updated:** 2026-10-16 — the managed-binary removal is guarded: it refuses a symlinked or uncontained `rust-pi` folder, and a replacement that is not Rust Pi or is the same file. Same day: "Detect an existing binary" (and the curl flow's Detect) removes the extension's own managed binary when switching away from it; the stale-managed quiet skip narrowed to this machine's own path or a missing storage root. Same day: the resolver finds the managed install itself; the managed install no longer writes `rustBinaryPath`; a stale managed path is skipped quietly. Same day: pin moved to rust-pi v0.8.0; RPC surface re-probed; resumed-session workdir and attachment sidecar noted.
 > **Earlier:** 2026-08-31 — corrected the `_backendKind` list (getAllSlashCommands no longer branches), dropped the stale count, noted `sessionModes`.
 > `~/.pi/agent` and merges the catalog; the relocated home and linked `auth.json`
 > described here were removed), re-verified the RPC flags against v0.3.0, and noted
@@ -147,17 +147,59 @@ and false for TypeScript — everything else gated is `!rust`.
   stdin/stdout with **partial-line buffering**, request/response correlation by
   `id`, fire-and-forget `send()`, raw-event emitter, SIGTERM→SIGKILL `dispose()`.
 - `src/rust-resolver.ts` — `detectRustBinary()`: resolves the binary
-  (`rustBinaryPath` → `PI_BINARY_PATH` → `~/.cargo/bin` → `~/.local/bin` →
+  (`rustBinaryPath` → `PI_BINARY_PATH` → the **extension-managed install**
+  `<globalStorage>/rust-pi/pi` → `~/.cargo/bin` → `~/.local/bin` →
   `/usr/local/bin` → PATH; also `legacy-pi`/`rust-pi`) and **verifies it's a
   native executable** (ELF/Mach-O/PE) so the TypeScript `pi` CLI (a Node script)
   is never mistaken for it, then runs `--version`. Also home to the extension
   interop helpers: `shouldDisableRustExtensions()` / `workspaceHasTsPiExtensions()`
   / `isRustExtensionConflict()` (see the interop section below).
+  `activate()` hands it the managed folder (`setManagedRustDir`) before any
+  detection. A configured `rustBinaryPath` that is **missing and has exactly the
+  shape the managed install used to write** (`…/globalStorage/<this extension>/rust-pi/pi[.exe]`,
+  either separator) is skipped quietly with one log line (`isStaleManagedPath`) —
+  but only when it is (i) this machine's own managed binary gone missing, or
+  (ii) its `globalStorage` folder does not exist on this machine (another
+  machine's profile, e.g. a Mac's applied in a Linux container). A missing path
+  into a storage folder that does exist here (another VS Code variant's profile,
+  a mounted share) still warns, as does any other unusable configured path.
 - `src/rust-sessions.ts` — Rust session storage (`sessions-rust`, kept separate
   from the TS pool because the JSONL formats are not cross-readable) and a
   tolerant JSONL listing for the unified Past Sessions view.
 - `src/rust-install.ts` — on-demand install (managed GitHub-release download with
-  checksum verification, official `curl | sh`, manual, detect-existing).
+  checksum verification, official `curl | sh`, manual, detect-existing). The
+  managed install does **not** write `rustBinaryPath` (up to 0.2.7 it wrote the
+  binary's absolute path there, which leaked to other machines); the resolver
+  finds the managed folder itself. Values older versions wrote are left alone —
+  same machine: redundant; other machine: skipped quietly. If an explicit
+  setting still outranks the new managed binary, the install says so and clears
+  the setting only on the user's click (`finishManagedInstall`).
+  **Switching away removes the managed copy.** "Detect an existing binary"
+  (`detectAndRefresh`, also reached from the manual flow's and the curl flow's
+  Detect button — `afterCurlInstall`) removes the extension's own
+  `<globalStorage>/rust-pi/pi[.exe]` (`removeManagedRustBinary`, which takes no
+  path) only when the managed binary is the one winning AND another binary, found
+  with the managed one excluded (`detectRustBinaryExcludingManaged`), answered
+  `--version`. Then it invalidates the detection memo, refreshes the runtime
+  context and says what was removed and how to get it back. A setting or
+  `PI_BINARY_PATH` that already outranks it leaves it alone; with nothing else
+  runnable it is kept. The search order is unchanged, so a curl install run by
+  hand in a terminal keeps losing to a leftover managed binary until the user
+  runs Detect; the managed install's success message says so.
+  **It can only delete the extension's own file.** `removeManagedRustBinary`
+  refuses when the `rust-pi` folder is a symlink (`lstat`), and unless the file's
+  real parent is exactly `realpath(<globalStorage>)/rust-pi` — so no link can
+  carry the delete into, say, `~/.local/bin`. `detectAndRefresh` also keeps the
+  managed binary when the replacement's `--version` names another program (first
+  token differs — a native `pi` that is not Rust Pi) or is the same file (same
+  dev+inode: a hard link, or a case-only alias on a case-insensitive disk). Every
+  refusal is a warning saying why nothing was removed. Known and accepted: a
+  second window may try the removed path once within the 5 s detection memo; and
+  Detect after a failed curl install may switch to an older Rust Pi found
+  elsewhere (the notice names its version). Also accepted, because both need
+  someone who can already write this extension's storage folder: a mount placed
+  on the `rust-pi` folder, and the gap between the final check and the unlink —
+  Node has no unlink-only-if-unchanged.
 - `src/model-catalog.ts` (formerly `rust-catalog.ts` — renamed 2026-07-06: the
   helpers serve BOTH runtimes) — pure thinking-capability logic
   (`getSupportedThinkingLevels`/`clampThinkingLevel`/`reconcileThinkingCapability`),

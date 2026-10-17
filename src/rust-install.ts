@@ -12,7 +12,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { piLog, piWarn, revealLog } from "./logger.js";
 import { refreshRuntimeContext } from "./runtime-detection.js";
-import { detectRustBinary, invalidateRustBinaryCache, firstLine } from "./rust-resolver.js";
+import {
+  detectRustBinary, detectRustBinaryExcludingManaged, invalidateRustBinaryCache, firstLine, isInsideManaged,
+  managedRustBinary, removeManagedRustBinary, type RustInstallStatus,
+} from "./rust-resolver.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import pinnedRust from "./rust-pi-version.json";
 
@@ -37,7 +40,7 @@ export async function installRustInteractive(context: vscode.ExtensionContext): 
     { label: "$(cloud-download) Managed download (recommended)", detail: "Checksum-verified binary into extension-managed storage. Leaves PATH alone and does NOT touch an existing `pi` command. Risk: may not run against older system libraries — detected on install, with a fallback offered.", id: "managed" },
     { label: "$(terminal) Official installer (curl | sh)", detail: "Runs the upstream install.sh from GitHub and sets up PATH for you. Risk: executes a remote script, and MAY RENAME an existing TypeScript `pi` command to `legacy-pi`.", id: "curl" },
     { label: "$(book) Guide me (manual)", detail: "Open the install instructions; the extension detects the binary afterward.", id: "manual" },
-    { label: "$(search) Detect an existing binary", detail: "Look on PATH and common locations (~/.cargo/bin, ~/.local/bin, /usr/local/bin).", id: "detect" },
+    { label: "$(search) Detect an existing binary", detail: "Use a Rust Pi you installed yourself (~/.cargo/bin, ~/.local/bin, /usr/local/bin, PATH). If one runs, the extension-managed copy is removed so it no longer takes precedence.", id: "detect" },
   ];
   items.sort((a, b) => (a.id === preferred ? -1 : b.id === preferred ? 1 : 0));
 
@@ -68,9 +71,9 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
     vscode.window.showErrorMessage(`No prebuilt Rust Pi binary for ${process.platform}/${process.arch}. Try the official installer or build from source.`);
     return false;
   }
-  return vscode.window.withProgress(
+  const placed = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "Installing Rust Pi…", cancellable: true },
-    async (progress, token) => {
+    async (progress, token): Promise<{ dest: string; tag: string } | null> => {
       // Abort in-flight network requests when the user cancels (and the socket
       // timeout backstops a silent stall — see NET_TIMEOUT_MS).
       const ac = new AbortController();
@@ -130,7 +133,7 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
         fs.copyFileSync(extracted, dest);
         fs.chmodSync(dest, 0o755);
 
-        // Verify THE BINARY WE JUST WROTE before pointing the setting at it.
+        // Verify THE BINARY WE JUST WROTE before declaring it installed.
         //
         // This is not an edge case on Linux. Upstream builds on a bleeding-edge toolchain and the
         // glibc floor moves between releases: v0.3.0 needs GLIBC_2.39, v0.5.1 needs 2.43
@@ -164,35 +167,100 @@ async function managedDownloadRust(context: vscode.ExtensionContext): Promise<bo
             "Show Log",
           ).then((pick) => { if (pick === "Show Log") { revealLog(); } });
           piWarn(`Managed Rust install: removed ${dest}; it cannot exec on this host (${detail})`);
-          return false;
+          return null;
         }
 
-        await vscode.workspace.getConfiguration("pi-code-gui").update("rustBinaryPath", dest, vscode.ConfigurationTarget.Global);
-        piLog(`Managed Rust install: placed binary at ${dest}`);
-
-        invalidateRustBinaryCache();
-        const status = detectRustBinary();
-        if (!status.installed) {
-          vscode.window.showWarningMessage(
-            `Rust Pi was downloaded to ${dest} but didn't run (it may need a newer system library). Try the official installer instead.`,
-          );
-          return false;
-        }
-        await refreshRuntimeContext(true);
-        vscode.window.showInformationMessage(`Rust Pi ${status.version ?? tag} installed.`);
-        // The binary alone isn't enough: its find/grep tools need fd/rg, which
-        // upstream documents as prerequisites but doesn't install. The user just
-        // opted into Rust, so offer the documented install now.
-        await ensureRustToolDeps();
-        return true;
+        // The binary is in place and runs. Everything that can prompt the user happens in
+        // finishManagedInstall, after the progress notification has closed.
+        return { dest, tag };
       } catch (e: unknown) {
         vscode.window.showErrorMessage(`Rust Pi install failed: ${e instanceof Error ? e.message : String(e)}`);
-        return false;
+        return null;
       } finally {
         try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     },
   );
+  return placed ? finishManagedInstall(placed.dest, placed.tag) : false;
+}
+
+function realpathOr(p: string): string {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+/**
+ * The tail of a managed install, once the binary is in `<globalStorage>/rust-pi` and answers
+ * `--version`. Exported so it is testable without the network.
+ *
+ * It does NOT write `pi-code-gui.rustBinaryPath`. It used to, with the binary's absolute path —
+ * and that machine-scoped setting still reached other machines (observed: a Mac profile's value
+ * applied inside a Linux dev container), so every Rust session there warned that the file did not
+ * exist. The resolver now finds the managed install itself (setManagedRustDir, from activate()).
+ *
+ * The one thing the old write did on purpose was make the managed binary beat a DIFFERENT binary
+ * the user had configured — by overwriting their setting without asking. Now, when an explicit
+ * choice still outranks the managed binary, we say which one, and clear the setting only on the
+ * user's click.
+ */
+export async function finishManagedInstall(dest: string, tag: string): Promise<boolean> {
+  piLog(`Managed Rust install: placed binary at ${dest}`);
+  invalidateRustBinaryCache();
+  let status = detectRustBinary();
+  if (!status.installed) {
+    vscode.window.showWarningMessage(
+      `Rust Pi was downloaded to ${dest} but didn't run (it may need a newer system library). Try the official installer instead.`,
+    );
+    return false;
+  }
+  const destReal = realpathOr(dest);
+  if (status.binaryPath !== destReal) {
+    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
+    const configured = cfg.get<string>("rustBinaryPath")?.trim();
+    const env = process.env.PI_BINARY_PATH?.trim();
+    if (configured && !status.configuredPathError && realpathOr(configured) === status.binaryPath) {
+      const USE = "Use Managed Install";
+      const pick = await vscode.window.showWarningMessage(
+        `Rust Pi ${tag} was installed to ${dest}, but "pi-code-gui.rustBinaryPath" (${configured}) takes precedence, ` +
+        `so sessions will keep running ${status.binaryPath}. Clear the setting to use the managed install?`,
+        USE, "Keep Setting",
+      );
+      if (pick === USE) {
+        await cfg.update("rustBinaryPath", undefined, vscode.ConfigurationTarget.Global);
+        invalidateRustBinaryCache();
+        // Machine-scoped, and its value can come from a layer this window cannot clear (a local
+        // profile applied in a remote). Never claim a clear that did not happen.
+        if (vscode.workspace.getConfiguration("pi-code-gui").get<string>("rustBinaryPath")?.trim()) {
+          void vscode.window.showWarningMessage(
+            `"pi-code-gui.rustBinaryPath" is still set in another settings layer; remove it there to use the managed install.`,
+          );
+          void vscode.commands.executeCommand("workbench.action.openSettings", "pi-code-gui.rustBinaryPath");
+        }
+        status = detectRustBinary();
+      }
+    } else if (env && realpathOr(env) === status.binaryPath) {
+      void vscode.window.showWarningMessage(
+        `Rust Pi ${tag} was installed to ${dest}, but the PI_BINARY_PATH environment variable (${env}) takes precedence, ` +
+        `so sessions will keep running ${status.binaryPath}. Unset it to use the managed install.`,
+      );
+    } else {
+      void vscode.window.showWarningMessage(
+        `Rust Pi ${tag} was installed to ${dest}, but detection chose ${status.binaryPath} instead. See the log for why.`,
+        "Show Log",
+      ).then((pick) => { if (pick === "Show Log") { revealLog(); } });
+    }
+  }
+  await refreshRuntimeContext(true);
+  if (status.binaryPath === destReal) {
+    vscode.window.showInformationMessage(
+      `Rust Pi ${status.version ?? tag} installed. If you later install Rust Pi another way, ` +
+      `run "PiGui: Install Rust Pi" → Detect an existing binary to switch to it.`,
+    );
+  }
+  // The binary alone isn't enough: its find/grep tools need fd/rg, which
+  // upstream documents as prerequisites but doesn't install. The user just
+  // opted into Rust, so offer the documented install now.
+  await ensureRustToolDeps();
+  return true;
 }
 
 /** After a managed Rust install, check rust-pi's find/grep tool deps (fd, rg) and,
@@ -222,14 +290,26 @@ async function curlInstallRust(): Promise<boolean> {
   // whatever `main` happens to be. The managed path verifies SHA256SUMS and hard-fails without
   // them; this path can't (it is the upstream installer), so at minimum it must not float.
   term.sendText(`curl -fsSL "https://raw.githubusercontent.com/${REPO}/${pinnedRust.tag}/install.sh" | bash`);
-  term.sendText('echo "Rust Pi installer finished. Reload VS Code to use it."');
+  term.sendText('echo "Rust Pi installer finished. Click Detect in the notification (or run PiGui: Install Rust Pi -> Detect an existing binary)."');
   // rust-pi's find/grep tools also need fd/rg, which it doesn't install. Offer
   // them now (independent of the curl install running in the terminal above).
   await ensureRustToolDeps();
-  void vscode.window
-    .showInformationMessage("Installing Rust Pi… Reload VS Code after the terminal finishes.", "Reload Now")
-    .then((a) => { if (a === "Reload Now") { void vscode.commands.executeCommand("workbench.action.reloadWindow"); } });
+  void afterCurlInstall();
   return true;
+}
+
+/**
+ * The curl flow's closing notification. The extension cannot see when (or whether) the installer
+ * in the terminal finished, so switching waits for the user's Detect click — which verifies the
+ * new binary runs before removing the managed copy (detectAndRefresh). A reload alone would not
+ * switch: a managed binary still outranks the common locations and PATH. Exported for tests.
+ */
+export async function afterCurlInstall(): Promise<boolean> {
+  const pick = await vscode.window.showInformationMessage(
+    "Installing Rust Pi in the terminal. When it finishes, click Detect to switch to it.",
+    "Detect",
+  );
+  return pick === "Detect" ? detectAndRefresh({ offerReload: true }) : false;
 }
 
 async function manualInstallRust(): Promise<boolean> {
@@ -238,18 +318,113 @@ async function manualInstallRust(): Promise<boolean> {
   return a === "Detect" ? detectAndRefresh() : false;
 }
 
-async function detectAndRefresh(): Promise<boolean> {
+/** First whitespace-separated token of a `--version` line: the program's own name. */
+const firstToken = (v: string | undefined): string | undefined => v?.trim().split(/\s+/)[0] || undefined;
+
+/**
+ * Why `other` must NOT replace the managed binary, or undefined when it may (review of record
+ * SF2): its `--version` must name the same program as the managed binary's, and it must not be
+ * the managed file itself under another name (same dev+inode — a hard link, or a case-only alias
+ * on a case-insensitive filesystem).
+ */
+function replacementMismatch(other: RustInstallStatus, managed: RustInstallStatus, managedBin: string): string | undefined {
+  const otherPath = other.binaryPath ?? "";
+  const statOr = (f: string): fs.Stats | undefined => { try { return fs.statSync(f); } catch { return undefined; } };
+  const a = statOr(otherPath);
+  const b = statOr(managedBin);
+  if (!a || !b) {
+    return `Found ${otherPath}, but it or the extension-managed install at ${managedBin} could not be inspected; nothing was removed.`;
+  }
+  if (a.dev === b.dev && a.ino === b.ino) {
+    return `Found ${otherPath}, but it is the same file as the extension-managed install at ${managedBin}; nothing was removed.`;
+  }
+  const want = firstToken(managed.version);
+  if (!want || firstToken(other.version) !== want) {
+    const line = (other.version ?? "").split("\n")[0].trim();
+    return `Found ${otherPath}, but its --version ("${line}") does not identify as Rust Pi; the extension-managed install was kept.`;
+  }
+  return undefined;
+}
+
+/**
+ * "Detect an existing binary" (also the manual flow's and the curl flow's Detect button).
+ *
+ * Founder's option "c": choosing a self-installed binary here is the explicit moment to drop the
+ * extension's own managed copy, so no leftover keeps outranking it. Order, strictly:
+ *   full detect → only if the MANAGED binary is the one winning → detect with it excluded (each
+ *   candidate accepted only after `--version` succeeds) → remove ONLY `<managedDir>/pi[.exe]` →
+ *   invalidate → refreshRuntimeContext(true) → notice.
+ * When the setting or PI_BINARY_PATH already outranks the managed binary, nothing is removed (a
+ * status check must not delete the user's fallback). When nothing else runs, the managed binary
+ * is kept. Exported for tests.
+ */
+export async function detectAndRefresh(opts: { offerReload?: boolean } = {}): Promise<boolean> {
   invalidateRustBinaryCache();
-  const status = detectRustBinary();
+  let status = detectRustBinary();
+  let notice: string | undefined;
+  let warning: string | undefined; // why the managed binary was kept although another was found
+  const managedBin = managedRustBinary();
+  // Only when THE managed binary is the winner (not some other file a user put in that folder).
+  if (status.installed && managedBin && status.binaryPath === realpathOr(managedBin)) {
+    const other = detectRustBinaryExcludingManaged();
+    // SF2 (unit 4c): only a binary that identifies as the same program, and is not the managed
+    // file itself under another name, justifies removing a working Rust Pi.
+    const mismatch = other.installed && other.binaryPath ? replacementMismatch(other, status, managedBin) : undefined;
+    if (mismatch) {
+      piWarn(`detectAndRefresh: managed binary kept: ${mismatch}`);
+      warning = mismatch;
+    } else if (other.installed && other.binaryPath) {
+      // A setting that is a symlink (or other alias) to the managed binary dangles after removal and
+      // would warn every session; say so. The literal managed path is skipped quietly (S1 (i)).
+      const configured = vscode.workspace.getConfiguration("pi-code-gui").get<string>("rustBinaryPath")?.trim();
+      const aliased = !!configured && path.resolve(configured) !== managedBin && isInsideManaged(configured);
+      const r = removeManagedRustBinary();
+      if (r && "removed" in r) {
+        invalidateRustBinaryCache();
+        status = detectRustBinary();
+        notice =
+          `Rust Pi now uses ${status.binaryPath}${status.version ? ` (${status.version})` : ""}. ` +
+          `The extension-managed copy at ${r.removed} was removed so it no longer takes precedence; ` +
+          `open Rust sessions keep their binary until reopened. To get it back, run "PiGui: Install Rust Pi" → Managed download. ` +
+          `After a curl install run by hand in a terminal, run "PiGui: Install Rust Pi" → Detect an existing binary to switch the same way.` +
+          (aliased ? ` "pi-code-gui.rustBinaryPath" (${configured}) pointed at it; clear it.` : "");
+      } else if (r && "error" in r) {
+        piWarn(`detectAndRefresh: could not remove the managed binary: ${r.error}`);
+        warning = r.refused
+          ? `Found Rust Pi at ${other.binaryPath}, but nothing was removed: ${r.error}. ` +
+            `The extension-managed install still takes precedence.`
+          : `Found Rust Pi at ${other.binaryPath}, but the extension-managed copy at ${managedBin} could not be removed (${r.error}), ` +
+            `so it still takes precedence. Close Rust sessions and run Detect again.`;
+      }
+    }
+  }
   if (status.installed) {
     await refreshRuntimeContext(true);
-    vscode.window.showInformationMessage(`Rust Pi ${status.version ?? ""} detected.`);
+    if (notice) {
+      vscode.window.showInformationMessage(notice);
+    } else if (warning) {
+      void vscode.window.showWarningMessage(warning);
+    } else {
+      const managed = !!status.binaryPath && isInsideManaged(status.binaryPath);
+      vscode.window.showInformationMessage(
+        `Rust Pi ${status.version ?? ""} detected at ${status.binaryPath}` +
+        (managed ? " (the extension-managed install; no other runnable Rust Pi was found)." : "."),
+      );
+    }
     // Covers both the detect path and the manual path (which routes here): make
     // sure rust-pi's find/grep deps (fd, rg) are present, same as managed install.
     await ensureRustToolDeps();
     return true;
   }
-  vscode.window.showWarningMessage("No Rust Pi binary found. Set `pi-code-gui.rustBinaryPath` or install it.");
+  const msg = "No Rust Pi binary found. Set `pi-code-gui.rustBinaryPath` or install it.";
+  if (opts.offerReload) {
+    // After a terminal install the extension host's PATH predates it; a reload picks it up.
+    const RELOAD = "Reload Window";
+    const pick = await vscode.window.showWarningMessage(msg, RELOAD);
+    if (pick === RELOAD) { void vscode.commands.executeCommand("workbench.action.reloadWindow"); }
+  } else {
+    vscode.window.showWarningMessage(msg);
+  }
   return false;
 }
 

@@ -15,7 +15,7 @@ import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary, Runtime } from "./types.js";
 import { planPanelRestore } from "./panel-restore.js";
 import { cachedRuntimes, resolveEffectiveDefaultRuntime, refreshRuntimeContext } from "./runtime-detection.js";
-import { detectRustBinary, rustVersionNoticeKey } from "./rust-resolver.js";
+import { detectRustBinary, rustVersionNoticeKey, setManagedRustDir } from "./rust-resolver.js";
 import { isRustSessionPath, listRustSessions, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
 import { isRustSessionHeader } from "./session-format.js";
 import { installRustInteractive } from "./rust-install.js";
@@ -233,6 +233,9 @@ async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promi
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extContext = context;
+  // Before ANY Rust detection: the resolver finds the managed install here itself, rather than
+  // through an absolute path the install used to write into the machine-scoped setting.
+  setManagedRustDir(path.join(context.globalStorageUri.fsPath, "rust-pi"));
 
   // Create output channel for diagnostics (View → Output → Pi Code Gui)
   const outputChannel = vscode.window.createOutputChannel("Pi Code Gui", { log: true });

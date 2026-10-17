@@ -380,7 +380,7 @@
         "pi-code-gui.rustBinaryPath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual.",
+          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, the extension-managed install, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual. The managed install no longer sets this; if it holds a `…/globalStorage/nimbletron.pi-code-gui/rust-pi/pi` path written by an older version, you can remove it. While it is empty, a managed install takes precedence over binaries in the common locations and on `PATH`; to switch to one you installed yourself, run **PiGui: Install Rust Pi → Detect an existing binary**, which removes the extension-managed copy once the other binary runs.",
           "scope": "machine"
         },
         "pi-code-gui.rustInstallMethod": {
