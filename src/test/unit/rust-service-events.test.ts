@@ -10,6 +10,7 @@ import { RustService, type RustHost, type RustDeps, type RustSessionConfig } fro
 import type { RustResponse } from "../../rust-process.js";
 import type { PiServiceEvent } from "../../types.js";
 import { translateAgentEvent, type AgentTranslateState } from "../../agent-events.js";
+import { computeUsageStats } from "../../usage-stats.js";
 
 type Any = ReturnType<typeof JSON.parse>;
 
@@ -20,6 +21,7 @@ interface Harness {
   setActive(v: boolean): void;
   getActive(): boolean;
   setStats(data: Any): void;            // control the get_session_stats reply
+  setMessages(list: Any[]): void;       // control the get_messages reply
   setModels(list: Any[]): void;         // control the get_available_models reply
   setModelsFail(v: boolean): void;
   setState(data: Any): void;            // control the get_state reply
@@ -32,12 +34,13 @@ const CONFIG: RustSessionConfig = { defaultThinkingLevel: "off", rustExtensionPo
  *  handleAgentEvent (applies setAgentRunActive/setStreaming and the rust captureContext effect),
  *  so the dedupe latch and context% behave as in production. contextWindow is preset so the
  *  %-context recompute is observable. */
-function makeHarness(opts: { contextWindow?: number } = {}): Harness {
+function makeHarness(opts: { contextWindow?: number; config?: Partial<RustSessionConfig> } = {}): Harness {
   const events: PiServiceEvent[] = [];
   const requests: string[] = [];
   // The run flag is owned by the RustService instance now (see PiBackend); drive it through the
   // instance rather than a host callback.
   let stats: Any = { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 };
+  let messages: Any[] = [];
   let models: Any[] = [{ provider: "p", id: "m1" }];
   let modelsFail = false;
   let stateData: Any = { model: { id: "deepseek-v4-pro", provider: "deepseek", api: "openai-completions", reasoning: true }, thinkingLevel: "high" };
@@ -73,7 +76,7 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
   };
 
   const deps = {
-    config: () => CONFIG,
+    config: () => ({ ...CONFIG, ...opts.config }),
   } as unknown as RustDeps;
 
   const fakeProcess = {
@@ -81,7 +84,7 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
       requests.push(command);
       if (command === "get_session_stats") { return { type: "response", success: true, data: stats } as Any; }
       if (command === "get_state") { return { type: "response", success: true, data: stateData } as Any; }
-      if (command === "get_messages") { return { type: "response", success: true, data: { messages: [] } } as Any; }
+      if (command === "get_messages") { return { type: "response", success: true, data: { messages } } as Any; }
       if (command === "get_available_models") {
         if (modelsFail) { throw new Error("rpc down"); }
         return { type: "response", success: true, data: { models } } as Any;
@@ -101,6 +104,7 @@ function makeHarness(opts: { contextWindow?: number } = {}): Harness {
     setActive: (v) => { (rust as Any).setAgentRunActive(v); },
     getActive: () => (rust as Any).getAgentRunActive(),
     setStats: (data) => { stats = data; },
+    setMessages: (list) => { messages = list; },
     setState: (data) => { stateData = data; },
     setModels: (list: Any[]) => { models = list; },
     setModelsFail: (v: boolean) => { modelsFail = v; },
@@ -416,4 +420,244 @@ test("with --no-extensions it is softened to a note, but still shown", async () 
   assert.match(String(card.content), /expected here/);
   assert.match(String(card.content), /pi-web-access/, "still names the package");
   assert.ok(!String(card.content).startsWith("\u26a0"), "no warning glyph");
+});
+
+// ── Unit 7 phase C: cost from the binary (D4/R4) and the real context window ──
+// PROVEN against rust-pi 0.8.0 on a local mock (design v1 D4): message_end carries
+// message.usage.cost = {input, output, cacheRead, cacheWrite, total}, and get_session_stats
+// carries data.cost = the sum of the STORED per-turn costs.
+const turnEnd = (tokens: Any, total: number) => assistantMsgEnd({ ...tokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+const RATES = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+
+test("accumulateUsage sums message_end usage.cost.total", () => {
+  const h = makeHarness();
+  h.emit({ type: "agent_start" });
+  h.emit(turnEnd({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }, 1.5));
+  h.emit(turnEnd({ input: 50, output: 10, cacheRead: 0, cacheWrite: 0 }, 2.25));
+  assert.equal(h.rust.getUsage().cost, 3.75, "the live cost climbs from the binary's own per-turn figure");
+  // A binary that reports cost as a bare number, or not at all, still accumulates tokens.
+  h.emit(assistantMsgEnd({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.25 }));
+  h.emit(assistantMsgEnd({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }));
+  assert.equal(h.rust.getUsage().cost, 4);
+  assert.equal(h.rust.getUsage().input, 152);
+});
+
+// R4 (review of record B1): the legacy offset comes from get_messages' per-turn STORED costs —
+// an assistant turn with tokens stored at 0 is one an older binary wrote. initializeInner hands
+// the reply to takeStoredTurns; here we hand it over directly.
+const CUR = { provider: "deepseek", id: "deepseek-v4-pro" };
+const storedTurn = (input: number, total: number, model = CUR) => ({
+  role: "assistant", provider: model.provider, model: model.id,
+  usage: { input, output: 0, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } },
+});
+function resumed(h: Harness, messages: Any[]): void {
+  (h.rust as Any).resetSessionUsage();   // as initializeInner does before it reads the history
+  (h.rust as Any)._model = { ...CUR };
+  (h.rust as Any).takeStoredTurns({ messages });
+  h.setMessages(messages);                 // what get_messages lists from here on
+}
+
+test("a resumed zero-cost session keeps its earlier turns' cost after the next turn", async () => {
+  // R4 (PROVEN, design review §1.5): a session written by a pre-0.8.0 binary stores every turn at
+  // cost 0, and 0.8.0 resumes it reporting cost 0 with its tokens intact. The binary's next turn is
+  // priced (here at 4, deliberately not tokens x RATES, so re-pricing everything cannot pass).
+  const h = makeHarness();
+  resumed(h, [{ role: "user", content: [] }, storedTurn(4_000_000, 0)]);
+  h.setStats({ tokens: { input: 4_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 });
+  await (h.rust as Any).refreshUsage();                     // the resume snapshot
+  const before = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+  assert.equal(before.cost, 12, "old turns priced from their tokens before any new turn");
+
+  h.emit({ type: "agent_start" });
+  h.emit(turnEnd({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 4));
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").cost, 16, "live: binary turn + legacy offset");
+
+  h.setStats({ tokens: { input: 5_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 4 });
+  h.setMessages([{ role: "user", content: [] }, storedTurn(4_000_000, 0), storedTurn(1_000_000, 4)]);
+  h.emit({ type: "agent_end", messages: [] });
+  await flush();
+  const after = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+  assert.equal(after.cost, 16, "after the snap: the binary's 4 + the old turns' 12");
+  assert.equal(after.costKnown, true);
+});
+
+test("a session whose history holds only priced turns, or none, adds no legacy offset", async () => {
+  for (const [label, messages, first] of [
+    ["resumed 0.8.0 session", [storedTurn(1_000_000, 5)], { tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 5 }],
+    ["fresh session", [], { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 }],
+    // Stats alone say "tokens at cost 0", but no stored turn is at 0: nothing is guessed from them.
+    ["no zero-cost turn in the history", [storedTurn(1_000_000, 5)], { tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 }],
+  ] as Array<[string, Any[], Any]>) {
+    const h = makeHarness();
+    resumed(h, messages);
+    h.setStats(first);
+    await (h.rust as Any).refreshUsage();
+    assert.equal(h.rust.getUsage().uncosted, undefined, label);
+    // The next turn's snapshot is the stored turns' own figure, with nothing added.
+    h.setMessages([...messages, storedTurn(1_000_000, 4)]);
+    h.setStats({ tokens: { input: first.tokens.input + 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: first.cost + 4 });
+    h.emit({ type: "agent_start" });
+    h.emit(turnEnd({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 4));
+    h.emit({ type: "agent_end", messages: [] });
+    await flush(); await flush();
+    const s = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+    assert.deepEqual([s.cost, s.costKnown], [messages.length ? 9 : 4, true], label);
+  }
+});
+
+test("legacy turns on another model than the current one are flagged, so their cost is not guessed", () => {
+  const h = makeHarness();
+  resumed(h, [storedTurn(1_000_000, 0, { provider: "other", id: "m-x" }), storedTurn(1_000_000, 0)]);
+  assert.equal(h.rust.getUsage().uncostedOtherModel, true, "one old turn ran on another model");
+  resumed(h, [storedTurn(1_000_000, 0), storedTurn(1_000_000, 3)]);
+  assert.equal(h.rust.getUsage().uncostedOtherModel, undefined, "all old turns on the current model");
+  resumed(h, [storedTurn(0, 0, { provider: "other", id: "m-x" }), storedTurn(1_000_000, 0)]);
+  assert.equal(h.rust.getUsage().uncostedOtherModel, undefined, "a turn with no tokens is not an old turn");
+  // The flag follows the CURRENT model: a later switch makes the same old turns foreign.
+  (h.rust as Any)._model = { provider: "other", id: "m-x" };
+  assert.equal(h.rust.getUsage().uncostedOtherModel, true, "after a model switch");
+  (h.rust as Any)._model = null;
+  assert.equal(h.rust.getUsage().uncostedOtherModel, true, "no resolved model: nothing to match");
+  // A turn stored without provider/model cannot be matched either.
+  resumed(h, [{ role: "assistant", usage: { input: 5, output: 0, cacheRead: 0, cacheWrite: 0 } }]);
+  assert.equal(h.rust.getUsage().uncostedOtherModel, true, "unknown model");
+});
+
+test("a turn the binary stores at cost 0 counts as an old turn live, exactly as it will after a reopen", async () => {
+  // Reload stability: get_messages on the next open will list this turn at cost 0, so the live
+  // total must already treat it the same way — not drop it now and price it after a reload.
+  const h = makeHarness();
+  resumed(h, []);
+  const live = (provider: string, id: string, input: number, total: number) => ({ type: "message_end",
+    message: { ...storedTurn(input, total, { provider, id }) } });
+  h.emit({ type: "agent_start" });
+  h.emit(live(CUR.provider, CUR.id, 1_000_000, 4));
+  h.emit(live(CUR.provider, CUR.id, 1_000_000, 0));
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").cost, 7, "the binary's 4 + the zero-cost turn's 3");
+  const reopened = makeHarness();
+  resumed(reopened, [storedTurn(1_000_000, 4), storedTurn(1_000_000, 0)]);
+  reopened.setStats({ tokens: { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 4 });
+  await (reopened.rust as Any).refreshUsage();
+  assert.equal(computeUsageStats(reopened.rust.getUsage(), RATES, "rust").cost, 7, "the same total after a reopen");
+  // A zero-cost turn on another model: unknown live, as it is after a reopen.
+  h.emit(live("other", "m-x", 1_000_000, 0));
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, false);
+});
+
+test("a re-init (/new) clears the legacy offset", async () => {
+  const h = makeHarness();
+  resumed(h, [storedTurn(4_000_000, 0)]);
+  h.setStats({ tokens: { input: 4_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0 });
+  await (h.rust as Any).refreshUsage();
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").cost, 12);
+  (h.rust as Any).resetSessionUsage();
+  // Before the new session's first snapshot (e.g. its init snapshot failed), a live turn must not
+  // inherit the previous session's offset.
+  h.emit({ type: "agent_start" });
+  h.emit(turnEnd({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 2));
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").cost, 2, "live, before any snapshot");
+  h.setStats({ tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 2 });
+  h.emit({ type: "agent_end", messages: [] });
+  await flush();
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").cost, 2, "after the snapshot");
+});
+
+test("the Rust context window shown is the model's real window whatever contextBudget is", () => {
+  // Design S (C27 give-up 2): pi-code-gui.contextBudget is TypeScript-only. rust-pi compacts
+  // against the model's own window, so the % shown must use that window too.
+  for (const contextBudget of [0, 50_000, 500_000]) {
+    const h = makeHarness({ config: { contextBudget } });
+    h.rust.applyState({ model: { id: "m", provider: "p", contextWindow: 200_000 }, thinkingLevel: "off" });
+    (h.rust as Any).captureContext({ input: 100_000, cacheRead: 0 });
+    const u = h.rust.getUsage();
+    assert.equal(u.contextWindow, 200_000, `budget ${contextBudget}`);
+    assert.equal(u.contextPercent, 50, `budget ${contextBudget}`);
+  }
+});
+
+// ── Review Cc (unit7-Cb-review.md SF1): cost and tokens from the per-turn record, not the kept context ──
+// PROVEN on rust-pi 0.8.0 (a real auto-compaction under a local mock): after a compaction
+// get_session_stats counts only the kept context, while get_messages lists every turn with its
+// stored cost; the summary calls are billed but reported nowhere.
+
+test("after a turn the cost and tokens are every stored turn's, even when the stats count only the kept context", async () => {
+  const h = makeHarness();
+  (h.rust as Any)._model = { ...CUR };
+  resumed(h, [storedTurn(1_000_000, 1), storedTurn(1_000_000, 2)]);
+  h.setStats({ tokens: { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 3 });
+  await (h.rust as Any).refreshUsage();
+  assert.equal(h.rust.getUsage().cost, 3);
+  h.emit({ type: "agent_start" });
+  h.emit(turnEnd({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 4));
+  assert.equal(h.rust.getUsage().cost, 7, "live");
+  // The binary compacted the first turn away: its stats drop to the kept 2 + 4.
+  h.setMessages([storedTurn(1_000_000, 1), storedTurn(1_000_000, 2), storedTurn(1_000_000, 4)]);
+  h.setStats({ tokens: { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 6 });
+  h.emit({ type: "agent_end", messages: [] });
+  await flush(); await flush();
+  const u = h.rust.getUsage();
+  assert.deepEqual([u.cost, u.input], [7, 3_000_000], "the stored turns' 1+2+4 and 3M tokens, not the kept 6 and 2M");
+  // A live message the binary does not keep is not counted once the turn ends — the figure a
+  // reopen will show (get_messages is the record).
+  h.emit({ type: "agent_start" });
+  h.emit(turnEnd({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 5));
+  assert.equal(h.rust.getUsage().cost, 12, "live");
+  h.emit({ type: "agent_end", messages: [] });
+  await flush(); await flush();
+  assert.equal(h.rust.getUsage().cost, 7, "after the turn: the stored record");
+});
+
+test("a compaction makes the cost unknown at once, and stays unknown", async () => {
+  // Its summary calls are billed but appear in no reply, so every later figure would under-count.
+  for (const type of ["auto_compaction_start", "compaction_start"]) {
+    const h = makeHarness();
+    (h.rust as Any)._model = { ...CUR };
+    resumed(h, [storedTurn(1_000_000, 1)]);
+    h.setStats({ tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 1 });
+    await (h.rust as Any).refreshUsage();
+    assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, true, type);
+    h.emit({ type, reason: "threshold" });
+    const s = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+    assert.equal(s.costKnown, false, `${type}: shown ${s.cost}`);
+    assert.match(String(s.costNote), /compacted/);
+    await (h.rust as Any).refreshUsage();
+    assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, false, `${type}: still unknown after a refresh`);
+    (h.rust as Any).resetSessionUsage();
+    assert.equal(h.rust.getUsage().costUnknown, undefined, `${type}: a new session starts clean`);
+  }
+});
+
+test("a manual /compact that succeeds makes the cost unknown", async () => {
+  const h = makeHarness();
+  (h.rust as Any)._model = { ...CUR };
+  resumed(h, [storedTurn(1_000_000, 1)]);
+  await h.rust.compact();
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, false);
+});
+
+test("stats above the per-turn sum make the cost unknown (the per-turn figures drifted)", async () => {
+  // Review Cc N2: the stats count a subset of the same stored turns, so they can never exceed them.
+  const h = makeHarness();
+  (h.rust as Any)._model = { ...CUR };
+  resumed(h, [storedTurn(1_000_000, 0)]);
+  h.setStats({ tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 4 });
+  await (h.rust as Any).refreshUsage();
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, false);
+});
+
+test("a history read that races a new turn does not drop that turn's live cost", async () => {
+  // refreshEntries runs after the status snap, outside the refresh guard, so the next turn can
+  // stream while its get_messages is in flight; a reply taken before that turn must not replace it.
+  const h = makeHarness();
+  (h.rust as Any)._model = { ...CUR };
+  resumed(h, [storedTurn(1_000_000, 1)]);
+  const proc = (h.rust as Any).process;
+  const inner = proc.request;
+  proc.request = async (command: string): Promise<RustResponse> => {
+    const r = await inner(command);
+    if (command === "get_messages") { h.emit(turnEnd({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 2)); }
+    return r;                                // the reply lists only the first turn
+  };
+  await (h.rust as Any).refreshEntries();
+  assert.equal(h.rust.getUsage().cost, 3, "the stored 1 + the racing turn's 2");
 });

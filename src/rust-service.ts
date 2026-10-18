@@ -21,10 +21,12 @@ import type { RustLoadError } from "./extension-errors.js";
 import { providerHasCredential, oauthProviders, defaultRustAgentDir, readApprovalMode } from "./rust-models.js";
 import { formatMissingToolsNotice } from "./rust-deps.js";
 import { censusSessionFile } from "./session-format.js";
+import { readFileSync } from "node:fs";
 import { thinkingLevelIsLive } from "./model-catalog.js";
 import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
+import type { TokenCounts } from "./usage-stats.js";
 import type { PlanMode, ApprovalMode } from "./types.js";
 import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
 
@@ -46,6 +48,14 @@ export interface RustUsage {
   cost: number;
   contextPercent: number | null;
   contextWindow: number;
+  /** Token counts of turns stored at cost 0, e.g. by an older binary (R4) — see takeStoredTurns. */
+  uncosted?: TokenCounts;
+  /** Some legacy turn ran on another model than the current one — see takeStoredTurns. */
+  uncostedOtherModel?: boolean;
+  /** A resume whose get_messages failed: turns stored at 0 cannot be found. */
+  uncostedUnread?: boolean;
+  /** Why no session cost can be stated (review Cc) — see RawUsage.costUnknown. */
+  costUnknown?: "compacted" | "usage-unread" | "mismatch";
 }
 
 export interface RustInitResult {
@@ -53,6 +63,54 @@ export interface RustInitResult {
   error?: string;
   errorKind?: string;
   warning?: string;
+}
+
+type StoredTotals = TokenCounts & { cost: number };
+
+/** The message list of a get_messages reply, or null when it carries none where we read it. */
+function messagesOf(data: unknown): unknown[] | null {
+  const d = data as { messages?: unknown } | undefined;
+  return Array.isArray(d?.messages) ? d.messages : (Array.isArray(data) ? data : null);
+}
+
+/** Review Cc SF1: the session's cost and tokens are the sum of every assistant turn get_messages
+ *  lists — PROVEN on 0.8.0 to list every turn with its stored cost even after a compaction, when
+ *  get_session_stats counts only the context it kept. Also counts the user/assistant messages, for
+ *  comparing against the stats' own counts. */
+function sumStoredTurns(list: unknown[]): StoredTotals & { users: number; assistants: number } {
+  const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+  const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, users: 0, assistants: 0 };
+  for (const msg of list) {
+    const m = (msg && typeof msg === "object" ? msg : {}) as { role?: unknown; usage?: unknown };
+    if (m.role === "user") { t.users++; continue; }
+    if (m.role !== "assistant") { continue; }
+    t.assistants++;
+    if (!m.usage || typeof m.usage !== "object") { continue; }
+    const u = m.usage as Record<string, unknown>;
+    t.input += n(u.input); t.output += n(u.output); t.cacheRead += n(u.cacheRead); t.cacheWrite += n(u.cacheWrite);
+    t.cost += turnCostOf(u);
+  }
+  return t;
+}
+
+/** Whether a session JSONL holds a `compaction` entry (null when the file cannot be read). The
+ *  file is the binary's DATA, written in Pi's session format. Review Cc B1: the only reliable
+ *  record of an earlier compaction on a resume — see the cross-check in initializeInner. */
+function sessionFileHasCompaction(filePath: string): boolean | null {
+  let raw: string;
+  try { raw = readFileSync(filePath, "utf-8"); } catch { return null; }
+  for (const line of raw.split("\n")) {
+    if (!line.includes("compaction")) { continue; }
+    try { if ((JSON.parse(line) as { type?: unknown }).type === "compaction") { return true; } } catch { /* not an entry */ }
+  }
+  return false;
+}
+
+/** One assistant turn's stored cost: `usage.cost.total` (0.8.0, PROVEN), or a bare number. */
+function turnCostOf(usage: Record<string, unknown>): number {
+  const c = usage.cost;
+  const v = typeof c === "number" ? c : (c && typeof c === "object" ? (c as Record<string, unknown>).total : 0);
+  return typeof v === "number" ? v : 0;
 }
 
 /**
@@ -155,7 +213,8 @@ export interface RustSessionConfig {
   rustExtensionPolicy: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
-  /** Resolved context budget (0 = no budget). */
+  /** Resolved context budget (0 = no budget). Not consumed on Rust: contextBudget is
+   *  TypeScript-only (Design S), so the displayed window is always the model's own. */
   contextBudget: number;
   /** Total ms to keep retrying a slow start before failing (default 15000 — nobody waits a
    *  minute at a blank panel). Injectable so a test can collapse it; a suite must never inherit
@@ -212,6 +271,28 @@ export class RustService implements PiBackend {
    *  empty — rust-pi persists the transcript, and reopening replays it into the webview. */
   get currentSessionPath(): string | null { return this.sessionPath; }
   private usage: RustUsage | null = null;
+  /** R4: the summed tokens of this session's assistant turns STORED at cost 0 (turns an older
+   *  binary wrote), else null, and the provider/model each ran on ("" when unnamed). Built from
+   *  get_messages at init (takeStoredTurns) and kept current by each live message_end. */
+  private legacyUncosted: TokenCounts | null = null;
+  private legacyModels = new Set<string>();
+  /** A resume whose get_messages failed: any turns stored at 0 are unknown (review B2). */
+  private legacyUnread = false;
+  /** Review Cc SF1: the session's cost and tokens summed over every turn get_messages lists (null
+   *  until a history read), kept live by each message_end and re-taken after each turn. When set it
+   *  is what getUsage reports; get_session_stats is only the fallback, since after a compaction it
+   *  counts only the kept context. */
+  private storedTotals: StoredTotals | null = null;
+  /** The last get_session_stats figures and user/assistant message counts (null when absent). */
+  private statsTotals: StoredTotals | null = null;
+  private statsCounts: { users: number; assistants: number } | null = null;
+  /** The session compacted (live event, /compact, or fewer messages in the stats than the history
+   *  on a resume). rust-pi reports its summary calls' cost nowhere (PROVEN on 0.8.0), so "$??". */
+  private compacted = false;
+  /** A resume whose usage reply could not be read: a compaction cannot be ruled out. */
+  private usageUnread = false;
+  /** Bumped per live assistant message, so a history read that raced a new turn is not applied. */
+  private liveTurnSeq = 0;
   private contextWindow = 0;
   private lastContextTokens = 0;
   private slashCommands: Array<{ cmd: string; desc: string; source: string }> = [];
@@ -292,8 +373,7 @@ export class RustService implements PiBackend {
     const fresh = opts.fresh ?? false;
     const openPath = opts.openPath;
     // Reset per-session usage so a re-init (e.g. /new) starts clean.
-    this.usage = null;
-    this.lastContextTokens = 0;
+    this.resetSessionUsage();
     this.steering = [];
     this.followUp = [];
     this.degradedWarned.clear();
@@ -612,6 +692,8 @@ export class RustService implements PiBackend {
       this.warnDegraded("models", "Couldn't load the Rust model list — model switching (/model) may be unavailable this session.");
     }
 
+    let historyRead = false;
+    let historyCounts: { users: number; assistants: number } | null = null;
     try {
       const msgs = await proc.request(RUST_RPC.getMessages, {}, 15000);
       const entries = parseRustEntries(msgs.data);
@@ -628,6 +710,10 @@ export class RustService implements PiBackend {
       this.warnIfHistoryWasNotLoaded(entries.length);
       this.entries = entries;
       this.captureContextFromMessages(msgs.data);
+      historyCounts = msgs.success ? this.takeStoredTurns(msgs.data) : null;
+      // Review Cc N1: a reply whose message list we cannot find (e.g. moved to another key) is not a
+      // read history — reading it as an empty one would show a partial figure as known.
+      historyRead = historyCounts !== null;
       this.host.emit({ type: "batch-start", data: { hasEntries: entries.length > 0 } });
       await this.host.sendInitialMessages(entries);
       this.host.emit({ type: "batch-end", data: { hasEntries: entries.length > 0 } });
@@ -636,6 +722,9 @@ export class RustService implements PiBackend {
       piWarn(`Rust get_messages failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("history", "Couldn't load this session's history from Rust Pi — earlier messages may not be shown (the session file on disk is intact).");
     }
+    // Review B2: a resumed session whose history could not be read hides any turns stored at 0, so
+    // its cost is unknown rather than partial. A fresh session has no history to miss.
+    if (!historyRead && (openPath || !fresh)) { this.legacyUnread = true; }
 
     // The Rust session advertises its own commands/templates/skills — surface
     // them in the slash-command list instead of the TypeScript SDK's.
@@ -659,6 +748,19 @@ export class RustService implements PiBackend {
     }
 
     await this.refreshUsage();
+    // Review Cc SF1/SF2/B1: was a resumed session compacted earlier? Two signals, either suffices:
+    // the session file holds a `compaction` entry (the definitive one: the stats count the summary
+    // as a user message, so a compaction that dropped only the first user message leaves the counts
+    // equal — PROVEN on 0.8.0), and the stats count fewer messages (the kept context) than
+    // get_messages lists (every message). If either cannot be read, a compaction cannot be ruled
+    // out, so the cost is unknown rather than a likely under-count. A history with no message has
+    // nothing to have compacted.
+    if (historyRead && historyCounts && (openPath || !fresh) && historyCounts.users + historyCounts.assistants > 0) {
+      const st = this.statsCounts;
+      const inFile = this.sessionPath ? sessionFileHasCompaction(this.sessionPath) : null;
+      if (inFile || (st && (st.users < historyCounts.users || st.assistants < historyCounts.assistants))) { this.compacted = true; }
+      else if (!st || inFile === null) { this.usageUnread = true; }
+    }
     this.host.reportStatus();
     try { this.host.emitPostInitState(); }
     catch (e: unknown) { piWarn(`Post-init emissions failed: ${e instanceof Error ? e.message : String(e)}`); }
@@ -980,8 +1082,17 @@ export class RustService implements PiBackend {
     // messages (the `pending` backlog stayed >0 mid-turn, so tokens read 0 until the
     // turn ended). The message_end EVENT carries the real per-round usage (the same
     // source context% already trusts via captureContext), so summing it climbs live.
-    // agent_end's refreshState then SNAPS this.usage to the authoritative cumulative,
-    // correcting any drift. (cost is recomputed from tokens × catalog rates in PiService.)
+    // agent_end's refreshState then SNAPS this.usage to the cumulative, correcting any drift
+    // (the stored turns get_messages lists, re-taken in refreshEntries — review Cc SF1). The cost
+    // is the binary's own per-turn figure; PiService falls back to tokens × catalog rates only
+    // when the binary reports none (usage-stats.ts).
+    // Review Cc SF1: a compaction's summary calls are billed but reported nowhere (PROVEN on 0.8.0:
+    // not in its events, the compaction entry, get_messages or the stats), so from here the
+    // session's cost is unknown. Marked at the start: the calls may be billed even if it fails.
+    if (typeof event?.type === "string" && event.type.endsWith("compaction_start")) {
+      this.compacted = true;
+      this.host.reportStatus();
+    }
     if (event?.type === "message_end" && (event as { message?: { role?: string } }).message?.role === "assistant") {
       // rust-pi v0.1.22 delivers per-message usage here as
       // {input,output,cacheRead,cacheWrite,totalTokens,cost} (confirmed via a debug probe), so
@@ -995,7 +1106,10 @@ export class RustService implements PiBackend {
         if (tokenFieldsLookDrifted(mu)) {
           this.warnDegraded("usage-shape", "A Rust assistant message carried usage without the expected numeric token fields — the live cost estimate may be stuck; the usage wire-shape may have drifted.");
         } else {
-          this.accumulateUsage(mu as Record<string, unknown>); this.host.reportStatus();
+          this.accumulateUsage(mu as Record<string, unknown>);
+          // A turn the binary stores at 0 joins the legacy offset now, as get_messages will list it on reopen.
+          this.noteUncostedTurn((event as { message?: unknown }).message);
+          this.host.reportStatus();
         }
       }
     }
@@ -1273,8 +1387,19 @@ export class RustService implements PiBackend {
   private async refreshEntries(): Promise<void> {
     if (!this.process) { return; }
     try {
+      const seq = this.liveTurnSeq;
       const msgs = await this.process.request(RUST_RPC.getMessages, {}, 8000);
-      if (msgs.success) { this.entries = parseRustEntries(msgs.data); this.recordCapOk("history"); }
+      if (msgs.success) {
+        this.entries = parseRustEntries(msgs.data); this.recordCapOk("history");
+        // Review Cc SF1: re-take the cost and tokens from every stored turn — unless a new turn's
+        // message arrived while this read was in flight (its live figure would be lost until the next).
+        const list = messagesOf(msgs.data);
+        if (this.storedTotals && list && seq === this.liveTurnSeq) {
+          const { users: _u, assistants: _a, ...totals } = sumStoredTurns(list);
+          this.storedTotals = totals;
+          this.host.reportStatus();
+        }
+      }
     } catch (e: unknown) {
       piWarn(`refreshEntries failed: ${e instanceof Error ? e.message : String(e)}`);
       this.warnDegraded("history", "Couldn't refresh this session's history from Rust Pi — the Open Sessions list may not reflect the latest turn.");
@@ -1308,6 +1433,51 @@ export class RustService implements PiBackend {
     }
   }
 
+  /** Per-session usage state, cleared on every (re-)init. */
+  private resetSessionUsage(): void {
+    this.usage = null;
+    this.lastContextTokens = 0;
+    this.legacyUncosted = null;
+    this.legacyModels.clear();
+    this.legacyUnread = false;
+    this.storedTotals = null;
+    this.statsTotals = null;
+    this.statsCounts = null;
+    this.compacted = false;
+    this.usageUnread = false;
+  }
+
+  /** R4 (review of record B1): rust-pi's session cost is the sum of each turn's STORED cost, and a
+   *  pre-0.8.0 binary stored its turns at 0 — so the turns to price ourselves are exactly the
+   *  assistant messages get_messages lists with tokens but a stored cost of 0 (PROVEN on 0.8.0:
+   *  each carries usage.cost.total, provider and model). Per turn, not per session, so a session
+   *  part-written by each binary keeps its old turns' cost through any number of reopens.
+   *  The same walk takes the session's stored totals (review Cc SF1). Returns the history's
+   *  user/assistant message counts, or null when the reply carries no message list. */
+  private takeStoredTurns(data: unknown): { users: number; assistants: number } | null {
+    // Starts from the empty offset resetSessionUsage left at the top of initializeInner.
+    const messages = messagesOf(data);
+    if (!messages) { return null; }
+    for (const m of messages) { this.noteUncostedTurn(m); }
+    const { users, assistants, ...totals } = sumStoredTurns(messages);
+    this.storedTotals = totals;
+    return { users, assistants };
+  }
+
+  /** Add one assistant message to the legacy offset when it has tokens and a stored cost of 0
+   *  (`usage.cost.total` 0, a bare `usage.cost` 0, or no cost at all). */
+  private noteUncostedTurn(msg: unknown): void {
+    const m = (msg && typeof msg === "object" ? msg : {}) as { role?: unknown; provider?: unknown; model?: unknown; usage?: unknown };
+    if (m.role !== "assistant" || !m.usage || typeof m.usage !== "object") { return; }
+    const u = m.usage as Record<string, unknown>;
+    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+    const t = { input: n(u.input), output: n(u.output), cacheRead: n(u.cacheRead), cacheWrite: n(u.cacheWrite) };
+    if (t.input + t.output + t.cacheRead + t.cacheWrite <= 0 || turnCostOf(u) > 0) { return; }
+    const sum = this.legacyUncosted ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    this.legacyUncosted = { input: sum.input + t.input, output: sum.output + t.output, cacheRead: sum.cacheRead + t.cacheRead, cacheWrite: sum.cacheWrite + t.cacheWrite };
+    this.legacyModels.add(typeof m.provider === "string" && typeof m.model === "string" ? `${m.provider}/${m.model}` : "");
+  }
+
   private applyUsage(data: unknown): void {
     if (!data || typeof data !== "object") { return; }
     const d = data as Record<string, unknown>;
@@ -1315,6 +1485,9 @@ export class RustService implements PiBackend {
     const n = (v: unknown): number => (typeof v === "number" ? v : 0);
     const cw = this.contextWindow;
     const ctx = this.lastContextTokens;
+    this.statsTotals = { input: n(t.input), output: n(t.output), cacheRead: n(t.cacheRead), cacheWrite: n(t.cacheWrite), cost: n(d.cost) };
+    this.statsCounts = typeof d.userMessages === "number" && typeof d.assistantMessages === "number"
+      ? { users: d.userMessages, assistants: d.assistantMessages } : null;
     this.usage = {
       input: n(t.input), output: n(t.output),
       cacheRead: n(t.cacheRead), cacheWrite: n(t.cacheWrite),
@@ -1361,26 +1534,12 @@ export class RustService implements PiBackend {
       // transport (only some serialize it) vs a display-only no-op.
       this._model = { id: model.id, name: model.name, provider: model.provider, api: model.api, reasoning: model.reasoning };
       if (typeof model.contextWindow === "number") {
-        // Clamp the displayed context window to the user's context budget so the
-        // context-% readout honours the budget for EVERY Rust model — including
-        // built-in (static-registry) models, which never pass through models.json
-        // and so can't be clamped at the source the way custom models are.
-        //
-        // Limitation / compromise: this clamp only affects the GUI's context-%
-        // display. The binary's real auto-compaction trigger is should_compact()
-        // = contextTokens > contextWindow − reserveTokens, evaluated against the
-        // model's OWN contextWindow inside the Rust process. For CUSTOM models we
-        // also bake the budget into models.json (see rust-models.ts applyManaged-
-        // Models), so the binary compacts at the budget too — full parity with TS.
-        // For BUILT-IN models we cannot lower that window without writing a
-        // models.json entry that SHADOWS the built-in (which would replace the
-        // provider's other models), so the binary keeps auto-compacting at the
-        // registry window. Net result: the budget governs the % display
-        // everywhere and real compaction for custom models; built-in models' real
-        // compaction remains at their registry window. This was a deliberate
-        // trade-off to avoid shadowing built-ins for a display-parity gain.
-        const budget = this.deps.config().contextBudget;
-        this.contextWindow = budget > 0 ? Math.min(model.contextWindow, budget) : model.contextWindow;
+        // The model's REAL window, never clamped: pi-code-gui.contextBudget is TypeScript-only
+        // (Design S, C27 give-up 2). rust-pi compacts at should_compact() = contextTokens >
+        // contextWindow − reserveTokens against the model's own window, and the extension no
+        // longer lowers that window in models.json, so a % against a smaller budget would show
+        // "full" long before the binary compacts.
+        this.contextWindow = model.contextWindow;
       }
     } else if (typeof d.modelId === "string") {
       this._model = { id: d.modelId, provider: typeof d.provider === "string" ? d.provider : undefined };
@@ -1700,6 +1859,8 @@ export class RustService implements PiBackend {
       // in-place-updating InlineCard ("display:true"), which can scroll out of view on
       // a repeat. So /compact always reports where the user is looking — the conversation.
       if (resp.success) {
+        // Its summary calls are billed but reported nowhere (review Cc SF1): the cost is now unknown.
+        this.compacted = true;
         await this.refreshState();
         this.host.emit({ type: "custom-message", data: { customType: "info", content: "Context compacted.", timestamp: Date.now() } });
       } else {
@@ -1792,11 +1953,19 @@ export class RustService implements PiBackend {
    *  `sessionFile`), so this is null between init and the first turn — callers
    *  persisting it must tolerate null rather than recording a stale path. */
   getSessionPath(): string | null { return this.sessionPath; }
-  /** Add one assistant message's token usage to the running cumulative so the status bar
-   *  climbs live mid-turn. Replaced wholesale by the authoritative get_session_stats total
-   *  at agent_end (applyUsage), so any estimate drift self-corrects each turn. */
+  /** Add one assistant message's token usage and cost to the running cumulative so the status
+   *  bar climbs live mid-turn (both this.usage and, once the history is read, storedTotals).
+   *  Re-taken at agent_end (applyUsage, refreshEntries), so any estimate drift self-corrects each turn. The cost is the
+   *  binary's own per-turn figure, `usage.cost.total` (0.8.0, PROVEN); a bare number is taken
+   *  as-is, and a binary that sends neither adds 0 (computeUsageStats then prices the tokens). */
   private accumulateUsage(u: Record<string, unknown>): void {
     const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+    const turnCost = turnCostOf(u);
+    this.liveTurnSeq++;
+    const st = this.storedTotals;
+    if (st) {
+      this.storedTotals = { input: st.input + n(u.input), output: st.output + n(u.output), cacheRead: st.cacheRead + n(u.cacheRead), cacheWrite: st.cacheWrite + n(u.cacheWrite), cost: st.cost + turnCost };
+    }
     const base = this.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: this.contextWindow };
     this.usage = {
       ...base,
@@ -1804,6 +1973,7 @@ export class RustService implements PiBackend {
       output: base.output + n(u.output),
       cacheRead: base.cacheRead + n(u.cacheRead),
       cacheWrite: base.cacheWrite + n(u.cacheWrite),
+      cost: base.cost + turnCost,
     };
   }
 
@@ -1816,8 +1986,21 @@ export class RustService implements PiBackend {
     const ctx = this.lastContextTokens;
     const contextPercent = (cw > 0 && ctx > 0) ? Math.min(100, (ctx / cw) * 100) : null;
     const u = this.usage;
-    return u
-      ? { ...u, contextWindow: cw, contextPercent }
-      : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent, contextWindow: cw };
+    const cur = this._model?.provider && this._model.id ? `${this._model.provider}/${this._model.id}` : null;
+    const otherModel = [...this.legacyModels].some((k) => k !== cur);
+    // Review Cc N2: the stats count a subset of the stored turns, so stats above the stored sum
+    // mean the per-turn figures drifted (e.g. a renamed cost field reads 0 on every turn).
+    const st = this.storedTotals, sd = this.statsTotals;
+    const mismatch = !!st && !!sd && (sd.cost > st.cost + 1e-9 * Math.max(1, st.cost) || sd.input > st.input
+      || sd.output > st.output || sd.cacheRead > st.cacheRead || sd.cacheWrite > st.cacheWrite);
+    const costUnknown = this.compacted ? "compacted" : this.usageUnread ? "usage-unread" : mismatch ? "mismatch" : undefined;
+    const legacy = {
+      ...(this.legacyUncosted ? { uncosted: this.legacyUncosted, ...(otherModel ? { uncostedOtherModel: true } : {}) } : {}),
+      ...(this.legacyUnread ? { uncostedUnread: true } : {}),
+      ...(costUnknown ? { costUnknown } as const : {}),
+    };
+    // The stored turns, when the history was read, are the session's figures (review Cc SF1).
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    return { ...(u ?? zero), ...(st ?? {}), contextPercent, contextWindow: cw, ...legacy };
   }
 }

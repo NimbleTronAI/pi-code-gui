@@ -261,9 +261,9 @@ export function findCatalogModelCost(
 }
 
 /** Compute a turn/session cost from token counts and per-million-token rates — the
- *  same arithmetic as pi-ai's calculateCost (rate / 1e6 × tokens, summed). Used to
- *  derive cost EXTENSION-SIDE for the Rust backend, whose binary reports cost:0 even
- *  with full rates in its catalog (it doesn't compute cost). */
+ *  same arithmetic as pi-ai's calculateCost (rate / 1e6 × tokens, summed). Used EXTENSION-SIDE
+ *  on the Rust backend only as a fallback: rust-pi 0.8.0+ prices its own turns, so this prices
+ *  a binary that reports cost 0 and the turns an older binary stored at 0 (usage-stats.ts). */
 export function computeTokenCost(
   usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
   rates: { input: number; output: number; cacheRead: number; cacheWrite: number },

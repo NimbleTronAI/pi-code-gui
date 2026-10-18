@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RustProcess, type RustProcessOpts } from "../../rust-process.js";
 import { RustService, classifyStaleDefaultExit, type RustHost, type RustDeps, type RustSessionConfig } from "../../rust-service.js";
+import { computeUsageStats } from "../../usage-stats.js";
 import type { PiServiceEvent } from "../../types.js";
 
 // A fake rust-pi answering the full init handshake. Behavior switches on the
@@ -57,7 +58,7 @@ process.stdin.on("data", (d) => {
       reply(MODE === "bad-state"
         ? { someUnknownShape: true }
         : { model: { id: "deepseek-v4-pro", provider: "deepseek", api: "openai-completions", reasoning: true, contextWindow: 131072 },
-            thinkingLevel: "high", sessionFile: "/tmp/fake-session.jsonl", sessionId: "sess-42",
+            thinkingLevel: "high", sessionFile: process.env.FAKE_SESSION_FILE ?? "/tmp/fake-session.jsonl", sessionId: "sess-42",
             autoCompactionEnabled: true, autoRetryEnabled: true });
       }
     } else if (o.type === "set_model") {
@@ -69,11 +70,14 @@ process.stdin.on("data", (d) => {
     } else if (o.type === "get_available_models") {
       reply(MODE === "no-models" ? { models: [] } : { models: MODELS });
     } else if (o.type === "get_messages") {
-      reply({ messages: [{ id: "m1", role: "user", content: [{ type: "text", text: "hi" }] }] });
+      if (process.env.FAKE_MESSAGES === "fail") { W({ type: "response", id: o.id, command: o.type, success: false, error: "history unavailable" }); }
+      else reply(process.env.FAKE_MESSAGES ? JSON.parse(process.env.FAKE_MESSAGES) : { messages: [{ id: "m1", role: "user", content: [{ type: "text", text: "hi" }] }] });
     } else if (o.type === "get_commands") {
       reply({ commands: [{ name: "compact", description: "Compact context" }] });
     } else if (o.type === "get_session_stats") {
-      reply({ tokens: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 }, cost: 0 });
+      // Default: the default history above (one user message, no assistant turn), as 0.8.0 counts it.
+      if (process.env.FAKE_STATS === "fail") { W({ type: "response", id: o.id, command: o.type, success: false, error: "stats unavailable" }); }
+      else reply(process.env.FAKE_STATS ? JSON.parse(process.env.FAKE_STATS) : { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0, userMessages: 1, assistantMessages: 0 });
     }
   }
 });
@@ -1239,4 +1243,184 @@ test("unit5c S2: a stderr tail cut mid-warning (RustProcess keeps the last 500 c
   const cut = "…canonical model identity (\"deepseek\", \"deepseek-flash\") at line 1 column 605\nFile: /x/models.json\nModel my-custom/my-model not found";
   assert.equal(classifyStaleDefaultExit(exitMsg(cut), "my-custom", "my-model"), null);
   assert.equal(classifyStaleDefaultExit(exitMsg("…\nFile: C:\\u\\.pi\\agent\\models.json\nModel my-custom/my-model not found"), "my-custom", "my-model"), null);
+});
+
+// Unit 7 phase C (R4, review of record B1). rust-pi 0.8.0's get_messages carries each assistant
+// turn's STORED cost (usage.cost.total) and its provider/model; a turn an older binary wrote is
+// stored at 0. The legacy offset is built from those turns, so it survives any number of reopens.
+const R4_RATES = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+const asst = (input: number, total: number | null) => ({
+  role: "assistant", provider: "deepseek", model: "deepseek-v4-pro", content: [{ type: "text", text: "ok" }],
+  usage: { input, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: input, ...(total === null ? {} : { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } }) },
+});
+const user = { role: "user", content: [{ type: "text", text: "hi" }] };
+/** A resumed session's JSONL on disk (the fake binary reads nothing; RustService reads it for its
+ *  compaction entries). SESSION holds none. */
+const sessionDir = mkdtempSync(join(tmpdir(), "rust-cc-"));
+const sessionFile = (name: string, lines: unknown[]) => { const f = join(sessionDir, name); writeFileSync(f, lines.map((l) => JSON.stringify(l)).join("\n") + "\n"); return f; };
+const SESSION = sessionFile("plain.jsonl", [{ type: "session", version: 3 }, { type: "message", message: user }]);
+after(() => rmSync(sessionDir, { recursive: true, force: true }));
+/** A get_session_stats reply as 0.8.0 shapes it: input tokens, cost, and the user/assistant
+ *  message counts of the context it KEPT (fewer than get_messages lists once it has compacted). */
+const stats = (input: number, cost: number, userMessages: number, assistantMessages: number) =>
+  JSON.stringify({ tokens: { input, output: 0, cacheRead: 0, cacheWrite: 0 }, cost, userMessages, assistantMessages });
+function r4Service(env: () => Record<string, string>) {
+  const { host } = makeHost();
+  return new RustService(host, makeDeps("ok", {
+    createProcess: (opts: RustProcessOpts) => new RustProcess({
+      ...opts, binaryPath: process.execPath, args: [fakeBin, ...opts.args],
+      // get_state names the file the binary opened, as 0.8.0 does on a resume.
+      env: { ...opts.env, FAKE_MODE: "ok", FAKE_SESSION_FILE: SESSION, ...env() },
+    }),
+  }));
+}
+
+test("a session part-written by an older binary keeps its old turns' cost when it is reopened", async () => {
+  // The review's probe: resume a legacy session, take one new (priced) turn, reload. The total
+  // must not drop: before the fix the reopen saw the whole-session cost > 0 and lost the old turns.
+  let env: Record<string, string> = {};
+  const svc = r4Service(() => env);
+  try {
+    // First open: one turn an older binary stored at 0 (1M input tokens = 3 at the rates).
+    env = { FAKE_MESSAGES: JSON.stringify({ messages: [user, asst(1_000_000, 0)] }), FAKE_STATS: stats(1_000_000, 0, 1, 1) };
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    assert.equal(computeUsageStats(svc.getUsage(), R4_RATES, "rust").cost, 3, "first open: the old turn priced from its tokens");
+    // Reopen after one new turn the binary priced at 4 (deliberately not tokens x rates).
+    env = { FAKE_MESSAGES: JSON.stringify({ messages: [user, asst(1_000_000, 0), user, asst(1_000_000, 4)] }), FAKE_STATS: stats(2_000_000, 4, 2, 2) };
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+    assert.equal(s.cost, 7, "reopened: the binary's 4 + the old turn's 3, the same total as before the reload");
+    assert.equal(s.costKnown, true);
+    // A turn stored with no cost at all, or as a bare 0, is an old turn too; a turn with no tokens is not.
+    env = { FAKE_MESSAGES: JSON.stringify({ messages: [asst(1_000_000, null), { ...asst(1_000_000, 0), usage: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } }, asst(0, 0), asst(1_000_000, 4)] }), FAKE_STATS: stats(3_000_000, 4, 0, 4) };
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    assert.equal(computeUsageStats(svc.getUsage(), R4_RATES, "rust").cost, 10);
+  } finally { svc.dispose(); }
+});
+
+test("a resumed session whose history cannot be read shows the cost as unknown, not partial", async () => {
+  // Review B2: with no per-turn record, any old turns stored at 0 are invisible, so the binary's
+  // figure alone would be a confident under-count. A fresh session has no history to miss.
+  let env: Record<string, string> = { FAKE_MESSAGES: "fail", FAKE_STATS: JSON.stringify({ tokens: { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 4 }) };
+  const svc = r4Service(() => env);
+  try {
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+    assert.equal(s.costKnown, false, `shown ${s.cost}`);
+    assert.match(String(s.costNote), /history couldn't be read/);
+    assert.equal((await svc.initialize({ fresh: true })).success, true);
+    assert.equal(computeUsageStats(svc.getUsage(), R4_RATES, "rust").cost, 4, "a fresh session: the binary's own figure");
+    env = { FAKE_MESSAGES: JSON.stringify({ messages: [user, asst(1_000_000, 0), user, asst(1_000_000, 4)] }), FAKE_STATS: stats(2_000_000, 4, 2, 2) };
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    assert.equal(computeUsageStats(svc.getUsage(), R4_RATES, "rust").costKnown, true, "a reopen that reads its history clears it");
+  } finally { svc.dispose(); }
+});
+
+test("a resumed session whose stats read cost 0 but whose history cannot be read shows the cost as unknown, adding no offset", async () => {
+  // Review Cc: the binary's tokens cover only the context it kept after a compaction, and without
+  // the history we cannot tell whether it compacted — so a re-price is no longer "complete".
+  const svc = r4Service(() => ({ FAKE_MESSAGES: "fail", FAKE_STATS: stats(1_000_000, 0, 1, 1) }));
+  try {
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    assert.equal(svc.getUsage().uncosted, undefined, "nothing guessed from the stats");
+    const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+    assert.equal(s.costKnown, false, `shown ${s.cost}`);
+  } finally { svc.dispose(); }
+});
+
+test("initialize resets the R4 legacy offset: a fresh session after a resumed zero-cost one shows only its own cost", async () => {
+  // A re-init (/new) must not carry the previous session's offset — even when the new session's
+  // history read fails and so cannot replace it.
+  let env: Record<string, string> = { FAKE_MESSAGES: JSON.stringify({ messages: [user, asst(4_000_000, 0), user, asst(1_000_000, 1)] }), FAKE_STATS: stats(5_000_000, 1, 2, 2) };
+  const svc = r4Service(() => env);
+  try {
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    assert.equal(computeUsageStats(svc.getUsage(), R4_RATES, "rust").cost, 13, "resumed: the binary's 1 + the old turn's 12");
+    env = { FAKE_MESSAGES: "fail", FAKE_STATS: JSON.stringify({ tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 2 }) };
+    assert.equal((await svc.initialize({ fresh: true })).success, true);
+    assert.equal(computeUsageStats(svc.getUsage(), R4_RATES, "rust").cost, 2, "the new session's own cost, no inherited offset");
+  } finally { svc.dispose(); }
+});
+
+// Review Cc (unit7-Cb-review.md SF1/SF2/N1/N2). PROVEN black-box on rust-pi 0.8.0 with a real
+// auto-compaction under a local mock: get_session_stats then counts only the context it KEPT (its
+// cost, tokens and message counts drop), while get_messages still lists every message with its
+// stored cost. The compaction's own summary calls are billed but appear in NO reply — not in the
+// events, the compaction entry, get_messages or the stats — so a compacted session's cost is unknown.
+const turns = (...costs: number[]) => costs.flatMap((c) => [user, asst(1_000_000, c)]);
+
+test("a compacted session keeps its compacted turns' cost and tokens, and shows the cost as unknown", async () => {
+  // Four priced turns (1+2+3+4 = 10); the binary kept the last two (cost 7, 2M tokens, 2+2 messages).
+  let env: Record<string, string> = { FAKE_MESSAGES: JSON.stringify({ messages: turns(1, 2, 3, 4) }), FAKE_STATS: stats(2_000_000, 7, 2, 2) };
+  const svc = r4Service(() => env);
+  try {
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    const u = svc.getUsage();
+    assert.equal(u.cost, 10, "every stored turn's cost, not the kept context's 7");
+    assert.equal(u.input, 4_000_000, "every stored turn's tokens");
+    const s = computeUsageStats(u, R4_RATES, "rust");
+    assert.equal(s.costKnown, false, `shown ${s.cost}: the summary calls are billed but reported nowhere`);
+    assert.match(String(s.costNote), /compacted/);
+    // Control: the same history, never compacted (the stats count every message), is known.
+    env = { FAKE_MESSAGES: JSON.stringify({ messages: turns(1, 2, 3, 4) }), FAKE_STATS: stats(4_000_000, 10, 4, 4) };
+    assert.equal((await svc.initialize({ openPath: SESSION })).success, true);
+    const k = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+    assert.deepEqual([k.cost, k.costKnown], [10, true]);
+  } finally { svc.dispose(); }
+});
+
+test("a resumed session whose file holds a compaction entry shows the cost as unknown even when the stats' counts match the history", async () => {
+  // Review Cc B1 (PROVEN on 0.8.0): the stats count the compaction summary as a user message, so a
+  // compaction that dropped only the first user message leaves the counts equal. The file says so.
+  const compacted = sessionFile("compacted.jsonl", [{ type: "session", version: 3 }, { type: "message", message: user },
+    { type: "compaction", id: "c1", summary: "S", firstKeptEntryId: "a1", tokensBefore: 50000 }, { type: "message", message: asst(1_000_000, 1) }]);
+  let file = compacted;
+  const svc = r4Service(() => ({ FAKE_MESSAGES: JSON.stringify({ messages: turns(1, 2) }), FAKE_STATS: stats(2_000_000, 3, 2, 2), FAKE_SESSION_FILE: file }));
+  try {
+    assert.equal((await svc.initialize({ openPath: compacted })).success, true);
+    const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+    assert.equal(s.costKnown, false, `shown ${s.cost}`);
+    assert.equal(svc.getUsage().costUnknown, "compacted");
+    // A resume whose file cannot be read cannot rule a compaction out either.
+    file = join(sessionDir, "missing.jsonl");
+    assert.equal((await svc.initialize({ openPath: file })).success, true);
+    assert.equal(svc.getUsage().costUnknown, "usage-unread");
+  } finally { svc.dispose(); }
+});
+
+test("a resume whose usage stats cannot be read shows the cost as unknown, never $0.00", async () => {
+  // Review Cc SF2: without the stats we cannot tell whether the session compacted.
+  for (const [label, env] of [
+    ["drifted stats, history read", { FAKE_MESSAGES: JSON.stringify({ messages: turns(1, 2) }), FAKE_STATS: JSON.stringify({ weird: 1 }) }],
+    ["failed stats, history read", { FAKE_MESSAGES: JSON.stringify({ messages: turns(1, 2) }), FAKE_STATS: "fail" }],
+    ["neither readable", { FAKE_MESSAGES: "fail", FAKE_STATS: JSON.stringify({ weird: 1 }) }],
+    ["stats without message counts", { FAKE_MESSAGES: JSON.stringify({ messages: turns(1, 2) }), FAKE_STATS: JSON.stringify({ tokens: { input: 2_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 3 }) }],
+  ] as Array<[string, Record<string, string>]>) {
+    const svc = r4Service(() => env);
+    try {
+      assert.equal((await svc.initialize({ openPath: SESSION })).success, true, label);
+      const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+      assert.equal(s.costKnown, false, `${label}: shown ${s.cost}`);
+    } finally { svc.dispose(); }
+  }
+});
+
+test("a history reply whose message list moved, or whose per-turn cost field was renamed, shows the cost as unknown", async () => {
+  // Review Cc N1: the list under another key parses to nothing — a partial figure is not the
+  // session's. N2: a renamed per-turn cost reads 0 everywhere — the stats' total then exceeds the
+  // per-turn sum, which never happens when both are read correctly.
+  const renamed = (c: number) => ({ ...asst(1_000_000, null), usage: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: { totalUsd: c } } });
+  for (const [label, env] of [
+    ["list moved", { FAKE_MESSAGES: JSON.stringify({ history: turns(0, 4) }), FAKE_STATS: stats(2_000_000, 4, 2, 2) }],
+    // Even where the stats read empty too, a history we could not find is not an empty one.
+    ["list moved, stats empty", { FAKE_MESSAGES: JSON.stringify({ history: turns(0, 4) }), FAKE_STATS: stats(0, 0, 0, 0) }],
+    ["cost field renamed", { FAKE_MESSAGES: JSON.stringify({ messages: [user, renamed(0), user, renamed(4)] }), FAKE_STATS: stats(2_000_000, 4, 2, 2) }],
+  ] as Array<[string, Record<string, string>]>) {
+    const svc = r4Service(() => env);
+    try {
+      assert.equal((await svc.initialize({ openPath: SESSION })).success, true, label);
+      const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+      assert.equal(s.costKnown, false, `${label}: shown ${s.cost}`);
+    } finally { svc.dispose(); }
+  }
 });

@@ -21,10 +21,105 @@ test("rust without rates: cost 0, costKnown false (→ $??)", () => {
   assert.equal(s.costKnown, false);
 });
 
-test("rust ignores any cost the binary reported and recomputes from tokens", () => {
-  // Binary reports cost:99 but Rust cost is always recomputed from rates.
+test("rust: a binary-reported cost wins over the computed one", () => {
+  // rust-pi 0.8.0 prices each turn itself (message_end usage.cost.total, get_session_stats cost)
+  // from the rates in its own catalog. That figure is the binary's measurement; tokens x OUR rates
+  // would re-price stored turns at today's rates, which is not what was billed.
   const s = computeUsageStats(usage({ input: 1_000_000, cost: 99 }), RATES, "rust");
-  assert.equal(s.cost, 3);
+  assert.equal(s.cost, 99);
+  assert.equal(s.costKnown, true);
+  assert.equal(s.costNote, undefined);
+});
+
+test("rust: a binary-reported cost shows even when the catalog holds no rates for the model", () => {
+  // e.g. a model the user priced in their own models.json: the binary prices it, we cannot.
+  const s = computeUsageStats(usage({ input: 1_000_000, cost: 2.5 }), null, "rust");
+  assert.equal(s.cost, 2.5);
+  assert.equal(s.costKnown, true);
+});
+
+test("rust: zero binary cost with priceable rates falls back to tokens × rates", () => {
+  // An older or user-supplied binary that reports cost 0: our arithmetic, as before.
+  const s = computeUsageStats(usage({ input: 1_000_000, output: 1_000_000, cost: 0 }), RATES, "rust");
+  assert.equal(s.cost, 18);
+  assert.equal(s.costKnown, true);
+});
+
+test("withheld rates still beat a binary-reported cost", () => {
+  // The binary prices DeepSeek from the same flat catalog rates, so its figure is no more right
+  // than ours: the $?? policy applies on top of whatever the binary reports.
+  const s = computeUsageStats(usage({ input: 1_000_000, output: 1_000_000, cost: 16.65 }), RATES, "rust", "because clocks");
+  assert.equal(s.costKnown, false);
+  assert.equal(s.cost, 0);
+  assert.equal(s.costNote, "because clocks");
+});
+
+test("rust: turns stored at cost 0 by an older binary are priced from tokens and added to the binary's cost", () => {
+  // R4: rust-pi sums STORED per-turn costs, so a session resumed from a pre-0.8.0 binary carries
+  // 0 for its old turns. RustService hands their token counts over as `uncosted`.
+  const uncosted = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const s = computeUsageStats(usage({ input: 2_000_000, cost: 4, uncosted }), RATES, "rust");
+  assert.equal(s.cost, 7);   // 4 (binary) + 1M x 3 (legacy offset)
+  assert.equal(s.costKnown, true);
+  assert.equal("uncosted" in s, false, "the offset's token counts are not display stats");
+});
+
+test("rust: earlier zero-cost turns we cannot price make the session cost unknown", () => {
+  // Review of record S1: the binary's figure alone would silently drop the old turns while
+  // claiming to be the whole session's cost. "$??" with the reason, never a confident partial.
+  const uncosted = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const rates of [null, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }]) {
+    const s = computeUsageStats(usage({ input: 2_000_000, cost: 4, uncosted }), rates, "rust");
+    assert.equal(s.costKnown, false, JSON.stringify(rates));
+    assert.equal(s.cost, 0);
+    assert.match(String(s.costNote), /No per-token price/);
+    assert.match(String(s.costNote), /older Rust Pi/, "says why the session total is unknown");
+  }
+  // No zero-cost turns with tokens: the binary's own figure stands, rates or not.
+  assert.equal(computeUsageStats(usage({ cost: 4, uncosted: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }), null, "rust").costKnown, true);
+});
+
+test("rust: a resume whose history could not be read makes the cost unknown, whatever the binary reports", () => {
+  const s = computeUsageStats(usage({ input: 2_000_000, cost: 4, uncostedUnread: true }), RATES, "rust");
+  assert.equal(s.costKnown, false);
+  assert.equal(s.cost, 0);
+  assert.equal("uncostedUnread" in s, false, "not a display stat");
+  // Review Cc (SF1/SF2): the binary at 0 is no longer "complete" — its tokens count only what it
+  // kept after a compaction, and without the history we cannot tell. Unknown, never re-priced.
+  const z = computeUsageStats(usage({ input: 1_000_000, cost: 0, uncostedUnread: true }), RATES, "rust");
+  assert.equal(z.costKnown, false, `shown ${z.cost}`);
+  assert.match(String(z.costNote), /history couldn't be read/);
+});
+
+test("rust: a compacted session, unread usage, or per-turn costs that don't add up make the cost unknown", () => {
+  // Review Cc SF1 (PROVEN on 0.8.0): the summary calls a compaction makes are billed but appear in
+  // no reply, so any figure after a compaction would be a confident under-count. SF2: an unread
+  // usage reply on a resume hides whether it compacted. N2: a stats total above the per-turn sum
+  // means the per-turn figures drifted. Each is "$??" with its reason, for any rates or cost.
+  for (const [reason, note] of [["compacted", /compacted/], ["usage-unread", /usage couldn't be read/], ["mismatch", /don't add up/]] as const) {
+    for (const cost of [0, 4]) {
+      const s = computeUsageStats(usage({ input: 2_000_000, cost, costUnknown: reason }), RATES, "rust");
+      assert.equal(s.costKnown, false, `${reason} at binary cost ${cost}: shown ${s.cost}`);
+      assert.equal(s.cost, 0);
+      assert.match(String(s.costNote), note);
+      assert.equal("costUnknown" in s, false, "not a display stat");
+    }
+  }
+  // The withheld-rates note still wins (it is the more specific reason).
+  assert.equal(computeUsageStats(usage({ cost: 4, costUnknown: "compacted" }), RATES, "rust", "because clocks").costNote, "because clocks");
+});
+
+test("rust: earlier zero-cost turns on another model than the current one make the session cost unknown", () => {
+  // Pricing them at the CURRENT model's rates would be a confident wrong figure: they ran on a
+  // model whose rates we are not holding. Applies whether or not the binary has priced a turn yet.
+  const uncosted = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const cost of [0, 4]) {
+    const s = computeUsageStats(usage({ input: 2_000_000, cost, uncosted, uncostedOtherModel: true }), RATES, "rust");
+    assert.equal(s.costKnown, false, `binary cost ${cost}`);
+    assert.equal(s.cost, 0);
+    assert.match(String(s.costNote), /older Rust Pi/);
+    assert.equal("uncostedOtherModel" in s, false, "not a display stat");
+  }
 });
 
 test("sdk: keeps the SDK-computed cost; costKnown true when cost > 0", () => {
