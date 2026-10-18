@@ -1,55 +1,38 @@
-// Rust model catalog for the extension.
+// Rust model catalog for the extension (Design S).
 //
-// The Rust binary resolves models against a fixed built-in registry that goes
-// stale — it predates new models (e.g. deepseek-v4-pro) and carries their wrong
-// reasoning flag and no pricing. Rather than make users hand-declare models, this
-// module writes a fresh catalog into the binary's models.json, OVERRIDING its
-// built-in list with the same registry the TypeScript runtime uses: bundled as
-// src/model-registry.generated.json (generated from @earendil-works/pi-ai and kept
-// fresh by regenerating with scripts/gen-model-registry.mjs; there is no dependabot.yml,
-// so this is a manual step on a pi-ai bump).
+// THE RULE (the founder's, C27): on Rust the extension only ADJUSTS models rust-pi already
+// supports, using exactly the values Pi itself uses. It never adds providers, never moves
+// endpoints, and never shrinks context windows.
 //
-// We always relocate the Rust agent home (PI_CODING_AGENT_DIR) to a directory we
-// own (or pi-code-gui.rustAgentDir), so writing the full catalog never clobbers a
-// user's own ~/.pi/agent/models.json (their CLI/TUI setup). auth.json is seeded
-// from ~/.pi/agent so OAuth logins carry over; API keys resolve from the
-// environment by the binary's provider convention, so no apiKey is written.
+// So at each Rust session start this module writes ONE kind of thing into the agent home's
+// models.json: `providers.<p>.modelOverrides.<id>` = Pi's own per-model values (name, window,
+// output limit, prices, input, reasoning, thinking map, two compat flags) plus our `_managedBy`
+// stamp. Nothing at provider level, no `models` array, no connection, no context-budget clamp.
+// "Pi's values" come from catalogSource() — the installed TypeScript Pi's catalog, or the bundled
+// floor when no TS Pi is installed (src/catalog-source.ts). When it has no answer, nothing is
+// written and the previous file stays valid for rust-pi.
 //
-// Special-auth providers (Bedrock, Azure, Vertex, Copilot, …) are intentionally
-// NOT in the catalog — they need non-API-key auth and stay on the binary's native
-// handling. For raw, unmanaged control of the Rust model registry, use the Pi CLI.
+// An override for an id rust-pi does not list makes rust-pi CREATE that model on the connection it
+// gives any new model of that provider. That is allowed only where that connection is the one Pi
+// uses (C29); src/rust-pi-catalog.generated.json — rust-pi's own ids and that connection per
+// provider, measured from the pinned binary by scripts/gen-rust-pi-catalog.mjs — is the evidence.
+//
+// models.json is the USER'S file, shared with the Pi CLI. Everything we ever wrote carries the
+// stamp; everything without it is theirs and is never deleted or rewritten. A file we cannot
+// rewrite safely is never written at all, and the user is told once why (rust-pi ignores a file it cannot parse; a read-only one it reads as it is).
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { piDebug } from "./logger.js";
-import { resolveMaxOutputTokens, buildThinkingCompat } from "./model-catalog.js";
-import registryData from "./model-registry.generated.json";
+import { piDebug, piWarn } from "./logger.js";
+import { catalogSource, type CatalogProviders, type ModelConnections, type SlimModel } from "./catalog-source.js";
+import rustPiCatalogData from "./rust-pi-catalog.generated.json";
 import type { ApprovalMode } from "./types.js";
 import pkg from "../package.json";
 
 /** This extension's version, for stamping the entries we manage in the user's models.json. */
 const EXTENSION_VERSION: string = (pkg as { version?: string }).version ?? "unknown";
-
-interface RegistryModel {
-  id: string;
-  name: string;
-  reasoning: boolean;
-  contextWindow: number;
-  maxTokens: number;
-  input: string[];
-  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
-  // Per-model thinking metadata (kept by gen-model-registry.mjs). thinkingLevelMap
-  // tells rust-pi which graded levels the model honors so it clamps the same way
-  // the extension's picker offers them; compat.thinkingFormat is the wire dialect;
-  // compat.forceAdaptiveThinking selects Anthropic's modern adaptive `effort` API.
-  thinkingLevelMap?: Record<string, string | null>;
-  compat?: { thinkingFormat?: string; forceAdaptiveThinking?: boolean };
-}
-interface RegistryProvider { baseUrl: string; api: string; models: RegistryModel[]; }
-interface ModelRegistry { generatedFrom: string; piAiVersion: string; providers: Record<string, RegistryProvider>; }
-const registry = registryData as ModelRegistry;
 
 /** A fatal models-setup failure the caller MUST surface (never swallow). */
 export class RustModelsError extends Error {}
@@ -77,8 +60,8 @@ function msg(e: unknown): string { return e instanceof Error ? e.message : Strin
  *
  *  Sharing the directory removes the problem rather than managing it: one agent home means one
  *  auth.json, so there is nothing to synchronise and nothing to degrade. The clobber concern is
- *  answered instead by writeRustModels MERGING per-model entries and never rewriting the file
- *  wholesale — which is also what Pi itself promises about this file.
+ *  answered instead by mergeModelsJson writing only stamped per-model overrides and never
+ *  rewriting anything it did not write — which is also what Pi itself promises about this file.
  *
  *  `pi-code-gui.rustAgentDir` still overrides, for anyone who does want the pools separate. */
 export function defaultRustAgentDir(): string {
@@ -98,12 +81,6 @@ function ensureDir(dir: string): void {
   }
 }
 
-/** Write the bundled catalog into models.json, overriding the binary's built-ins.
- *  contextWindow is clamped to the context budget so auto-compaction fires there;
- *  a model's maxTokens is written only when it's a real output limit (rust-pi
- *  0.1.20 forwards maxTokens to the API verbatim, so the pi-ai placeholder values
- *  that copy the context window 400 as a silent empty turn — those are omitted so
- *  the provider's own default applies). Returns how many maxTokens were omitted. */
 /** Auth env keys that do NOT follow the `<ID>_API_KEY` convention, mirroring `pi --list-providers`
  *  for the providers we bundle. Everything else is derived, so a new provider needs no change
  *  here unless it is irregular. */
@@ -121,18 +98,10 @@ function authEnvKeys(provId: string): string[] {
 }
 
 /**
- * Providers the user can actually authenticate to — from the environment the binary will be
- * given, plus OAuth entries in the shared agent home's auth.json.
- *
- * This is what scopes the catalog we write. Writing all 963 bundled models put half a megabyte
- * into the user's own models.json to describe models they cannot reach: of 32 bundled providers,
- * a typical user has credentials for one or two. Scoping to those keeps the file small enough to
- * read, and makes the model picker offer what can actually be run — the picker is populated from
- * the binary's get_available_models, so it reflects exactly what is in this file plus the
- * binary's built-ins.
- *
- * Providers whose credentials are not env/auth.json shaped (Bedrock's AWS_*, Vertex, Copilot)
- * fall out naturally: they are not in the bundled catalog, and stay on the binary's own handling.
+ * Whether the user can authenticate to `provId` — from the environment the binary will be given,
+ * or an OAuth entry in the shared agent home's auth.json. Used by the Rust service's credential
+ * predicate (stale-model recovery); it does NOT scope what models.json describes — rust-pi lists
+ * only providers it has credentials for, so every provider is written (Design S, C26 NEW-1).
  */
 export function providerHasCredential(provId: string, env: NodeJS.ProcessEnv, oauth: Set<string>): boolean {
   if (oauth.has(provId)) { return true; }
@@ -145,20 +114,6 @@ export function oauthProviders(agentDir: string): Set<string> {
     const auth = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"), "utf-8"));
     return new Set(Object.keys(auth ?? {}));
   } catch { return new Set(); }
-}
-
-export function credentialedProviders(env: NodeJS.ProcessEnv, agentDir: string): Set<string> {
-  const out = new Set<string>();
-  for (const provId of Object.keys(registry.providers)) {
-    if (authEnvKeys(provId).some((k) => (env[k] ?? "").trim() !== "")) { out.add(provId); }
-  }
-  try {
-    const auth = JSON.parse(fs.readFileSync(path.join(agentDir, "auth.json"), "utf-8"));
-    for (const provId of Object.keys(auth ?? {})) {
-      if (provId in registry.providers) { out.add(provId); }
-    }
-  } catch { /* absent or unparseable — env alone then */ }
-  return out;
 }
 
 /**
@@ -196,250 +151,6 @@ export function writeApprovalMode(agentDir: string, mode: ApprovalMode): string 
   }
 }
 
-/** Stamped on every entry we manage, so the file stays inspectable: anything carrying this is
- *  ours to refresh, anything without it is the user's and is never touched. Includes the version
- *  so a stale entry can be traced to the release that wrote it. */
-export const MANAGED_BY = `pi-code-gui@${EXTENSION_VERSION}`;
-const MANAGED_KEY = "_managedBy";
-
-/** Build the entry we'd write for one registry model. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function managedEntry(m: RegistryModel, contextBudget: number): { entry: any; omitted: boolean } {
-  // Decide maxTokens against the model's REAL context window (provider validity is judged
-  // against the true window, not the budget-clamped one written for compaction). A real
-  // sub-window limit is kept verbatim so genuine large outputs survive (e.g. deepseek 384000);
-  // a placeholder (>= window) or garbage value is omitted → provider default applies.
-  const maxTokens = resolveMaxOutputTokens(m.maxTokens, m.contextWindow);
-  return {
-    omitted: maxTokens === undefined,
-    entry: {
-      id: m.id,
-      name: m.name,
-      contextWindow: contextBudget > 0 ? Math.min(m.contextWindow, contextBudget) : m.contextWindow,
-      ...(maxTokens !== undefined ? { maxTokens } : {}),
-      input: m.input,
-      ...(m.cost ? { cost: m.cost } : {}),
-      // Always write `reasoning` (true AND false). pi_agent_rust treats the catalog as
-      // AUTHORITATIVE — it honors this flag directly and only falls back to its built-in
-      // heuristic when the field is ABSENT. Omitting `false` would re-enable the heuristic and
-      // the override bug that disabled thinking for misclassified models.
-      reasoning: !!m.reasoning,
-      // Per-model thinking metadata UNDER compat — the shape pi_agent_rust deserializes
-      // (model.compat.{thinkingLevelMap,forceAdaptiveThinking,thinkingFormat}). A top-level
-      // thinkingLevelMap would be silently dropped. This is the metadata a live
-      // `--fetch-models` cannot supply, which is why we write entries at all.
-      ...buildThinkingCompat(m),
-      [MANAGED_KEY]: MANAGED_BY,
-    },
-  };
-}
-
-/**
- * Merge our managed entries into the agent home's models.json, preserving everything else.
- *
- * This file is the USER's — Pi documents it as user-authored and authoritative, loaded after the
- * generated catalog and never rewritten by Pi itself. We now share the agent home rather than
- * relocating it, so replacing the file wholesale (as this once did, with all 854 bundled models)
- * would destroy hand-written provider entries. Instead:
- *
- *   - an entry carrying our marker is ours: refreshed to match the current bundle
- *   - an entry WITHOUT the marker is the user's: left exactly as found, even where it names a
- *     model we also manage. Hand edits win, which is the same promise Pi makes about this file.
- *     To hand-edit one of ours, delete its `_managedBy` line and it stops being managed.
- *   - providers and models we say nothing about are untouched
- *
- * Membership can also come from the binary's own `--fetch-models` (models.fetched.json, loaded
- * first). That is treated as a bonus, never a dependency: its rows are silently dropped when the
- * provider's route shape changes (measured — the models vanish with no warning to the client), so
- * every model we need is written here regardless.
- */
-/**
- * Provider `api` values the pinned Rust binary is known to implement.
- *
- * models.json is deserialized by the binary, and its `api` field selects a protocol
- * implementation — an unknown value is not a row we lose, it is a file the binary may reject
- * whole, taking every managed entry for every provider with it. That failure is silent: the
- * session starts, the picker falls back to the binary's built-ins, and nothing says why the
- * catalog vanished. This repo has already been bitten by exactly that shape once, when a
- * `session_info` key we appended made older builds reject an entire session file.
- *
- * pi-ai 0.86.1 introduced `pi-messages` (the `radius` provider, Pi's own gateway) — a protocol
- * that postdates every rust-pi release including v0.5.1, which 0.2.x pins: nothing in the 0.5.x
- * notes mentions it, and upstream's own pi-ai vendoring is still 0.85.1, which predates radius.
- * Rather than find out the hard way, describe
- * only what the binary can act on and leave the rest to its native handling, which is what
- * already happens for Bedrock, Vertex and Copilot.
- *
- * The asymmetry is the whole argument: withholding a provider the binary probably cannot reach
- * anyway costs that one provider on the Rust runtime, while writing an api it rejects costs the
- * entire catalog. Note this is a RUST-runtime concern only — the bundled catalog still carries
- * these providers, so pricing, context windows and thinking levels resolve for them under the
- * TypeScript runtime as usual.
- *
- * MEASURED on rust-pi 0.8.0 (black-box, a scratch agent dir holding one radius provider): the
- * binary does NOT reject the file for an unknown api — it lists the provider's models — but
- * `set_model` onto one fails "Provider not implemented (api: pi-messages)", exactly as it does for
- * an invented api. So 0.8.0 still has no pi-messages protocol, and describing radius would put
- * models in the picker that cannot be selected. Withholding stays. (What DOES reject the whole
- * file is two ids for one model identity — see the dedupe in mergeModelsJson.)
- *
- * When the pinned rust-pi gains a protocol, add it here; the debug log names what was withheld so
- * a stale list is discoverable rather than permanent.
- */
-const RUST_SUPPORTED_APIS = new Set([
-  "openai-completions", "anthropic-messages", "google-generative-ai", "openai-responses",
-  "mistral-conversations",
-]);
-
-/** Provider ids the bundled catalog carries but we decline to describe to the Rust binary,
- *  with the api that disqualified each. Empty when the binary understands everything we bundle. */
-export function apisUnsupportedByRust(): Array<{ provider: string; api: string }> {
-  return Object.entries(registry.providers)
-    .filter(([, prov]) => !RUST_SUPPORTED_APIS.has(prov.api))
-    .map(([provider, prov]) => ({ provider, api: prov.api }));
-}
-
-/**
- * The exact (api, baseUrl) pairs an EARLIER release bundled for a provider whose connection
- * details have since moved. A provider object written before 0.2.8 carries no stamp, so this is
- * the only way to tell one we wrote from one the user wrote: an exact match on a pair we shipped.
- *
- * pi-ai 1.3.0 moved kimi-coding to openai-completions on a /v1 endpoint, and opencode/opencode-go
- * to /inference. Earlier history also has opencode/opencode-go on openai-completions and
- * openrouter/xai on other apis; those are deliberately NOT listed — each would migrate a user
- * onto a provider api the catalog generator flattens from a multi-api provider, which is a
- * separate, unresolved problem, and rewriting a working connection onto it is not a repair.
- * Add a pair here only when a catalog bump moves a provider and the old pair is known.
- */
-const LEGACY_PROVIDER_CONNECTIONS: Record<string, Array<{ api: string; baseUrl: string }>> = {
-  "kimi-coding": [{ api: "anthropic-messages", baseUrl: "https://api.kimi.com/coding" }],
-  "opencode": [{ api: "anthropic-messages", baseUrl: "https://opencode.ai/zen" }],
-  "opencode-go": [{ api: "anthropic-messages", baseUrl: "https://opencode.ai/zen/go" }],
-};
-
-/**
- * Bring a provider object's connection details (baseUrl, api) in line with the catalog — when,
- * and only when, it is ours.
- *
- * These used to be filled only when ABSENT, with nothing at provider level telling ours from the
- * user's. So a catalog bump that moved an endpoint reached nobody who already had the provider:
- * their MODEL entries (stamped, so refreshed) took the new compat while the provider kept the old
- * endpoint and protocol — a mixed entry describing neither release. The stamp fixes that going
- * forward; the legacy table recognises the objects older releases wrote unstamped. Anything else
- * is the user's, and is left exactly as found apart from filling a missing field.
- *
- * Like a stamped model, a stamped provider is rewritten on every session start: to keep your own
- * endpoint on a provider we created, delete its `_managedBy`.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function refreshConnection(provId: string, target: any, prov: { api: string; baseUrl: string }): void {
-  const ours = target[MANAGED_KEY] !== undefined
-    || (LEGACY_PROVIDER_CONNECTIONS[provId] ?? []).some((l) => l.api === target.api && l.baseUrl === target.baseUrl);
-  if (ours) {
-    target.baseUrl = prov.baseUrl;
-    target.api = prov.api;
-    target[MANAGED_KEY] = MANAGED_BY;
-    return;
-  }
-  // The user's provider: fill only what is missing, never rewrite what they set.
-  if (!target.baseUrl) { target.baseUrl = prov.baseUrl; }
-  if (!target.api) { target.api = prov.api; }
-}
-
-export function mergeModelsJson(file: string, contextBudget: number, only?: Set<string>): { written: number; omitted: number; userOwned: number; retired: number; skippedApis: string[] } {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let doc: any = { providers: {} };
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
-    if (parsed && typeof parsed === "object") { doc = parsed; }
-  } catch { /* absent or unparseable — start fresh rather than fail the session */ }
-  if (!doc.providers || typeof doc.providers !== "object") { doc.providers = {}; }
-
-  let written = 0, omitted = 0, userOwned = 0, retired = 0;
-  const skippedApis: string[] = [];
-  for (const [provId, prov] of Object.entries(registry.providers)) {
-    // Only describe providers the user can authenticate to — see credentialedProviders.
-    if (only && !only.has(provId)) { continue; }
-    // ...and only protocols the binary implements — see RUST_SUPPORTED_APIS.
-    if (!RUST_SUPPORTED_APIS.has(prov.api)) { skippedApis.push(`${provId} (${prov.api})`); continue; }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const existing: any = doc.providers[provId];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const target: any = existing && typeof existing === "object"
-      ? existing
-      : (doc.providers[provId] = { baseUrl: prov.baseUrl, api: prov.api, [MANAGED_KEY]: MANAGED_BY, models: [] });
-    if (!Array.isArray(target.models)) { target.models = []; }
-    refreshConnection(provId, target, prov);
-
-    // ONE ENTRY PER MODEL IDENTITY. The binary canonicalises a bare id to its provider-prefixed
-    // form, so `X` and `<provider>/X` describe one model — and the binary rejects the WHOLE file
-    // when both are present ("duplicate canonical model identity"), measured on 0.5.1 and 0.8.0
-    // with openrouter's `auto` / `openrouter/auto`. Only a bare (slash-free) id is canonicalised:
-    // `vendor/model` and `openrouter/vendor/model` are two identities there (probed on 0.8.0).
-    // Two sources of a twin:
-    //   - the catalog carries both: keep the prefixed id (what the binary reports either way) and
-    //     drop the bare alias;
-    //   - the user wrote one by hand (unstamped): theirs is untouchable, so ours yields.
-    // A dropped id is absent from `bundledIds`, so the retire pass below also removes a copy an
-    // earlier release wrote.
-    const bare = (id: string): boolean => !id.includes("/");
-    const twin = (id: string): string | null =>
-      id.startsWith(`${provId}/`) ? (bare(id.slice(provId.length + 1)) ? id.slice(provId.length + 1) : null)
-      : bare(id) ? `${provId}/${id}` : null;
-    const allIds = new Set(prov.models.map((m) => m.id));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const userIds = new Set(target.models.filter((m: any) => m && typeof m.id === "string" && m[MANAGED_KEY] === undefined).map((m: any) => m.id as string));
-    let yielded = 0;
-    const models = prov.models.filter((m) => {
-      if (bare(m.id) && allIds.has(`${provId}/${m.id}`)) { return false; }
-      const t = twin(m.id);
-      if (t !== null && userIds.has(t)) { yielded++; return false; }
-      return true;
-    });
-    userOwned += yielded;
-
-    // RETIRE MODELS WE USED TO MANAGE AND NO LONGER DO.
-    //
-    // Refreshing only what is currently bundled leaves withdrawn models behind forever, because
-    // nothing ever deletes them. Measured after the pi-ai 0.86.1 bump: DeepSeek withdrew
-    // `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`, and both stayed in the user's
-    // models.json stamped `pi-code-gui@0.2.1` — so the picker still offered them, a session
-    // resumed onto one, and their frozen prices were two releases out of date. A model the
-    // catalog has dropped is not a model the user can run.
-    //
-    // Only OUR entries go: an entry without the marker is the user's and is untouchable, which is
-    // the same promise the refresh path makes. Scoped to providers we are describing on this pass,
-    // so a provider skipped for want of a credential or an unsupported api keeps whatever it has.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bundledIds = new Set(models.map((m: any) => m.id));
-    const before = target.models.length;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    target.models = target.models.filter((m: any) =>
-      !(m && typeof m.id === "string" && m[MANAGED_KEY] !== undefined && !bundledIds.has(m.id)));
-    retired += before - target.models.length;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const byId = new Map<string, any>(target.models.filter((m: any) => m && typeof m.id === "string").map((m: any) => [m.id, m]));
-    for (const m of models) {
-      const current = byId.get(m.id);
-      if (current && current[MANAGED_KEY] === undefined) { userOwned++; continue; }   // theirs — hands off
-      const { entry, omitted: om } = managedEntry(m, contextBudget);
-      if (om) { omitted++; }
-      if (current) { Object.assign(current, entry); } else { target.models.push(entry); }
-      written++;
-    }
-  }
-
-  const payload = JSON.stringify(doc, null, 2) + "\n";
-  // Skip the write when nothing changed — this runs on EVERY Rust session init, and the content
-  // only moves on an extension update or a contextBudget change.
-  try { if (fs.readFileSync(file, "utf-8") === payload) { return { written, omitted, userOwned, retired, skippedApis }; } }
-  catch { /* absent/unreadable → write below */ }
-  try { fs.writeFileSync(file, payload); }
-  catch (e) { throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. The Rust model catalog won't be available.`); }
-  return { written, omitted, userOwned, retired, skippedApis };
-}
-
 /**
  * Ensure the agent home is usable for OAuth. Nothing to do when it IS the user's ~/.pi/agent —
  * the binary reads the same auth.json the CLI writes, so a `/login` applies with no copying,
@@ -455,11 +166,6 @@ export function checkAuthAvailable(dir: string): string | null {
   return `The Rust agent home is set to "${dir}", which has no auth.json of its own, so OAuth logins made against ~/.pi/agent do not apply there. Run \`/login\` while a Rust session is active, or clear the "pi-code-gui.rustAgentDir" setting to share ~/.pi/agent. API keys from the environment are unaffected.`;
 }
 
-/**
- * Write the bundled model catalog into the Rust agent home and return env
- * additions (PI_CODING_AGENT_DIR) plus non-fatal warnings. Throws RustModelsError
- * on a fatal problem the caller must surface.
- */
 /** Called after a mid-session `/login`. With the agent home shared there is nothing to copy —
  *  the credential the SDK just wrote IS the one the binary reads — so this only reports the case
  *  where a user-set rustAgentDir has put the two somewhere different. rust-pi reads auth at
@@ -471,27 +177,351 @@ export function reseedRustAuth(): string | null {
   return checkAuthAvailable(dir);
 }
 
+/** Stamped on every value we write, so the file stays inspectable: anything carrying it is ours to
+ *  replace, anything without it is the user's and is never touched. Includes the version so an
+ *  entry can be traced to the release that wrote it. */
+export const MANAGED_BY = `pi-code-gui@${EXTENSION_VERSION}`;
+const MANAGED_KEY = "_managedBy";
+
+/** rust-pi's own catalog, per provider of Pi's: the ids it lists with no models.json of ours, and
+ *  the connection it gives a model it does NOT list. Generated; see scripts/gen-rust-pi-catalog.mjs. */
+export interface RustPiCatalog {
+  rustPi: string;
+  providers: Record<string, { newModel: { api: string; baseUrl: string }; ids: string[] }>;
+}
+export const RUST_PI_CATALOG = rustPiCatalogData as RustPiCatalog;
+
+/**
+ * K1 — every (api, baseUrl) an earlier release wrote into a provider object (git history
+ * v0.2.0..0.2.8; the opencode / opencode-go `openai-completions …/zen[/go]/v1` pairs come from the
+ * v0.1.x registries, which wrote to globalStorage — kept, as they equal rust-pi's own connection). Those releases wrote connections unstamped, so the only way to tell ours from a
+ * user's is "an object holding only our models[] entries, on a pair we shipped". Frozen: this
+ * release never writes a connection again.
+ */
+const SHIPPED_PAIRS: Record<string, ReadonlyArray<readonly [string, string]>> = {
+  "ant-ling": [["openai-completions", "https://api.ant-ling.com/v1"]],
+  "anthropic": [["anthropic-messages", "https://api.anthropic.com"]],
+  "baseten": [["openai-completions", "https://inference.baseten.co/v1"]],
+  "cerebras": [["openai-completions", "https://api.cerebras.ai/v1"]],
+  "deepseek": [["openai-completions", "https://api.deepseek.com"]],
+  "fireworks": [["anthropic-messages", "https://api.fireworks.ai/inference"]],
+  "google": [["google-generative-ai", "https://generativelanguage.googleapis.com/v1beta"]],
+  "groq": [["openai-completions", "https://api.groq.com/openai/v1"]],
+  "huggingface": [["openai-completions", "https://router.huggingface.co/v1"]],
+  "kimi-coding": [["anthropic-messages", "https://api.kimi.com/coding"], ["openai-completions", "https://api.kimi.com/coding/v1"]],
+  "meta": [["openai-responses", "https://api.meta.ai/v1"]],
+  "minimax": [["anthropic-messages", "https://api.minimax.io/anthropic"]],
+  "minimax-cn": [["anthropic-messages", "https://api.minimaxi.com/anthropic"]],
+  "mistral": [["mistral-conversations", "https://api.mistral.ai"]],
+  "moonshotai": [["openai-completions", "https://api.moonshot.ai/v1"]],
+  "moonshotai-cn": [["openai-completions", "https://api.moonshot.cn/v1"]],
+  "nvidia": [["openai-completions", "https://integrate.api.nvidia.com/v1"]],
+  "openai": [["openai-responses", "https://api.openai.com/v1"]],
+  "opencode": [["anthropic-messages", "https://opencode.ai/inference"], ["anthropic-messages", "https://opencode.ai/zen"], ["openai-completions", "https://opencode.ai/zen/v1"]],
+  "opencode-go": [["anthropic-messages", "https://opencode.ai/inference/go"], ["anthropic-messages", "https://opencode.ai/zen/go"], ["openai-completions", "https://opencode.ai/zen/go/v1"]],
+  "openrouter": [["anthropic-messages", "https://openrouter.ai/api"], ["openai-completions", "https://openrouter.ai/api/v1"]],
+  "qwen-token-plan": [["openai-completions", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"]],
+  "qwen-token-plan-cn": [["openai-completions", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"]],
+  "qwen-token-plan-individual": [["openai-completions", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"]],
+  "radius": [["pi-messages", "https://radius.pi.dev/v1"]],
+  "together": [["openai-completions", "https://api.together.ai/v1"]],
+  "vercel-ai-gateway": [["anthropic-messages", "https://ai-gateway.vercel.sh"]],
+  "xai": [["openai-completions", "https://api.x.ai/v1"], ["openai-responses", "https://api.x.ai/v1"]],
+  "xiaomi": [["openai-completions", "https://api.xiaomimimo.com/v1"]],
+  "xiaomi-token-plan-ams": [["openai-completions", "https://token-plan-ams.xiaomimimo.com/v1"]],
+  "xiaomi-token-plan-cn": [["openai-completions", "https://token-plan-cn.xiaomimimo.com/v1"]],
+  "xiaomi-token-plan-sgp": [["openai-completions", "https://token-plan-sgp.xiaomimimo.com/v1"]],
+  "zai": [["openai-completions", "https://api.z.ai/api/coding/paas/v4"]],
+  "zai-coding-cn": [["openai-completions", "https://open.bigmodel.cn/api/coding/paas/v4"]],
+};
+
+/** K10 — every key any release ever wrote inside a stamped entry or override. A stamped value
+ *  holding any other key was edited by the user: it becomes theirs, whole. */
+const WROTE = {
+  top: new Set(["id", "name", "contextWindow", "maxTokens", "input", "cost", "reasoning", "thinkingLevelMap", "compat", MANAGED_KEY]),
+  cost: new Set(["input", "output", "cacheRead", "cacheWrite"]),
+  compat: new Set(["thinkingFormat", "forceAdaptiveThinking", "thinkingLevelMap"]),
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = any;
+const isObj = (v: unknown): v is Record<string, Json> => !!v && typeof v === "object" && !Array.isArray(v);
+const ours = (v: unknown): boolean => isObj(v) && v[MANAGED_KEY] !== undefined;
+const onlyKeys = (v: unknown, allowed: Set<string>): boolean => !isObj(v) || Object.keys(v).every((k) => allowed.has(k));
+/** K10: drop our stamp from a stamped value the user has added a key to. */
+function adoptIfEdited(v: Json): void {
+  if (ours(v) && !(onlyKeys(v, WROTE.top) && onlyKeys(v.cost, WROTE.cost) && onlyKeys(v.compat, WROTE.compat))) { delete v[MANAGED_KEY]; }
+}
+/** K3: rust-pi 0.8.0 merges a bare key into `<provider>/x` (measured for openrouter's auto; `deepseek/x` and bare nvidia ids stay distinct), so we write LESS, never more: for our own and your ids `x` and `<provider>/x` are compared as one. Never used to decide what rust-pi lists. */
+const oneId = (pid: string, id: unknown): unknown =>
+  typeof id === "string" && id.startsWith(`${pid}/`) && !id.slice(pid.length + 1).includes("/") ? id.slice(pid.length + 1) : id;
+/** rust-pi reports an anthropic-messages endpoint with the `/v1/messages` path the protocol
+ *  appends; Pi's base URL names the same endpoint without it (measured on 0.8.0). */
+const endpoint = (api: string, baseUrl: string): string =>
+  `${api} ${api === "anthropic-messages" ? baseUrl.replace(/\/v1\/messages$/, "") : baseUrl}`;
+
+/** K4–K6: what one override carries — Pi's per-model values, in the form rust-pi reads as Pi does. */
+function overrideOf(m: SlimModel): Json {
+  // K4: a placeholder output limit (>= the window) is left out; rust-pi would send it verbatim.
+  const maxTokens = Number.isFinite(m.maxTokens) && m.maxTokens > 0 && m.maxTokens < m.contextWindow ? m.maxTokens : undefined;
+  // K5: string levels only — a null level ("unsupported" in Pi) makes rust-pi reject the whole file.
+  const map: Record<string, string> = {};
+  for (const [level, value] of Object.entries(m.thinkingLevelMap ?? {})) { if (typeof value === "string") { map[level] = value; } }
+  const compat: Json = {};
+  if (m.compat?.thinkingFormat) { compat.thinkingFormat = m.compat.thinkingFormat; }
+  if (typeof m.compat?.forceAdaptiveThinking === "boolean") { compat.forceAdaptiveThinking = m.compat.forceAdaptiveThinking; }
+  return {
+    ...(m.name !== undefined ? { name: m.name } : {}),
+    contextWindow: m.contextWindow,
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(m.input !== undefined ? { input: m.input } : {}),
+    ...(m.cost ? { cost: { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cacheRead, cacheWrite: m.cost.cacheWrite } } : {}),
+    reasoning: !!m.reasoning,
+    ...(Object.keys(map).length ? { thinkingLevelMap: map } : {}),
+    ...(Object.keys(compat).length ? { compat } : {}),
+    [MANAGED_KEY]: MANAGED_BY,
+  };
+}
+
+/** K8: a shape either runtime rejects, at every level we read or write. */
+function shapeOk(doc: Json): boolean {
+  if (!isObj(doc)) { return false; }
+  if (doc.providers === undefined) { return true; }
+  if (!isObj(doc.providers)) { return false; }
+  return Object.values(doc.providers).every((p) => isObj(p)
+    && (p.models === undefined || (Array.isArray(p.models) && p.models.every(isObj)))
+    && (p.modelOverrides === undefined || (isObj(p.modelOverrides) && Object.values(p.modelOverrides).every(isObj))));
+}
+
+/** STEP 1 — remove everything we wrote (K1, K10, K11). Mutates `doc`. */
+function removeOurs(doc: Json): void {
+  if (!isObj(doc.providers)) { return; }
+  for (const [pid, obj] of Object.entries<Json>(doc.providers)) {
+    const had = Object.keys(obj).length;
+    if (Array.isArray(obj.models)) { obj.models.forEach(adoptIfEdited); }
+    if (isObj(obj.modelOverrides)) { Object.values(obj.modelOverrides).forEach(adoptIfEdited); }
+    // K1: an object an older release filled — our models[] entries and none of the user's — got
+    // its connection from us, iff that connection is a pair we shipped for this provider.
+    if (Array.isArray(obj.models) && obj.models.some(ours) && obj.models.every(ours)
+      && (SHIPPED_PAIRS[pid] ?? []).some(([api, url]) => api === obj.api && url === obj.baseUrl)) {
+      delete obj.api; delete obj.baseUrl;
+    }
+    // K11: a container our removal empties was ours.
+    if (Array.isArray(obj.models) && obj.models.some(ours)) {
+      obj.models = obj.models.filter((m: Json) => !ours(m));
+      if (!obj.models.length) { delete obj.models; }
+    }
+    if (isObj(obj.modelOverrides) && Object.values(obj.modelOverrides).some(ours)) {
+      for (const [id, v] of Object.entries(obj.modelOverrides)) { if (ours(v)) { delete obj.modelOverrides[id]; } }
+      if (!Object.keys(obj.modelOverrides).length) { delete obj.modelOverrides; }
+    }
+    delete obj[MANAGED_KEY]; // 0.2.8-pre stamped provider objects; nothing else we would remove is left in them
+    if (had && !Object.keys(obj).length) { delete doc.providers[pid]; } // TS Pi rejects an empty provider object
+  }
+}
+
+/** STEP 2 — write Pi's values for every source model rust-pi can take as Pi does. Mutates `doc`. */
+function writePi(doc: Json, source: CatalogProviders, rust: RustPiCatalog, connections?: ModelConnections): { written: number; notCreated: string[] } {
+  let written = 0;
+  const notCreated: string[] = [];
+  for (const [pid, prov] of Object.entries(source)) {
+    const r = rust.providers[pid];
+    // A provider rust-pi does not list has nothing to adjust (C27 give-up 1).
+    if (!r || !prov.models?.length) { continue; }
+    const existing: Json = isObj(doc.providers?.[pid]) ? doc.providers[pid] : undefined;
+    // B-1. rust-pi lists none of its built-ins for a provider object carrying a `models` array (measured,
+    // 0.8.0), and a new model there takes the object's own api/baseUrl: such an object is the user's catalog,
+    // so we create nothing in it. An object that sets its own baseUrl or api likewise: only what rust-pi lists.
+    const usersCatalog = Array.isArray(existing?.models);
+    const usersConnection = existing?.api !== undefined || existing?.baseUrl !== undefined;
+    const own = usersCatalog ? new Set<unknown>() : new Set<unknown>(r.ids); // exact ids: rust-pi merges `x` with `<p>/x` only for openrouter's auto (measured), so oneId is not used here
+    // C29: a model rust-pi lacks is created on r.newModel; allowed only when that is Pi's own
+    // connection FOR THAT MODEL (a provider can mix apis and endpoints; the slim provider-level pair is
+    // only its first model's, and is used only where no per-model connection is known — the floor).
+    const rustNew = endpoint(r.newModel.api, r.newModel.baseUrl);
+    const createOk = (id: string): boolean => {
+      const c = connections?.[pid]?.[id] ?? prov;
+      return endpoint(c.api, c.baseUrl) === rustNew;
+    };
+    // K2: an id the user defines in this provider (models[] or modelOverrides) is theirs.
+    const yours = new Set<unknown>([
+      ...(Array.isArray(existing?.models) ? existing.models.map((m: Json) => oneId(pid, m?.id)) : []),
+      ...Object.keys(isObj(existing?.modelOverrides) ? existing.modelOverrides : {}).map((id) => oneId(pid, id)),
+    ]);
+    const ids = new Set(prov.models.map((m) => m.id));
+    for (const m of prov.models) {
+      if (oneId(pid, m.id) === m.id && oneId(pid, `${pid}/${m.id}`) === m.id && ids.has(`${pid}/${m.id}`)) { continue; } // K3: the prefixed twin carries it
+      if (yours.has(oneId(pid, m.id))) { continue; }
+      if (!own.has(m.id) && (usersCatalog || usersConnection || !createOk(m.id))) { notCreated.push(`${pid}/${m.id}`); continue; }
+      if (!isObj(doc.providers)) { doc.providers = {}; }
+      const target: Json = isObj(doc.providers[pid]) ? doc.providers[pid] : (doc.providers[pid] = {});
+      if (!isObj(target.modelOverrides)) { target.modelOverrides = {}; }
+      target.modelOverrides[m.id] = overrideOf(m);
+      written++;
+    }
+  }
+  return { written, notCreated };
+}
+
+type UnsafeReason = "read" | "readonly" | "bom" | "parse" | "shape";
+const PLAIN_JSON_FIX = "save it as plain JSON (no comments, no trailing commas, UTF-8 without a byte-order mark)";
+
+/** The one message a user sees about a models.json we will not touch (K8, C28(4)). */
+function unsafeMessage(file: string, reason: UnsafeReason, code?: string): string {
+  // A read-only file is one rust-pi DOES read, so it gets its own sentence, not "Rust Pi ignores it".
+  if (reason === "readonly" && code === "folder") {
+    return `Your models.json (\`${file}\`) cannot be updated because its folder is read-only, so the extension has not changed it, and Rust sessions use it exactly as it is. To let the extension keep Rust Pi's model details current, make the folder writable, then start a new Rust session.`;
+  }
+  if (reason === "readonly") {
+    return `Your models.json (\`${file}\`) is read-only, so the extension has not changed it, and Rust sessions use it exactly as it is. To let the extension keep Rust Pi's model details current, make it writable, then start a new Rust session.`;
+  }
+  const [why, fix] = {
+    read: [`could not be read (${code ?? "unknown error"})`, "make it a readable file (check its permissions)"],
+    bom: ["starts with a byte-order mark", PLAIN_JSON_FIX],
+    parse: ["isn't plain JSON (it may have comments, trailing commas or a syntax error)", PLAIN_JSON_FIX],
+    shape: ["isn't shaped like a models file", "make the file, its \"providers\" and each provider JSON objects, each \"models\" a list and each \"modelOverrides\" an object"],
+  }[reason];
+  return `Your models.json (\`${file}\`) ${why}. Rust Pi ignores a file like that completely — including any custom providers in it — so Rust sessions use only Rust Pi's built-in models. The extension has not changed the file. To fix it, ${fix}, then start a new Rust session.`;
+}
+
+/** The file's current text, or null when it does not exist. Other errors throw. */
+function readText(file: string): string | null {
+  try { return fs.readFileSync(file, "utf-8"); }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") { throw e; }
+    // A symlink to a missing file is the user's link, not "no file": writing would replace it.
+    let link = false;
+    try { link = fs.lstatSync(file).isSymbolicLink(); } catch { /* truly absent */ }
+    if (link) { throw e; }
+    return null;
+  }
+}
+
+/** SF-1/SF-B: what stops us writing `file` safely — the file itself read-only, or (the temp-file rename
+ *  needs the DIRECTORY's permission) its folder. Follows a symlink. Checked only when a write is due. */
+function unwritable(file: string): "file" | "folder" | null {
+  let target = file;
+  try {
+    target = fs.realpathSync(file);
+    if ((fs.statSync(target).mode & 0o222) === 0) { return "file"; }
+    fs.accessSync(target, fs.constants.W_OK);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") { return "file"; }
+  }
+  try { fs.accessSync(path.dirname(target), fs.constants.W_OK); } catch { return "folder"; }
+  return null;
+}
+
+export interface MergeOptions {
+  /** rust-pi's own catalog (default: the generated one for the pinned binary). */
+  rust?: RustPiCatalog;
+  /** Pi's own connection per model (a "pi" snapshot's); absent → the provider's (the floor's shape). */
+  connections?: ModelConnections;
+  /** Test seam: runs after the temp file is written and before the check-and-rename. */
+  beforeRename?: () => void;
+}
+export type MergeResult =
+  | { outcome: "written" | "unchanged"; written: number; notCreated: string[] }
+  | { outcome: "unsafe"; reason: UnsafeReason; message: string }
+  | { outcome: "raced" };
+
+/**
+ * Merge Pi's values into models.json (v4 §2). Pure in (file, source): the content written depends
+ * only on those, so two windows starting Rust together converge on the same bytes.
+ *
+ *   - unsafe file (K8): never written; the result carries the message for the user
+ *   - STEP 1: everything we ever wrote is removed (K1 migration, K10, K11)
+ *   - STEP 2: Pi's values are written as stamped overrides (K2–K6, C29)
+ *   - no semantic change: nothing is written, so the user's formatting is never touched for nothing
+ *   - otherwise a temp file is renamed over it — unless the file changed since we read it (an
+ *     editor save, another window): then we start over once, and after a second change we skip
+ */
+export function mergeModelsJson(file: string, source: CatalogProviders, opts: MergeOptions = {}): MergeResult {
+  const rust = opts.rust ?? RUST_PI_CATALOG;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let text: string | null;
+    try { text = readText(file); }
+    catch (e) { return { outcome: "unsafe", reason: "read", message: unsafeMessage(file, "read", (e as NodeJS.ErrnoException)?.code) }; }
+    let doc: Json = {};
+    if (text !== null) {
+      if (text.charCodeAt(0) === 0xfeff) { return { outcome: "unsafe", reason: "bom", message: unsafeMessage(file, "bom") }; }
+      try { doc = JSON.parse(text); }
+      catch { return { outcome: "unsafe", reason: "parse", message: unsafeMessage(file, "parse") }; }
+      if (!shapeOk(doc)) { return { outcome: "unsafe", reason: "shape", message: unsafeMessage(file, "shape") }; }
+    }
+    const before = JSON.stringify(doc);
+    removeOurs(doc);
+    const { written, notCreated } = writePi(doc, source, rust, opts.connections);
+    if (JSON.stringify(doc) === before) { return { outcome: "unchanged", written, notCreated }; }
+    const blocked = unwritable(file);
+    if (blocked) { return { outcome: "unsafe", reason: "readonly", message: unsafeMessage(file, "readonly", blocked) }; }
+    if (replaceIfUnchanged(file, JSON.stringify(doc, null, 2) + "\n", text, opts.beforeRename)) {
+      return { outcome: "written", written, notCreated };
+    }
+  }
+  return { outcome: "raced" };
+}
+
+/** Atomically replace `file` with `payload` iff its bytes still equal `expected` (null = absent).
+ *  A symlinked models.json is written through to its target, and the file keeps its permissions. */
+function replaceIfUnchanged(file: string, payload: string, expected: string | null, beforeRename?: () => void): boolean {
+  let target = file;
+  let mode: number | undefined;
+  try { target = fs.realpathSync(file); mode = fs.statSync(target).mode & 0o7777; }
+  catch { /* absent: a new file with default permissions */ }
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.pi-code-gui-${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, payload, mode !== undefined ? { mode } : {});
+    if (mode !== undefined) { fs.chmodSync(tmp, mode); }
+    beforeRename?.();
+    let changed: boolean;
+    try { changed = readText(file) !== expected; } catch { changed = true; }
+    if (changed) { fs.rmSync(tmp, { force: true }); return false; }
+    fs.renameSync(tmp, target);
+    return true;
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw new RustModelsError(`Couldn't write "${file}": ${msg(e)}. Rust sessions will use the models it already describes.`);
+  }
+}
+
+const unsafeWarned = new Set<UnsafeReason>(); // one notice per reason per window
+
+/**
+ * Prepare the Rust agent home for a spawn: merge Pi's values into models.json (rust-pi reads it
+ * only at startup) and return env additions (PI_CODING_AGENT_DIR) plus non-fatal warnings.
+ * Throws RustModelsError on a fatal problem the caller must surface. Called from
+ * RustService.initialize via pi-service's `setupModels` dep — the ONLY place models.json is
+ * written (C28(2)).
+ */
 export function setupRustModels(): { piEnv: Record<string, string>; warnings: string[] } {
   if (!_ctx) { throw new RustModelsError("Rust models support not initialized (internal error)."); }
   const warnings: string[] = [];
-  const budget = vscode.workspace.getConfiguration("pi-code-gui").get<number>("contextBudget") ?? 0;
   const dir = resolveAgentDir(_ctx);
   ensureDir(dir);
-  const scope = credentialedProviders(process.env, dir);
-  const merged = mergeModelsJson(path.join(dir, "models.json"), budget, scope);
+  const file = path.join(dir, "models.json");
+  const snap = catalogSource().providers();
+  if (snap.kind === "none") {
+    piDebug(`Rust model catalog: models.json left as it is this start — ${snap.label}`);
+  } else {
+    const r = mergeModelsJson(file, snap.providers, { connections: snap.kind === "pi" ? snap.connections : undefined });
+    if (r.outcome === "unsafe") {
+      piWarn(`Rust model catalog: ${r.message}`);
+      if (!unsafeWarned.has(r.reason)) { unsafeWarned.add(r.reason); warnings.push(r.message); }
+    } else if (r.outcome === "raced") {
+      piWarn(`Rust model catalog: ${file} kept changing while it was being merged, so it was left as it is this start.`);
+    } else {
+      piDebug(`Rust model catalog from ${snap.label}: ${r.outcome}, ${r.written} override(s) in ${file}` +
+        (r.notCreated.length ? `; ${r.notCreated.length} model(s) not offered because rust-pi would reach them on another endpoint or protocol than Pi (${r.notCreated.slice(0, 5).join(", ")}${r.notCreated.length > 5 ? ", …" : ""})` : ""));
+    }
+  }
   const w = checkAuthAvailable(dir);
   if (w) { warnings.push(w); }
-  piDebug(`Rust model catalog: merged ${merged.written} managed entries for ${scope.size} credentialed provider(s) [${[...scope].join(", ") || "none"}] into ${dir}/models.json (budget=${budget}, ${merged.omitted} placeholder maxTokens omitted, ${merged.userOwned} left to the user, ${merged.retired} withdrawn model(s) retired)`);
-  // Name what was withheld, so an outgrown RUST_SUPPORTED_APIS list is discoverable.
-  if (merged.skippedApis.length) {
-    piDebug(`Rust model catalog: withheld ${merged.skippedApis.length} credentialed provider(s) the pinned binary has no protocol for [${merged.skippedApis.join(", ")}] — they stay on its native handling. See RUST_SUPPORTED_APIS in rust-models.ts.`);
-  }
   // PI_MAX_TOOL_ITERATIONS: rust-pi stops a turn at 50 tool calls by default and reports
   // `stopReason: "error"`, cutting long work off mid-task. 0 leaves the binary's default alone
   // rather than pinning us to a number that could drift out from under the setting.
   const piEnv: Record<string, string> = { PI_CODING_AGENT_DIR: dir };
   const maxIters = vscode.workspace.getConfiguration("pi-code-gui").get<number>("maxToolIterations") ?? 0;
   if (Number.isInteger(maxIters) && maxIters > 0) { piEnv.PI_MAX_TOOL_ITERATIONS = String(maxIters); }
-
   return { piEnv, warnings };
 }

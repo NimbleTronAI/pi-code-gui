@@ -66,9 +66,13 @@ export interface SlimModel {
 }
 export interface SlimProvider { baseUrl: string; api: string; models: SlimModel[] }
 export type CatalogProviders = Record<string, SlimProvider>;
+/** Per provider, per model id: the connection Pi itself uses for that model. The slim shape keeps one
+ *  connection per provider (the generator's); a provider can mix apis and endpoints, and the Rust merge
+ *  gates each model it would create on its OWN connection (C29). "pi" snapshots only. */
+export type ModelConnections = Record<string, Record<string, { api: string; baseUrl: string }>>;
 
 export type CatalogSnapshot =
-  | { kind: "pi"; providers: CatalogProviders; label: string }
+  | { kind: "pi"; providers: CatalogProviders; connections: ModelConnections; label: string }
   | { kind: "floor"; providers: CatalogProviders; label: string }
   | { kind: "none"; reason: string; label: string };
 
@@ -130,6 +134,16 @@ export function slimCatalog(models: readonly any[]): CatalogProviders {
     const first = list[0];
     if (!rustExpressibleProvider(providerId, first)) { continue; }
     out[providerId] = { baseUrl: first.baseUrl, api: first.api, models: list.map(slimModel) };
+  }
+  return out;
+}
+
+/** Pi's chat models → each model's own (api, baseUrl), for every provider (writePi reads only the ones the source keeps). */
+export function modelConnections(models: readonly any[]): ModelConnections {
+  const out: ModelConnections = {};
+  for (const m of models) {
+    if (!m || typeof m.provider !== "string" || typeof m.id !== "string" || typeof m.api !== "string" || typeof m.baseUrl !== "string") { continue; }
+    (out[m.provider] ??= {})[m.id] = { api: m.api, baseUrl: m.baseUrl };
   }
   return out;
 }
@@ -277,7 +291,8 @@ export function createCatalogSource(opts: CatalogSourceOptions = {}): CatalogSou
     switch (state.s) {
       case "ready":
         try {
-          return { kind: "pi", providers: slimCatalog(state.rt.getModels()), label: `Pi's catalog (pi-coding-agent ${state.version})` };
+          const models = state.rt.getModels();
+          return { kind: "pi", providers: slimCatalog(models), connections: modelConnections(models), label: `Pi's catalog (pi-coding-agent ${state.version})` };
         } catch (e) {
           const reason = `the installed Pi's catalog could not be read (${e instanceof Error ? e.message : String(e)})`;
           return { kind: "none", reason, label: `no model catalog this start — ${reason}` };
