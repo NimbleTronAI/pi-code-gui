@@ -7,120 +7,51 @@
 [![Open VSX Downloads](https://badgen.net/open-vsx/d/NimbleTron/pi-code-gui?color=a160e4)](https://open-vsx.org/extension/NimbleTron/pi-code-gui)
 [![Publish](https://github.com/NimbleTronAI/pi-code-gui/actions/workflows/publish.yml/badge.svg)](https://github.com/NimbleTronAI/pi-code-gui/actions/workflows/publish.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![TypeScript runtime](https://img.shields.io/npm/v/%40earendil-works%2Fpi-coding-agent?label=TypeScript%20Pi&color=7C3AED&style=flat-square&logo=typescript&logoColor=white)](https://pi.dev)
-[![Rust runtime (tested)](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FNimbleTronAI%2Fpi-code-gui%2Fmain%2Fsrc%2Frust-pi-version.json&query=%24.tag&label=Rust%20Pi%20%28tested%29&color=DEA584&style=flat-square&logo=rust&logoColor=white)](https://github.com/Dicklesworthstone/pi_agent_rust/releases)
+[![Pi](https://img.shields.io/npm/v/%40earendil-works%2Fpi-coding-agent?label=Pi&color=7C3AED&style=flat-square&logo=typescript&logoColor=white)](https://pi.dev)
 
-> A native VS Code editor experience for the **Pi coding agent** — Pi runs inside VS Code, not in a terminal. Pick your engine per session: [**TypeScript Pi**](https://pi.dev), with full access to your editor state, diagnostics, and symbols, or [**Rust Pi**](https://github.com/Dicklesworthstone/pi_agent_rust), a fast, self-contained binary, with a stronger security model.
+> A native VS Code editor experience for the [**Pi coding agent**](https://pi.dev) — Pi runs inside VS Code, not in a terminal, with full access to your editor state, diagnostics, and symbols.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/NimbleTronAI/pi-code-gui/main/media/pi-code-gui-readme.png" alt="Pi Code GUI">
 </p>
 
+> **Using Rust Pi?** Support for it ended with version 0.2.3 — see [what that means and how to keep using it](#rust-pi-support-has-ended).
+
 ## Quick Start
 
-1. **Install a runtime**: On first launch, Pi Code Gui detects whether **TypeScript Pi** or **Rust Pi** is installed; if neither is, it asks you to choose and installs on demand — no manual setup needed (see [Choosing a runtime](#choosing-a-runtime)). To install manually instead:
-   - **TypeScript Pi** — `npm install -g @earendil-works/pi-coding-agent` (needs Node.js + npm)
-   - **Rust Pi** — run **PiGui: Install Rust Pi** (managed binary download, official `curl | sh`, or `cargo install`)
+1. **Install Pi**: On first launch, Pi Code Gui checks for Pi and offers to install it if it's missing. To install it yourself: `npm install -g @earendil-works/pi-coding-agent` (needs Node.js + npm).
 2. **Set an API key**: Run **PiGui: Set Up API Key / Login** from the command palette (`Ctrl+Shift+P`), or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (or `DEEPSEEK_API_KEY`, etc.) in your environment.
 3. **Open the chat**: Click the Pi icon in the activity bar, or run **PiGui: Code Agent** from the command palette.
-4. **Start prompting**: The agent reads files, runs commands, and makes edits. On **TypeScript Pi** it also inspects your editor state, diagnostics, and symbols through the VS Code bridge; **Rust Pi** works through its own built-in file and shell tools.
+4. **Start prompting**: The agent reads files, runs commands, makes edits, and inspects your editor state, diagnostics, and symbols through the VS Code bridge.
 
 ## Why Pi Code Gui?
 
-The Pi coding agent is a powerful AI pair programmer, with an exceptional terminal (TUI) implementation. 
+The Pi coding agent is a powerful AI pair programmer, with an exceptional terminal (TUI) implementation.
 
 For people who prefer a GUI experience, this extension embeds Pi directly in VS Code's native UI:
 
 - **In-editor chat** — streaming responses, thinking blocks, and tool execution results rendered in a webview panel, not a terminal buffer.
-- **Choose your engine** — run each session on [**TypeScript Pi** or **Rust Pi**](#choosing-a-runtime), and mix them across tabs; the active runtime is badged in the status bar.
-- **Native VS Code bridge** *(TypeScript Pi)* — 16 tools that call VS Code APIs directly: inspect the active editor, check diagnostics, find symbols, look up types, apply edits, and format code. **Rust Pi** works the same files through its own fast `read`/`write`/`edit`/`bash`/`grep` tools.
-- **Session persistence** — conversation history survives VS Code restarts; resume reopens each session on the runtime that created it.
-- **Multi-session support** — multiple chat panels, each with an independent runtime, model, and thinking level.
-- **Plan before you edit** *(Rust Pi)* — put a session in plan mode and the agent drafts a plan while every write is held, then you approve or reject it; a strip above the prompt also sets how much runs without asking.
-
-## Choosing a runtime
-
-Every session runs on one of two interchangeable Pi runtimes:
-
-- **TypeScript Pi** *(default)* — deepest VS Code integration: 16 editor-bridge tools, interactive cards, per-session tool control, and the full in-process extension catalog.
-- **Rust Pi** — fast, self-contained, and the only runtime with **plan mode and approval control** (see [Plan mode and approvals](#plan-mode-and-approvals-rust-pi)): ~100 ms startup, <50 MB idle, one ~21 MB binary with no Node.js, and a hard safety floor that blocks catastrophic shell commands. Trades away the editor-bridge tools.
-
-New sessions use your **default runtime** — the `defaultRuntime` setting, which *ships* as TypeScript and is changed with **PiGui: Set Default Runtime** (remembered). When only one runtime is installed, that one is used regardless. You can also choose per session with **PiGui: Add Rust/TypeScript Pi Session** or **Add Pi Session (Choose Runtime)**. The active runtime shows as a `π TS`/`π Rust` chip in the status bar and a tree badge. Switching opens a *new* session on the other runtime; live sessions don't hot-swap, and the original stays open.
-
-Both runtimes are detected at startup and installed only when you first reach for one that's missing — never behind your back. The full trade-off:
-
-| | TypeScript Pi | Rust Pi |
-|---|---|---|
-| Project | [@earendil-works/pi-coding-agent](https://pi.dev) | [pi_agent_rust](https://github.com/Dicklesworthstone/pi_agent_rust) |
-| Process model | In-process (shares the extension host's Node.js) | Out-of-process (spawned binary, line-delimited JSON-RPC) |
-| Install | `npm install -g @earendil-works/pi-coding-agent` (needs Node.js + npm) | Managed binary download / `cargo install`, or official `curl \| sh`, or manual |
-| Startup / memory | Heavier; Node.js runtime | ~100 ms startup, <50 MB idle, single ~21 MB binary, no Node.js |
-| VS Code editor-bridge tools | 16 tools (diagnostics, symbols, types, format, apply-edit) | Uses its own file/shell tools instead |
-| `/tools` per-session control | Per-session tool picker | Full built-in tool set (no picker) |
-| Custom interactive cards | Buttons, clickable rows, live polling | Markdown rendering |
-| Plan mode | — | **Draft a plan first**: the agent explores read-only and every edit waits for your approval |
-| Approval control | Tools auto-accept | **`always-ask` / `write` / `yolo`** — choose how much runs without asking |
-| Extension catalog | In-process Pi extension/package catalog | Separate Rust catalog (QuickJS / native) |
-| Session history | `~/.pi/agent/sessions` (JSONL) | Separate Rust pool (JSONL v3 tree + SQLite index) |
-| Built-in safety | Tools auto-accept (no per-tool gate) | Approval posture you choose, **plus** catastrophic-command blocking, zero `unsafe`, secret env filter |
-
-### Model catalog on the Rust runtime
-
-The Rust binary ships with its own curated model registry baked into each release, so its catalog reflects whatever was current when that binary was built. To keep the two runtimes in step — and to save you any per-model setup — this extension bundles the **same model catalog Pi itself uses** (generated from [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai)) and writes it into the Rust agent's `models.json`, taking precedence over the binary's built-in list for standard API-key providers. So on Rust you get the same models as the TypeScript runtime — with matching pricing, context windows, reasoning/thinking support, and more regularly maintained model definitions — and **nothing to configure**: pick a model, put its provider's API key in your environment, and go.
-
-The catalog stays current on its own. Dependabot tracks `@earendil-works/pi-ai`, and a build check refuses to package a stale catalog, so every release ships fresh data — updating the extension updates your Rust model list.
-
-> **Cloud providers with specialized auth** — Amazon Bedrock, Azure, Google Vertex, GitHub Copilot — aren't in the catalog, because their authentication and routing can't be expressed as a plain `models.json` entry. They keep working through the Rust binary's own native handling, exactly as in the Pi CLI.
-
-> **Prefer raw, unmanaged control of the Rust model registry?** That's a perfect job for the **Pi CLI** — this extension intentionally favors a curated, always-fresh catalog over hand-maintained model definitions. (You can still redirect the extension's Rust agent home with **`pi-code-gui.rustAgentDir`**, e.g. to a writable path of your choosing.)
-
-> **Context budget:** when `pi-code-gui.contextBudget` is set, the extension clamps each catalog model's effective `contextWindow` to your budget in `models.json`, so the Rust runtime's auto-compaction (and manual `/compact`) trigger at the budget rather than only near the model's full window — matching the TypeScript runtime.
-
-> **Thinking level vs. reasoning (by provider):** a model's *thinking level* (off → max) only changes generation on transports that send it — Anthropic (`anthropic-messages`), the OpenAI Responses API (`openai-responses`), and Google. On OpenAI-compatible chat APIs (`openai-completions`, including **DeepSeek**) the level isn't transmitted; the model self-allocates its reasoning, so under Rust the status bar shows a read-only **reasoning: on/off** badge instead of an adjustable level rather than letting you set one that does nothing.
-
-> **⚠️ Cost & token figures are estimates, not your bill.** The token counts and dollar amounts in the status bar are computed locally — from the bundled catalog's per-model rates and the usage each runtime reports back — purely for at-a-glance guidance. They can be wrong or incomplete: published rates change, the catalog can lag a provider's current pricing, and providers meter in ways a flat rate doesn't capture (cache reads/writes, request minimums, batch/volume discounts, taxes). Some providers report no usage for a turn, in which case the figure stays `0`; where we have no rate for a model we show `$??` rather than a misleading `$0`. **Always rely on your provider account's usage/billing dashboard for actual cost — never on these in-app summaries.**
-
-Nothing fails silently: an unwritable agent directory surfaces as a clear error in the chat (and a notification for fatal cases).
+- **Native VS Code bridge** — 16 tools that call VS Code APIs directly: inspect the active editor, check diagnostics, find symbols, look up types, apply edits, and format code.
+- **Session persistence** — conversation history survives VS Code restarts.
+- **Multi-session support** — multiple chat panels, each with an independent model and thinking level.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
 | 💬 **Chat panel** | Streaming text, collapsible thinking blocks, tool call/result rendering, markdown with syntax-highlighted code blocks |
-| 🔀 **Two runtimes** | Run each session on **TypeScript Pi** (in-process SDK + editor bridge) or **Rust Pi** (fast ~21 MB standalone binary); per-session choice, badged in the status bar — see [Choosing a runtime](#choosing-a-runtime) |
-| 🧰 **Editor bridge** *(TypeScript Pi)* | Agent reads open editors, checks diagnostics, inspects symbols/types, applies edits, formats code through VS Code APIs. Under **Rust Pi**, the agent uses its own file/shell tools instead |
-| 🧭 **Mode strip** *(Rust Pi)* | A strip above the prompt shows what your next message will do, and changes it before you send: **plan mode** — the agent drafts a plan and holds every edit until you approve it — and the **approval posture** governing which actions run without asking (`always-ask` / `write` / `yolo`). Both are visible at the moment you commit, not buried in a command palette |
+| 🧰 **Editor bridge** | Agent reads open editors, checks diagnostics, inspects symbols/types, applies edits, formats code through VS Code APIs |
 | 🔄 **Session history** | Auto-saved conversations can be resumed or deleted. Find with text search |
 | 🪟 **Multi-session** | Multiple independent chat panels, each with its own model, thinking level, and conversation tree |
 | 🔐 **Flexible auth** | Runtime API key overrides via VS Code settings, env vars, or the built-in auth config |
-| 🔧 **Settings** | Toggle auto-compaction and auto-retry (both runtimes), plus skills, context-file, and prompt-template loading *(TypeScript Pi)* — all from the UI |
-| 📋 **Custom Messages** *(TypeScript Pi)* | Extensions can render inline interactive cards with buttons, clickable rows, and live polling updates — see [§ Custom Messages](#custom-messages--minimal-working-example). Under **Rust Pi**, cards fall back to markdown |
-| 🛠️ **Tool control** *(TypeScript Pi)* | `/tools` command opens a grouped checkbox picker to select which built-in, bridge, or extension tools are active per session. Persisted to session file, restored on resume. **Rust Pi** runs its full built-in tool set (no picker) |
-| 📦 **Runtime-aware packages** | The Packages view manages the one shared Pi catalog and follows the focused session's runtime — each package is marked **active** (loaded by that runtime) or **available** (installed but not loaded), with provenance/safety signals. Works under either runtime (drives the Rust binary when the TypeScript SDK isn't installed) |
-
-## Plan mode and approvals *(Rust Pi)*
-
-**New in 0.2.0.** Rust Pi 0.3.0 can draft a plan before it touches anything, and can be told how
-much to do without asking. Both now have a home in the UI — a strip directly above the prompt,
-because what the next message will do is worth knowing *before* you send it, not after.
-
-**Plan mode.** Switch to `plan` and the agent works read-only: it explores, then submits a plan
-and waits. Every write is refused until you decide. When a plan arrives you get **Approve** or
-**Reject** right in the strip. Approving unblocks writes and drops "Carry out the plan" into the
-prompt, ready to send; rejecting returns the agent to planning, where a follow-up message is how
-you say what to change.
-
-**Approval posture.** `always-ask` needs a yes for every edit and command, `write` lets file edits
-through while commands still ask, and `yolo` runs everything. Rust Pi reads this only when a
-session starts, so changing it restarts the session — your conversation is reloaded from disk and
-carries forward. The prompt says so, and offers **Restart, don't ask again**.
-
-The setting lives in `~/.pi/agent/settings.json`, which the extension shares with the `pi` CLI —
-so a change applies to both, and the prompt tells you that too. Defaults for new sessions are
-`pi-code-gui.defaultMode` and `pi-code-gui.defaultApproval`, offered whenever you change either.
+| 🔧 **Settings** | Toggle auto-compaction, auto-retry, skills, context-file, and prompt-template loading — all from the UI |
+| 📋 **Custom Messages** | Extensions can render inline interactive cards with buttons, clickable rows, and live polling updates — see [§ Custom Messages](#custom-messages--minimal-working-example) |
+| 🛠️ **Tool control** | `/tools` command opens a grouped checkbox picker to select which built-in, bridge, or extension tools are active per session. Persisted to session file, restored on resume |
+| 📦 **Packages** | The Packages view manages your Pi packages — each marked **active** (loaded) or **available** (installed but not loaded), with provenance/safety signals |
 
 ## Gotchas
 
+- **⚠️ Cost & token figures are estimates, not your bill.** The token counts and dollar amounts in the status bar are computed locally — from the model catalog's per-model rates and the usage Pi reports back — purely for at-a-glance guidance. They can be wrong or incomplete: published rates change, the catalog can lag a provider's current pricing, and providers meter in ways a flat rate doesn't capture (cache reads/writes, request minimums, batch/volume discounts, taxes). Some providers report no usage for a turn, in which case the figure stays `0`; where we have no rate for a model we show `$??` rather than a misleading `$0`. **Always rely on your provider account's usage/billing dashboard for actual cost — never on these in-app summaries.**
 - **DeepSeek V4 sessions show `$??` instead of a cost.** DeepSeek bills those models at
   different rates by time of day (peak is 2x off-peak), the bundled price catalog has no field
   for time-varying rates, and DeepSeek's API doesn't report the billed amount. Any figure shown
@@ -129,7 +60,7 @@ so a change applies to both, and the prompt tells you that too. Defaults for new
   gateway (OpenRouter, Vercel AI Gateway) still price normally. Tracked upstream as
   [pi#8510](https://github.com/earendil-works/pi/issues/8510) and
   [pi#8491](https://github.com/earendil-works/pi/issues/8491).
-- Not all TUI behaviours map well into VSCode's UX. For instance, having new UI widgets spawned by extension packages. I did a best effort implementation, but there is definitely room for improvement.
+- Not all TUI behaviours map well into VSCode's UX. For instance, having new UI widgets spawned by extension packages. We did a best-effort implementation, but there is definitely room for improvement.
 
 ## Custom Messages — Minimal Working Example
 
@@ -216,11 +147,6 @@ When the message arrives in the webview:
 - **If no renderer is registered:** the `content` string is rendered as
   markdown inside a bordered card (graceful fallback).
 
-> **Note:** Custom message renderers run **in-process** and therefore only work
-> under the TypeScript runtime. Under the [Rust runtime](#choosing-a-runtime),
-> custom-card extensions render only their `content` markdown fallback —
-> interactive renderers require the in-process TypeScript runtime.
-
 ### 3. Action buttons
 
 Buttons with `data-command` attributes automatically execute the slash
@@ -287,11 +213,9 @@ renderer independently in a browser console.
 
 ## Architecture
 
-Every session runs on one of two interchangeable runtimes (see [Choosing a runtime](#choosing-a-runtime)). `PiService` branches internally on `_backendKind`; roughly 85% of it — event translation, the UI bridge, pickers, status, slash commands — is runtime-agnostic.
-
-- **PiService** manages the agent lifecycle and is the runtime branch point. For **TypeScript Pi** it loads the `@earendil-works/pi-coding-agent` SDK **in-process** from your global npm install (so `pi update --self` picks up new SDK versions without an extension update). For **Rust Pi** it spawns [`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust) as an **out-of-process** `pi --mode rpc` subprocess and speaks line-delimited JSON-RPC over stdio. Either way it subscribes to agent events, translates them into chat UI messages, and handles model/thinking/settings changes.
-- **PiWebviewPanel** renders a webview chat UI. It subscribes to PiService events and re-renders streaming text, thinking blocks, tool execution, bash output, compaction summaries, and custom messages in real time — identically for both runtimes.
-- **Bridge tools** are registered as SDK `customTools` constructed with `defineTool()` and Typebox schemas, the same way the SDK's own built-in tools are defined. They are a **TypeScript-runtime** feature; Rust Pi uses its own built-in `read`/`write`/`edit`/`bash`/`grep` tools on the same files.
+- **PiService** manages the agent lifecycle. It loads the `@earendil-works/pi-coding-agent` SDK **in-process** from your global npm install (so `pi update --self` picks up new SDK versions without an extension update), subscribes to agent events, translates them into chat UI messages, and handles model/thinking/settings changes.
+- **PiWebviewPanel** renders a webview chat UI. It subscribes to PiService events and re-renders streaming text, thinking blocks, tool execution, bash output, compaction summaries, and custom messages in real time.
+- **Bridge tools** are registered as SDK `customTools` constructed with `defineTool()` and Typebox schemas, the same way the SDK's own built-in tools are defined.
 
 <!--
   This image is a PNG because vsce forbids inline SVGs in the README. The PNG is
@@ -315,21 +239,13 @@ Every session runs on one of two interchangeable runtimes (see [Choosing a runti
 | `pi-code-gui.defaultModelProvider` | string | `""` | Default model provider (e.g. `anthropic`). Empty = auto-detect |
 | `pi-code-gui.defaultModelId` | string | `""` | Default model ID (e.g. `claude-sonnet-4-5`). Requires provider set |
 | `pi-code-gui.defaultThinkingLevel` | string | `"off"` | Default thinking level for new sessions |
-| `pi-code-gui.contextBudget` | number | `0` | Per-session token budget (0 = model default). Drives auto-compaction; for the Rust runtime it clamps the custom model's effective context window |
+| `pi-code-gui.contextBudget` | number | `0` | Per-session token budget (0 = model default). Drives auto-compaction |
 | `pi-code-gui.sessionDir` | string | `""` | Custom directory for session `.jsonl` files. Empty = pi SDK default (`~/.pi/agent/sessions/`) |
-| `pi-code-gui.defaultRuntime` | string (`typescript`\|`rust`) | `typescript` | Runtime for new sessions when both are installed. Resume always reuses a session's origin runtime |
-| `pi-code-gui.sessionHistoryScope` | string (`unified`\|`perRuntime`) | `unified` | Whether Past Sessions shows both runtimes (badged) or only the default runtime's |
-| `pi-code-gui.rustBinaryPath` | string | `""` | Custom path to the Rust `pi` binary. Empty = auto-detect |
-| `pi-code-gui.rustInstallMethod` | string (`managed`\|`curl`\|`manual`) | `managed` | Pre-selected method in the on-demand Rust install dialog |
-| `pi-code-gui.rustExtensionPolicy` | string (`safe`\|`balanced`\|`permissive`) | `balanced` | Capability profile for Rust Pi extensions (`--extension-policy`) |
-| `pi-code-gui.rustExtensions` | string (`auto`\|`enabled`\|`disabled`) | `auto` | Whether Rust sessions load Pi extensions (`--no-extensions`). `auto` disables discovery only when the workspace has TypeScript-format `.pi/` extensions the Rust runtime can't parse |
-| `pi-code-gui.rustAgentDir` | string | `""` | Rust agent home (`PI_CODING_AGENT_DIR`) where the extension writes its managed `models.json` (the bundled [Pi model catalog](#model-catalog-on-the-rust-runtime)). Empty = an extension-managed folder (so the full-catalog write never clobbers your `~/.pi/agent`); a set path redirects Rust there. `auth.json` is seeded from `~/.pi/agent` for OAuth |
 
 ## Requirements
 
 - VS Code 1.125+
-- **A Pi runtime** — TypeScript Pi (needs Node.js + npm) or Rust Pi (a standalone binary). The extension detects what's installed and, if neither is, asks you to choose; install is on-demand. See [Choosing a runtime](#choosing-a-runtime).
-  - **Rust Pi tool dependencies** — Rust Pi's `find` and `grep` tools shell out to [`fd`](https://github.com/sharkdp/fd) and [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`), which must be on your `PATH` (a documented `pi_agent_rust` prerequisite). Install with `apt install fd-find ripgrep` (Linux; Debian names fd `fdfind`, so also `ln -s "$(command -v fdfind)" ~/.local/bin/fd`) or `brew install fd ripgrep` (macOS). After a managed Rust install the extension detects these and offers to install them for you.
+- **Pi** — `@earendil-works/pi-coding-agent`, installed globally (needs Node.js + npm). The extension offers to install it if it's missing.
 - At least one API key (Anthropic, OpenAI, DeepSeek, Gemini, etc.) — run **PiGui: Set Up API Key / Login** or see the [Pi quickstart](https://pi.dev/docs/latest/quickstart)
 
 ## Development
@@ -356,24 +272,52 @@ Activate the repo's pre-commit checks once per clone:
 git config core.hooksPath .githooks
 ```
 
-**Rust-runtime clean-room rule.** `pi_agent_rust` (and its runtime deps `asupersync` / `franken-*`) ships under an MIT license **with an OpenAI/Anthropic rider**: its source and derivative works may not be made available to those parties. What that means for contributions here:
+## Rust Pi support has ended
 
-- **Don't read or paste that source into AI coding assistants** (Claude Code, Copilot, Cursor, …) while working on this repo — AI surfaces route content to those vendors — and don't port its code into PRs.
-- **Work black-box:** this extension integrates with the released *binary* over its `--mode rpc` protocol; observed wire behavior, `--version`/`--help` output, and the upstream *issue tracker* are the reference material. The plain-MIT ancestor [earendil-works/pi](https://github.com/earendil-works/pi) may be read freely.
-- **The gate is not a bug:** `scripts/check-cleanroom.sh` runs at pre-commit and inside the packaging pipeline. If it fails your commit, a file references restricted source paths — fix the reference rather than reaching for `--no-verify` (CI runs the same gate).
+**Version 0.2.3 is the last release of Pi Code Gui that supports Rust Pi** ([`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust)). From the next release on, the extension runs on Pi alone, and Rust sessions, the plan-mode and approval strip, and all `rust*` settings are gone.
 
-The full rule lives in `AGENTS.md` §"pi clean-room — license law".
+**Why.** Pi Code Gui could offer Rust Pi as a second engine because it was built as a drop-in replacement for Pi: the same sessions, the same model catalog, the same behaviour, so one interface could drive both. That is no longer its direction. Rust Pi's own [product direction](https://github.com/Dicklesworthstone/pi_agent_rust#current-product-direction) now says it *"is no longer trying to be a strict drop-in replacement for the legacy TypeScript Pi"*, takes a different project as its reference, and *"may intentionally differ"* from Pi. That is a sound choice for Rust Pi — but it means every release would move the two engines further apart, and this extension would keep falling behind both of them. We would rather do one engine well than two badly.
+
+**We're sorry.** If you chose this extension for Rust Pi — for its speed, its plan mode, or its approval controls — this takes something away from you, and that's on us, not on the Rust Pi project. Thank you for using it, and for the issues and feedback that shaped it.
+
+### If you want to keep using Rust Pi in VS Code
+
+Pick whichever suits you:
+
+1. **Stay on 0.2.3.** In the Extensions view, open Pi Code Gui → the gear menu → **Install Specific Version…** → **0.2.3**. Then, in the same menu, turn off **Auto Update** for this extension, so it stays there. Version 0.2.3 was tested against Rust Pi **0.3.0**; newer Rust Pi releases may not work with it.
+
+2. **Fork 0.2.3 and carry it forward.** The extension is MIT-licensed, and the release is tagged:
+
+   ```bash
+   git clone https://github.com/NimbleTronAI/pi-code-gui.git
+   cd pi-code-gui
+   git checkout v0.2.3
+   corepack enable && pnpm install --frozen-lockfile
+   pnpm run vsix                                   # needs ripgrep (rg) on your PATH
+   code --install-extension pi-code-gui-0.2.3.vsix
+   ```
+
+   If you publish your fork, give it **your own `name` and `publisher`** in `package.json`, so it doesn't collide with or pass for this extension, and keep the MIT `LICENSE`.
+
+   **Please read this before working on a fork.** Rust Pi and its runtime dependencies (`asupersync`, `franken-*`) ship under an MIT license **with an OpenAI/Anthropic rider**: their source and derivatives may not be made available to those parties. So **don't read or paste Rust Pi's source into AI coding assistants** (Claude Code, Copilot, Cursor, …), and don't port its code. Work black-box, as this extension did: drive the released *binary* over `pi --mode rpc`, and use its `--help` output, observed behaviour, and its issue tracker as references. Your `v0.2.3` checkout includes `scripts/check-cleanroom.sh`, which enforces this at commit time — if it fails, fix the reference rather than bypassing it. The full rule is in that checkout's `AGENTS.md`, §"pi clean-room — license law".
+
+3. **Use Rust Pi directly**, in its own terminal interface — see its [README](https://github.com/Dicklesworthstone/pi_agent_rust).
+
+### Cleaning up after Rust Pi
+
+Upgrading removes nothing from your disk. Two things you may want to tidy:
+
+- **Your Rust sessions** are still in `~/.pi/agent/sessions-rust/`. The next release no longer lists them, but they are untouched and remain readable by Rust Pi itself — and by 0.2.3, if you go back.
+- **Model entries this extension wrote for Rust are removed for you.** Rust sessions added entries to `~/.pi/agent/models.json`, each marked `"_managedBy": "pi-code-gui@…"`. That file is shared with Pi and the `pi` CLI, and those entries replace Pi's own definitions of the same models — which can cap long outputs and drop thinking-level settings. The first time the new release starts, it deletes every entry carrying that marker, and nothing else: entries without it are yours, and stay exactly as they are. If you go back to 0.2.3, it writes them again.
 
 ## Credits
 
-Pi Code Gui is a GUI shell around two independent upstream agents — all the hard agent work lives in them:
+Pi Code Gui is a GUI shell around [**Pi**](https://pi.dev) — [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) by the [earendil-works](https://github.com/earendil-works/pi) team. All the hard agent work lives there; this extension embeds its SDK in-process.
 
-- **[Pi (TypeScript)](https://pi.dev)** — [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) by the [earendil-works](https://github.com/earendil-works/pi) team. The original Pi coding agent and the SDK this extension embeds in-process.
-- **[Pi (Rust)](https://github.com/Dicklesworthstone/pi_agent_rust)** — [`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust) by [Jeffrey Emanuel (Dicklesworthstone)](https://github.com/Dicklesworthstone). A high-performance, zero-`unsafe` Rust port driven out-of-process over its `--mode rpc` protocol; a first-class runtime here.
+Through version 0.2.3 the extension also supported [**Rust Pi**](https://github.com/Dicklesworthstone/pi_agent_rust) — [`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust) by [Jeffrey Emanuel (Dicklesworthstone)](https://github.com/Dicklesworthstone), a high-performance, zero-`unsafe` Rust port. Thank you for it, and for the release notes and issue answers that made integrating it possible.
 
-Thanks to both projects and their maintainers. Runtime trademarks and project names belong to their respective owners.
+Project names and trademarks belong to their respective owners.
 
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
-

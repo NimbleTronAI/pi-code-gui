@@ -8,6 +8,7 @@
 
 ### Fixed
 - **Rust: an OpenRouter key no longer empties the model list.** Providers whose endpoint moved are updated in place; delete a provider's `_managedBy` line in `models.json` to keep your own.
+- **Rust: no more "rustBinaryPath could not be used" warning** for a managed-install path from another machine. To switch to a Rust Pi you installed yourself, run *Install Rust Pi → Detect an existing binary*.
 - **A Rust session that won't start now tells you why**, and a resumed session whose model was withdrawn switches to a working one and says so.
 - **TypeScript runtime:** messages and compaction summaries added by extensions now appear in the chat instead of the "Unhandled agent event" card.
 - **Native DeepSeek costs show `$??`** — its time-of-day billing can't be expressed as one rate.

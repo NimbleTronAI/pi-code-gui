@@ -38,6 +38,8 @@ reference; follow the links for depth.
 
 ## Operations
 
+
+- [Batch 0.2.8 — status and next steps](operations/batch-0.2.8-status.md) — handover: what the branch holds, the Rust removal decision, and the ordered next steps
 - [SDK Resolution & Init](operations/sdk-resolution.md) — finding the Pi SDK on disk and the TypeScript init sequence (owned by `SdkService`)
 - [Build Pipeline](operations/build-pipeline.md) — esbuild, tsc, ESLint, VSIX packaging, CI publish
 - [Logging](operations/logging.md) — single logger → "Pi Code Gui" Output channel; `piDebug`/`piLog`/`piWarn` levels; no console writes

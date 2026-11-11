@@ -133,6 +133,14 @@ operator before starting.
   batch this caught real defects in two units that each member's own reviewer had approved: a
   feature check reading the wrong package, and a fix that silently discarded user-visible messages.
 
+**Founder's standing instructions** (2026-10-17):
+
+- **Never ask for merge sign-off.** The founder says when a batch merges. Do not prompt for it,
+  remind about it, or list it as a pending decision.
+- **No push until the founder says so.**
+- **The release process is the founder's.** Do not argue from release timing or outages, and do not
+  propose changes to the release workflows unless asked.
+
 **Deliberately unbound** — asked and declined on 2026-10-06 as belonging to another project. Do
 not invent a local substitute for these; ask the founder when a batch first needs one:
 
