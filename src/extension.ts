@@ -9,6 +9,7 @@ import { PiPackagesTreeProvider } from "./pi-packages-tree-provider.js";
 import { initLogger, disposeLogger, piLog, piDebug, piWarn, redactSecrets } from "./logger.js";
 import { initSecrets } from "./secrets.js";
 import { initRendererConsent, resetRendererConsent } from "./renderer-consent.js";
+import { cleanupManagedModelsAtStartup } from "./managed-models-cleanup.js";
 import { initRustModels } from "./rust-models.js";
 import { configureCatalogSource, catalogSource, type CatalogSourceOptions } from "./catalog-source.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
@@ -260,6 +261,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const outputChannel = vscode.window.createOutputChannel("Pi Code Gui", { log: true });
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
+  // Remove the model entries earlier versions wrote into the user's Pi models.json. Every
+  // activation, no flag (it is idempotent, writes nothing when there is nothing to remove, and also
+  // cleans up after a downgrade and return); deferred so it never delays activation, and before the
+  // first await so a failed await cannot skip it. It never throws and logs its own outcome.
+  setImmediate(() => cleanupManagedModelsAtStartup({ info: piLog, warn: piWarn, debug: piDebug }));
   initRustModels(context);
   configureHostCatalogSource(context);
   initRendererConsent(context);

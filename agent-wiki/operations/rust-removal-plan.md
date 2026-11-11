@@ -146,6 +146,11 @@ when U1 lands, and U4 and U5 come last.
    Unit 2/6 fixes) per [Documentation Discipline](../discipline/documentation-discipline.md).
 4. Update the `AGENTS.md` overview: remove the runtime-selection bullet and the bridge-tool and
    architecture lines that mention Rust.
+4a. README's cleanup bullet (line ~303) promises the cleanup "deletes every entry carrying that marker,
+   and nothing else". U1 (landed) behaves slightly differently: a stamped entry the user edited is kept
+   whole, and a provider connection (`api` + `baseUrl`) that 0.2.x wrote unstamped is removed when
+   it is a pair we shipped and the provider held only our entries. Make the README say this
+   accurately, in the founder's approved voice ("we").
 5. Last step: delete this plan page and rewrite the status page without Rust wording, because both
    would fail §5. Git keeps the plan, and the log entry names the commit.
 
@@ -174,7 +179,11 @@ when U1 lands, and U4 and U5 come last.
   `permissions.deny` and `hooks`.
 - **C10** `.devcontainer/devcontainer.json` belongs to the coordinator (D6, uncommitted in the
   main tree). U3 does not touch it.
-- **C11** Unit-test baseline: 819/819 at `69c2e74`.
+- **C11** Unit-test baseline: 819/819 at `69c2e74`; 844/844 after U1.
+- **C12** (from U1) `cleanupManagedModelsAtStartup` runs from `activate()` via `setImmediate`,
+  before the first await. U2 must keep that call when it rewrites `activate()`. Deferred: a
+  models.json under a custom `rustAgentDir` is not cleaned (that setting's home was the Rust
+  runtime's alone).
 
 ## 5. Acceptance
 
