@@ -5,19 +5,18 @@
 //   node scripts/check-currency.mjs --json     ← machine-readable; same exit codes
 //
 // --json exists for .github/workflows/upstream-currency.yml, which turns drift into a GitHub
-// ISSUE. That workflow is the point: this script has correctly reported rust-pi v0.3.0 against
-// v0.5.1 since 12 September, into CI logs nobody reads. Detection was never the gap.
+// ISSUE. That workflow is the point: this script once reported a stale pin for months, into CI
+// logs nobody reads. Detection was never the gap.
 //
-// WHY THIS EXISTS: three upstream projects move independently and nothing told us when they
+// WHY THIS EXISTS: upstream projects move independently and nothing told us when they
 // did. We found out by breakage — pi-ai removed getProviders()/getModels() at 0.81.0 and the
 // catalog generator simply stopped working, silently blocking `max` for a week. Model PRICING
 // rides on the same package, so drift there means we quote stale rates in the status bar with
 // full confidence.
 //
-//   pi_agent_rust        the Rust backend. Pinned by src/rust-pi-version.json.
 //   @earendil-works/pi-ai            the model catalog + PRICING. devDependency; regenerates
 //                                    src/model-registry.generated.json.
-//   @earendil-works/pi-coding-agent  the TypeScript backend (in-process SDK). Installed
+//   @earendil-works/pi-coding-agent  the Pi SDK (in-process). Installed
 //                                    globally rather than as a package dependency, so nothing
 //                                    in this repo records which version we work against.
 //
@@ -79,28 +78,7 @@ function record(name, ours, latest, extra) {
   if (stale && extra) { notes.push(extra); }
 }
 
-// ── 1. pi_agent_rust (the Rust backend) ─────────────────────────────
-const pinnedTag = read("src/rust-pi-version.json").tag;
-let rustLatest = null;
-try {
-  const rel = await getJson("https://api.github.com/repos/Dicklesworthstone/pi_agent_rust/releases/latest");
-  rustLatest = rel.tag_name;
-  // A release can be published with an incomplete asset matrix — v0.1.23 shipped 3 of 5
-  // binaries and backfilled linux-arm64 a week later. Bumping the pin to a release that has
-  // no asset for a user's platform breaks their managed install, so surface the matrix.
-  const assets = (rel.assets ?? []).map((a) => a.name);
-  const bins = assets.filter((n) => n.startsWith("pi-") && !n.endsWith(".json"));
-  const EXPECTED = ["pi-linux-amd64", "pi-linux-arm64", "pi-darwin-amd64", "pi-darwin-arm64", "pi-windows-amd64"];
-  const missing = EXPECTED.filter((e) => !bins.some((b) => b.startsWith(e)));
-  if (missing.length) {
-    notes.push(`  ! ${rustLatest} is missing platform assets: ${missing.join(", ")}\n` +
-               `    Managed install fails outright for those platforms — verify before bumping the pin.`);
-  }
-} catch (e) { notes.push(`  ! could not reach the GitHub releases API: ${e.message}`); }
-record("pi_agent_rust (Rust backend)", pinnedTag, rustLatest,
-  `  -> bump "tag" in src/rust-pi-version.json, then re-verify the managed install.`);
-
-// ── 2. pi-ai (model catalog + pricing) ──────────────────────────────
+// ── 1. pi-ai (model catalog + pricing) ──────────────────────────────
 const registry = read("src/model-registry.generated.json");
 const bundledPiAi = registry.piAiVersion;
 let piAiLatest = null;
@@ -116,12 +94,12 @@ if (registry.modelDataGeneratedAt) {
     days > 45 ? "AGING" : "ok"]);
 }
 
-// ── 3. pi-coding-agent (the TypeScript backend) ─────────────────────
+// ── 2. pi-coding-agent (the Pi SDK) ─────────────────────
 // Not a package dependency — it is installed globally and the devcontainer takes @latest — so
 // the only local evidence of what we work against is whatever is installed right now.
 // On a CI runner there is no global install, so "ours" used to read "(not installed)" — which
 // carries no version triple, so the comparison silently could not flag anything. Drift in the
-// TypeScript backend was therefore invisible in exactly the place we now want it reported. Fall
+// Pi SDK was therefore invisible in exactly the place we now want it reported. Fall
 // back to the version we record as tested against, so the check means something off-machine.
 const sdkTested = read("src/pi-sdk-version.json").testedAgainst;
 let sdkInstalled = null;
@@ -137,16 +115,16 @@ for (const p of [
 const sdkOurs = sdkTested ?? sdkInstalled ?? "(not installed)";
 if (sdkInstalled && sdkTested && sdkInstalled !== sdkTested) {
   notes.push(`  ! the globally installed pi-coding-agent is ${sdkInstalled}, but src/pi-sdk-version.json\n` +
-             `    records ${sdkTested} as tested. Bump that file once you have run the TS side against it.`);
+             `    records ${sdkTested} as tested. Bump that file once you have run the extension against it.`);
 }
 let sdkLatest = null;
 try { sdkLatest = (await getJson("https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest")).version; }
 catch (e) { notes.push(`  ! could not reach npm for pi-coding-agent: ${e.message}`); }
 record("pi-coding-agent (TS backend)", sdkOurs, sdkLatest,
-  `  -> npm install -g @earendil-works/pi-coding-agent@latest, run the TS side of the\n` +
-  `     side-by-side, then bump "testedAgainst" in src/pi-sdk-version.json.`);
+  `  -> npm install -g @earendil-works/pi-coding-agent@latest, run the extension\n` +
+  `     against it, then bump "testedAgainst" in src/pi-sdk-version.json.`);
 
-// ── 4. supply chain ─────────────────────────────────────────────────
+// ── 3. supply chain ─────────────────────────────────────────────────
 // Currency alone does not protect you: the ChainDrop campaign shipped MALICIOUS versions of
 // packages we were otherwise current with. See scripts/supply-chain.mjs.
 const sc = runSupplyChainChecks();

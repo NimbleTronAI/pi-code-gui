@@ -50,9 +50,6 @@ The project runs two tiers of tests:
   modules + BOTH service init paths + the RustProcess transport. Not unit-tested
   (vscode-coupled UI shells): PiService orchestration/pickers, extension.ts,
   rust-install/rust-packages interactive flows.
-  There is also an opt-in REAL-binary contract probe: `pnpm run test:rust-smoke`
-  (scripts/rust-smoke.mjs) — get_state round-trip against PI_RUST_BIN or
-  ~/.local/bin/rust-pi; skips cleanly when no binary is present.
 - **Integration tests.** `pnpm test` (runs the node:test suite; `pnpm run test:vscode` is the separate VS Code harness) → `@vscode/test-cli` +
   `@vscode/test-electron` launches the Extension Development Host against real
   VS Code APIs (`out/test/**/*.test.js`, config in `.vscode-test.mjs`).

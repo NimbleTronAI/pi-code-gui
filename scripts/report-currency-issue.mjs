@@ -3,19 +3,15 @@
 //   node scripts/report-currency-issue.mjs currency.json     ← needs gh + GH_TOKEN
 //   node scripts/report-currency-issue.mjs currency.json --dry-run
 //
-// WHY AN ISSUE AND NOT A PR: the two things we track cannot be bumped mechanically.
+// WHY AN ISSUE AND NOT A PR: what we track cannot be bumped mechanically.
 //
-//   - pi_agent_rust is an out-of-process binary we speak a JSON-RPC contract to. 0.3.0 taught us
-//     that a version bump is a protocol investigation, not an edit: commands appear, event
-//     shapes move, and the extension gates UI on capability flags. A PR that changed `tag` in
-//     src/rust-pi-version.json would LOOK mergeable and would not be, which is worse than no PR.
 //   - pi-ai carries model PRICING. A bare bump leaves the generated registry stamped at the old
 //     version and fails the build; the regenerated prices want a human look (0.86.1 moved 67 of
 //     them). That is exactly why .github/dependabot.yml ignores it by name.
 //
 // So the deliverable is a short issue that says what moved and what to do about it. Dependabot
-// cannot do this job at all: it reads manifests, and neither a GitHub release pinned in a JSON
-// file nor a globally-installed npm package is a manifest dependency.
+// cannot do this job at all: it reads manifests, and a globally-installed npm package
+// (pi-coding-agent) is not a manifest dependency.
 //
 // NOTIFICATION DISCIPLINE: editing an issue body is silent on GitHub, while a comment notifies.
 // So the body is rewritten on every run (always current, never spam) and a comment is posted

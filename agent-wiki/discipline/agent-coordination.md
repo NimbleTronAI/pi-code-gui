@@ -149,7 +149,7 @@ not invent a local substitute for these; ask the founder when a batch first need
 - The threshold at which the full ceremony (worktree + member + reviewer) applies
 
 Until §20 is bound, the commit ceremony stays what it already was here: the founder says when to
-commit, `.githooks/pre-commit` runs the clean-room gates, and the full gate is `pnpm run package`.
+commit, and the full gate is `pnpm run package` (there is no pre-commit hook).
 
 ## Why this is here and not in a private memory
 

@@ -32,7 +32,10 @@
 
 ## Next steps, in order
 
-1. **Wait for the founder's signal**, then build the Rust **removal plan** (not before). Its inputs:
+0. **2026-11-11: the founder said go, and asked for the newest TypeScript Pi (1.5.2) instead of
+   1.4.0.** The plan is written: [Rust removal plan](rust-removal-plan.md). It supersedes steps 1–4
+   below, and D1–D6 were accepted as recommended the same day. **U1** (top tier, worktree `/workspaces/rr-u1`) and **U3** (mid tier, `/workspaces/rr-u3`) were started from `69c2e74`. U2 starts when U1 lands. **U3 landed (staged, not committed) 2026-11-11:** the clean-room law and gate, `.githooks/` (and `core.hooksPath` unset), the Rust scripts and the devcontainer Rust provisioning are removed; `pnpm run package` was green with 819/819 in the U3 worktree. One `TS backend` row key stays in the currency issue tooling, because renaming it would post a spurious issue comment.
+1. ~~Wait for the founder's signal~~, then build the Rust **removal plan** (not before). Its inputs:
    [archive/batch-0.2.8/rust-removal-inputs.md](../archive/batch-0.2.8/rust-removal-inputs.md).
    Acceptance: afterwards `rust` appears only in README.md, CHANGELOG.md and agent-wiki logs. Scope
    includes the clean-room policy and its machinery, the devcontainer Rust provisioning, every
@@ -70,4 +73,5 @@ a real defect in nearly every unit that the member's own reviewer had passed —
 Signing: commits and pushes go through the founder's 1Password SSH agent; when it refuses, ask the
 founder to approve the prompt — never bypass signing.
 
-> **Last updated:** 2026-11-11 — written as the handover before a container restart
+> **Last updated:** 2026-11-11 — step 0: the plan is written, targeting pi 1.5.2
+> **Earlier:** 2026-11-11 — written as the handover before a container restart

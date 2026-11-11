@@ -264,14 +264,6 @@ To package a `.vsix`:
 pnpm run vsix         # Creates pi-code-gui-x.x.x.vsix
 ```
 
-## Contributing
-
-Activate the repo's pre-commit checks once per clone:
-
-```bash
-git config core.hooksPath .githooks
-```
-
 ## Rust Pi support has ended
 
 **Version 0.2.3 is the last release of Pi Code Gui that supports Rust Pi** ([`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust)). From the next release on, the extension runs on Pi alone, and Rust sessions, the plan-mode and approval strip, and all `rust*` settings are gone.
