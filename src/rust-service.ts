@@ -26,7 +26,7 @@ import { thinkingLevelIsLive } from "./model-catalog.js";
 import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
 import type { RustInstallStatus } from "./rust-resolver.js";
 import type { PiServiceEvent } from "./types.js";
-import type { TokenCounts } from "./usage-stats.js";
+import type { RawUsage, TokenCounts } from "./usage-stats.js";
 import type { PlanMode, ApprovalMode } from "./types.js";
 import { backendCapabilityDefaults, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
 
@@ -54,8 +54,8 @@ export interface RustUsage {
   uncostedOtherModel?: boolean;
   /** A resume whose get_messages failed: turns stored at 0 cannot be found. */
   uncostedUnread?: boolean;
-  /** Why no session cost can be stated (review Cc) — see RawUsage.costUnknown. */
-  costUnknown?: "compacted" | "usage-unread" | "mismatch";
+  /** Why no session cost can be stated (review Cc, C34) — see RawUsage.costUnknown. */
+  costUnknown?: RawUsage["costUnknown"];
 }
 
 export interface RustInitResult {
@@ -93,17 +93,55 @@ function sumStoredTurns(list: unknown[]): StoredTotals & { users: number; assist
   return t;
 }
 
-/** Whether a session JSONL holds a `compaction` entry (null when the file cannot be read). The
- *  file is the binary's DATA, written in Pi's session format. Review Cc B1: the only reliable
- *  record of an earlier compaction on a resume — see the cross-check in initializeInner. */
-function sessionFileHasCompaction(filePath: string): boolean | null {
+/** C34 (the founder's decision): an assistant turn the user STOPPED that the binary saved with no
+ *  cost. PROVEN on rust-pi 0.8.0 against a local mock: a stop mid-stream, or before the first token,
+ *  still sends the request, and the turn is emitted and stored with stopReason "aborted" and every
+ *  usage figure 0. The provider may bill it, so the session's cost is unknowable ("$??"). A stopped
+ *  turn the binary DID price is no exception (review Db B1, PROVEN on 0.8.0 with anthropic-messages):
+ *  it stores only the input tokens, its output at 0. A stop while a TOOL runs is: no request is in
+ *  flight, yet the binary stores the same aborted zero turn right after the tool result it cancelled
+ *  (`details.status: "cancelled"`, PROVEN on 0.8.0, review D S2) — `prev` is the message before it. */
+function isStoppedUnpriced(msg: unknown, prev: unknown): boolean {
+  const m = (msg && typeof msg === "object" ? msg : {}) as { role?: unknown; stopReason?: unknown; usage?: unknown };
+  if (m.role !== "assistant" || m.stopReason !== "aborted") { return false; }
+  const p = (prev && typeof prev === "object" ? prev : {}) as { role?: unknown; details?: { status?: unknown } };
+  return !(p.role === "toolResult" && p.details?.status === "cancelled");
+}
+
+/** C34, review D R1/N2: an assistant turn that FAILED after the provider accepted the request, saved
+ *  at no cost. PROVEN on rust-pi 0.8.0 against a local mock: when the stream breaks after an HTTP 200
+ *  (with text already shown or not), the binary emits and STORES an assistant turn with stopReason
+ *  "error" and every usage figure 0, though the provider may bill it. If auto-retry then succeeds,
+ *  get_messages drops the failed attempt but the session FILE keeps it (on the branch the session
+ *  left). A request the provider REFUSED (an HTTP error status) is emitted the same way but never
+ *  stored, and is assumed unbilled (standard provider practice; a black-box probe cannot prove it) — so a
+ *  live failure is settled by the file (resolveFailedTurns). A failed turn stored WITH a cost is no
+ *  exception (review Db B1, PROVEN on 0.8.0 with anthropic-messages: only its input tokens are priced). */
+function isFailedUnpriced(msg: unknown): boolean {
+  const m = (msg && typeof msg === "object" ? msg : {}) as { role?: unknown; stopReason?: unknown };
+  return m.role === "assistant" && m.stopReason === "error";
+}
+
+/** What a session JSONL records that no RPC reply does (null when the file cannot be read): a
+ *  `compaction` entry (review Cc B1: the only reliable record of an earlier compaction on a resume —
+ *  see the cross-check in initializeInner), and a failed turn stored at no cost (isFailedUnpriced).
+ *  The file is the binary's DATA, written in Pi's session format. */
+function scanSessionFile(filePath: string): { compaction: boolean; failedTurn: boolean } | null {
   let raw: string;
   try { raw = readFileSync(filePath, "utf-8"); } catch { return null; }
+  const found = { compaction: false, failedTurn: false };
   for (const line of raw.split("\n")) {
-    if (!line.includes("compaction")) { continue; }
-    try { if ((JSON.parse(line) as { type?: unknown }).type === "compaction") { return true; } } catch { /* not an entry */ }
+    if (!line.includes("compaction") && !line.includes("\"error\"")) { continue; }
+    try {
+      const e = JSON.parse(line) as { type?: unknown; message?: unknown };
+      if (e.type === "compaction") { found.compaction = true; }
+      if (e.type === "message" && isFailedUnpriced(e.message)) { found.failedTurn = true; }
+    } catch {
+      // A torn line that names an error cannot rule a failed turn out (review Db S1).
+      if (line.includes("\"error\"")) { found.failedTurn = true; }
+    }
   }
-  return false;
+  return found;
 }
 
 /** One assistant turn's stored cost: `usage.cost.total` (0.8.0, PROVEN), or a bare number. */
@@ -239,7 +277,9 @@ export interface RustDeps {
   workspaceIsTrusted(): boolean;
   /** The rustExtensions setting mode: "auto" | "enabled" | "disabled". */
   extensionsMode(): string;
-  setupModels(): { piEnv: Record<string, string>; warnings: string[] };
+  /** Prepare the agent home for the spawn (models.json, env). Async: PiService's first waits, for a
+   *  bounded time, for the model catalog the merge is fed from. */
+  setupModels(): Promise<{ piEnv: Record<string, string>; warnings: string[] }>;
   /** True when the user can authenticate to `provider`. Injectable so scoping is testable
    *  without the ambient environment deciding the answer. */
   hasCredential?(provider: string): boolean;
@@ -289,6 +329,17 @@ export class RustService implements PiBackend {
   /** The session compacted (live event, /compact, or fewer messages in the stats than the history
    *  on a resume). rust-pi reports its summary calls' cost nowhere (PROVEN on 0.8.0), so "$??". */
   private compacted = false;
+  /** C34: a turn of this session was stopped and saved at no cost (live, or found on a resume). */
+  private aborted = false;
+  /** C34, review D R1/N2: the session file holds a failed turn saved at no cost (isFailedUnpriced). */
+  private failed = false;
+  /** A live failed turn the file has not yet settled: it may be a refused request (not stored, not
+   *  billed) or a billed one (stored). Unknown until resolveFailedTurns reads the file. */
+  private failedPending = false;
+  /** The previous message_end's message, for the stop-during-a-tool case of isStoppedUnpriced. */
+  private lastMessage: unknown = null;
+  /** Set by dispose(): an initialize still waiting for setupModels must not spawn (review D S1). */
+  private disposed = false;
   /** A resume whose usage reply could not be read: a compaction cannot be ruled out. */
   private usageUnread = false;
   /** Bumped per live assistant message, so a history read that raced a new turn is not applied. */
@@ -482,12 +533,13 @@ export class RustService implements PiBackend {
     if (cfg.openaiApiKey) { env.OPENAI_API_KEY = cfg.openaiApiKey; injected.add("openai"); }
     this._injectedCredentials = injected;
 
-    // Model catalog: override the Rust binary's stale built-in model list with the
-    // bundled Pi catalog (writes models.json in the relocated agent home). Never
-    // silent — fatal problems (unwritable dir) become a loud error + notification;
-    // softer ones (an auth-seed miss) become chat warnings.
+    // Model catalog (Design S): adjust the models rust-pi already has with the installed Pi's own
+    // values — stamped overrides merged into the shared agent home's models.json, the only place
+    // that file is written (rust-models.ts setupRustModels). Never silent — fatal problems
+    // (unwritable dir) become a loud error + notification; softer ones (a file we will not
+    // rewrite, an auth miss) become chat warnings.
     try {
-      const { piEnv, warnings } = this.deps.setupModels();
+      const { piEnv, warnings } = await this.deps.setupModels();
       Object.assign(env, piEnv);
       for (const w of warnings) {
         this.host.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${w}`, timestamp: Date.now() } });
@@ -499,6 +551,9 @@ export class RustService implements PiBackend {
       this.deps.showError(`Pi Code Gui: ${m}`);
       // Continue: built-in models still work; an unresolved model is caught below.
     }
+    // The tab may have closed during that wait (the catalog can take up to 2.5 s): never spawn then,
+    // or the child would outlive the session that no longer holds it.
+    if (this.disposed) { return this.closedResult(); }
 
     // Record the posture this session is being spawned with — rust-pi reads it once, here, and
     // never again, so this is the only accurate answer for the strip's lifetime.
@@ -522,6 +577,7 @@ export class RustService implements PiBackend {
       try {
         await this.spawnWithinBudget(binaryPath, args, cwd, env);
       } catch (e: unknown) {
+        if (this.disposed) { throw e; }
         const first = e instanceof Error ? e.message : String(e);
         const kind = !restoring && !staleExit ? classifyStaleDefaultExit(first, provider, modelId) : null;
         if (!kind) { throw e; }
@@ -546,6 +602,7 @@ export class RustService implements PiBackend {
     try {
       await startup();
     } catch (e: unknown) {
+      if (this.disposed) { return this.closedResult(); }
       const msg = e instanceof Error ? e.message : String(e);
       // Recover from an extension-parse conflict OR from a package that HANGS startup, and only
       // when we did NOT already disable extensions. In "auto" mode we self-heal (retry with
@@ -624,6 +681,7 @@ export class RustService implements PiBackend {
         }
       }
     } catch (e: unknown) {
+      if (this.disposed) { return this.closedResult(); }
       const m = e instanceof Error ? e.message : String(e);
       piWarn(`Rust get_state failed: ${m}`);
       // A project-local package can HANG the handshake instead of failing the spawn: the
@@ -755,9 +813,11 @@ export class RustService implements PiBackend {
     // get_messages lists (every message). If either cannot be read, a compaction cannot be ruled
     // out, so the cost is unknown rather than a likely under-count. A history with no message has
     // nothing to have compacted.
+    const scan = (openPath || !fresh) && this.sessionPath ? scanSessionFile(this.sessionPath) : null;
+    if (scan?.failedTurn) { this.failed = true; }
     if (historyRead && historyCounts && (openPath || !fresh) && historyCounts.users + historyCounts.assistants > 0) {
       const st = this.statsCounts;
-      const inFile = this.sessionPath ? sessionFileHasCompaction(this.sessionPath) : null;
+      const inFile = scan ? scan.compaction : null;
       if (inFile || (st && (st.users < historyCounts.users || st.assistants < historyCounts.assistants))) { this.compacted = true; }
       else if (!st || inFile === null) { this.usageUnread = true; }
     }
@@ -911,7 +971,7 @@ export class RustService implements PiBackend {
   private static _toolDepsWarned = false;
   /** One-per-host guard: show the full "/compact differs under Rust" explanation once. */
   private static _compactGateExplained = false;
-  /** One-per-host guard: warn once that a Rust auto-retry re-runs and re-bills the turn. */
+  /** One-per-host guard: warn once that a Rust auto-retry re-sent a request, and what the failed attempt may cost. */
   private static _autoRetryRebillWarned = false;
 
   /** Spawn (or re-spawn) the Rust RPC subprocess, disposing any prior one first. */
@@ -974,7 +1034,16 @@ export class RustService implements PiBackend {
     }
   }
 
+  private static readonly CLOSED_WHILE_STARTING = "The session was closed while it was starting.";
+  private closedResult(): RustInitResult {
+    this.process?.dispose();
+    this.process = null;
+    return { success: false, error: RustService.CLOSED_WHILE_STARTING, errorKind: "closed" };
+  }
+
   private async spawn(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+    // One check for every spawn path: a closed session never gets a (re)spawned child.
+    if (this.disposed) { throw new Error(RustService.CLOSED_WHILE_STARTING); }
     this.process?.dispose();
     // Per-spawn, so a retry's verdict is not polluted by the attempt that failed.
     this._loadErrors = [];
@@ -1014,6 +1083,7 @@ export class RustService implements PiBackend {
 
   /** Tear down the subprocess (it owns its own persistence). */
   dispose(): void {
+    this.disposed = true;
     this.steering = [];
     this.followUp = [];
     this.process?.dispose();
@@ -1028,16 +1098,10 @@ export class RustService implements PiBackend {
    *  executes the resulting plan against vscode/PiService state. */
   private handleEvent(event: RustEvent): void {
     normalizeRustEvent(event);
-    // One-time (per host): rust-pi's auto-retry restarts the WHOLE turn on a transient
-    // provider error — re-running and RE-BILLING every tool call, not just re-issuing the
-    // failed request (confirmed 2026-07-07: one prompt → 4 fully-executed, separately-billed
-    // runs on a flaky provider; auto-retry off → a single clean failure, no duplication).
-    // The retry spinner alone doesn't convey the cost consequence, so surface it once so a
-    // multiplied bill is never silent. Turning off Auto-retry avoids it; the re-execution
-    // itself is a rust-pi behaviour tracked upstream.
+    // One-time (per host): a Rust auto-retry re-sends ONLY the request that failed (PROVEN on 0.8.0, Db record review: a tool round, a dropped request, a retry -> 3 requests, the tool ran once, on both wire APIs; the 2026-07-07 whole-turn re-run was an older binary). A failed attempt the provider had accepted may still be billed, and the session cost then shows $?? (isFailedUnpriced). Say so once, so the retry spinner is never the only signal.
     if (event?.type === "auto_retry_start" && !RustService._autoRetryRebillWarned) {
       RustService._autoRetryRebillWarned = true;
-      this.host.emit({ type: "custom-message", data: { customType: "info", content: "⚠ Auto-retry restarted this turn after a transient provider error. On the Rust runtime a retry re-runs the whole turn, so each attempt is billed again — a flaky provider can multiply the cost. Turn off Auto-retry in settings to avoid this (the re-run behaviour is tracked upstream).", timestamp: Date.now() } });
+      this.host.emit({ type: "custom-message", data: { customType: "info", content: "⚠ Auto-retry re-sent a request after a provider error. The finished steps of this turn are kept, and only the failed request was sent again. If the provider had already accepted the failed attempt, it may still bill it, and the session cost then shows $??. Turn off Auto-retry in settings to stop a turn at its first failure instead.", timestamp: Date.now() } });
     }
     const queueNonEmpty = this.steering.length > 0 || this.followUp.length > 0;
     // routeRustEvent reads agentRunActive BEFORE handleAgentEvent clears it, so
@@ -1093,7 +1157,11 @@ export class RustService implements PiBackend {
       this.compacted = true;
       this.host.reportStatus();
     }
+    const prevMessage = this.lastMessage;
+    if (event?.type === "message_end") { this.lastMessage = (event as { message?: unknown }).message; }
     if (event?.type === "message_end" && (event as { message?: { role?: string } }).message?.role === "assistant") {
+      if (isStoppedUnpriced((event as { message?: unknown }).message, prevMessage)) { this.aborted = true; }
+      if (isFailedUnpriced((event as { message?: unknown }).message)) { this.failedPending = true; }
       // rust-pi v0.1.22 delivers per-message usage here as
       // {input,output,cacheRead,cacheWrite,totalTokens,cost} (confirmed via a debug probe), so
       // this live per-round accumulate is what climbs the cost mid-run. Keep it the ONLY mid-run
@@ -1363,6 +1431,9 @@ export class RustService implements PiBackend {
       try {
         const state = await this.process.request(RUST_RPC.getState, {}, 8000);
         if (state.success) { this.applyState(state.data); this.recordCapOk("status"); }
+        // After the run (the binary has written every attempt by agent_end, PROVEN on 0.8.0), with the
+        // session file named by get_state — a fresh session's first file appears only here.
+        if (!this._agentRunActive) { this.resolveFailedTurns(); }
       } catch (e: unknown) {
         piWarn(`refreshState failed: ${e instanceof Error ? e.message : String(e)}`);
         this.warnDegraded("status", "Couldn't sync Rust Pi's status — the model/context readout may be stale.");
@@ -1381,6 +1452,16 @@ export class RustService implements PiBackend {
     // Entries feed ONLY the Open Sessions tree, never the status bar — refresh them
     // OUTSIDE the guard so a slow history parse can't block the next turn's status.
     await this.refreshEntries();
+  }
+
+  /** Settle a live failed turn from the session file, the record a reopen reads too, so the live
+   *  figure and the reopened one agree. An unreadable file settles nothing: the cost stays unknown. */
+  private resolveFailedTurns(): void {
+    if (!this.failedPending || !this.sessionPath) { return; }
+    const scan = scanSessionFile(this.sessionPath);
+    if (!scan) { return; }
+    this.failed = this.failed || scan.failedTurn;
+    this.failedPending = false;
   }
 
   /** Re-pull the Rust session's entries so the Open Sessions tree reflects new turns. */
@@ -1444,6 +1525,10 @@ export class RustService implements PiBackend {
     this.statsTotals = null;
     this.statsCounts = null;
     this.compacted = false;
+    this.aborted = false;
+    this.failed = false;
+    this.failedPending = false;
+    this.lastMessage = null;
     this.usageUnread = false;
   }
 
@@ -1459,6 +1544,8 @@ export class RustService implements PiBackend {
     const messages = messagesOf(data);
     if (!messages) { return null; }
     for (const m of messages) { this.noteUncostedTurn(m); }
+    if (messages.some((m, i) => isStoppedUnpriced(m, messages[i - 1]))) { this.aborted = true; }
+    if (messages.some(isFailedUnpriced)) { this.failed = true; }
     const { users, assistants, ...totals } = sumStoredTurns(messages);
     this.storedTotals = totals;
     return { users, assistants };
@@ -1993,7 +2080,7 @@ export class RustService implements PiBackend {
     const st = this.storedTotals, sd = this.statsTotals;
     const mismatch = !!st && !!sd && (sd.cost > st.cost + 1e-9 * Math.max(1, st.cost) || sd.input > st.input
       || sd.output > st.output || sd.cacheRead > st.cacheRead || sd.cacheWrite > st.cacheWrite);
-    const costUnknown = this.compacted ? "compacted" : this.usageUnread ? "usage-unread" : mismatch ? "mismatch" : undefined;
+    const costUnknown = this.compacted ? "compacted" : this.aborted ? "aborted" : this.failed || this.failedPending ? "failed" : this.usageUnread ? "usage-unread" : mismatch ? "mismatch" : undefined;
     const legacy = {
       ...(this.legacyUncosted ? { uncosted: this.legacyUncosted, ...(otherModel ? { uncostedOtherModel: true } : {}) } : {}),
       ...(this.legacyUnread ? { uncostedUnread: true } : {}),

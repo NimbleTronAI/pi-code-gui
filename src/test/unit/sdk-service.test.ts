@@ -87,7 +87,7 @@ function makeEnv(opts: {
     readFileUtf8: async () => { if (opts.piAiPackageJson === undefined) { throw new Error("no pkg (skip version check)"); } return opts.piAiPackageJson; },
     notifyOutdatedPiAi: (installed, supported, belowFloor) => { notified.push(installed); notices.push([installed, supported, belowFloor]); },
     buildBridgeTools: () => [],
-    catalogProviders: () => ({}),
+    catalogProviders: async () => ({}),
     confirmRendererConsent: async () => true,
   };
   return { host, deps, notified, notices };
@@ -320,6 +320,25 @@ test("createAgentSession throwing → 'createAgentSession failed'", async () => 
   const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
   assert.equal(out.success, false);
   assert.match(out.error ?? "", /createAgentSession failed/);
+});
+
+test("the first TS session reconciles against the runtime catalog", async () => {
+  // R9: the reconcile awaits deps.catalogProviders() — PiService's waits for the catalog source — so
+  // even the window's first session takes the model's thinking capability from Pi's catalog, not
+  // from whatever the source held while it was still loading.
+  const rt = { setRuntimeApiKey: async () => {}, getAvailable: async () => [{ provider: "acme", id: "m1", name: "m1" }], getModel: () => null, getAuth: async () => undefined, refresh: async () => {} };
+  const modules = (absPath: string): Any => {
+    if (absPath.includes("pi-ai/dist/index.js")) { return fakeAi(); }
+    if (absPath.includes("providers/all.js")) { return { getBuiltinModel: () => null, builtinModels: () => ({ getModels: () => [], complete: async () => ({}) }) }; }
+    if (absPath.includes("typebox")) { return { Type: {} }; }
+    if (absPath.endsWith("dist/index.js")) { return fakeSdk({ ModelRuntime: { create: async () => rt } }); }
+    throw new Error(`unexpected import: ${absPath}`);
+  };
+  const { host, deps } = makeEnv({ modules, config: { defaultThinkingLevel: "high" } });
+  deps.catalogProviders = async () => { await new Promise((r) => setTimeout(r, 30)); return { acme: { models: [{ id: "m1", reasoning: true }] } }; };
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.ok(out.success, out.error ?? "initialize() reported failure with no error message");
+  assert.equal(out.thinkingLevel, "high", "the catalog's reasoning flag kept the configured level");
 });
 
 test("runtime API keys from config are applied to the model runtime", async () => {

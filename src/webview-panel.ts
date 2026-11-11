@@ -620,7 +620,7 @@ export class PiWebviewPanel {
       value: b.value,
     }));
     const picked = await vscode.window.showQuickPick(items,
-      { placeHolder: "Select per-session token budget. Takes effect on next session." },
+      { placeHolder: "Select per-session token budget (TypeScript sessions only — Rust Pi compacts at the model's own window). Takes effect on next session." },
     );
     if (!picked) { return; }
     await ps.setContextBudget(picked.value);

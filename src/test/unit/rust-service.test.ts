@@ -7,7 +7,7 @@
 // coverage gap (zero direct tests on initializeInner).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RustProcess, type RustProcessOpts } from "../../rust-process.js";
@@ -140,7 +140,7 @@ function makeDeps(mode: string, overrides?: Partial<RustDeps>): RustDeps {
     shouldDisableExtensions: () => false,
     workspaceIsTrusted: () => true,
     extensionsMode: () => "auto",
-    setupModels: () => ({ piEnv: {}, warnings: [] }),
+    setupModels: async () => ({ piEnv: {}, warnings: [] }),
     sessionDir: () => tmp,
     workspaceCwd: () => tmp,
     config: () => config,
@@ -225,7 +225,7 @@ test("initialize: fatal models.json setup failure surfaces in chat + showError b
   const { host, state } = makeHost();
   let shown = "";
   const svc = new RustService(host, makeDeps("ok", {
-    setupModels: () => { throw new Error("disk full (test)"); },
+    setupModels: async () => { throw new Error("disk full (test)"); },
     showError: (m) => { shown = m; },
   }));
   const result = await svc.initialize({ fresh: true });
@@ -235,6 +235,44 @@ test("initialize: fatal models.json setup failure surfaces in chat + showError b
     const chat = state.events.filter((e) =>
       e.type === "custom-message" && String((e.data as { content?: unknown })?.content ?? "").includes("disk full"));
     assert.equal(chat.length, 1);
+  } finally { svc.dispose(); }
+});
+
+test("initialize awaits setupModels (the catalog wait) before it spawns the binary", async () => {
+  // Phase D: PiService's setupModels first waits (bounded) for the catalog source, so it is async;
+  // the spawn must carry the env it returns (PI_CODING_AGENT_DIR), not race past it.
+  const { host } = makeHost();
+  let spawnedEnv: NodeJS.ProcessEnv | undefined;
+  const base = makeDeps("ok");
+  const svc = new RustService(host, makeDeps("ok", {
+    setupModels: async () => { await new Promise((r) => setTimeout(r, 50)); return { piEnv: { PI_CODING_AGENT_DIR: "/agent-home-from-setup" }, warnings: [] }; },
+    createProcess: (opts: RustProcessOpts) => { spawnedEnv = opts.env; return base.createProcess!(opts); },
+  }));
+  const result = await svc.initialize({ fresh: true });
+  try {
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(spawnedEnv?.PI_CODING_AGENT_DIR, "/agent-home-from-setup");
+  } finally { svc.dispose(); }
+});
+
+test("a session closed while it waits for the catalog never spawns the binary", async () => {
+  // Review D S1: the catalog wait opened a gap before the spawn; a tab closed in it must not leave
+  // an orphaned rust-pi behind.
+  const { host } = makeHost();
+  let spawned = 0;
+  const base = makeDeps("ok");
+  const svc = new RustService(host, makeDeps("ok", {
+    setupModels: async () => { await new Promise((r) => setTimeout(r, 200)); return { piEnv: {}, warnings: [] }; },
+    createProcess: (opts: RustProcessOpts) => { spawned++; return base.createProcess!(opts); },
+  }));
+  const pending = svc.initialize({ fresh: true });
+  setTimeout(() => svc.dispose(), 50);
+  const result = await pending;
+  try {
+    assert.equal(spawned, 0, "no binary spawned after the close");
+    assert.equal(result.success, false);
+    // Review D R2: the caller must be able to tell a user's close from a failure (no "Pi init failed … Retry").
+    assert.equal(result.errorKind, "closed");
   } finally { svc.dispose(); }
 });
 
@@ -1388,6 +1426,35 @@ test("a resumed session whose file holds a compaction entry shows the cost as un
   } finally { svc.dispose(); }
 });
 
+test("a reopened session whose file holds a failed attempt shows the cost as unknown, though get_messages has dropped it", async () => {
+  // Review D N2 (PROVEN on rust-pi 0.8.0 + a local mock, scratchpad u7Db/out/wire-F.json): the stream broke after
+  // the provider accepted the request, auto-retry then succeeded. get_messages lists only the success; the file
+  // keeps the failed attempt, stored at 0 with stopReason "error", on the branch the session left.
+  const failed = { ...asst(0, 0), stopReason: "error", errorMessage: "API error: SSE error: unexpected EOF", content: [{ type: "text", text: "part" }] };
+  const withFailure = sessionFile("failed.jsonl", [{ type: "session", version: 3 }, { type: "message", id: "u1", message: user },
+    { type: "message", id: "f1", parentId: "u1", message: failed }, { type: "message", id: "a1", parentId: "u1", message: asst(1_000_000, 1) }]);
+  const clean = sessionFile("recovered-http.jsonl", [{ type: "session", version: 3 }, { type: "message", id: "u1", message: user },
+    { type: "message", id: "a1", parentId: "u1", message: asst(1_000_000, 1) }]);
+  let file = withFailure;
+  const svc = r4Service(() => ({ FAKE_MESSAGES: JSON.stringify({ messages: turns(1) }), FAKE_STATS: stats(1_000_000, 1, 1, 1), FAKE_SESSION_FILE: file }));
+  try {
+    assert.equal((await svc.initialize({ openPath: withFailure })).success, true);
+    const s = computeUsageStats(svc.getUsage(), R4_RATES, "rust");
+    assert.equal(s.costKnown, false, `shown ${s.cost}`);
+    assert.equal(svc.getUsage().costUnknown, "failed");
+    // Review Db S1: a torn line that still names an error cannot rule a failed turn out.
+    file = sessionFile("torn.jsonl", [{ type: "session", version: 3 }, { type: "message", id: "u1", message: user },
+      { type: "message", id: "a1", parentId: "u1", message: asst(1_000_000, 1) }]);
+    writeFileSync(file, readFileSync(file, "utf-8") + JSON.stringify({ type: "message", id: "f1", message: failed }).slice(0, -10) + "\n");
+    assert.equal((await svc.initialize({ openPath: file })).success, true);
+    assert.equal(svc.getUsage().costUnknown, "failed", "a torn error line");
+    // Control: a retry after a REFUSED request (HTTP error) leaves nothing in the file — known.
+    file = clean;
+    assert.equal((await svc.initialize({ openPath: clean })).success, true);
+    assert.deepEqual([svc.getUsage().costUnknown, computeUsageStats(svc.getUsage(), R4_RATES, "rust").cost], [undefined, 1]);
+  } finally { svc.dispose(); }
+});
+
 test("a resume whose usage stats cannot be read shows the cost as unknown, never $0.00", async () => {
   // Review Cc SF2: without the stats we cannot tell whether the session compacted.
   for (const [label, env] of [
@@ -1423,4 +1490,84 @@ test("a history reply whose message list moved, or whose per-turn cost field was
       assert.equal(s.costKnown, false, `${label}: shown ${s.cost}`);
     } finally { svc.dispose(); }
   }
+});
+
+test("a session closed while a start with a failed extension load is pending never spawns again", async () => {
+  // Review Db S2: the first spawn reports a project-extension load error and stays pending; the tab
+  // closes; the pending start rejects with "disposed". The "retry with --no-extensions" path must not
+  // spawn a second binary into a session that no longer exists (an orphan holding the session dir).
+  const { host } = makeHost();
+  let spawned = 0;
+  const live: string[] = [];
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (opts: RustProcessOpts) => {
+      const id = `proc${++spawned}`;
+      let rejectSpawn: ((e: Error) => void) | null = null;
+      live.push(id);
+      return {
+        // The retry (--no-extensions) starts cleanly; the first attempt stays pending until disposed.
+        spawn: () => (opts.args ?? []).includes("--no-extensions") ? Promise.resolve() : new Promise<void>((_res, rej) => {
+          rejectSpawn = rej;
+          opts.onLoadError?.({ kind: "unsupported-module", packageName: "bad-pkg", detail: "Imports node:dns/promises." });
+        }),
+        dispose: () => { live.splice(live.indexOf(id), 1); rejectSpawn?.(new Error("Rust process disposed")); },
+        isAlive: () => true,
+        request: async () => ({ type: "response", success: true, data: {} }),
+        send: () => {},
+      } as unknown as RustProcess;
+    },
+  }));
+  const pending = svc.initialize({ fresh: true });
+  setTimeout(() => svc.dispose(), 50);
+  const result = await pending;
+  assert.equal(spawned, 1, "the --no-extensions retry spawned nothing");
+  assert.equal(result.success, false);
+  assert.equal(result.errorKind, "closed");
+  assert.deepEqual(live, [], "no process survives the close");
+});
+
+test("a disposed session's spawn() refuses to start a binary at all", async () => {
+  // Review Db S2 (spawn guard alone): every spawn path, including the readiness-budget loop,
+  // funnels through spawn(); after dispose it must throw and create nothing.
+  const { host } = makeHost();
+  let spawned = 0;
+  const made: RustProcess[] = [];
+  const svc = new RustService(host, makeDeps("ok", {
+    createProcess: (_opts: RustProcessOpts) => {
+      spawned++;
+      const p = { spawn: async () => {}, dispose: () => {}, isAlive: () => true, request: async () => ({}), send: () => {} } as unknown as RustProcess;
+      made.push(p);
+      return p;
+    },
+  }));
+  svc.dispose();
+  try {
+    await assert.rejects(() => (svc as unknown as { spawn(b: string, a: string[], c: string, e: NodeJS.ProcessEnv): Promise<void> }).spawn(process.execPath, [], tmp, {}), /closed while it was starting/);
+    assert.equal(spawned, 0);
+  } finally { made.forEach((p) => p.dispose()); }
+});
+
+test("a session closed during the handshake after a failed extension load never respawns", async () => {
+  // Review Db S2 (handshake door): get_state rejects because the tab closed; no --no-extensions retry.
+  const { host } = makeHost();
+  let spawned = 0;
+  let svcRef: RustService | null = null;
+  const svc = new RustService(host, makeDeps("ok", {
+    extensionsMode: () => "auto",
+    createProcess: (opts: RustProcessOpts) => {
+      spawned++;
+      return {
+        spawn: async () => { opts.onLoadError?.({ kind: "unsupported-module", packageName: "bad-pkg", detail: "x" }); },
+        dispose: () => {},
+        isAlive: () => true,
+        request: async () => { svcRef?.dispose(); throw new Error("Rust process disposed"); },
+        send: () => {},
+      } as unknown as RustProcess;
+    },
+  }));
+  svcRef = svc;
+  const result = await svc.initialize({ fresh: true });
+  assert.equal(spawned, 1);
+  assert.equal(result.errorKind, "closed");
 });

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as vscode from "vscode";
 
 import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
-import { piDebug, piWarn, registerSecret } from "./logger.js";
+import { piDebug, piLog, piWarn, registerSecret } from "./logger.js";
 import { piAiNoticeMessage } from "./version-compare.js";
 import { getApiKey } from "./secrets.js";
 import { confirmRendererConsent } from "./renderer-consent.js";
@@ -19,13 +19,14 @@ import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget,
 import { buildSummaryContext, cleanTabSummary } from "./tab-summary.js";
 import { EventBus } from "./event-bus.js";
 import bundledRegistry from "./model-registry.generated.json";
+import { catalogSource } from "./catalog-source.js";
 import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.js";
 
 
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractMessageText } from "./agent-events.js";
 import { replaySessionEntries, indexEntries } from "./session-replay.js";
-import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
+import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps, type CatalogProviders } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
 import { detectMissingRustTools } from "./rust-deps.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
@@ -34,7 +35,13 @@ import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
 import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
-import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems, type ModelChoice } from "./model-picker.js";
+import { resolveFallbackModels, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems, type ModelChoice } from "./model-picker.js";
+
+/** How long a session start waits for the model catalog source (Design S v4 §2 K9): the installed
+ *  Pi's catalog-only runtime normally loads in about 0.8 s cold, and much less once the SDK is
+ *  imported. Past it, a Rust start writes nothing to models.json and a TypeScript start reconciles
+ *  against the bundled floor; both log which catalog they used. */
+const CATALOG_START_BUDGET_MS = 2500;
 
 export interface InstallStatus {
   installed: boolean;
@@ -279,6 +286,16 @@ export class PiService {
   }
 
   async initialize(opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
+    const result = await this.startRuntime(opts);
+    // After a session of either runtime starts, Pi's own catalog refresh runs in the background —
+    // the only network-capable catalog call (C24: deduped, host-throttled, PI_OFFLINE and Pi's TTL
+    // honoured, errors logged, never thrown). It never writes models.json (C28(2)): that happens
+    // only at the next Rust session start, from whatever the refresh stored.
+    if (result.success) { void catalogSource().refreshInBackground(); }
+    return result;
+  }
+
+  private async startRuntime(opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
     const fresh = opts?.fresh ?? false;
     const openPath = opts?.openPath ?? null;
 
@@ -420,7 +437,13 @@ export class PiService {
       shouldDisableExtensions: (cwd) => shouldDisableRustExtensions(cwd),
       workspaceIsTrusted: () => vscode.workspace.isTrusted,
       extensionsMode: () => rustExtensionsMode(),
-      setupModels: () => setupRustModels(),
+      // Wait (bounded) for the catalog the merge is fed from: without it providers() is still
+      // "not ready" and the merge writes nothing this start (rust-models.ts setupRustModels).
+      setupModels: async () => {
+        const snap = await catalogSource().prepare(CATALOG_START_BUDGET_MS);
+        piLog(`Model catalog for this Rust session: ${snap.label}`);
+        return setupRustModels();
+      },
       hasCredential: (prov: string) => providerHasCredential(prov, process.env, oauthProviders(defaultRustAgentDir())),
       sessionDir: () => resolveRustSessionDir(),
       workspaceCwd: () => resolveWorkspaceCwd(),
@@ -492,7 +515,11 @@ export class PiService {
       fileExists: (p) => fs.existsSync(p),
       readFileUtf8: (p) => fs.promises.readFile(p, "utf-8"),
       buildBridgeTools: (defineTool, typebox) => createBridgeTools(defineTool, typebox),
-      catalogProviders: () => this.bundledProviders,
+      catalogProviders: async () => {
+        const snap = await catalogSource().prepare(CATALOG_START_BUDGET_MS);
+        piLog(`Model catalog for this TypeScript session: ${snap.kind === "none" ? `bundled floor — ${snap.reason}` : snap.label}`);
+        return this.catalogProviders;
+      },
       // Arbitrary JS in the webview — ask once per custom type and remember the answer.
       confirmRendererConsent: (customType) => confirmRendererConsent(customType),
       notifyOutdatedPiAi: (installed, supported, belowFloor) => {
@@ -1302,7 +1329,7 @@ export class PiService {
     } catch (e: any) {
       piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
     }
-    if (models.length === 0) { models = FALLBACK_MODELS; }
+    if (models.length === 0) { models = resolveFallbackModels(this.catalogProviders); }
 
     const items = buildModelPickerItems(models, this.model?.id, this.getDefaultModel());
     const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select model (\u2605 = default)", matchOnDetail: true });
@@ -1326,31 +1353,34 @@ export class PiService {
 
   /** The full pi-ai model object for the active model (carries reasoning +
    *  thinkingLevelMap), or null when it can't be resolved from the registry. */
-  /** The bundled pi-ai catalog providers map — the authoritative capability source of
-   *  record (each model owner's published spec; e.g. DeepSeek documents reasoning_effort
-   *  = high|max with low/medium→high and xhigh→max, encoded as a model's thinkingLevelMap). */
-  private get bundledProviders(): Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> | undefined {
-    return (bundledRegistry as { providers?: Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> }).providers;
+  /** The model catalog — the authoritative capability and price source of record (each model
+   *  owner's published spec; e.g. DeepSeek documents reasoning_effort = high|max with
+   *  low/medium→high and xhigh→max, encoded as a model's thinkingLevelMap). It is the installed
+   *  Pi's own catalog (catalog-source.ts) — the one the Pi CLI and Rust's models.json use — and the
+   *  bundled floor when no TypeScript Pi is installed or its catalog is not loaded yet. */
+  private get catalogProviders(): CatalogProviders {
+    const snap = catalogSource().providers();
+    return snap.kind === "none" ? (bundledRegistry as unknown as { providers: CatalogProviders }).providers : snap.providers;
   }
 
   private currentFullModel(): ThinkingModel | null {
     const id = this._model?.id; const provider = this._model?.provider;
     if (!id || !provider) { return null; }
     // TS SDK path: resolve the live pi-ai model from the registry, then reconcile it
-    // against the bundled catalog so a custom ~/.pi/agent/models.json that omits
+    // against the model catalog so a custom ~/.pi/agent/models.json that omits
     // `reasoning` can't downgrade a known-reasoning model (shared with the init clamp).
     if (this.modelRuntime) {
       try {
         const m = this.modelRuntime.getModel(provider, id) as ThinkingModel | undefined;
-        if (m) { return reconcileThinkingCapability(this.bundledProviders, provider, id, m); }
-      } catch { /* fall through to the bundled catalog */ }
+        if (m) { return reconcileThinkingCapability(this.catalogProviders, provider, id, m); }
+      } catch { /* fall through to the model catalog */ }
     }
     // Rust path (no SDK ModelRegistry — see initializeRust) or registry miss: use the
-    // bundled catalog. NOT rust-pi's get_state.reasoning, which is only the executor's
+    // model catalog. NOT rust-pi's get_state.reasoning, which is only the executor's
     // heuristic and has classified models wrongly before.
-    const bundled = findCatalogThinkingModel(this.bundledProviders, provider, id);
+    const bundled = findCatalogThinkingModel(this.catalogProviders, provider, id);
     if (bundled) { return bundled; }
-    // Absent from the bundled catalog: last resort, rust-pi's reported reasoning flag —
+    // Absent from the model catalog: last resort, rust-pi's reported reasoning flag —
     // only to avoid offering a graded picker the runtime would no-op. A fallback
     // heuristic, not an authoritative capability source.
     if (this._model?.reasoning === undefined) { return null; }
@@ -1520,19 +1550,20 @@ export class PiService {
 
   // ── Usage / token stats ──────────────────────────────
 
-  /** Per-million-token cost rates for the active model, from the bundled catalog, or
+  /** Per-million-token cost rates for the active model, from the model catalog, or
    *  null when we have no rate info (→ the status bar shows "$??" rather than $0). */
   private activeCostRates(): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
     const p = this._model?.provider; const id = this._model?.id;
     // Withhold rates we know cannot be right rather than pricing with them — the Rust path
     // multiplies these directly, so returning them would produce a confident wrong figure.
     if (catalogRatesAreUnexpressible(p, id)) { return null; }
-    return (p && id) ? findCatalogModelCost(this.bundledProviders, p, id) : null;
+    return (p && id) ? findCatalogModelCost(this.catalogProviders, p, id) : null;
   }
 
   getUsageStats(): UsageStats {
     // Raw token counts + context come from the active backend primitive (SdkService sums its
-    // session entries; RustService caches get_session_stats). The cost policy — the genuine
+    // session entries; RustService sums the turns get_messages lists, with get_session_stats only
+    // as its fallback, and flags a cost it cannot state). The cost policy — the genuine
     // runtime divergence — is the pure, tested computeUsageStats (src/usage-stats.ts).
     const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
     return computeUsageStats(u, this.activeCostRates(), this._backendKind,

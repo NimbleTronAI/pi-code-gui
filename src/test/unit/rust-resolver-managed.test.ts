@@ -192,7 +192,7 @@ test("a foreign managed rustBinaryPath is skipped quietly and the session spawns
     detectBinary: () => detectRustBinary(),
     warnConfiguredBinaryUnusable: (why: string) => { warned.push(why); },
     shouldDisableExtensions: () => false, workspaceIsTrusted: () => true, extensionsMode: () => "auto",
-    setupModels: () => ({ piEnv: {}, warnings: [] }), sessionDir: () => tmp, workspaceCwd: () => tmp,
+    setupModels: async () => ({ piEnv: {}, warnings: [] }), sessionDir: () => tmp, workspaceCwd: () => tmp,
     config: () => ({ defaultThinkingLevel: "off", rustExtensionPolicy: "balanced", contextBudget: 0, readyBudgetMs: 200 }),
     showError: () => {}, offerReopen: () => {}, exportHtml: async (_s: unknown, out: string) => out,
     detectMissingTools: async () => null,

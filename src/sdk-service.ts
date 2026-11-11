@@ -314,9 +314,11 @@ export interface SdkDeps {
    *  out of this file, so SdkService stays headlessly importable). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   buildBridgeTools(defineTool: Function, typebox: any): any[];
-  /** The bundled pi-ai catalog providers (authoritative capability/cost source).
-   *  Injected rather than imported so this module needs no JSON import (headless). */
-  catalogProviders(): CatalogProviders | undefined;
+  /** The model catalog (authoritative capability/cost source): the installed Pi's own, or the
+   *  bundled floor. Async: PiService's waits, for a bounded time, for the catalog source to load,
+   *  so even a window's first session reconciles against Pi's catalog. Injected rather than
+   *  imported so this module needs no JSON import (headless). */
+  catalogProviders(): Promise<CatalogProviders | undefined>;
   /** Ask the user whether a pi extension may run a custom message renderer (arbitrary JS) in
    *  the webview. Remembered per custom type; see the TRUST BOUNDARY note at the call site. */
   confirmRendererConsent(customType: string): Promise<boolean>;
@@ -703,14 +705,14 @@ export class SdkService implements PiBackend {
       piDebug(`Skipping session restore (fresh=${fresh}, hasSessionManager=${!!this.sessionManager})`);
     }
 
-    // Reconcile the model's thinking capability against the authoritative bundled
+    // Reconcile the model's thinking capability against the authoritative model
     // catalog FIRST, so a custom ~/.pi/agent/models.json that omits `reasoning` can't
     // make a known-reasoning model look non-reasoning. Upgrade resumeModel IN PLACE so
     // both our clamp below AND the SDK's own clamp (createAgentSession → sdk.js
     // clampThinkingLevel(model, level), and getSupportedThinkingLevels(this.model) for
     // the picker) see reasoning:true — otherwise the default level (e.g. xhigh) silently
     // clamps to "off" at session open.
-    const catalog = this.deps.catalogProviders();
+    const catalog = await this.deps.catalogProviders();
     if (resumeModel?.provider && resumeModel?.id) {
       resumeModel = reconcileThinkingCapability(catalog, resumeModel.provider, resumeModel.id, resumeModel);
       // Restore cost rates too: a stripped ~/.pi/agent/models.json entry that omits

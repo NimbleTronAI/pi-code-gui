@@ -4,7 +4,10 @@
 // decision layer). RustService is vscode-free (host + deps injected), so we drive the REAL
 // handleEvent / accumulateUsage / applyUsage / getUsage / refreshState here against a fake
 // process and a host that applies translateAgentEvent's effects exactly as PiService does.
-import { test } from "node:test";
+import { test, after } from "node:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { RustService, type RustHost, type RustDeps, type RustSessionConfig } from "../../rust-service.js";
 import type { RustResponse } from "../../rust-process.js";
@@ -660,4 +663,190 @@ test("a history read that races a new turn does not drop that turn's live cost",
   };
   await (h.rust as Any).refreshEntries();
   assert.equal(h.rust.getUsage().cost, 3, "the stored 1 + the racing turn's 2");
+});
+
+// ── C34 (the founder's decision, 2026-10-18): a stopped turn is billed but stored by rust-pi at $0 ──
+// PROVEN on rust-pi 0.8.0 against a local mock: stopping a turn mid-stream, or before its first
+// token, still sends the request to the provider, and the binary emits and stores that assistant
+// message with stopReason "aborted" and every usage figure 0. What it cost is unknowable, so the
+// session's cost is "$??", as after a compaction.
+const ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const stoppedTurn = (usage: Any = ZERO_USAGE) => ({ role: "assistant", provider: CUR.provider, model: CUR.id, stopReason: "aborted", errorMessage: "Aborted", usage });
+
+test("a stopped turn makes the session cost unknown, live and after a reopen", async () => {
+  const h = makeHarness();
+  resumed(h, [storedTurn(1_000_000, 1)]);
+  h.emit({ type: "agent_start" });
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, true, "before the stop");
+  h.emit({ type: "message_end", message: stoppedTurn() });
+  const live = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+  assert.equal(live.costKnown, false, `live: shown ${live.cost}`);
+  assert.equal(h.rust.getUsage().costUnknown, "aborted");
+  assert.match(String(live.costNote), /stopped/);
+  h.setMessages([storedTurn(1_000_000, 1), stoppedTurn()]);
+  h.emit({ type: "agent_end", messages: [] });
+  await flush(); await flush();
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, false, "still unknown after the turn's snapshot");
+
+  const reopened = makeHarness();
+  resumed(reopened, [storedTurn(1_000_000, 1), stoppedTurn(), storedTurn(1_000_000, 2)]);
+  assert.equal(reopened.rust.getUsage().costUnknown, "aborted", "a reopen finds the stopped turn in the history");
+  (reopened.rust as Any).resetSessionUsage();
+  assert.equal(reopened.rust.getUsage().costUnknown, undefined, "a new session starts clean");
+
+  // No false alarm: turns that finished, and a stopped turn whose cost the binary did report.
+  const normal = makeHarness();
+  resumed(normal, [storedTurn(1_000_000, 1), { ...storedTurn(1_000_000, 2), stopReason: "stop" }]);
+  normal.emit({ type: "message_end", message: { ...storedTurn(1_000_000, 3), stopReason: "toolUse" } });
+  assert.equal(normal.rust.getUsage().costUnknown, undefined);
+  const reported = makeHarness();
+  resumed(reported, [stoppedTurn({ input: 1000, output: 10, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } })]);
+  // Review Db B1 (PROVEN on rust-pi 0.8.0, anthropic-messages + a local mock): a stopped or failed turn can be stored
+  // priced at its input tokens only, its output at 0 — a priced stopped turn is no proof of a complete figure.
+  assert.equal(reported.rust.getUsage().costUnknown, "aborted", "a stopped turn the binary priced is still unknown");
+});
+
+test("a stop while a tool runs (no request in flight) keeps the session cost known", async () => {
+  // Review D S2 (PROVEN on rust-pi 0.8.0 + a local mock): stopping during a tool run sends no request, yet
+  // rust-pi still stores an aborted zero-cost assistant turn, right after the tool result it cancelled.
+  const toolTurn = { ...storedTurn(1_000_000, 1), stopReason: "toolUse" };
+  const cancelled = { role: "toolResult", toolCallId: "t1", isError: true, details: { status: "cancelled", reason: "abort_signal", schema: "pi.tool.cancellation.v1" } };
+  const h = makeHarness();
+  resumed(h, []);
+  h.emit({ type: "agent_start" });
+  for (const m of [toolTurn, cancelled, stoppedTurn()]) { h.emit({ type: "message_end", message: m }); }
+  assert.equal(h.rust.getUsage().costUnknown, undefined, "live");
+  const reopened = makeHarness();
+  resumed(reopened, [{ role: "user", content: [] }, toolTurn, cancelled, stoppedTurn()]);
+  assert.equal(reopened.rust.getUsage().costUnknown, undefined, "reopen");
+  // Control: a stop mid-stream on the request AFTER a finished tool reached the provider, so it is unknown.
+  const finished = { role: "toolResult", toolCallId: "t1", isError: false };
+  const live = makeHarness();
+  resumed(live, []);
+  for (const m of [toolTurn, finished, stoppedTurn()]) { live.emit({ type: "message_end", message: m }); }
+  assert.equal(live.rust.getUsage().costUnknown, "aborted", "live control");
+  const ctl = makeHarness();
+  resumed(ctl, [toolTurn, finished, stoppedTurn()]);
+  assert.equal(ctl.rust.getUsage().costUnknown, "aborted", "reopen control");
+});
+
+// ── C34 + review D R1/N2: a request that FAILS after the provider accepted it is billed but stored at $0 ──
+// PROVEN black-box on rust-pi 0.8.0 against a local mock (scratchpad u7Db/out/wire-*.json): when the stream
+// breaks after an HTTP 200 — with text already shown or not — the binary emits a message_end and STORES an
+// assistant turn with stopReason "error" and every usage figure 0. If auto-retry then succeeds, get_messages
+// no longer lists the failed attempt, but the session FILE keeps it (on the branch the session left); if every
+// attempt fails, get_messages lists the last one too. A request the provider REFUSED (an HTTP error status) is
+// emitted the same way but never stored, and is not billed. The session file is the record, live and on reopen.
+const failDir = mkdtempSync(join(tmpdir(), "rust-fail-"));
+after(() => rmSync(failDir, { recursive: true, force: true }));
+const failedTurn = (content: Any[]) => ({ role: "assistant", provider: CUR.provider, model: CUR.id, content, stopReason: "error",
+  errorMessage: "API error: SSE error: unexpected EOF reading chunk size (transient connection drop)", usage: ZERO_USAGE });
+const refusedTurn = () => ({ ...failedTurn([]), errorMessage: "Provider error: p: API error (HTTP 500): {}" });
+const userMsg = { role: "user", content: "hi" };
+let failFiles = 0;
+const failFile = (messages: Any[]): string => {
+  const f = join(failDir, `s${++failFiles}.jsonl`);
+  writeFileSync(f, [{ type: "session", version: 3 }, ...messages.map((m, i) => ({ type: "message", id: `e${i}`, message: m }))].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  return f;
+};
+/** Drive one live run: the given message_end messages, then the real agent_end, with the binary's file on disk. */
+async function liveRun(h: Harness, file: string, ends: Any[]): Promise<void> {
+  h.setState({ model: { id: CUR.id, provider: CUR.provider, api: "openai-completions" }, thinkingLevel: "off", sessionFile: file });
+  h.emit({ type: "agent_start" });
+  for (const m of ends) { h.emit({ type: "message_end", message: m }); }
+  h.emit({ type: "agent_end", messages: [] });
+  await flush(); await flush(); await flush();
+}
+
+test("a turn that fails after streaming makes the session cost unknown, live and after a reopen", async () => {
+  // Review D R1, shape D: every attempt streamed text and then the connection dropped.
+  const partial = failedTurn([{ type: "text", text: "hello part" }]);
+  const h = makeHarness();
+  resumed(h, [userMsg, storedTurn(1_000_000, 1)]);
+  h.emit({ type: "agent_start" });
+  h.emit({ type: "message_end", message: partial });
+  const live = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+  assert.equal(live.costKnown, false, `live: shown ${live.cost}`);
+  assert.equal(h.rust.getUsage().costUnknown, "failed");
+  assert.match(String(live.costNote), /failed/);
+  const file = failFile([userMsg, storedTurn(1_000_000, 1), userMsg, partial, partial]);
+  h.setMessages([userMsg, storedTurn(1_000_000, 1), userMsg, partial]);
+  await liveRun(h, file, []);
+  assert.equal(h.rust.getUsage().costUnknown, "failed", "still unknown once the run ends");
+  // Reopen: get_messages lists the last failed attempt.
+  const reopened = makeHarness();
+  resumed(reopened, [userMsg, storedTurn(1_000_000, 1), userMsg, partial]);
+  assert.equal(reopened.rust.getUsage().costUnknown, "failed", "a reopen finds the failed turn in the history");
+  // The same failure before any text arrived (HTTP 200, then the drop) is stored too, and may be billed.
+  const early = makeHarness();
+  resumed(early, [userMsg, storedTurn(1_000_000, 1), userMsg, failedTurn([])]);
+  assert.equal(early.rust.getUsage().costUnknown, "failed", "a stored failure with no text");
+  (early.rust as Any).resetSessionUsage();
+  assert.equal(early.rust.getUsage().costUnknown, undefined, "a new session starts clean");
+  // Review Db B1: a failed turn stored with a cost (its input tokens only, PROVEN on anthropic-messages) is unknown too.
+  const priced = makeHarness();
+  resumed(priced, [{ ...partial, usage: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1000, cost: { input: 0.003, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.003 } } }]);
+  assert.equal(priced.rust.getUsage().costUnknown, "failed", "a failed turn priced at its input only");
+});
+
+test("a request the provider refused leaves the session cost known once the run ends, as after a reopen", async () => {
+  // Control (PROVEN on 0.8.0): an HTTP 500 is emitted as a zero-cost error turn but never stored, and is not billed.
+  const h = makeHarness();
+  resumed(h, [userMsg, storedTurn(1_000_000, 1)]);
+  h.emit({ type: "agent_start" });
+  h.emit({ type: "message_end", message: refusedTurn() });
+  assert.equal(computeUsageStats(h.rust.getUsage(), RATES, "rust").costKnown, false, "unknown until the file is read: never a confident figure meanwhile");
+  const file = failFile([userMsg, storedTurn(1_000_000, 1), userMsg, storedTurn(1_000_000, 2)]);
+  h.setMessages([userMsg, storedTurn(1_000_000, 1), userMsg, storedTurn(1_000_000, 2)]);
+  await liveRun(h, file, [storedTurn(1_000_000, 2)]);
+  const s = computeUsageStats(h.rust.getUsage(), RATES, "rust");
+  assert.deepEqual([s.costKnown, h.rust.getUsage().costUnknown], [true, undefined], `shown ${s.cost}`);
+  // A file that cannot be read cannot rule the failure out: unknown.
+  const u = makeHarness();
+  resumed(u, [userMsg, storedTurn(1_000_000, 1)]);
+  await liveRun(u, join(failDir, "missing.jsonl"), [refusedTurn(), storedTurn(1_000_000, 2)]);
+  assert.equal(u.rust.getUsage().costUnknown, "failed", "unreadable file");
+});
+
+test("a failed attempt that a retry recovered still makes the session cost unknown, live and after a reopen", async () => {
+  // Review D N2, shape F: attempt 1 streamed text and dropped, attempt 2 succeeded. get_messages forgets attempt 1;
+  // the session file keeps it.
+  const partial = failedTurn([{ type: "text", text: "hello part" }]);
+  const ok = storedTurn(1_000_000, 2);
+  const file = failFile([userMsg, storedTurn(1_000_000, 1), userMsg, partial, ok]);
+  const h = makeHarness();
+  resumed(h, [userMsg, storedTurn(1_000_000, 1)]);
+  h.setMessages([userMsg, storedTurn(1_000_000, 1), userMsg, ok]);
+  h.setState({ model: { id: CUR.id, provider: CUR.provider, api: "openai-completions" }, thinkingLevel: "off", sessionFile: file });
+  h.emit({ type: "agent_start" });
+  h.emit({ type: "message_end", message: partial });
+  h.emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: partial.errorMessage });
+  h.emit({ type: "agent_start" });
+  h.emit({ type: "message_end", message: ok });
+  h.emit({ type: "auto_retry_end", attempt: 1, success: true });
+  assert.equal(h.rust.getUsage().costUnknown, "failed", "live");
+  h.emit({ type: "agent_end", messages: [] });
+  await flush(); await flush(); await flush();
+  assert.equal(h.rust.getUsage().costUnknown, "failed", "after the run: the file holds the failed attempt");
+  // The same failure before any text arrived.
+  const g = makeHarness();
+  resumed(g, [userMsg, storedTurn(1_000_000, 1)]);
+  g.setMessages([userMsg, storedTurn(1_000_000, 1), userMsg, ok]);
+  await liveRun(g, failFile([userMsg, storedTurn(1_000_000, 1), userMsg, failedTurn([]), ok]), [failedTurn([]), ok]);
+  assert.equal(g.rust.getUsage().costUnknown, "failed", "a failure with no text, recovered");
+  // The reopen reads the same file: rust-service.test.ts "a reopened session whose file holds a failed attempt …".
+});
+
+test("the one-time auto-retry warning says only the failed request is re-sent, and that the cost may then be unknown", () => {
+  // Review Db S1: on 0.8.0 a retry re-sends the failed request only; finished tool rounds are kept.
+  const h = makeHarness();
+  (RustService as Any)._autoRetryRebillWarned = false;
+  (RustService as Any)._autoRetryWarned = false;
+  h.emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "boom" });
+  const warn = h.events
+    .map((e: Any) => String(e?.data?.content ?? ""))
+    .find((c: string) => c.includes("Auto-retry"));
+  assert.ok(warn, "the warning is emitted");
+  assert.doesNotMatch(warn, /whole turn|billed again/);
+  assert.match(warn, /\$\?\?/);
 });

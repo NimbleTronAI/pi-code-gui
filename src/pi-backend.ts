@@ -16,18 +16,13 @@
 // what they can do via `capabilities` (a data flag) rather than PiService hard-coding
 // `!isRust` conditionals.
 import { assertNever, type Runtime, type PlanMode, type ApprovalMode } from "./types.js";
+import type { RawUsage } from "./usage-stats.js";
 
 /** A backend's usage snapshot. Shared shape across runtimes (RustService already used
- *  it; SdkService now computes the same from its SessionManager). */
-export interface BackendUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cost: number;
-  contextPercent: number | null;
-  contextWindow: number;
-}
+ *  it; SdkService now computes the same from its SessionManager). It IS the cost policy's input
+ *  (usage-stats.ts RawUsage), the Rust-only fields included (`uncosted*`, `costUnknown`), so a
+ *  field-by-field copy of it cannot silently drop what makes a Rust cost "$??". */
+export type BackendUsage = RawUsage;
 
 /** What a runtime can do — replaces scattered `_backendKind === "rust"` feature gates.
  *  A capability is a property of the backend, checked by PiService's shared UI. */

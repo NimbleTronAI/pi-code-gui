@@ -26,49 +26,83 @@ atomically (rename gives a new inode, `nlink` drops to 1) and is impossible when
 Sharing the directory removes the problem rather than managing it: one home, one
 `auth.json`, nothing to synchronise, identical on every platform.
 
-## Merge, don't rewrite
+## The rule (Design S, 0.2.8)
 
-Because the home is now the user's, `models.json` is theirs. The extension **merges**
-per-model entries into it, each stamped `_managedBy: "pi-code-gui@<version>"`:
+On Rust the extension only **adjusts** models rust-pi already supports, using exactly the
+values Pi itself uses. It never adds providers, never moves endpoints, and never shrinks
+context windows. Concretely, `setupRustModels` (`src/rust-models.ts`) writes ONE kind of
+thing into the shared `models.json`: `providers.<p>.modelOverrides.<id>` = Pi's per-model
+values (name, window, output limit, prices, input, reasoning, thinking map, two compat
+flags) plus a `_managedBy: "pi-code-gui@<version>"` stamp. No `models` array, no
+provider-level key, no connection, no context-budget clamp.
 
-- an entry carrying the marker is ours, and is refreshed on each session start;
-- an entry **without** it is the user's and is left exactly as found, even when its
-  id collides with one we manage — deleting the marker takes an entry out of
-  management permanently.
+- **Where the values come from** (`src/catalog-source.ts`): the INSTALLED TypeScript Pi's
+  catalog, read through a catalog-only `ModelRuntime` (its own `models.json` path never
+  exists, so what we wrote is never read back) — whatever its age; the bundled floor
+  (`model-registry.generated.json`) only when no TypeScript Pi is installed; otherwise
+  "none", and nothing is written that start. "Not installed" means its `package.json` is
+  not found at that moment — so a start caught mid-upgrade (`npm i -g`) writes the floor's
+  values; the next start with Pi present rewrites them.
+- **When.** Only at a Rust session start. It first waits up to 2.5 s for the source
+  (`CATALOG_START_BUDGET_MS`, `pi-service.ts` `makeRustDeps().setupModels`) and logs
+  `Model catalog for this Rust session: <source>`. A TypeScript session start and a
+  catalog refresh never write `models.json` (C28(2), pinned by test). rust-pi reads the
+  file only at spawn.
+- **Created models.** An override for an id rust-pi does not list makes it create that
+  model on its default connection for the provider; that is allowed only where the
+  connection equals Pi's for that model (C29), checked against
+  `src/rust-pi-catalog.generated.json`, measured from the pinned binary by
+  `scripts/gen-rust-pi-catalog.mjs`. Re-run that generator when the rust-pi pin moves AND
+  after a pi-ai bump (a new Pi provider gets nothing until it is listed there). Nothing is
+  created in a provider object holding the user's own `models` list or connection.
+- **Yours is never touched.** Anything without the stamp is the user's: their models,
+  overrides, provider objects and any key they add inside one of ours (that whole value
+  becomes theirs). Files from 0.2.7 (stamped `models[]`, clamped windows, provider
+  connections) migrate once, at the first Rust start.
+- **Files we will not write.** A comment, trailing comma, byte-order mark, syntax error or
+  wrong shape: never written, and the user is told once that rust-pi ignores the whole
+  file. A read-only file or folder: never written, with its own notice.
+- **Writing reformats.** When anything changes, the whole file is re-emitted as 2-space
+  JSON: every value, key and entry is preserved, but hand layout (spacing, `1.0`, escapes,
+  duplicate keys) is not. Nothing changed → nothing is written.
 
-**Provider objects carry the same stamp (0.2.8).** A provider's `baseUrl` and `api` used
-to be filled only when absent, so a catalog bump that moved an endpoint never reached a
-user who already had the provider: the stamped models were refreshed with the new compat
-while the provider kept the old endpoint — a mixed entry. Now a provider object we create
-is stamped; a stamped one has `baseUrl`/`api` rewritten from the catalog on every session
-start; an unstamped one is migrated (and stamped) only when its `(api, baseUrl)` exactly
-equals a pair an earlier release bundled (`LEGACY_PROVIDER_CONNECTIONS` — kimi-coding,
-opencode, opencode-go, moved by pi-ai 1.3.0). Any other unstamped provider is the user's.
-To keep your own endpoint on a provider we created, delete its `_managedBy` — like a
-stamped model, a stamped provider is rewritten on every session start.
+The `/model` fallback list, prices (`activeCostRates`), thinking capability and the
+TypeScript session's reconcile read the same source (`PiService.catalogProviders`); a
+TypeScript start also waits up to 2.5 s for it.
 
-**One entry per model identity.** rust-pi canonicalises a bare (slash-free) id to its
-provider-prefixed form and rejects the **whole** file — every provider, with only a
-stderr warning — when both are present ("duplicate canonical model identity"). The
-bundled openrouter catalog carries both `auto` and `openrouter/auto`; the merge keeps the
-prefixed one and retires the bare alias; when the *user* has written one of the pair by
-hand, theirs is kept and ours is not written. Only a bare (slash-free) id is a twin:
-`vendor/model` and `openrouter/vendor/model` are two identities and both are written.
-Measured on 0.5.1 and 0.8.0.
+## The catalog refresh — what it contacts
 
-Entries are written only for providers the user can authenticate to
-(`credentialedProviders`): env keys derived as `<ID>_API_KEY`, with five irregular
-ones mirroring `pi --list-providers`, plus any OAuth entry in the shared `auth.json`.
-Describing all 963 bundled models wrote ~501 KB for models the user could not reach;
-scoped, a typical machine gets ~1.6 KB for one provider.
+After any session starts, `catalogSource().refreshInBackground()` runs **Pi's own** catalog
+refresh (`ModelRuntime.refresh`), the only network-capable catalog call (C24): at most once
+per 4 h per host (the time is kept in `globalState`), deduped, `PI_OFFLINE` and Pi's TTL and
+ETags honoured, errors logged and never shown. Like the CLI's own refresh it can contact:
+
+- **pi.dev** — Pi's model-catalog service;
+- **openrouter.ai**, with the user's own OpenRouter key or login — their personalised list;
+- the **radius gateway** (`/v1/config`), when a radius login exists.
+
+The extension never calls any of these itself. Credentials are read-only: an expiring
+login is skipped, never refreshed; a `!command` or `$VAR` key is not resolved; `auth.json`
+is never written. Pi stores the result in the shared `<agentDir>/models-store.json`, which
+it creates (with the agent dir) on first use, as the CLI does. The next Rust start writes
+those values into `models.json`.
+
+**After upgrading Pi**, the catalog this window loaded stays in use until a window reload;
+the Pi CLI sees the previous values in `models.json` until the next Rust start.
+
+## Accepted give-ups and residuals
+
+- Providers rust-pi does not support are not offered on Rust.
+- `pi-code-gui.contextBudget` is TypeScript-only; Rust compacts at, and shows %, of the
+  model's real window.
+- Moved endpoints (kimi-coding, opencode, opencode-go) use rust-pi's own endpoint.
+- Models Pi has withdrawn but rust-pi still lists stay visible on Rust with rust-pi's values.
 
 ## Why the catalog is needed at all
 
-rust-pi 0.3.0 ships 94 built-in models and **none of the DeepSeek V4 family**, so the
-merged entries are what make current models reachable. They also carry metadata a
-live `--fetch-models` cannot supply: `contextWindow` clamped to the context budget
-(so auto-compaction fires where the user set it), a real `maxTokens`, and the
-`thinkingLevelMap` / `thinkingFormat` the picker and the binary both need.
+rust-pi's built-in catalog is fixed at its build: it lacks current models and carries
+stale prices, windows and thinking maps. The overrides give Rust the same values a
+TypeScript tab shows, while every endpoint stays rust-pi's own.
 
 ## Cross-reference
 
@@ -76,7 +110,12 @@ live `--fetch-models` cannot supply: `contextWindow` clamped to the context budg
 - [Session Modes](session-modes.md) — approval mode also lives in this shared home
 - [Runtime Debugging](../operations/runtime-debugging.md) — what to check when a model is missing
 
-> **Last updated:** 2026-10-16 — provider-level stamp, refresh and legacy migration;
+> **Last updated:** 2026-10-18 — the floor is written when Pi's package.json is missing at that start (e.g. mid-upgrade) (review D N4).
+> **Earlier:** 2026-10-18 — Design S (0.2.8): per-model overrides from the installed Pi's
+> catalog, written only at a Rust start; the catalog refresh and the hosts it contacts; the
+> reformat, read-only and give-up disclosures. Replaces the earlier version's provider
+> stamp, credential scoping and context-budget clamp.
+> **Earlier:** 2026-10-16 — provider-level stamp, refresh and legacy migration;
 > duplicate-identity dedupe (0.2.8, rust-pi v0.8.0).
 > **Earlier:** 2026-08-31 — new page. The catalog and agent-home rules were
 > undocumented, and the one place that mentioned them (runtime-selection.md)

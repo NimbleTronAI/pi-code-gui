@@ -343,7 +343,7 @@
         "pi-code-gui.contextBudget": {
           "type": "number",
           "default": 0,
-          "description": "Per-session token budget. 0 = use model default. Increase for longer conversations before auto-compaction."
+          "description": "Per-session token budget, for TypeScript sessions only (Rust Pi always compacts at the model's own context window). 0 = use model default. Increase for longer conversations before auto-compaction."
         },
         "pi-code-gui.sessionDir": {
           "type": "string",

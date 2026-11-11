@@ -1,7 +1,8 @@
 # Runtime Selection (TypeScript + Rust)
 
 > **Status:** active — supersedes `archive/multi-backend.md`
-> **Last updated:** 2026-10-16 — the managed-binary removal is guarded: it refuses a symlinked or uncontained `rust-pi` folder, and a replacement that is not Rust Pi or is the same file. Same day: "Detect an existing binary" (and the curl flow's Detect) removes the extension's own managed binary when switching away from it; the stale-managed quiet skip narrowed to this machine's own path or a missing storage root. Same day: the resolver finds the managed install itself; the managed install no longer writes `rustBinaryPath`; a stale managed path is skipped quietly. Same day: pin moved to rust-pi v0.8.0; RPC surface re-probed; resumed-session workdir and attachment sidecar noted.
+> **Last updated:** 2026-10-18 — Design S wired (0.2.8): a Rust start waits up to 2.5 s for the installed Pi's catalog and writes it into `models.json` as per-model overrides (the only writer); any session start triggers Pi's own background catalog refresh; `contextBudget` is TypeScript-only; a Rust turn stopped mid-request, or a request that failed after the provider accepted it (even when a retry then succeeded), makes the session cost `$??`. See [Model Catalog](model-catalog.md).
+> **Earlier:** 2026-10-16 — the managed-binary removal is guarded: it refuses a symlinked or uncontained `rust-pi` folder, and a replacement that is not Rust Pi or is the same file. Same day: "Detect an existing binary" (and the curl flow's Detect) removes the extension's own managed binary when switching away from it; the stale-managed quiet skip narrowed to this machine's own path or a missing storage root. Same day: the resolver finds the managed install itself; the managed install no longer writes `rustBinaryPath`; a stale managed path is skipped quietly. Same day: pin moved to rust-pi v0.8.0; RPC surface re-probed; resumed-session workdir and attachment sidecar noted.
 > **Earlier:** 2026-08-31 — corrected the `_backendKind` list (getAllSlashCommands no longer branches), dropped the stale count, noted `sessionModes`.
 > `~/.pi/agent` and merges the catalog; the relocated home and linked `auth.json`
 > described here were removed), re-verified the RPC flags against v0.3.0, and noted
@@ -85,8 +86,18 @@ had already been hand-corrected in the fallback).
 **A handful of `_backendKind` checks remain, all deliberate** — runtime identity, not
 feature gates: the `backend` accessor and the `capabilities` fallback (which service is
 active), the `initialize` branch (which one to construct), `getUsageStats`' cost policy
-(the Rust binary reports `cost:0` even after a billed turn — probed on 0.3.0 — so
-PiService derives it from catalog rates while the SDK computes its own), `dispose`'
+(rust-pi 0.8.0 prices each turn itself from the rates in `models.json`, summed over the
+turns `get_messages` lists; PiService falls back to catalog rates only for a binary that
+reports none, and shows `$??` where the spend is unknowable — after a compaction, whose
+summary calls rust-pi reports nowhere, or a turn stopped while its request was in flight,
+which it stores at 0 or at only its input tokens (anthropic-messages) although the provider
+may bill it — so a priced stopped turn is no proof either (a stop while a tool runs sends
+no request and keeps the cost known), or a request that failed after the provider accepted
+it — the stream broke after an HTTP 200, with or without text shown — which it also stores
+at 0 or at its input only, in the session file even when an auto-retry then succeeded and `get_messages` no
+longer lists it (a request the provider refused with an HTTP error is never stored, and is assumed
+unbilled — standard provider practice, which a black-box probe cannot prove; a live failure therefore shows `$??` until the session file settles it at the end
+of the run, so the live figure and the reopened one agree) — while the SDK computes its own), `dispose`'
 teardown sequencing (subprocess kill vs in-process session-file flush), and the
 `runtime` getter plus diagnostics. These are genuine runtime divergence, and each is
 `assertNever`-guarded, so adding a third runtime is a compile error at every branch
@@ -203,7 +214,8 @@ and false for TypeScript — everything else gated is `!rust`.
 - `src/model-catalog.ts` (formerly `rust-catalog.ts` — renamed 2026-07-06: the
   helpers serve BOTH runtimes) — pure thinking-capability logic
   (`getSupportedThinkingLevels`/`clampThinkingLevel`/`reconcileThinkingCapability`),
-  cost computation, and the maxTokens/compat shaping for the Rust models.json.
+  and cost computation. (Its maxTokens/compat helpers are no longer used by the Rust
+  merge since Design S; `src/rust-models.ts` shapes the overrides itself.)
   The shared `extractMessageText` + tool-preview helpers likewise moved from
   `rust-events.ts` into `agent-events.ts`, so imports point rust-specific → shared.
 - `src/runtime-detection.ts` — `detectRuntimes()`,
@@ -352,11 +364,16 @@ rejected alternative. (Lightweight, in lieu of formal ADRs.)
 - **Settings live in the binary.** `autoCompactionEnabled`/`autoRetryEnabled` are
   toggled over RPC (`set_auto_compaction`/`set_auto_retry`); there is no
   in-process session to mutate, and `get_state` re-syncs the values.
-- **Context-window clamp asymmetry (built-in vs custom models).** Built-in Rust
-  models keep their registry window for real auto-compaction; only custom models
-  (written into `models.json`) are clamped to the context budget — lowering a
-  built-in's window would require shadowing it. The displayed `%` honours the
-  budget for both.
+- **`pi-code-gui.contextBudget` is TypeScript-only (0.2.8, Design S).** Rust
+  compacts at the model's own window and its `%` uses that window; `models.json` is
+  never clamped. The setting's description and the budget picker say so.
+- **The model catalog on Rust (Design S).** At each Rust start `setupModels` waits up
+  to 2.5 s for `catalogSource()` — the installed TypeScript Pi's catalog, or the
+  bundled floor when none is installed — and merges it into `models.json` as stamped
+  per-model overrides; that start is the file's only writer. After any session starts,
+  Pi's own catalog refresh runs in the background (pi.dev; openrouter.ai with the user's
+  own key; the radius gateway when logged in). Details, give-ups and disclosures:
+  [Model Catalog & the Shared Agent Home](model-catalog.md).
 - **Shared agent home (changed in 0.2.0).** Rust sessions point
   `PI_CODING_AGENT_DIR` at the user's own `~/.pi/agent`, so there is one
   `auth.json` and a `/login` applies to both the extension and the `pi` CLI with

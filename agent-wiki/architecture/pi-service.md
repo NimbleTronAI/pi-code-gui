@@ -33,7 +33,15 @@ whole resolve→load→create sequence lives in `SdkService`, not here.
 - **Session lifecycle** — `initialize()` picks the backend, applies the shared state it
   returns (model, cycle list, thinking level, resume flag), then wires the session to
   the UI: event subscription, extension binding, history replay, and the first
-  `reportStatus`/`emitSettings`/`emitSlashCommands`.
+  `reportStatus`/`emitSettings`/`emitSlashCommands`. After a successful start of either
+  runtime it triggers Pi's own background catalog refresh
+  (`catalogSource().refreshInBackground()`, see [Model Catalog](model-catalog.md)).
+- **The model catalog seam** — `catalogProviders` (the installed Pi's catalog from
+  `src/catalog-source.ts`, the bundled floor until it loads) feeds prices, thinking
+  capability, the `/model` fallback list, and the SDK's reconcile. The two runtime deps
+  wait up to 2.5 s for it (`CATALOG_START_BUDGET_MS`): `makeRustDeps().setupModels`
+  before the Rust `models.json` merge, `makeSdkDeps().catalogProviders` before the first
+  TypeScript reconcile. Each logs which catalog its session used.
 - **Event fan-out** (`onEvent`/`emit`) — observer pattern over `PiServiceEvent`,
   validated against the shared Zod schema in `src/shared/protocol.ts`.
 - **User actions** — `sendPrompt`, `abort`, `newSession`, `resumeSession`, `compact`,
@@ -89,8 +97,10 @@ escape hatch for the few places that genuinely need identity. Both exist today.
   a setting in-process so the UI can flip immediately, while the Rust RPC may reject or
   clamp, so its state flips only on the backend's echo.
 - **`getUsageStats()`** still keys its cost policy on `runtime === "rust"` rather than a
-  capability. Known, deliberate, low severity: the Rust binary reports `cost: 0` and we
-  derive cost from catalog rates, whereas the SDK computes its own. Every attempted
+  capability. Known, deliberate, low severity: on Rust the binary's per-turn figures are
+  checked and summed (`$??` after a compaction, a stopped turn or a request that failed
+  after the provider accepted it, catalog rates only for a
+  binary that reports none), whereas the SDK computes its own. Every attempted
   rewrite moved the displayed number on TypeScript, which is not a trade worth making
   for tidiness.
 
@@ -119,7 +129,10 @@ escape hatch for the few places that genuinely need identity. Both exist today.
 - [Event Translation](event-translation.md) — how both event streams become `PiServiceEvent`
 - [SDK Resolution & Init](../operations/sdk-resolution.md) — the TypeScript load sequence
 
-> **Last updated:** 2026-08-05 — rewritten after the god-class extraction. The previous
+> **Last updated:** 2026-10-18 — the model-catalog seam (`catalogProviders`, the 2.5 s
+> catalog wait in both runtime deps, the background refresh after a start); the Rust cost
+> divergence restated for rust-pi 0.8.0; a failed-after-accepted request is `$??` too.
+> **Earlier:** 2026-08-05 — rewritten after the god-class extraction. The previous
 > version (2026-06-21) described responsibilities that had since moved, and named
 > `setEffort` (deleted), `PiService.formatModelDetail()` (now in `model-picker.ts`),
 > `authStorage`/`modelRegistry` (replaced by `ModelRuntime`), and `_agentRunActive` as

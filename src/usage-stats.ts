@@ -26,8 +26,11 @@ export interface RawUsage {
   /** Rust only: why no session cost can be stated at all (review Cc). "compacted": the session
    *  compacted, and rust-pi reports the cost of its summary calls nowhere; "usage-unread": a resume
    *  whose usage reply could not be read, so a compaction cannot be ruled out; "mismatch": the
-   *  binary's session total exceeds its per-turn record, so the per-turn figures drifted. */
-  costUnknown?: "compacted" | "usage-unread" | "mismatch";
+   *  binary's session total exceeds its per-turn record, so the per-turn figures drifted;
+   *  "aborted" (C34): a turn was stopped, and rust-pi stores a stopped turn at 0 (or at its input only) although the
+   *  provider may bill it; "failed" (C34, review D R1/N2): a request failed after the provider
+   *  accepted it, and rust-pi stores that turn at 0 (or at its input only) although the provider may bill it. */
+  costUnknown?: "compacted" | "aborted" | "failed" | "usage-unread" | "mismatch";
 }
 
 export type TokenCounts = { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -62,6 +65,14 @@ const COST_UNKNOWN_NOTES: Record<NonNullable<RawUsage["costUnknown"]>, string> =
   compacted:
     "This session has been compacted. Rust Pi doesn't report what the summaries it writes when " +
     "compacting cost, so the session cost can't be computed. Token counts above don't include them.",
+  aborted:
+    "A turn in this session was stopped before it finished. The provider may still bill a stopped " +
+    "request, but Rust Pi saves it at no cost, or at only part of its cost, so the session cost can't be " +
+    "computed. Token counts above may not include all of it.",
+  failed:
+    "A request in this session failed part-way through. The provider may still bill it, but Rust Pi " +
+    "saves it at no cost, or at only part of its cost, so the session cost can't be computed. Token " +
+    "counts above may not include all of it.",
   "usage-unread":
     "This session's usage couldn't be read from Rust Pi, so it can't be checked for a compaction " +
     "(whose cost Rust Pi doesn't report) and the session cost can't be computed.",
@@ -75,8 +86,9 @@ const COST_UNKNOWN_NOTES: Record<NonNullable<RawUsage["costUnknown"]>, string> =
  *    turns stored at 0, e.g. by an older binary (R4). Those turns make the cost "$??" when they
  *    ran on another model or the current one has no priceable rates. A binary that reports 0
  *    gets the old arithmetic: cost = tokens × rates when the rates are priceable, else "$??".
- *    A compacted session, an unread usage or history reply on a resume, or a per-turn record
- *    that doesn't add up is "$??" whatever the figures (`costUnknown`, `uncostedUnread`).
+ *    A compacted session, a stopped turn saved at no cost, an unread usage or history reply on a
+ *    resume, or a per-turn record that doesn't add up is "$??" whatever the figures
+ *    (`costUnknown`, `uncostedUnread`).
  *  - SDK: keeps the SDK's own computed cost; costKnown when it computed one OR we hold
  *    priceable rates (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
  *    An SDK-computed cost > 0 always wins — that is a measurement, not an inference. */

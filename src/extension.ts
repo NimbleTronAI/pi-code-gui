@@ -10,6 +10,7 @@ import { initLogger, disposeLogger, piLog, piDebug, piWarn, redactSecrets } from
 import { initSecrets } from "./secrets.js";
 import { initRendererConsent, resetRendererConsent } from "./renderer-consent.js";
 import { initRustModels } from "./rust-models.js";
+import { configureCatalogSource, catalogSource, type CatalogSourceOptions } from "./catalog-source.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
 import type { SessionSummary, Runtime } from "./types.js";
@@ -229,6 +230,24 @@ async function warnIfUntestedRustBinary(context: vscode.ExtensionContext): Promi
   if (choice === SHOW) { await vscode.commands.executeCommand("pi-code-gui.installRust"); }
 }
 
+/** Where the host keeps the time of its last catalog refresh, so the 4 h throttle survives reloads. */
+const CATALOG_REFRESH_KEY = "pi-code-gui.catalogRefreshedAt";
+
+/** The extension host's one model-catalog source (src/catalog-source.ts), configured once at
+ *  activate before anything can use it: its throttle lives in globalState, and its catalog-only
+ *  models path (which must never exist) under this extension's own globalStorage. `extra` is the
+ *  seam the tests use to inject a fake Pi. */
+export function configureHostCatalogSource(context: Pick<vscode.ExtensionContext, "globalState" | "globalStorageUri">, extra: Partial<CatalogSourceOptions> = {}): void {
+  configureCatalogSource({
+    throttle: {
+      get: () => context.globalState.get<number>(CATALOG_REFRESH_KEY),
+      set: (at) => { void context.globalState.update(CATALOG_REFRESH_KEY, at); },
+    },
+    catalogModelsPath: path.join(context.globalStorageUri.fsPath, "catalog-only", "models.json"),
+    ...extra,
+  });
+}
+
 // ── Activate ───────────────────────────────────────────
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -242,6 +261,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(outputChannel);
   initLogger(outputChannel);
   initRustModels(context);
+  configureHostCatalogSource(context);
   initRendererConsent(context);
   // Load API keys from SecretStorage, migrating any still sitting in plaintext settings. Awaited
   // because the config seam that serves them (SdkDeps/RustDeps.config()) is synchronous; it is a
@@ -1644,6 +1664,9 @@ async function initSessionInBackground(context: vscode.ExtensionContext, sw: Ses
   } catch (e: unknown) {
     result = { success: false, error: e instanceof Error ? e.message : String(e) };
   }
+  // The user closed this tab while it was starting (review D R2): nothing failed, so say nothing —
+  // a "Pi init failed … Retry" here would offer to reopen the tab they just closed.
+  if (result.errorKind === "closed" || !sessions.includes(sw)) { return; }
 
   if (!result.success) {
     sw.webviewPanel.postMessage({
@@ -2445,6 +2468,8 @@ export async function deactivate(): Promise<void> {
     sw.webviewPanel.dispose();
   }
   sessions.length = 0;
+  // Abort an in-flight catalog refresh; nothing refreshes after this.
+  catalogSource().dispose();
   // Stop output-channel writes last, so a late log during teardown can't throw
   // "Channel has been closed" from the global unhandledRejection handler.
   disposeLogger();
