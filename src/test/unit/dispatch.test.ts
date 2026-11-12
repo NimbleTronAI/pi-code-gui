@@ -22,6 +22,7 @@ const HTML = `<!DOCTYPE html><html><body>
   <div id="settings-overlay"></div>
   <div id="slash-autocomplete"></div>
   <div id="live-panel"></div>
+  <div id="pi-sb-thinking"></div>
 </body></html>`;
 
 let handlers: any;
@@ -173,4 +174,33 @@ test("summarization auto-retry-start shows the indicator and leaves a running to
   assert.equal(doc.getElementById("retry-indicator"), null, "compaction-end clears the leftover indicator");
   assert.equal(stateMod.state.isRetrying, false);
   toolsMod.handleToolEnd({ toolCallId: "t-sum", toolName: "write", result: { content: [] }, isError: false });
+});
+
+// ── what the webview saves for panel restore ──────────────────────────
+// VS Code hands this state back to deserializeWebviewPanel (panel-restore.ts) after a reload. The
+// session file is all a panel needs; a runtime field is no longer written (an earlier version's is
+// read only to close that version's panels).
+test("a status-update saves the session file, and nothing else, for panel restore", () => {
+  const vs = (globalThis as any).window.__vscode;
+  const saved: unknown[] = [];
+  const { getState, setState } = vs;
+  vs.getState = () => ({ sessionFilePath: "/s/old.jsonl", runtime: "typescript" });
+  vs.setState = (s: unknown) => { saved.push(s); };
+  try {
+    handlers.handleStatusUpdate({ sessionFile: "/s/new.jsonl" });
+    handlers.handleStatusUpdate({});
+  } finally { vs.getState = getState; vs.setState = setState; }
+  assert.deepEqual(saved, [{ sessionFilePath: "/s/new.jsonl" }, { sessionFilePath: "/s/old.jsonl" }]);
+});
+
+// ── the thinking chip ────────────────────────────────────────────────
+// The host composes the chip text (thinkingStatus) and Pi always transmits the level, so the chip
+// shows that text and always opens the picker; there is no read-only form.
+test("the thinking chip shows the host's text and is never read-only", () => {
+  const chip = (globalThis as any).document.getElementById("pi-sb-thinking");
+  handlers.handleStatusUpdate({ thinkingDisplay: "thinking: on · reasoning: high", thinkingLive: false, thinkingClickable: false });
+  assert.equal(chip.textContent, "thinking: on · reasoning: high");
+  assert.equal(chip.classList.contains("sb-readonly"), false);
+  handlers.handleStatusUpdate({ thinkingLevel: "low" });
+  assert.equal(chip.textContent, "thinking: low", "falls back to the level when no text is composed");
 });

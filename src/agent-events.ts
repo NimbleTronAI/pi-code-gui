@@ -14,7 +14,7 @@
 import type { PiServiceEvent } from "./types.js";
 
 /**
- * Extract the plain-text portion of a message `content` payload. Runtime-agnostic:
+ * Extract the plain-text portion of a message `content` payload:
  * a bare string is returned as-is; an array yields the joined `text` blocks;
  * anything else (incl. null/undefined) yields "".
  */

@@ -101,3 +101,46 @@ test("a session the user closed while it was starting shows no init-failed error
   assert.ok(guard > body.indexOf("sw.piService.initialize("), "the guard follows the initialize call");
   assert.ok(guard < body.indexOf("if (!result.success)"), "and comes before any failure is shown");
 });
+
+/** Every `when` / `enablement` clause anywhere under package.json `contributes`. */
+function contributedWhenClauses(): string[] {
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf-8"));
+  const out: string[] = [];
+  const walk = (o: unknown): void => {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (!o || typeof o !== "object") { return; }
+    for (const [k, v] of Object.entries(o)) {
+      if ((k === "when" || k === "enablement") && typeof v === "string") { out.push(v); } else { walk(v); }
+    }
+  };
+  walk(pkg.contributes);
+  return out;
+}
+
+// A menu entry gated on a context key nobody sets is hidden forever: the command is still
+// contributed, but the only button for it never appears. Every key in our own namespace must be
+// set by a setContext call in src/ (VS Code's own keys — view, viewItem, resourceScheme — are not
+// ours to set).
+test("every pi-code-gui context key in a when clause is set somewhere in src/", () => {
+  const clauses = contributedWhenClauses();
+  assert.ok(clauses.length > 5, "sanity: found the when clauses");
+  // A KEY is the left side of a term: strip comparison right-hand sides (`view == pi-code-gui.sessions`
+  // names a view id, not a context key), then collect what is left in our namespace.
+  const keys = new Set<string>();
+  for (const c of clauses) {
+    const lhs = c.replace(/(==|!=|=~|\bin\b|\bnot in\b)\s*(\/[^/]*\/|[^\s&|)]+)/g, "");
+    for (const m of lhs.matchAll(/pi-code-gui\.[\w.-]+/g)) { keys.add(m[0]); }
+  }
+  const src = allSrcText();
+  const unset = [...keys].filter((k) => !new RegExp(`"setContext",\\s*"${k.replace(/[.-]/g, "\\$&")}"`).test(src));
+  assert.deepEqual(unset, [], `when clauses read context keys that nothing sets: ${unset.join(", ")}`);
+});
+
+test("every menu entry names a contributed command", () => {
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf-8"));
+  const contributed = new Set((pkg.contributes?.commands ?? []).map((c: { command: string }) => c.command));
+  const menus: Record<string, Array<{ command?: string }>> = pkg.contributes?.menus ?? {};
+  const orphans = Object.entries(menus).flatMap(([where, entries]) =>
+    entries.filter((e) => e.command && !contributed.has(e.command)).map((e) => `${where}: ${e.command}`));
+  assert.deepEqual(orphans, [], `menu entries for commands that are not contributed: ${orphans.join(", ")}`);
+});

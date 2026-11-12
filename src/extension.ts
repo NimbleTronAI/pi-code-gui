@@ -12,7 +12,7 @@ import { initRendererConsent, resetRendererConsent } from "./renderer-consent.js
 import { cleanupManagedModelsAtStartup } from "./managed-models-cleanup.js";
 import { registerPhase3Commands } from "./phase3-commands.js";
 import { registerPhase4Commands } from "./phase4-commands.js";
-import type { SessionSummary, Runtime } from "./types.js";
+import type { SessionSummary } from "./types.js";
 import { planPanelRestore } from "./panel-restore.js";
 // The tree-view label extractor is the SAME operation as the event translator's — import the
 // one implementation instead of a second copy (this file's copy also threw on a null content
@@ -29,8 +29,6 @@ interface SessionWindow {
   isStreaming: boolean;
   /** Cached display label derived from session name or tab summary */
   label: string;
-  /** Intended runtime for this window (known before init completes). */
-  runtime: Runtime;
   /** Per-session subscriptions torn down when the session closes (audit M6: the tree-refresh
    *  listener was never unsubscribed, so a disposed session's late event still refreshed the
    *  tree and the closure kept the session alive). */
@@ -57,9 +55,6 @@ let phaseCommandsRegistered = false;
 
 function setActiveSession(sw: SessionWindow | null): void {
   activeSessionWindow = sw;
-  // The Packages view reflects the focused session's runtime (available vs active).
-  const rt: Runtime = sw?.runtime ?? primarySession()?.runtime ?? "typescript";
-  void packagesTreeProvider?.setFocusedRuntime(rt);
 }
 let sessionTreeProvider: MultiSessionTreeProvider | null = null;
 let sessionTreeView: vscode.TreeView<SessionTreeItem> | null = null;
@@ -86,7 +81,7 @@ function primarySession(): SessionWindow | undefined {
 }
 
 /** Create a new session window pair */
-function createSessionWindow(context: vscode.ExtensionContext, runtime: Runtime = "typescript"): SessionWindow {
+function createSessionWindow(context: vscode.ExtensionContext): SessionWindow {
   const id = `session-${++sessionCounter}`;
   const piService = new PiService();
   const webviewPanel = new PiWebviewPanel(context, piService);
@@ -94,7 +89,6 @@ function createSessionWindow(context: vscode.ExtensionContext, runtime: Runtime 
     id, piService, webviewPanel,
     initialized: false, isStreaming: false,
     label: getGenericSessionLabel(id),
-    runtime,
     disposables: [],
   };
 
@@ -186,7 +180,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Cmd+/, Cmd+L and the rest were "command not found" for that whole window, which is exactly
   // what the old "must be registered synchronously so keybindings work immediately" comment was
   // trying to prevent while sitting AFTER the wait. Neither registration needs a workspace
-  // folder or a runtime: every handler resolves its target at invocation time.
+  // folder or a session: every handler resolves its target at invocation time.
   registerEarlyCommands(context);
   registerPhaseCommands(context);
 
@@ -267,12 +261,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const plan = planPanelRestore(state, (p) => fs.existsSync(p));
         piDebug(`[serializer] revived panel → ${plan.action}${plan.openPath ? ` (${plan.openPath.split("/").pop()})` : ""}`);
         if (plan.action === "dispose") {
-          // The session file is gone, or it belongs to a Rust Pi session this version no longer
-          // runs — closing the shell beats resurrecting an empty one (or rewriting that file).
+          // The session file is gone, or an earlier version saved this tab for a runtime this
+          // version no longer has — closing the shell beats resurrecting an empty one (or
+          // rewriting that file).
           panel.dispose();
           if (plan.retiredSessionFile) {
-            piLog(`Closed a restored Rust Pi session tab; its file is untouched: ${plan.retiredSessionFile}`);
-            void vscode.window.showInformationMessage(`A Rust Pi session tab was closed: this version runs Pi sessions only. Its file is untouched: ${plan.retiredSessionFile}`);
+            piLog(`Closed a restored session tab an earlier version saved for a runtime it no longer supports; its file is untouched: ${plan.retiredSessionFile}`);
+            void vscode.window.showInformationMessage(`A session tab saved by an earlier version for a runtime it no longer supports was closed. Its file is untouched: ${plan.retiredSessionFile}`);
           }
           return;
         }
@@ -303,10 +298,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("pi-code-gui.addSession", () => {
       addSession(context);
     }),
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand("pi-code-gui.addSessionTypescript", () => addSession(context)),
   );
 
   context.subscriptions.push(
@@ -937,9 +928,6 @@ async function initPackagesView(context: vscode.ExtensionContext): Promise<void>
 
   // Initial load
   await packagesTreeProvider.refreshAll();
-  // Reflect the runtime of whatever session is focused on first load.
-  const initialRt: Runtime = activeSessionWindow?.runtime ?? primarySession()?.runtime ?? "typescript";
-  void packagesTreeProvider.setFocusedRuntime(initialRt);
 
   // ── Register package commands ────────────────
 
@@ -1178,10 +1166,6 @@ function addSession(context: vscode.ExtensionContext): void {
   void initSessionInBackground(context, sw, { fresh: true });
 }
 
-/** Short badge for a runtime, shown in tree items and chips. */
-function runtimeBadge(rt: Runtime): string {
-  return rt === "rust" ? "Rust" : "TS";
-}
 
 
 
@@ -1641,7 +1625,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     this._loadingPast = true;
     try {
       // Past sessions come from the SDK (returns [] if the SDK is absent).
-      const past: SessionSummary[] = (await PiService.listSessions(cwd)).map((s: SessionSummary) => ({ ...s, runtime: "typescript" }));
+      const past: SessionSummary[] = await PiService.listSessions(cwd);
       past.sort((a, b) => (b.modified ?? b.created ?? 0) - (a.modified ?? a.created ?? 0));
       this._pastSessions = past;
       piDebug(`refreshPastSessions: ${past.length} past sessions`);
@@ -1793,9 +1777,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       item.id = newId;
       item.label = label;
       item.collapsibleState = collapsible;
-      item.description = sw.initialized ? `${runtimeBadge(sw.runtime)} · ${sw.piService.model?.id ?? "..."}` : "initializing";
+      item.description = sw.initialized ? (sw.piService.model?.id ?? "...") : "initializing";
       item.tooltip = new vscode.MarkdownString(
-        `**${sw.id}**\n\nRuntime: ${sw.runtime === "rust" ? "Rust Pi" : "TypeScript Pi"}\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
+        `**${sw.id}**\n\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
       );
     } else {
       item = new SessionTreeItem(
@@ -1810,9 +1794,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       );
       item.id = `${sw.id}-${sw.initialized ? "rdy" : "init"}`;
       item.sessionId = sw.id;
-      item.description = sw.initialized ? `${runtimeBadge(sw.runtime)} · ${sw.piService.model?.id ?? "..."}` : "initializing";
+      item.description = sw.initialized ? (sw.piService.model?.id ?? "...") : "initializing";
       item.tooltip = new vscode.MarkdownString(
-        `**${sw.id}**\n\nRuntime: ${sw.runtime === "rust" ? "Rust Pi" : "TypeScript Pi"}\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
+        `**${sw.id}**\n\nModel: ${sw.piService.model?.id ?? "-"}\nThinking: ${sw.piService.thinkingLevel}\nEntries: ${entryCount}\nInitialized: ${sw.initialized}\nStreaming: ${sw.isStreaming}`,
       );
       this._sessionItems.set(sw.id, item);
     }
@@ -1948,8 +1932,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       ? formatRelativeTime(new Date(s.modified))
       : "";
     const msgCount = s.messageCount ?? 0;
-    const rt: Runtime = s.runtime === "rust" ? "rust" : "typescript";
-    const desc = `${runtimeBadge(rt)} · ${msgCount} msg${msgCount === 1 ? "" : "s"}${dateStr ? " · " + dateStr : ""}`;
+    const desc = `${msgCount} msg${msgCount === 1 ? "" : "s"}${dateStr ? " · " + dateStr : ""}`;
 
     const item = new SessionTreeItem(
       label,
@@ -1961,9 +1944,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       },
     );
     item.description = desc;
-    item.iconPath = new vscode.ThemeIcon(rt === "rust" ? "server-process" : "archive");
+    item.iconPath = new vscode.ThemeIcon("archive");
     item.tooltip = new vscode.MarkdownString(
-      `**${s.name || "Session"}**\n\nRuntime: ${rt === "rust" ? "Rust Pi" : "TypeScript Pi"}\nPath: \`${s.path}\`\nMessages: ${msgCount}\nCreated: ${s.created ? new Date(s.created).toLocaleString() : "-"}\nModified: ${s.modified ? new Date(s.modified).toLocaleString() : "-"}`,
+      `**${s.name || "Session"}**\n\nPath: \`${s.path}\`\nMessages: ${msgCount}\nCreated: ${s.created ? new Date(s.created).toLocaleString() : "-"}\nModified: ${s.modified ? new Date(s.modified).toLocaleString() : "-"}`,
     );
     item.contextValue = "pastSessionEntry";
     return item;

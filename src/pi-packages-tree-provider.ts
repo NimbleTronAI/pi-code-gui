@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import type { PiPackageService, InstalledPackage, MarketplacePackage } from "./pi-package-service.js";
-import type { Runtime } from "./types.js";
 
 /**
  * Tree data provider for the Pi Packages view.
@@ -78,30 +77,10 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
   private searchQuery = "";
   private updatesAvail = new Map<string, boolean>();
 
-  /** Runtime of the focused session — packages are shown from its perspective. */
-  private focusedRuntime: Runtime = "typescript";
-  /** Sources actually loaded ("active") by the focused runtime. */
+  /** Installed sources Pi sessions actually load ("active"); the rest are "available". */
   private activeSources = new Set<string>();
 
   constructor(private pkgService: PiPackageService) {}
-
-  /**
-   * Point the view at a session runtime (called when session focus changes).
-   * Recomputes which installed packages are active under that runtime, so the
-   * same shared catalog is shown "available vs active" for whichever session is
-   * in focus. No-op when the runtime is unchanged (avoids re-probing on every
-   * panel activation).
-   */
-  async setFocusedRuntime(runtime: Runtime): Promise<void> {
-    if (runtime === this.focusedRuntime) { return; } // refreshAll keeps the set current
-    this.focusedRuntime = runtime;
-    await this.recomputeActive();
-    this._onDidChangeTreeData.fire();
-  }
-
-  private runtimeLabel(): string {
-    return this.focusedRuntime === "rust" ? "Rust" : "TypeScript";
-  }
 
   private async recomputeActive(): Promise<void> {
     try {
@@ -201,14 +180,12 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
         "packages-installed-header",
         n > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None,
       );
-      // Show which session runtime the active/available state reflects.
-      const activeCount = this.installed.filter((p) => this.activeSources.has(p.source)).length;
-      installedHeader.description = n > 0
-        ? `${this.runtimeLabel()} · ${activeCount}/${n} active`
-        : `${this.runtimeLabel()} session`;
+      if (n > 0) {
+        const activeCount = this.installed.filter((p) => this.activeSources.has(p.source)).length;
+        installedHeader.description = `${activeCount}/${n} active`;
+      }
       installedHeader.tooltip = new vscode.MarkdownString(
-        `Packages are shared across runtimes. **Active** = loaded by the focused **${this.runtimeLabel()}** session; ` +
-        `**available** = installed but not loaded by it.`,
+        "**Active** = loaded by Pi sessions; **available** = installed but not loaded.",
       );
       children.push(installedHeader);
 
@@ -249,8 +226,8 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
         vscode.TreeItemCollapsibleState.Collapsed,
       );
       item.installedData = pkg;
-      // "available, not loaded" calls out packages the focused runtime can't/won't load.
-      const stateNote = active ? "" : `  · not loaded by ${this.runtimeLabel()}`;
+      // "available, not loaded" calls out packages Pi sessions do not load.
+      const stateNote = active ? "" : "  · not loaded";
       item.description = `${pkg.scope}${hasUpdate ? "  ⬆" : ""}${stateNote}`;
       item.iconPath = active
         ? new vscode.ThemeIcon(hasUpdate ? "sync" : pkg.scope === "project" ? "folder-library" : "package")

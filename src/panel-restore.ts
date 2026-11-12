@@ -9,7 +9,8 @@ export interface PanelRestorePlan {
    *  version no longer runs. */
   action: "open" | "fresh" | "dispose";
   openPath?: string;
-  /** Set when the panel belonged to a retired Rust Pi session: its file, left untouched. */
+  /** Set when an earlier version saved the panel for a runtime this version no longer has: the
+   *  session's file, left untouched. */
   retiredSessionFile?: string;
 }
 
@@ -22,9 +23,11 @@ export function planPanelRestore(
 ): PanelRestorePlan {
   const s = (state && typeof state === "object" ? state : {}) as { sessionFilePath?: unknown; runtime?: unknown };
   const p = typeof s.sessionFilePath === "string" && s.sessionFilePath.length > 0 ? s.sessionFilePath : null;
-  // A panel an older version persisted for a Rust Pi session. Opening its file on the SDK would
-  // migrate and rewrite it, so close the panel and leave the file exactly as it is.
-  if (s.runtime === "rust") { return p ? { action: "dispose", retiredSessionFile: p } : { action: "dispose" }; }
+  // Earlier versions also saved the runtime a panel ran on: "typescript" (the one this version
+  // runs) or the name of a second runtime this version no longer has. Opening such a session's
+  // file here would migrate and rewrite it, so close the panel and leave the file exactly as it
+  // is. This version saves no runtime, so its own panels never match.
+  if (s.runtime !== undefined && s.runtime !== "typescript") { return p ? { action: "dispose", retiredSessionFile: p } : { action: "dispose" }; }
   if (!p) { return { action: "fresh" }; }
   if (!fileExists(p)) { return { action: "dispose" }; }
   return { action: "open", openPath: p };

@@ -5,7 +5,8 @@
 // deferred integration gap.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiService } from "../../pi-service.js";
 import bundledRegistry from "../../model-registry.generated.json";
@@ -225,4 +226,39 @@ test("notifyOutdatedPiAi shows piAiNoticeMessage's text, not an inline copy", ()
   const decl = body.slice(0, body.indexOf("\n      },"));
   assert.match(decl, /piAiNoticeMessage\(installed, supported, belowFloor\)/);
   assert.doesNotMatch(decl, /legacy path/);
+});
+
+// ── /tools keeps the session's history (C13) ─────────────────────────
+// setActiveTools appends a tools_active_change entry straight to the session file. Pi rebuilds a
+// reopened session from its LAST entry, walking parentId back to the root (SessionManager
+// _buildIndex sets the leaf to the last entry; getBranch follows parentId — session-manager.js,
+// pi-coding-agent 1.5.2). An entry written with parentId:null was therefore a root of its own:
+// a session closed right after /tools reopened with no model history at all.
+test("setActiveTools chains its entry to the current leaf, so a reopened session keeps its history", () => {
+  const { pi, backend } = makePi();
+  const dir = mkdtempSync(join(tmpdir(), "pi-tools-"));
+  const file = join(dir, "s.jsonl");
+  writeFileSync(file, [
+    { type: "session", id: "s", timestamp: "t" },
+    { type: "message", id: "m1", parentId: null, message: { role: "user", content: "hi" } },
+    { type: "message", id: "m2", parentId: "m1", message: { role: "assistant", content: "hello" } },
+  ].map((e) => JSON.stringify(e)).join("\n") + "\n");
+  let active: string[] = [];
+  (backend as Any).session = {
+    setActiveToolsByName: (names: string[]) => { active = names; },
+    getActiveToolNames: () => active,
+  };
+  (backend as Any).sessionManager = { getSessionFile: () => file, getLeafId: () => "m2" };
+
+  pi.setActiveTools(["read", "bash"]);
+
+  const entries = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+  const tools = entries[entries.length - 1];
+  assert.equal(tools.type, "tools_active_change");
+  assert.equal(tools.parentId, "m2", "the entry hangs off the leaf it was written after");
+  // Reopen the way Pi does: leaf = last entry, then walk parentId to the root.
+  const byId = new Map(entries.filter((e) => e.type !== "session").map((e) => [e.id, e]));
+  const branch: string[] = [];
+  for (let cur = tools; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) { branch.unshift(cur.id); }
+  assert.deepEqual(branch, ["m1", "m2", tools.id], "the reopened branch still holds the conversation");
 });

@@ -23,15 +23,24 @@ test("no session file persisted (nothing hit disk) → fresh session", () => {
   assert.deepEqual(planPanelRestore({ runtime: "typescript" }, exists), { action: "fresh" });
 });
 
-test("a panel persisted by a Rust Pi session is closed, never opened on the SDK", () => {
-  // Opening that file on the SDK would migrate and rewrite it; the file must stay untouched.
+// An earlier version also saved the runtime a panel ran on. The only value ever written besides
+// "typescript" was its second runtime's name, which this version no longer has: any other value
+// closes the panel, so that session's file is never opened (and rewritten) here.
+test("a panel an earlier version saved for a runtime this version no longer has is closed, its file untouched", () => {
   let probed = false;
   assert.deepEqual(
-    planPanelRestore({ sessionFilePath: "/s/r.jsonl", runtime: "rust" }, () => { probed = true; return true; }),
+    planPanelRestore({ sessionFilePath: "/s/r.jsonl", runtime: "native" }, () => { probed = true; return true; }),
     { action: "dispose", retiredSessionFile: "/s/r.jsonl" },
   );
   assert.equal(probed, false, "the file is not even probed");
-  assert.deepEqual(planPanelRestore({ runtime: "rust" }, exists), { action: "dispose" });
+  assert.deepEqual(planPanelRestore({ runtime: "native" }, exists), { action: "dispose" });
+  assert.deepEqual(planPanelRestore({ sessionFilePath: "/s/p.jsonl", runtime: "python" }, exists),
+    { action: "dispose", retiredSessionFile: "/s/p.jsonl" }, "any value but typescript");
+});
+
+test("state saved without a runtime (this version's shape) restores normally", () => {
+  assert.deepEqual(planPanelRestore({ sessionFilePath: "/s/a.jsonl" }, exists), { action: "open", openPath: "/s/a.jsonl" });
+  assert.deepEqual(planPanelRestore({}, exists), { action: "fresh" });
 });
 
 test("foreign/legacy state (e.g. the step-0 probe) → fresh session", () => {
@@ -39,7 +48,7 @@ test("foreign/legacy state (e.g. the step-0 probe) → fresh session", () => {
 });
 
 test("null/undefined/garbage state never throws and falls back to fresh", () => {
-  for (const s of [null, undefined, 42, "x", { sessionFilePath: 7, runtime: "python" }]) {
+  for (const s of [null, undefined, 42, "x", { sessionFilePath: 7 }]) {
     assert.deepEqual(planPanelRestore(s, exists), { action: "fresh" });
   }
 });

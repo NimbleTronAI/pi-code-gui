@@ -61,20 +61,20 @@ test("piAiVersionNotice: an unreadable version says nothing rather than guessing
 });
 
 // ── the notice TEXT (piAiNoticeMessage) ───────────────────────────────
-// Below the floor the TypeScript runtime cannot start at all: SdkService.initialize calls
+// Below the floor a Pi session cannot start at all: SdkService.initialize calls
 // SDK.ModelRuntime.create() unconditionally, and pi-coding-agent exports ModelRuntime only from
 // 0.80.8. The old text promised "It still works via a legacy path" — false, and it was shown just
 // before the session failed.
 test("piAiNoticeMessage: below the floor says sessions cannot start, names the floor, no legacy-path promise", () => {
   const m = piAiNoticeMessage("0.80.7", "0.80.8", true);
   assert.equal(m,
-    "The installed Pi (TypeScript) SDK is too old: pi-ai 0.80.7, but this extension needs 0.80.8+. " +
-    "TypeScript sessions cannot start until you update.");
+    "The installed Pi SDK is too old: pi-ai 0.80.7, but this extension needs 0.80.8+. " +
+    "Pi sessions cannot start until you update.");
   assert.doesNotMatch(m, /still works|legacy/i);
 });
 
 test("piAiNoticeMessage: behind the target is a nudge (text pinned verbatim)", () => {
   assert.equal(piAiNoticeMessage("0.86.1", "1.3.0", false),
-    "A newer Pi (TypeScript) SDK is available: you have pi-ai 0.86.1, this extension is built against 1.3.0. " +
+    "A newer Pi SDK is available: you have pi-ai 0.86.1, this extension is built against 1.3.0. " +
     "Updating keeps model support and pricing in step.");
 });

@@ -1,5 +1,5 @@
 // Unit tests for translateAgentEvent — the pure core extracted from
-// PiService.handleAgentEvent (the dual-runtime streaming dispatcher). One group
+// PiService.handleAgentEvent (the streaming dispatcher). One group
 // per event type; asserts the emitted events, the scalar state mutations, the
 // in-place container mutations, and the trailing effects.
 
@@ -188,7 +188,7 @@ test("message_end user: nothing", () => {
   assert.equal(r.effects.reportStatus, undefined);
 });
 
-test("message_end assistant (typescript): emits assistant-end, reports status, no context capture", () => {
+test("message_end assistant: emits assistant-end, reports status, no context capture", () => {
   const content = [{ type: "toolCall", id: "t1", name: "write", arguments: {} }];
   const r = translateAgentEvent({ type: "message_end", message: { role: "assistant", content, stopReason: "end", usage: { input: 5 } } }, makeState());
   assert.deepEqual(types(r), ["assistant-end"]);

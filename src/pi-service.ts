@@ -102,7 +102,7 @@ export class PiService {
   /** The Pi SDK runtime (module loading, auth, registry, session manager,
    *  agent session). The legacy field names
    *  (session, SDK, AI, …) are kept as thin getters over this service so the
-   *  class's many read sites stay unchanged and runtime-agnostic. */
+   *  class's many read sites stay unchanged. */
   private _sdk: SdkService | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private get session(): any { return this._sdk?.session ?? null; }
@@ -115,8 +115,8 @@ export class PiService {
   private get _model(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null {
     return this.backend?.getModel() ?? null;
   }
-  /** The active thinking level — now OWNED by the active backend and read through the
-   *  seam (getter, so the ~10 read-sites are unchanged). Backends update it on init /
+  /** The active thinking level — now OWNED by the backend and read through the
+   *  seam (getter, so the ~10 read-sites are unchanged). The backend updates it on init /
    *  setThinkingLevel / applyThinkingLevel. */
   private get _thinkingLevel(): string { return this.backend?.getThinkingLevel() ?? "off"; }
   /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
@@ -595,7 +595,6 @@ export class PiService {
         thinkingLevel: this.realThinkingLevel(),
         // Composed Thinking/Reasoning chip text. See thinkingStatus.
         thinkingDisplay: thinking.text,
-        reasoning: this._model?.reasoning,
         isStreaming: this.backend?.isStreaming() ?? false,
         sessionId: this.sessionId ?? undefined,
         // On-disk session file (null until the first write). The webview persists this
@@ -883,8 +882,8 @@ export class PiService {
     }
     // Append ONLY to a file the SDK has already created. The SDK defers session
     // writes — it buffers entries in memory and flushes them with the session
-    // header via an EXCLUSIVE create (openSync wx) on the first assistant message
-    // (session-manager.js). If we appendFileSync first we'd (a) create the file
+    // header via an EXCLUSIVE create (openSync wx) once the session has its first user
+    // or assistant message (session-manager.js _hasConversation). If we appendFileSync first we'd (a) create the file
     // early, so the SDK's wx open throws EEXIST and the turn fails, and (b) leave a
     // headerless, malformed file. So never create it here — skip until it exists.
     if (!fs.existsSync(sf)) {
@@ -1306,11 +1305,13 @@ export class PiService {
     // Verify the update took effect
     const actualNames = this.session.getActiveToolNames();
     piDebug(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
-    // Force-persist the tool selection so it survives session close/reopen
+    // Force-persist the tool selection so it survives session close/reopen. Chain it to the
+    // current leaf: Pi reopens a session from its last entry and walks parentId back to the
+    // root, so a parentless entry here would reopen the session with no history.
     this._forcePersistEntry({
       type: "tools_active_change",
       id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      parentId: null,
+      parentId: this.sessionManager?.getLeafId?.() ?? null,
       timestamp: new Date().toISOString(),
       toolNames,
     });

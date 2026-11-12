@@ -125,10 +125,6 @@
         }
       },
       {
-        "command": "pi-code-gui.addSessionTypescript",
-        "title": "PiGui: Add TypeScript Pi Session"
-      },
-      {
         "command": "pi-code-gui.revealEntry",
         "title": "PiGui: Reveal Entry in Chat"
       },
@@ -322,7 +318,7 @@
         "pi-code-gui.contextBudget": {
           "type": "number",
           "default": 0,
-          "description": "Per-session token budget, for TypeScript sessions only. 0 = use model default. Increase for longer conversations before auto-compaction."
+          "description": "Per-session token budget. 0 = use model default. Increase for longer conversations before auto-compaction."
         },
         "pi-code-gui.sessionDir": {
           "type": "string",
@@ -430,11 +426,6 @@
           "command": "pi-code-gui.addSession",
           "when": "view == pi-code-gui.sessions",
           "group": "navigation"
-        },
-        {
-          "command": "pi-code-gui.addSessionTypescript",
-          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
-          "group": "1_runtime@2"
         },
         {
           "command": "pi-code-gui.filterPastSessions",

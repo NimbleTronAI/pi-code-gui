@@ -2,8 +2,8 @@
 //
 // Cover for gh #71: Node's ESM loader parses its argument as a URL, so a Windows absolute path
 // reads as a protocol — `C:\...\dist\index.js` fails with "Received protocol 'c:'". Every SDK
-// module this extension loads is addressed by an absolute path built with path.join, so the
-// TypeScript runtime could not start at all on Windows.
+// module this extension loads is addressed by an absolute path built with path.join, so no
+// session could start at all on Windows.
 //
 // These run on POSIX in CI, so the Windows-shaped assertions are about the FUNCTION's contract
 // (drive-letter input -> file: URL), which is platform-independent for pathToFileURL's parsing

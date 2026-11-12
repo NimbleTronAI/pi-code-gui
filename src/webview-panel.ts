@@ -491,22 +491,6 @@ export class PiWebviewPanel {
 
   <div id="attachment-bar"></div>
 
-  <!-- Mode strip. Sits ABOVE the composer because it declares what the NEXT prompt will do —
-       the status bar below reports what IS. Rust only; hidden otherwise. -->
-  <div id="pi-mode-strip" class="hidden">
-    <div id="pi-mode-seg" role="group" aria-label="Session mode">
-      <button id="pi-mode-code" class="pi-mode-opt" title="Edits run as the agent decides">code</button>
-      <button id="pi-mode-plan" class="pi-mode-opt" title="Draft a plan first; edits wait for approval">plan</button>
-    </div>
-    <span id="pi-mode-hint"></span>
-    <div id="pi-plan-actions" class="hidden">
-      <button id="pi-plan-approve" class="pi-plan-btn primary">Approve</button>
-      <button id="pi-plan-reject" class="pi-plan-btn">Reject</button>
-    </div>
-    <span class="pi-mode-spacer"></span>
-    <button id="pi-approval-chip" title="Which actions need your approval">approval: always-ask ▾</button>
-  </div>
-
   <div id="input-area">
     <textarea id="prompt-input" placeholder="Ask pi to do something..." rows="1" disabled></textarea>
     <div id="steer-split">
@@ -518,7 +502,6 @@ export class PiWebviewPanel {
 
   <div id="pi-status-bar">
     <span id="pi-sb-dot" style="flex-shrink:0; font-weight:700;">○</span>
-    <div class="pi-sb-item pi-sb-runtime--ts" id="pi-sb-runtime" title="Runtime for this session — click to start a session on the other runtime">π TS</div>
     <div class="pi-sb-item" id="pi-sb-model" title="Click to change model">π Pi</div>
     <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking &amp; reasoning">thinking: off</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>
@@ -564,7 +547,7 @@ export class PiWebviewPanel {
       value: b.value,
     }));
     const picked = await vscode.window.showQuickPick(items,
-      { placeHolder: "Select per-session token budget (TypeScript sessions only). Takes effect on next session." },
+      { placeHolder: "Select per-session token budget. Takes effect on next session." },
     );
     if (!picked) { return; }
     await ps.setContextBudget(picked.value);

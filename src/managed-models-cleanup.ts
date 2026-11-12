@@ -4,8 +4,8 @@
 // Pi Code Gui 0.2.0–0.2.3 wrote stamped entries into `providers.<p>.models[]` of
 // ~/.pi/agent/models.json (whatever PI_CODING_AGENT_DIR said), and filled in an unstamped
 // connection (`api` + `baseUrl`) on the provider object; the 0.2.8 pre-releases wrote stamped
-// `providers.<p>.modelOverrides.<id>` values and, briefly, a provider-level stamp. The TypeScript
-// Pi reads that same file — a provider-level `baseUrl` there is forced onto every built-in model of
+// `providers.<p>.modelOverrides.<id>` values and, briefly, a provider-level stamp. Pi itself
+// reads that same file — a provider-level `baseUrl` there is forced onto every built-in model of
 // the provider — so the entries outlive the feature that wrote them. Nothing writes them once
 // this release lands: the code that wrote them is removed in the same release.
 //

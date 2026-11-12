@@ -1,4 +1,4 @@
-// Headless tests for SdkService.initialize() — the 12-step TS-SDK resolve→load→
+// Headless tests for SdkService.initialize() — the 12-step Pi SDK resolve→load→
 // adapt→auth→model→resources→tools→session sequence. This was the audits' #1
 // coverage gap (the init had zero tests). SdkService is vscode-free: every environment dependency (config,
 // cwd, dynamic module import, fs, bridge-tool assembly, UI nudge) is injected via
@@ -274,6 +274,7 @@ test("pi-coding-agent without ModelRuntime (<0.80.8) → actionable error naming
   assert.match(out.error ?? "", /0\.80\.8/);
   assert.match(out.error ?? "", /npm install -g @earendil-works\/pi-coding-agent/);
   assert.doesNotMatch(out.error ?? "", /Cannot read properties/);
+  assert.doesNotMatch(out.error ?? "", /TypeScript/, "Pi has one runtime; the error names none");
 });
 
 test("pi-ai >=0.80 (no getModel) + providers/all import fails → actionable error", async () => {
@@ -364,7 +365,7 @@ test("runtime API keys from config are applied to the model runtime", async () =
 });
 
 // ── init: session-open branches + resume restore (audit H12) ─────────
-// The DEFAULT runtime's most common real-world path — continueRecent after a VS Code restart —
+// The most common real-world path — continueRecent after a VS Code restart —
 // plus openPath resume, the EEXIST regenerate guard, the context-budget clamp and the
 // default-model override, none of which had coverage.
 
@@ -499,9 +500,9 @@ test("setModel leaves the native window alone when no budget is set", async () =
 });
 
 // ── the Auto-retry toggle actually has to toggle something ────────────
-// setAutoRetry was an empty method, so on TypeScript the settings toggle flipped an
+// setAutoRetry was an empty method, so the settings toggle flipped an
 // extension-local flag, told the webview it had changed, and left the session retrying exactly
-// as before — a control that lied, on the DEFAULT runtime, about re-billing. The SDK exposes
+// as before — a control that lied about re-billing. The SDK exposes
 // AgentSession.setAutoRetryEnabled (verified in pi-coding-agent 0.83.0); it was never wired.
 test("setAutoRetry reaches the SDK session", async () => {
   const calls: Any[] = [];

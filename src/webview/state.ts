@@ -16,8 +16,8 @@ export interface AppState {
    *  disabling the box outright. */
   sessionUnavailable: boolean;
   /** An abort has been requested but the turn hasn't ended yet. Purely local: it acknowledges
-   *  the click immediately instead of waiting for the backend, which on Rust is a
-   *  fire-and-forget write to a busy subprocess. Cleared by whatever terminal event arrives. */
+   *  the click immediately instead of waiting for the turn to wind down. Cleared by whatever
+   *  terminal event arrives. */
   abortRequested: boolean;
   isCompacting: boolean;
   isRetrying: boolean;
@@ -188,18 +188,12 @@ export const state: AppState = {
   extensionSlashCommands: [],
   localSlashCommands: [
     "/login", "/logout", "/debug", "/model", "/thinking", "/sessions", "/settings",
-    // /tools is extension-serviced (SDK only). It must be intercepted here too, or under
-    // Rust it slips past every handler and gets forwarded raw to the binary, which doesn't
-    // parse it. Intercepted → pickActiveTools, which shows the honest "not on Rust" guard.
+    // /tools and /export are extension-serviced (pickActiveTools, PiBackend.exportToHtml), so
+    // they are intercepted here like the rest of this list.
     "/tools",
-    // Extension-serviced on BOTH runtimes (PiBackend.exportToHtml). Without interception the
-    // Rust RPC would forward "/export" to the model as a literal prompt — a billed turn that
-    // answers a question about the word rather than exporting anything.
     "/export",
-    // Session ops the extension services itself — must be intercepted here so they
-    // reach handleSlashCommand → the runtime-aware router, instead of being sent to
-    // the model as a prompt. (TypeScript's SDK parses such prompts; the Rust RPC
-    // does NOT, so /compact, /new etc. otherwise just talk to the model under Rust.)
+    // Session ops the extension services itself — intercepted here so they reach
+    // handleSlashCommand instead of being sent to the model as a prompt.
     "/new", "/clear", "/compact",
   ],
 

@@ -34,7 +34,7 @@ export function isOlderThan(installed: string, minimum: string): boolean {
  *  testable rather than buried in an effectful method:
  *
  *  - `belowFloor`: the SDK predates the API this extension is written against, so the
- *    TypeScript runtime cannot start (`ModelRuntime` is absent below 0.80.8). Breakage.
+ *    session cannot start (`ModelRuntime` is absent below 0.80.8). Breakage.
  *  - otherwise: the SDK merely predates the version THIS BUILD is current with (the pi-ai its
  *    bundled catalog was generated from). Routine — a nudge, not breakage.
  *
@@ -57,6 +57,6 @@ export function piAiVersionNotice(
  *  PiService.makeSdkDeps().notifyOutdatedPiAi shows it (warning when belowFloor, info otherwise). */
 export function piAiNoticeMessage(installed: string, version: string, belowFloor: boolean): string {
   return belowFloor
-    ? `The installed Pi (TypeScript) SDK is too old: pi-ai ${installed}, but this extension needs ${version}+. TypeScript sessions cannot start until you update.`
-    : `A newer Pi (TypeScript) SDK is available: you have pi-ai ${installed}, this extension is built against ${version}. Updating keeps model support and pricing in step.`;
+    ? `The installed Pi SDK is too old: pi-ai ${installed}, but this extension needs ${version}+. Pi sessions cannot start until you update.`
+    : `A newer Pi SDK is available: you have pi-ai ${installed}, this extension is built against ${version}. Updating keeps model support and pricing in step.`;
 }

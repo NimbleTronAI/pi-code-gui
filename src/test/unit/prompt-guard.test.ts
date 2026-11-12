@@ -5,11 +5,11 @@ import assert from "node:assert/strict";
 import { shouldDropPreemptingPrompt } from "../../prompt-guard.js";
 
 test("drops a mode-less conversational prompt while a turn is active", () => {
-  assert.equal(shouldDropPreemptingPrompt(undefined, true, "audit the dual runtimes"), true);
+  assert.equal(shouldDropPreemptingPrompt(undefined, true, "audit the event bus"), true);
 });
 
 test("allows the first prompt (no active turn)", () => {
-  assert.equal(shouldDropPreemptingPrompt(undefined, false, "audit the dual runtimes"), false);
+  assert.equal(shouldDropPreemptingPrompt(undefined, false, "audit the event bus"), false);
 });
 
 test("allows a genuine mid-stream follow-up (steer / queue)", () => {

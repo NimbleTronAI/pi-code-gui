@@ -4,7 +4,7 @@
 // *plumbing* —
 // module resolution/loading, pi-ai version adaptation, auth/registry/settings,
 // model selection, ResourceLoader, tools, SessionManager, and createAgentSession
-// (the old init Steps 1–9). PiService remains the runtime-agnostic orchestrator:
+// (the old init Steps 1–9). PiService remains the orchestrator:
 // it applies the returned shared state and wires the session to the UI (event
 // subscription, extension binding, history replay — the old Steps 10–12), reaching the SDK
 // objects through thin getters over this service.
@@ -28,7 +28,7 @@ import type { BackendUsage, PiBackend } from "./pi-backend.js";
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
 export type CatalogProviders = Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }>;
 
-/** The oldest pi-ai SDK the TypeScript runtime can start on. initialize() Step 3 needs
+/** The oldest pi-ai SDK a Pi session can start on. initialize() Step 3 needs
  *  SDK.ModelRuntime, and pi-coding-agent exports ModelRuntime only from 0.80.8 (the pi-ai check
  *  is a best-effort early warning: caret ranges can nest a newer pi-ai under an old
  *  pi-coding-agent; Step 3 feature-detects ModelRuntime for the hard error).
@@ -42,7 +42,7 @@ const MIN_CODING_AGENT_VERSION = "0.80.8";
  *  bundled catalog, which is generated from it. Self-maintaining: every `pnpm run
  *  gen:model-registry` moves this target, so shipping a fresher catalog automatically starts
  *  nudging users whose SDK predates it. That matters because the catalog is what the extension
- *  hands the backends: models, thinking tiers and PRICING it carries can outrun an older SDK. */
+ *  hands the SDK: models, thinking tiers and PRICING it carries can outrun an older SDK. */
 const TARGET_PI_AI_VERSION = (bundledRegistry as { piAiVersion?: string }).piAiVersion ?? SUPPORTED_PI_AI_VERSION;
 let _piAiVersionWarned = false;
 
@@ -52,7 +52,7 @@ let _piAiVersionWarned = false;
  *  protocol: `C:\\Users\\...\\dist\\index.js` fails with "Only URLs with a scheme in: file,
  *  data, node, and electron are supported ... Received protocol 'c:'". Every SDK module this
  *  extension loads is addressed by an absolute path built with path.join, so on Windows the
- *  TypeScript runtime could not start at all (gh #71).
+ *  extension could not start a session at all (gh #71).
  *
  *  pathToFileURL is the standard-library answer and handles drive letters, UNC paths and
  *  percent-encoding correctly — none of which a string concat of "file://" gets right. Applied
@@ -456,7 +456,7 @@ export class SdkService implements PiBackend {
     // Feature-detect: the pi-ai floor check above is only an early warning (a caret range can nest
     // a newer pi-ai under an old pi-coding-agent), so this is the hard, actionable stop.
     if (typeof SDK.ModelRuntime?.create !== "function") {
-      return { success: false, error: `The installed @earendil-works/pi-coding-agent is too old for the TypeScript runtime (needs ${MIN_CODING_AGENT_VERSION}+, which provides ModelRuntime). Update it: npm install -g @earendil-works/pi-coding-agent` };
+      return { success: false, error: `The installed @earendil-works/pi-coding-agent is too old for this extension (needs ${MIN_CODING_AGENT_VERSION}+, which provides ModelRuntime). Update it: npm install -g @earendil-works/pi-coding-agent` };
     }
     try {
       this.modelRuntime = await SDK.ModelRuntime.create();
@@ -768,7 +768,7 @@ export class SdkService implements PiBackend {
   }
 
   /** Once-per-host notice when the installed pi-ai predates this build: a warning below the
-   *  floor (the TypeScript runtime cannot start there), a nudge when merely behind the target
+   *  floor (a Pi session cannot start there), a nudge when merely behind the target
    *  (the pi-ai version the bundled catalog was generated from). */
   private async warnIfPiAiOutdated(): Promise<void> {
     if (_piAiVersionWarned || !this.piRoot) { return; }
@@ -865,7 +865,7 @@ export class SdkService implements PiBackend {
 
   /** Set the thinking level on the session. The SDK records the CLAMPED effective
    *  level itself (appendThinkingLevelChange); we echo the requested level back for
-   *  PiService's shared state (the TS transport always transmits it). */
+   *  PiService's shared state (the SDK always transmits it). */
   async setThinkingLevel(level: string): Promise<string> {
     if (!this.session) { piWarn(`setThinkingLevel("${level}") ignored: session not initialized`); return level; }
     this.session.setThinkingLevel(level);
@@ -901,8 +901,7 @@ export class SdkService implements PiBackend {
     }
   }
 
-  /** Auto-retry has no in-process SDK session toggle — PiService tracks the flag
-   *  locally. Kept for PiBackend symmetry (a no-op on the TS runtime). */
+  /** Push the auto-retry toggle to the session (PiService also tracks the flag locally). */
   async setAutoRetry(enabled: boolean): Promise<void> {
     // The SDK DOES expose this (AgentSession.setAutoRetryEnabled → SettingsManager.setRetryEnabled);
     // it simply was never wired, so the settings toggle flipped an extension-local flag, told the

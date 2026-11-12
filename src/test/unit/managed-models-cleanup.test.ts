@@ -1,5 +1,5 @@
 // Pi Code Gui 0.2.0–0.2.3 (and the 0.2.8 pre-releases) wrote model entries into the user's own
-// ~/.pi/agent/models.json, each stamped `"_managedBy": "pi-code-gui@<version>"`. The TypeScript Pi
+// ~/.pi/agent/models.json, each stamped `"_managedBy": "pi-code-gui@<version>"`. Pi itself
 // reads that file too, so the entries outlive the feature that wrote them. These tests pin the
 // cleanup that removes them on every activation: only what we wrote goes, everything of the user's
 // stays value-for-value and key-for-key, and a file we cannot rewrite safely is never written.
@@ -78,7 +78,7 @@ test("a models array, modelOverrides object or provider our removal empties is r
   assert.deepEqual(doc.providers.yoursEmpty, {}, "a provider you left empty is yours");
 });
 
-test("a file holding only ours keeps `providers` (TS Pi requires it): {\"providers\":{}} + newline", () => {
+test("a file holding only ours keeps `providers` (Pi requires it): {\"providers\":{}} + newline", () => {
   const file = tmpFile(pretty({ providers: { deepseek: { baseUrl: "https://api.deepseek.com", api: "openai-completions", models: [ours("deepseek-chat")] } } }));
   assert.equal(cleanupManagedModels(file).outcome, "removed");
   assert.equal(readFileSync(file, "utf-8"), '{\n  "providers": {}\n}\n');
