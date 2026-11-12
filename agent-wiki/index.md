@@ -40,6 +40,7 @@ reference; follow the links for depth.
 
 
 - [Batch 0.2.8 — status and next steps](operations/batch-0.2.8-status.md) — handover: what the branch holds, the Rust removal decision, and the ordered next steps
+- [Pi 1.5.2 findings](operations/pi-1.5.2-findings.md) — what 1.4.0 → 1.5.2 changed for us, and the live run of the extension on 1.5.2
 - [Rust removal plan](operations/rust-removal-plan.md) — the 0.2.8 plan: units U1–U5, open decisions, acceptance; targets pi 1.5.2
 - [SDK Resolution & Init](operations/sdk-resolution.md) — finding the Pi SDK on disk and the TypeScript init sequence (owned by `SdkService`)
 - [Build Pipeline](operations/build-pipeline.md) — esbuild, tsc, ESLint, VSIX packaging, CI publish
