@@ -2,16 +2,16 @@
 
 ## [0.2.8]
 
+### Removed
+- **Rust Pi support has ended.** 0.2.3 was the last release with it; see "Rust Pi support has ended" in the README. Add Pi Session is now the only way to start a session. The Add TypeScript Pi Session, Add Rust Pi Session, Add Pi Session (Choose Runtime), Switch Runtime, Set Default Runtime and Install Rust Pi commands are gone, along with the runtime pill and badges, the plan/approval strip, and the settings `defaultRuntime`, `sessionHistoryScope`, `rustBinaryPath`, `rustInstallMethod`, `rustExtensionPolicy`, `rustExtensions`, `rustAgentDir`, `defaultMode`, `maxToolIterations`, `startupBudgetSeconds` and `confirmApprovalRestart`.
+- **Rust sessions** in `~/.pi/agent/sessions-rust` are no longer listed and are left untouched; a tab restored from one is closed with a message. **The model entries earlier 0.2.x versions wrote into `~/.pi/agent/models.json` are removed** each time the extension starts; entries you edited are kept (see "Cleaning up after Rust Pi" in the README).
+
 ### Changed
-- **Rust Pi is now pinned to v0.8.0.** Its Linux builds need only glibc 2.28, so the managed install works again on Ubuntu 22.04 and Debian 12.
-- **Model catalog refreshed** to the latest upstream release: 1,242 models with current pricing. Radius is offered on the TypeScript runtime only.
+- **Model catalog refreshed to pi-ai 1.5.2**, and tested against pi-coding-agent 1.5.2. On Pi 1.5.x, `/reload` during a response or compaction fails with a "wait" message; run it again when Pi is idle.
 
 ### Fixed
-- **Rust: an OpenRouter key no longer empties the model list.** Providers whose endpoint moved are updated in place; delete a provider's `_managedBy` line in `models.json` to keep your own.
-- **Rust: no more "rustBinaryPath could not be used" warning** for a managed-install path from another machine. To switch to a Rust Pi you installed yourself, run *Install Rust Pi → Detect an existing binary*.
-- **A Rust session that won't start now tells you why**, and a resumed session whose model was withdrawn switches to a working one and says so.
-- **TypeScript runtime:** messages and compaction summaries added by extensions now appear in the chat instead of the "Unhandled agent event" card.
-- **Native DeepSeek costs show `$??`** — its time-of-day billing can't be expressed as one rate.
+- **A session closed right after `/tools` reopened with the model having lost the conversation.** It now reopens complete.
+- **Summarization retries and messages added by extensions** no longer show as "Unhandled agent event" cards.
 
 ## [0.2.3]
 
