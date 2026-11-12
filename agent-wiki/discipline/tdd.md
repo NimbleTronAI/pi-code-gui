@@ -29,7 +29,7 @@ The project runs two tiers of tests:
   jsdom seam), then `node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js` (`vscode` is stubbed). The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
   exception being the jsdom dispatch seam (see below). As of 2026-11, there are
-  **about 420 tests across 38 files** in `src/test/unit/` (agent-events, sdk-service,
+  **about 455 tests across 40 files** in `src/test/unit/` (agent-events, sdk-service,
   pi-service-integration, model-catalog, managed-models-cleanup, panel-restore,
   pi-package-path, pi-package-filter, bridge-limits, webview-format, version-compare,
   dispatch, logger, extension-errors, and more). This is the suite to run
@@ -99,7 +99,8 @@ silently add full module coverage beyond the scope of the change.
 - [Think Before Acting](think-before-acting.md) — the plan phase before TDD
 - [Verify, Don't Assume](verify-dont-assume.md) — what "tests pass" actually means
 
-> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): the suite is about 420 tests across 38 files; the second runtime's init and transport tests and precedents are gone.
+> **Last updated:** 2026-11-12 — count corrected to about 455 tests across 40 files (0.2.8, after the /reload, cost, retry-card and session-name fixes).
+> **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): the second runtime's init and transport tests and precedents are gone.
 > **Earlier:** 2026-07-21 — count at 461 tests across 47 files (adversarial-review remediation: security, activation, lifecycle, perf)
 > **Earlier:** 2026-06-25 — count to 199 tests across 18 files (added `extension-errors` — runtime-error classifiers)
 > **Earlier:** 2026-06-25 — count to 190 tests across 17 files (added `logger` + `normalizeToolArgs` cases)

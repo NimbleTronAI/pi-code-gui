@@ -263,13 +263,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const plan = planPanelRestore(state, (p) => fs.existsSync(p));
         piDebug(`[serializer] revived panel → ${plan.action}${plan.openPath ? ` (${plan.openPath.split("/").pop()})` : ""}`);
         if (plan.action === "dispose") {
-          // The session file is gone, or an earlier version saved this tab for a runtime this
-          // version no longer has — closing the shell beats resurrecting an empty one (or
-          // rewriting that file).
+          // The session file is gone, or an earlier version saved this tab for Rust Pi, which
+          // this version no longer runs — closing the shell beats resurrecting an empty one (or
+          // rewriting that file). Only ex-Rust Pi users meet this message, so it names Rust Pi
+          // and points at the README section that explains the change.
           panel.dispose();
           if (plan.retiredSessionFile) {
-            piLog(`Closed a restored session tab an earlier version saved for a runtime it no longer supports; its file is untouched: ${plan.retiredSessionFile}`);
-            void vscode.window.showInformationMessage(`A session tab saved by an earlier version for a runtime it no longer supports was closed. Its file is untouched: ${plan.retiredSessionFile}`);
+            piLog(`Closed a restored Rust Pi session tab; its file is untouched: ${plan.retiredSessionFile}`);
+            void vscode.window.showInformationMessage(`A Rust Pi session tab was closed: Pi Code Gui no longer runs Rust Pi (see "Rust Pi support has ended" in its README). The session file is untouched: ${plan.retiredSessionFile}`);
           }
           return;
         }

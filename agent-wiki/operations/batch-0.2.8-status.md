@@ -33,7 +33,7 @@
 ## Proven
 
 - `pnpm run package` green at `3d0b264`; 435/435 unit tests. With the `/reload` and cost
-  changes, 448/448.
+  changes, 448/448; with the retry-card and session-name fixes, 455/455.
 - The `/reload` guard and the billed-cost path are unit-tested against fakes shaped like the 1.5.2
   dist (`reload()` guard text, `isStreaming`/`isCompacting` getters, `usage` entry shape), read
   from the installed SDK. Not live-run; only OpenRouter sets `totalFromProvider` in pi-ai 1.5.2.
@@ -44,9 +44,12 @@
   bridge tools in a resumed session. That run was on the code **before** the runtime removal.
   The founder's manual check of the installed build covers the code after it.
 - The `/tools` fix has a red-first test that reopens the session file the way Pi does.
-- Acceptance greps: the word appears only in README.md, CHANGELOG.md, agent-wiki/log.md, and
-  in highlight.js language support plus the page documenting it (syntax highlighting for code
-  blocks, kept deliberately). The grep for second-runtime wording is clean.
+- Acceptance greps: the word appears only in README.md, CHANGELOG.md, agent-wiki/log.md;
+  in syntax highlighting for that language's code blocks, kept deliberately (`src/webview/highlight.ts`,
+  `src/shared/webview-format.ts` and `src/test/unit/webview-format.test.ts`, plus
+  `agent-wiki/architecture/syntax-highlighting.md`); and in the message shown when a restored tab of the
+  removed runtime is closed (`src/extension.ts`), which names it because only its former users
+  see it. The grep for second-runtime wording is clean.
 
 ## Deferred
 

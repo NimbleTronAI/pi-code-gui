@@ -2,7 +2,7 @@
 
 > **Status:** stable
 
-`src/pi-backend.ts` (78 lines) defines the `PiBackend` interface: the primitive operations
+`src/pi-backend.ts` defines the `PiBackend` interface: the primitive operations
 [PiService](pi-service.md) delegates to `SdkService`, the in-process Pi SDK runtime. There is one
 implementation. The interface stays because it is the test seam: PiService can be driven
 headlessly with a fake backend, and `SdkService` is driven with injected deps
@@ -49,6 +49,7 @@ The interface reduced coupling, it is not a complete boundary:
 - [PiService](pi-service.md): the orchestrator that holds the backend
 - [Event Translation](event-translation.md): the SDK event stream behind the seam
 
-> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): `BackendCapabilities`,
+> **Last updated:** 2026-11-12 — dropped the line count (it drifted); the interface gained `ReloadOutcome` and `reloadNotDoneText`.
+> **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): `BackendCapabilities`,
 > `backendCapabilityDefaults` and `flipsStateEagerly` deleted; one implementation remains.
 > **Earlier:** 2026-08-31 — noted the extension-owned plan/approval state added in 0.2.0 (since removed).

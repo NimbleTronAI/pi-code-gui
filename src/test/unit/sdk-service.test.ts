@@ -624,8 +624,8 @@ test("initialize: pi-ai 0.80.7 (no ModelRuntime upstream) gets the below-floor w
 test("setSessionName saves through the AgentSession, shaped like pi 1.5.2", async () => {
   const { svc, calls } = makeService({ setSessionName: (n: string) => calls.push(["session.setSessionName", n]) });
   svc.sessionManager = { getEntries: () => [], appendSessionInfo: (n: string) => calls.push(["appendSessionInfo", n]) } as Any;
-  assert.equal(await svc.setSessionName("analyze rust pi removal"), true);
-  assert.deepEqual(calls, [["session.setSessionName", "analyze rust pi removal"]]);
+  assert.equal(await svc.setSessionName("analyze the removal"), true);
+  assert.deepEqual(calls, [["session.setSessionName", "analyze the removal"]]);
 });
 
 test("setSessionName falls back to the SessionManager's appendSessionInfo", async () => {
