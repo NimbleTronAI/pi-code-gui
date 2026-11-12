@@ -185,6 +185,12 @@ when U1 lands, and U4 and U5 come last.
   models.json under a custom `rustAgentDir` is not cleaned (that setting's home was the Rust
   runtime's alone).
 
+- **C13** (founder, 2026-11-12) 0.2.8 carries the `/tools` history fix. `setActiveTools` in
+  `pi-service.ts` appends `tools_active_change` with `parentId: null`, so a session closed right
+  after `/tools` reopens without its model history (U4's live run proved it). The fix is
+  `parentId: this.sessionManager?.getLeafId?.() ?? null`. Its owner is U2 phase 2, which writes
+  a red-first test (reopen after /tools keeps the history) and adds a CHANGELOG line in U5.
+
 ## 5. Acceptance
 
 - `git grep -inP '(?<![tT])rust' -- . ':!README.md' ':!CHANGELOG.md' ':!agent-wiki/log.md'`
