@@ -297,10 +297,11 @@ Pick whichever suits you:
 
 ### Cleaning up after Rust Pi
 
-Upgrading removes nothing from your disk. Two things you may want to tidy:
+Upgrading removes nothing from your disk. Three things you may want to tidy:
 
 - **Your Rust sessions** are still in `~/.pi/agent/sessions-rust/`. The next release no longer lists them, but they are untouched and remain readable by Rust Pi itself — and by 0.2.3, if you go back.
-- **Model entries this extension wrote for Rust are removed for you.** Rust sessions added entries to `~/.pi/agent/models.json`, each marked `"_managedBy": "pi-code-gui@…"`. That file is shared with Pi and the `pi` CLI, and those entries replace Pi's own definitions of the same models — which can cap long outputs and drop thinking-level settings. The first time the new release starts, it deletes every entry carrying that marker, and nothing else: entries without it are yours, and stay exactly as they are. If you go back to 0.2.3, it writes them again.
+- **Model entries this extension wrote for Rust are removed for you.** Rust sessions added entries to `~/.pi/agent/models.json`, each marked `"_managedBy": "pi-code-gui@…"`. That file is shared with Pi and the `pi` CLI, and those entries replace Pi's own definitions of the same models — which can cap long outputs and drop thinking-level settings. The first time the new release starts, we remove the marked entries. If you edited one, we keep it whole, since it is yours now. Older releases also filled in a provider's `api` and `baseUrl` without a marker; we remove those too, but only when it is a connection we shipped for that provider and every model listed under it is one of our unedited entries. Your own settings on that provider, such as an API key, stay. A provider our removal leaves empty is removed as well. Nothing else in the file changes, though we rewrite it with two-space indentation. If the file isn't plain JSON (comments or trailing commas, say), we leave it untouched and write the reason to the Pi Code Gui output log. If you go back to 0.2.3, it writes them again.
+- **The Rust Pi binary, if you let the extension install it for you,** stays in VS Code's extension storage, in a `rust-pi` folder under `<globalStorage>/nimbletron.pi-code-gui/`. That is `~/.config/Code/User/globalStorage/` on Linux, `~/Library/Application Support/Code/User/globalStorage/` on macOS and `%APPDATA%\Code\User\globalStorage\` on Windows (other VS Code builds use their own folder name in place of `Code`). You can delete the `rust-pi` folder. We don't touch it.
 
 ## Credits
 

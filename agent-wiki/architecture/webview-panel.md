@@ -64,11 +64,5 @@ to `beside`: a hand-edited setting must not stop a chat from opening.
 Restored panels are unaffected — VS Code returns them to their remembered column,
 which is the wanted behaviour.
 
-## The mode strip
-
-`#pi-mode-strip` sits between the transcript and `#input-area`, above the composer
-rather than in the status bar below it: it declares what the **next** prompt will do,
-where the status bar reports what already is. It is Rust-only and hidden otherwise.
-See [Session Modes](session-modes.md).
-
-> **Last updated:** 2026-08-31 — added the panel-column fix (#83) and the mode strip.
+> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): the mode strip is gone from the panel.
+> **Earlier:** 2026-08-31 — added the panel-column fix (#83) and the mode strip.

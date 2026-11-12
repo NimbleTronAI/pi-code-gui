@@ -2,21 +2,19 @@
 
 > **Status:** stable
 
-The Event Translation Layer translates raw Pi SDK / Rust agent events into typed
+The Event Translation Layer translates raw Pi SDK agent events into typed
 `PiServiceEvent` emissions that the webview panel and extension commands consume.
-It is the bridge between the runtime's internal event model and the VS Code UI layer.
+It is the bridge between the SDK's internal event model and the VS Code UI layer.
 
 The decision logic is a **pure, vscode-free function** —
 `translateAgentEvent(event, state) → { events, mutations, effects }` in
 [`src/agent-events.ts`](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/agent-events.ts).
-`PiService.handleAgentEvent()` is now a thin shell that builds the state snapshot,
+`PiService.handleAgentEvent()` is a thin shell that builds the state snapshot,
 calls `translateAgentEvent`, applies the returned scalar mutations, emits the
-events, then runs the trailing effects (Rust subprocess calls before the data
-emits; `reportStatus` after). BOTH runtimes flow through this one function (TS SDK
-directly; Rust via `RustService.handleEvent` → `RustHost.handleAgentEvent`), so it
-is the single highest-leverage hot path — which is why it was extracted into a
-module with a per-event-type unit suite (`src/test/unit/agent-events.test.ts`).
-Precedent: `routeRustEvent` (rust-events.ts).
+events, then runs the trailing effects (`reportStatus` after). Every SDK event flows
+through this one function, so it is the single highest-leverage hot path, which is why it was
+extracted into a module with a per-event-type unit suite
+(`src/test/unit/agent-events.test.ts`).
 
 ## Why it exists
 
@@ -72,12 +70,11 @@ the prompt. Previously they were silently dropped.
 
 **`tool-start` args are always a record.** The protocol schema requires
 `data.args` to be a record, but a param-less tool persists `arguments: null` —
-which historical-session replay (including Rust sessions, whose `get_messages`
-entries flow through `PiService.sendInitialMessages`) would otherwise emit as
+which historical-session replay (`PiService.sendInitialMessages`) would otherwise emit as
 `null`, tripping outbound validation on every tool. `normalizeToolArgs(args)`
 (in `agent-events.ts`) collapses `null`/`undefined`/array/primitive to `{}`; all
 three `tool-start` emit sites — the two live ones and the replay loop in
-`pi-service.ts` — route through it so the guard can't drift apart.
+`session-replay.ts` — route through it so the guard can't drift apart.
 
 ## Related
 
@@ -85,8 +82,9 @@ three `tool-start` emit sites — the two live ones and the replay loop in
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-10-17 — `summarization_retry_*` (provider error mid-compaction) mapped to the retry indicator instead of the "Unhandled agent event" card (verified against pi-coding-agent 1.3.0)
+> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): one event source, no second routing path.
+> **Earlier:** 2026-10-17 — `summarization_retry_*` (provider error mid-compaction) mapped to the retry indicator instead of the "Unhandled agent event" card (verified against pi-coding-agent 1.3.0)
 > **Earlier:** 2026-10-16 — `entry_appended` renders displayed `custom_message` and `compaction` entries and is otherwise a recognised no-op; it used to fall to the diagnostic default and put a visible "Unhandled agent event" card in the chat on every extension `appendEntry` (verified against pi-coding-agent 1.3.0)
-> **Earlier:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical/Rust replay)
+> **Earlier:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical replay)
 > **Earlier:** 2026-06-24 — extracted the decision logic into the pure `translateAgentEvent` (`src/agent-events.ts`) with a per-event-type unit suite; `handleAgentEvent` is now a thin apply-mutations/emit/effects shell
 > **Earlier:** 2026-05-27 — added turn-end, message_update error, clarified user message_end

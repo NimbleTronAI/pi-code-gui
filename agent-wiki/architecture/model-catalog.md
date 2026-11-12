@@ -2,121 +2,68 @@
 
 > **Status:** evolving
 
-`src/rust-models.ts` decides what the Rust binary knows about models, and where its
-agent home lives. Both answers changed substantially in 0.2.0, and the previous
-answers are still described in older material — treat this page as authoritative.
+`src/model-registry.generated.json` is the extension's bundled model catalog, and
+`src/model-catalog.ts` holds the pure helpers that read it. The Pi SDK the extension loads keeps
+its own live catalog; the bundled one is the extension's authoritative copy of what each model
+owner publishes (prices, thinking tiers).
 
 ## One agent home, shared with the CLI
 
-Rust sessions run with `PI_CODING_AGENT_DIR` pointing at the user's own
-`~/.pi/agent` — the same directory the `pi` CLI uses. Earlier versions relocated it
-to an extension-owned folder so that writing the bundled catalog could not clobber a
-user's `models.json`. That relocation created a second problem it could not solve:
-the binary reads `auth.json` from *its* agent home, so the credential had to be
-carried across.
+Sessions run in-process on the user's installed Pi SDK, which uses Pi's agent home (`getAgentDir()`,
+by default `~/.pi/agent`, or `PI_CODING_AGENT_DIR`): the same directory the `pi` CLI uses. The
+SDK's `ModelRuntime` (created in `SdkService`) reads the user's `models.json` and `auth.json`
+there, so models, credentials and OAuth refreshes are shared with the CLI. The extension keeps
+no copy of either and writes neither.
 
-Every mechanism for carrying it was wrong. A symlink is refused outright by rust-pi
-0.3.0 (`auth.json must be a regular non-link file`, exit code 1). A copy diverges,
-because OAuth refresh tokens **rotate** — whichever copy refreshes first invalidates
-the other, and the user meets `invalid_grant` on a credential they never touched. A
-hard link is one file and therefore correct, but breaks whenever a writer saves
-atomically (rename gives a new inode, `nlink` drops to 1) and is impossible when
-`~/.pi` is a different filesystem, making behaviour depend on disk layout.
+## What the bundled catalog is used for
 
-Sharing the directory removes the problem rather than managing it: one home, one
-`auth.json`, nothing to synchronise, identical on every platform.
+`PiService.catalogProviders` returns the bundled registry's `providers`. It is generated from
+pi-ai by `pnpm run gen:model-registry` (`scripts/gen-model-registry.mjs`), and
+`pnpm run check:model-registry` verifies it is current. Its consumers:
 
-## The rule (Design S, 0.2.8)
+- **Thinking capability.** `reconcileThinkingCapability` upgrades a model the SDK reports as
+  non-reasoning when the catalog knows it reasons (a custom `models.json` entry that omits
+  `reasoning` makes the SDK default it to `false`, which would clamp the level to "off" and
+  collapse the picker). It never downgrades a model the SDK already reports as reasoning.
+- **Cost rates.** `findCatalogModelCost` fills the rates of a resumed model whose `models.json`
+  entry omits `cost`, since the SDK would then default them to zero and show no cost.
+  `activeCostRates` feeds the status-bar cost. A model whose published price the four flat rates
+  cannot express (native `deepseek`, billed by time of day) is withheld and shows `$??`
+  (`catalogRatesAreUnexpressible`, `costWithheldReason`).
+- **`/model` fallback.** When the SDK's auth-filtered list is empty, the fallback list is built
+  from the catalog.
+- **Currency nudge.** `TARGET_PI_AI_VERSION` is the pi-ai version the bundled catalog was
+  generated from. A user whose installed SDK carries an older pi-ai is told so once per window
+  (`piAiVersionNotice`).
 
-On Rust the extension only **adjusts** models rust-pi already supports, using exactly the
-values Pi itself uses. It never adds providers, never moves endpoints, and never shrinks
-context windows. Concretely, `setupRustModels` (`src/rust-models.ts`) writes ONE kind of
-thing into the shared `models.json`: `providers.<p>.modelOverrides.<id>` = Pi's per-model
-values (name, window, output limit, prices, input, reasoning, thinking map, two compat
-flags) plus a `_managedBy: "pi-code-gui@<version>"` stamp. No `models` array, no
-provider-level key, no connection, no context-budget clamp.
+`pi-code-gui.contextBudget` (when above 0) replaces the active model's `contextWindow` with the
+chosen budget, so compaction happens at that size.
 
-- **Where the values come from** (`src/catalog-source.ts`): the INSTALLED TypeScript Pi's
-  catalog, read through a catalog-only `ModelRuntime` (its own `models.json` path never
-  exists, so what we wrote is never read back) — whatever its age; the bundled floor
-  (`model-registry.generated.json`) only when no TypeScript Pi is installed; otherwise
-  "none", and nothing is written that start. "Not installed" means its `package.json` is
-  not found at that moment — so a start caught mid-upgrade (`npm i -g`) writes the floor's
-  values; the next start with Pi present rewrites them.
-- **When.** Only at a Rust session start. It first waits up to 2.5 s for the source
-  (`CATALOG_START_BUDGET_MS`, `pi-service.ts` `makeRustDeps().setupModels`) and logs
-  `Model catalog for this Rust session: <source>`. A TypeScript session start and a
-  catalog refresh never write `models.json` (C28(2), pinned by test). rust-pi reads the
-  file only at spawn.
-- **Created models.** An override for an id rust-pi does not list makes it create that
-  model on its default connection for the provider; that is allowed only where the
-  connection equals Pi's for that model (C29), checked against
-  `src/rust-pi-catalog.generated.json`, measured from the pinned binary by
-  `scripts/gen-rust-pi-catalog.mjs`. Re-run that generator when the rust-pi pin moves AND
-  after a pi-ai bump (a new Pi provider gets nothing until it is listed there). Nothing is
-  created in a provider object holding the user's own `models` list or connection.
-- **Yours is never touched.** Anything without the stamp is the user's: their models,
-  overrides, provider objects and any key they add inside one of ours (that whole value
-  becomes theirs). Files from 0.2.7 (stamped `models[]`, clamped windows, provider
-  connections) migrate once, at the first Rust start.
-- **Files we will not write.** A comment, trailing comma, byte-order mark, syntax error or
-  wrong shape: never written, and the user is told once that rust-pi ignores the whole
-  file. A read-only file or folder: never written, with its own notice.
-- **Writing reformats.** When anything changes, the whole file is re-emitted as 2-space
-  JSON: every value, key and entry is preserved, but hand layout (spacing, `1.0`, escapes,
-  duplicate keys) is not. Nothing changed → nothing is written.
+## Cleaning up after earlier versions
 
-The `/model` fallback list, prices (`activeCostRates`), thinking capability and the
-TypeScript session's reconcile read the same source (`PiService.catalogProviders`); a
-TypeScript start also waits up to 2.5 s for it.
+Pi Code Gui 0.2.0 through 0.2.8 pre-releases wrote entries into the user's `models.json`. Those
+entries outlive the feature, and Pi reads that file, so `src/managed-models-cleanup.ts` removes
+them at every startup (`cleanupManagedModelsAtStartup`, run from `activate()`; it never throws and
+logs its outcome). The rule:
 
-## The catalog refresh — what it contacts
-
-After any session starts, `catalogSource().refreshInBackground()` runs **Pi's own** catalog
-refresh (`ModelRuntime.refresh`), the only network-capable catalog call (C24): at most once
-per 4 h per host (the time is kept in `globalState`), deduped, `PI_OFFLINE` and Pi's TTL and
-ETags honoured, errors logged and never shown. Like the CLI's own refresh it can contact:
-
-- **pi.dev** — Pi's model-catalog service;
-- **openrouter.ai**, with the user's own OpenRouter key or login — their personalised list;
-- the **radius gateway** (`/v1/config`), when a radius login exists.
-
-The extension never calls any of these itself. Credentials are read-only: an expiring
-login is skipped, never refreshed; a `!command` or `$VAR` key is not resolved; `auth.json`
-is never written. Pi stores the result in the shared `<agentDir>/models-store.json`, which
-it creates (with the agent dir) on first use, as the CLI does. The next Rust start writes
-those values into `models.json`.
-
-**After upgrading Pi**, the catalog this window loaded stays in use until a window reload;
-the Pi CLI sees the previous values in `models.json` until the next Rust start.
-
-## Accepted give-ups and residuals
-
-- Providers rust-pi does not support are not offered on Rust.
-- `pi-code-gui.contextBudget` is TypeScript-only; Rust compacts at, and shows %, of the
-  model's real window.
-- Moved endpoints (kimi-coding, opencode, opencode-go) use rust-pi's own endpoint.
-- Models Pi has withdrawn but rust-pi still lists stay visible on Rust with rust-pi's values.
-
-## Why the catalog is needed at all
-
-rust-pi's built-in catalog is fixed at its build: it lacks current models and carries
-stale prices, windows and thinking maps. The overrides give Rust the same values a
-TypeScript tab shows, while every endpoint stays rust-pi's own.
+- An entry stamped `_managedBy: "pi-code-gui@<version>"` is ours and goes, unless the user added a
+  key we never write, which makes it theirs (kept whole).
+- A provider's `api` plus `baseUrl` that 0.2.x filled in unstamped goes only when it is a pair we
+  shipped for that provider and every entry in its `models` list is ours and unedited; the
+  provider's other keys stay.
+- Providers and containers our removal empties go too. Everything else is kept value for value.
+- A file that is not strict JSON in the shape of a models file, or is read-only, is never written;
+  the log says why. Nothing to remove means nothing is written.
 
 ## Cross-reference
 
-- [Runtime Selection](runtime-selection.md) — how a session picks its runtime
-- [Session Modes](session-modes.md) — approval mode also lives in this shared home
-- [Runtime Debugging](../operations/runtime-debugging.md) — what to check when a model is missing
+- [PiService](pi-service.md): `catalogProviders`, `activeCostRates`
+- [Runtime Debugging](../operations/runtime-debugging.md): what to check when a model is missing
+- [SDK Resolution](../operations/sdk-resolution.md): where the SDK comes from
+- [Open items](../operations/open-items.md): known gaps in the generated catalog
 
-> **Last updated:** 2026-10-18 — the floor is written when Pi's package.json is missing at that start (e.g. mid-upgrade) (review D N4).
-> **Earlier:** 2026-10-18 — Design S (0.2.8): per-model overrides from the installed Pi's
-> catalog, written only at a Rust start; the catalog refresh and the hosts it contacts; the
-> reformat, read-only and give-up disclosures. Replaces the earlier version's provider
-> stamp, credential scoping and context-budget clamp.
-> **Earlier:** 2026-10-16 — provider-level stamp, refresh and legacy migration;
-> duplicate-identity dedupe (0.2.8, rust-pi v0.8.0).
-> **Earlier:** 2026-08-31 — new page. The catalog and agent-home rules were
-> undocumented, and the one place that mentioned them (runtime-selection.md)
-> described the relocated home and linked auth.json that 0.2.0 removed.
+> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): page rewritten for the single
+> in-process runtime; the `models.json` override writer, the catalog-source and the background
+> refresh are gone; the startup cleanup is documented.
+> **Earlier:** 2026-10-18 — Design S (0.2.8): per-model overrides written at a start of the second runtime (removed).
+> **Earlier:** 2026-08-31 — new page: shared agent home rule.

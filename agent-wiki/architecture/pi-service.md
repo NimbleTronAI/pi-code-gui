@@ -2,60 +2,46 @@
 
 > **Status:** stable
 
-PiService (`src/pi-service.ts`) is the runtime-agnostic **orchestrator** behind every
-`SessionWindow`. It holds one `PiBackend` — either `SdkService` (in-process TypeScript
-SDK) or `RustService` (out-of-process `pi --mode rpc`) — and sequences primitives from
-it into user-facing operations, presenting the same `PiServiceEvent` stream to the
-webview regardless of runtime.
+PiService (`src/pi-service.ts`) is the **orchestrator** behind every `SessionWindow`. It holds
+one `PiBackend`, which is `SdkService` (the in-process Pi SDK), and sequences its primitives into
+user-facing operations, presenting a single `PiServiceEvent` stream to the webview.
 
-The distinction that matters: PiService does **not** implement the runtime differences.
-It orchestrates. Anything genuinely divergent lives behind
-[PiBackend](pi-backend.md) — as a primitive on the interface, or as a data flag in
-`BackendCapabilities`. When you find a `kind === "rust"` branch in this file, treat it
-as something not yet modelled, not as the intended pattern.
-
-See [PiBackend](pi-backend.md) for the seam and the capability model, and
-[Runtime Selection](runtime-selection.md) for how a session picks its runtime.
+PiService does not implement the SDK plumbing. It orchestrates: sending a prompt, picking a
+model, formatting status and cost, routing slash commands. The SDK-shaped primitives live behind
+[PiBackend](pi-backend.md), which is also the test seam that lets PiService be driven headlessly
+with a fake.
 
 ## Why it exists
 
-Both runtimes need the same conversation: send a prompt, stream a reply, show cost,
-pick a model, compact, resume. Only the mechanics differ. PiService owns that shared
-conversation so the webview, commands, and tree views never learn which backend is
-live.
+The conversation (send a prompt, stream a reply, show cost, pick a model, compact, resume) is the
+same shape whatever the SDK does underneath. PiService owns that conversation so the webview,
+commands and tree views talk to one object.
 
-The TypeScript SDK is also loaded dynamically from the user's global npm install
-rather than bundled — see [SDK Resolution](../operations/sdk-resolution.md) — and that
-whole resolve→load→create sequence lives in `SdkService`, not here.
+The Pi SDK is loaded dynamically from the user's global npm install rather than bundled (see
+[SDK Resolution](../operations/sdk-resolution.md)), and that whole resolve, load, create sequence
+lives in `SdkService`, not here.
 
 ## What PiService owns
 
-- **Session lifecycle** — `initialize()` picks the backend, applies the shared state it
-  returns (model, cycle list, thinking level, resume flag), then wires the session to
-  the UI: event subscription, extension binding, history replay, and the first
-  `reportStatus`/`emitSettings`/`emitSlashCommands`. After a successful start of either
-  runtime it triggers Pi's own background catalog refresh
-  (`catalogSource().refreshInBackground()`, see [Model Catalog](model-catalog.md)).
-- **The model catalog seam** — `catalogProviders` (the installed Pi's catalog from
-  `src/catalog-source.ts`, the bundled floor until it loads) feeds prices, thinking
-  capability, the `/model` fallback list, and the SDK's reconcile. The two runtime deps
-  wait up to 2.5 s for it (`CATALOG_START_BUDGET_MS`): `makeRustDeps().setupModels`
-  before the Rust `models.json` merge, `makeSdkDeps().catalogProviders` before the first
-  TypeScript reconcile. Each logs which catalog its session used.
-- **Event fan-out** (`onEvent`/`emit`) — observer pattern over `PiServiceEvent`,
-  validated against the shared Zod schema in `src/shared/protocol.ts`.
-- **User actions** — `sendPrompt`, `abort`, `newSession`, `resumeSession`, `compact`,
+- **Session lifecycle.** `initialize()` constructs an `SdkService`, runs its init, applies the
+  shared state it returns (model, cycle list, thinking level, resume flag), then wires the
+  session to the UI: event subscription, extension binding, history replay, and the first
+  `reportStatus`/`emitSettings`/`emitSlashCommands`.
+- **The model catalog seam.** `catalogProviders` is the bundled registry
+  (`model-registry.generated.json`, generated from pi-ai). It feeds prices, thinking capability,
+  the `/model` fallback list and the SDK's reconcile. See [Model Catalog](model-catalog.md).
+- **Event fan-out** (`onEvent`/`emit`): observer pattern over `PiServiceEvent`, validated
+  against the shared Zod schema in `src/shared/protocol.ts`.
+- **User actions**: `sendPrompt`, `abort`, `newSession`, `resumeSession`, `compact`,
   `cycleModel`, `setThinkingLevel`, `login`, `logout`, `toggleAutoCompaction`,
   `toggleAutoRetry`.
-- **Interactive pickers** — `pickModel()`, `pickThinkingLevel()`, `pickActiveTools()`.
-  Each is a thin vscode shell over a **pure, tested core**: the row/label building lives
-  in `src/model-picker.ts`, `src/thinking-dial.ts`, and `src/active-tools.ts`.
-- **Slash routing** — `tryHandleCommand()`, gated on
-  `capabilities.interceptSlashCommands`. TypeScript intercepts builtins before
-  `session.prompt` (as the CLI does); Rust forwards raw because the binary owns its own
-  slash handling. See [Slash Commands](#related).
-- **Status and cost formatting** — `getUsageStats()` combines the backend's raw usage
-  with catalog rates through the pure `computeUsageStats` in `src/usage-stats.ts`.
+- **Interactive pickers**: `pickModel()`, `pickThinkingLevel()`, `pickActiveTools()`. Each is a
+  thin vscode shell over a **pure, tested core**: the row and label building lives in
+  `src/model-picker.ts`, `src/thinking-dial.ts` and `src/active-tools.ts`.
+- **Slash routing**: `tryHandleCommand()` handles the GUI's own commands and intercepts the
+  builtins before `session.prompt`, as the CLI does. See [Slash Commands](#related).
+- **Status and cost formatting**: `getUsageStats()` combines the backend's raw usage with
+  catalog rates through the pure `computeUsageStats` in `src/usage-stats.ts`.
 
 ## What PiService does NOT own (moved out)
 
@@ -75,65 +61,32 @@ modules. Look here, not in `pi-service.ts`:
 | Login/logout flow | `src/auth-flow.ts` |
 | Thinking capability, clamping, pricing lookup | `src/model-catalog.ts` |
 | SDK resolve/load/create | `src/sdk-service.ts` |
-| Rust process, RPC, event ingress | `src/rust-service.ts`, `src/rust-process.ts` |
 
 PiService keeps thin getters (`session`, `SDK`, `AI`, `sessionManager`,
-`settingsManager`, `resourceLoader`) over `_sdk` so existing read sites still compile.
-They return `null` under Rust. `extension.ts` still reaches past the seam through
-`sessionManagerInstance` for clone/fork/export — genuinely SDK-shaped work that is not
-yet modelled on `PiBackend`.
+`settingsManager`, `resourceLoader`) over `_sdk` so existing read sites still compile; they
+return `null` before init or after a failed init. `extension.ts` still reaches past the seam
+through `sessionManagerInstance` for clone/fork/export, which is SDK-shaped work not modelled
+on `PiBackend`.
 
-## Runtime divergence, honestly
+## Details worth knowing
 
-`capabilities` (data) is the intended axis of difference; `capabilities.kind` is the
-escape hatch for the few places that genuinely need identity. Both exist today.
-
-- **Backend selection and init/dispose routing** legitimately branch on identity — you
-  cannot pick a backend through the backend.
-- **`dispose()`** has two branches by design: Rust captures its session file before
-  teardown and appends the session name after the binary exits; the SDK force-flushes
-  its deferred writes. Different persistence ownership, not a leak.
-- **`flipsStateEagerly(runtime)`** models the one real state divergence: the SDK applies
-  a setting in-process so the UI can flip immediately, while the Rust RPC may reject or
-  clamp, so its state flips only on the backend's echo.
-- **`getUsageStats()`** still keys its cost policy on `runtime === "rust"` rather than a
-  capability. Known, deliberate, low severity: on Rust the binary's per-turn figures are
-  checked and summed (`$??` after a compaction, a stopped turn or a request that failed
-  after the provider accepted it, catalog rates only for a
-  binary that reports none), whereas the SDK computes its own. Every attempted
-  rewrite moved the displayed number on TypeScript, which is not a trade worth making
-  for tidiness.
-
-## Rust-path details worth knowing
-
-- **`_agentRunActive` and `isStreaming` are owned by the BACKEND**, not PiService — read
+- **`dispose()`** force-flushes the session file before teardown. The SDK defers all disk
+  writes until the first assistant message, so a tab closed early would otherwise lose its
+  entries, including the tab name. It also aborts any running bash process, so closing a
+  session leaves no zombies.
+- **`_agentRunActive` and `isStreaming` are owned by the backend**, not PiService. They are read
   and written through `getAgentRunActive()`/`setAgentRunActive()` on `PiBackend`.
-  `RustService` reads its own copy directly so its event loop need not round-trip
-  through a host callback.
-- **Duplicate `agent_end`** — rust-pi emits `agent_end` twice on the abort path. The
-  dedupe reads the run flag *before* the mutation is applied (`routeRustEvent`'s
-  `isRealAgentEnd`), with a secondary guard in `translateAgentEvent`.
-- **Synthetic steer/follow-up queue** — the binary still emits no `queue_update`
-  (re-confirmed against 0.1.23), so `RustService` mirrors the queue locally.
-- **`RustHost`** is the explicit coupling: every piece of shared state RustService
-  reads/writes and every core call it makes passes through a `makeRustHost()` closure.
-- **Session naming** has no RPC, so the extension writes the name to extension state
-  keyed by session id. It must NOT be written into the session JSONL — doing so made
-  rust-pi reject the whole file and resume as an empty session.
+- **`getUsageStats()`** takes raw token counts and context from the backend and applies the cost
+  policy in the pure `computeUsageStats`; a model whose catalog rates cannot be right is priced
+  as unknown (`$??`) instead of with wrong rates.
 
 ## Related
 
-- [PiBackend](pi-backend.md) — the seam, capability model, and where divergence belongs
-- [Runtime Selection](runtime-selection.md) — how a session picks its runtime
-- [Session Window](session-window.md) — the SessionWindow that owns PiService
-- [Event Translation](event-translation.md) — how both event streams become `PiServiceEvent`
-- [SDK Resolution & Init](../operations/sdk-resolution.md) — the TypeScript load sequence
+- [PiBackend](pi-backend.md): the seam and where SDK-shaped work belongs
+- [Session Window](session-window.md): the SessionWindow that owns PiService
+- [Event Translation](event-translation.md): how SDK events become `PiServiceEvent`
+- [SDK Resolution & Init](../operations/sdk-resolution.md): the SDK load sequence
 
-> **Last updated:** 2026-10-18 — the model-catalog seam (`catalogProviders`, the 2.5 s
-> catalog wait in both runtime deps, the background refresh after a start); the Rust cost
-> divergence restated for rust-pi 0.8.0; a failed-after-accepted request is `$??` too.
-> **Earlier:** 2026-08-05 — rewritten after the god-class extraction. The previous
-> version (2026-06-21) described responsibilities that had since moved, and named
-> `setEffort` (deleted), `PiService.formatModelDetail()` (now in `model-picker.ts`),
-> `authStorage`/`modelRegistry` (replaced by `ModelRuntime`), and `_agentRunActive` as
-> "still on PiService" (now owned by the backends).
+> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): one backend (`SdkService`), no
+> capability or runtime branching, catalog is the bundled registry only.
+> **Earlier:** 2026-08-05 — rewritten after the god-class extraction.

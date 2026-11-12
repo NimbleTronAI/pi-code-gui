@@ -4,24 +4,22 @@
 
 The extension can't control which Pi extensions a user installs or how their
 provider configs are written, so it must **recognize the common failure shapes
-and communicate them clearly** — instead of leaking a raw stderr flood (Rust
-runtime) or a cryptic SDK throw (TypeScript runtime).
+and communicate them clearly** instead of leaking a cryptic SDK throw into the chat.
 
-All classification lives in one pure, vscode-free module —
-[`src/extension-errors.ts`](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/extension-errors.ts) —
-so it is unit-tested headlessly; the surfaces that *show* the result live in the
-runtime services.
+All classification lives in one pure, vscode-free module,
+[`src/extension-errors.ts`](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/extension-errors.ts),
+so it is unit-tested headlessly; the surfaces that *show* the result live in `SdkService` and
+`agent-events.ts`.
 
 ## Classifiers
 
 | Function | Recognizes | Produces |
 |----------|-----------|----------|
 | `classifyProviderConfigError(msg)` | the SDK's `Failed to resolve API key for provider X from environment variable: Y` | `{ provider, envVars, title, detail, remediation }` |
-| `classifyRustLoadError(line)` | a Rust-stderr extension/skill load line | `{ kind, packageName?, detail, remediation? }` where `kind` is `digest-mismatch` \| `unsupported-module` \| `load-failed` |
+| `explainAgentStop(stopReason, errorMessage)` | an assistant turn that ended with `stopReason: "error"`, `"aborted"` or any reason carrying an error message | a note for the chat, or `null` for an ordinary completion |
 
-Two `humanize*` / `format*` helpers compose these into a single user-facing
-string (`humanizeProviderError`, `humanizeRustLoadError`, `formatRustLoadError`),
-so a caller upgrades a message in place with `humanizeX(raw) ?? raw`.
+`humanizeProviderError` composes the classifier into a single user-facing string, so a caller
+upgrades a message in place with `humanizeProviderError(raw) ?? raw`.
 
 A tell-tale handled specially: when the missing env var is literally `ENV`, the
 provider config is using the obsolete `$ENV:NAME` reference syntax (the current
@@ -30,20 +28,17 @@ the `${NAME}` form.
 
 ## Where it surfaces
 
-**TypeScript runtime — provider-key failures.** A failed turn reaches the UI as
+**Provider-key failures.** A failed turn reaches the UI as
 the `message_update` → `error` event in
-[`src/agent-events.ts`](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/agent-events.ts)
-(the per-turn choke point both runtimes drive). That message is upgraded in
-place via `humanizeProviderError`; non-provider errors pass through unchanged.
-The steer/follow-up reject path in `pi-service.ts` gets the same treatment.
+[`src/agent-events.ts`](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/agent-events.ts),
+the per-turn choke point. That message is upgraded in place via `humanizeProviderError`;
+non-provider errors pass through unchanged. The steer/follow-up reject path in `sdk-service.ts` (`sendPrompt`)
+gets the same treatment.
 
-**Rust runtime — extension-load failures.** `RustProcess` (`src/rust-process.ts`)
-classifies each stderr line. The **first** occurrence of a unique
-`(kind, package)` failure is reported once — a clean `piWarn` plus an
-`onLoadError` callback — while repeats and pi's own multi-line `Remediation:`
-hint drop to `debug`. `RustService` wires `onLoadError` to a single in-chat
-`custom-message` card (`⚠ Pi extension "…" failed to load (…)`). This replaces
-the prior raw `[rust-stderr]` flood on every session open.
+**Turns that stop early.** The same file calls `explainAgentStop` on a finished assistant
+message. This used to be silence: the webview only handled `"aborted"`, so any other failure
+left a reply that trailed off. It is deliberately not an allowlist of benign reasons, because a
+novel failure reason would go silent again.
 
 ## Test coverage
 
@@ -54,30 +49,16 @@ humanization of a provider-key error event.
 
 ## Related
 
-- [Logging](logging.md) — the channel these also write to; `[rust-stderr]` source
-- [Event Translation](../architecture/event-translation.md) — the `agent-events.ts` choke point
-- [Runtime Selection](../architecture/runtime-selection.md) — the Rust subprocess + stderr plumbing
+- [Logging](logging.md): the channel these also write to
+- [Event Translation](../architecture/event-translation.md): the `agent-events.ts` choke point
 
-## Naming the right package, and matching severity to intent
+## Lesson: match severity to intent
 
-Two lessons from classifier bugs that reached users.
+A failure notice for something the user deliberately turned off reports a fault where there
+was none. When a message describes an outcome the user chose, it should read as a note saying
+the outcome was expected; the same failure with the setting on is still an error.
 
-**Name the package, not its scheme.** rust-pi reports a provenance failure as
-`…resolved provenance changed for npm:pi-web-access while source is immutable…`. The
-classifier anchored on a colon straight after the package name, so on that line it
-backtracked into capturing the *source scheme*: the user was told
-`Pi extension "npm" failed to load` and advised to run `pi remove npm` — not a package,
-and no help in finding the one that broke. Matching no longer depends on the
-delimiter, and the remediation quotes the command the binary itself recommends. Note
-the sibling shape (`digest changed for npm:pi-web-access: expected …`) *does* put a
-colon there, which is why the bug survived: the existing test used that variant.
-
-**Severity follows intent.** rust-pi still attempts project packages when
-`--no-extensions` is passed, so the failure arrives either way. Raising a red Error
-card for a thing the user deliberately turned off — duplicated in the output channel —
-reported a fault where there was none. With extensions disabled the card remains (the
-package genuinely did not load) but reads as a note saying the outcome was expected;
-with extensions enabled it is still an error.
-
-> **Last updated:** 2026-08-31 — added the provenance-naming fix and the
+> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): the stderr load-error
+> classifier, its in-chat card and the provenance-naming lesson are gone; `explainAgentStop` documented.
+> **Earlier:** 2026-08-31 — added the provenance-naming fix and the
 > intent-matched severity rule (both shipped 0.2.0).

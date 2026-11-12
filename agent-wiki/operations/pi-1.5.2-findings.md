@@ -15,7 +15,7 @@ Researched 2026-11-11 for batch "0.2.8". Sources: the installed `pi-coding-agent
 is identical to upstream tag v1.5.2 (`diff` prints nothing), and the raw upstream `packages/{ai,agent}/CHANGELOG.md` at
 v1.5.2. The 1.4.0 comparison install is an `npm pack` of 1.4.0 (scratch); 1.5.2 is the container's global install.
 **PROVEN** means we ran or read it; **ASSUMED** means inferred and not run. Method as in the
-[1.4.0 findings](../archive/batch-0.2.8/pi-1.4.0-findings.md).
+1.4.0 findings (that page was removed with the batch archive; it last existed at commit `69c2e74`).
 
 ## 1. Breaking items, checked against our code
 
