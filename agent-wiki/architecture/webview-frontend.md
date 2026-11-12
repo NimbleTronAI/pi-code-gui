@@ -46,8 +46,8 @@ and `main.ts` in order. esbuild bundles everything into a single IIFE.
 
 Message types are defined in `src/shared/protocol.ts` as Zod-validated schemas
 with derived TypeScript types:
-- `ExtensionToWebview` — 38 event types from extension to webview
-- `WebviewToExtension` — 18 command types from webview to extension
+- `ExtensionToWebview` — 37 event types from extension to webview
+- `WebviewToExtension` — 16 command types from webview to extension
 - `PiServiceEvent` — alias for `ExtensionToWebview` (all events through `emit()`)
 
 Runtime validation via Zod is wired on the **extension→webview** direction only,
@@ -149,7 +149,8 @@ refs (relative paths, anchors), blocking `javascript:`, `data:`, `vbscript:`,
 - [Streaming Pipeline](streaming-pipeline.md) — RAF-batched rendering
 - [Component System Proposal](component-system-proposal.md) — proposed architectural upgrade
 
-> **Last updated:** 2026-08-06 — `renderInline()` link-href guard consolidated into `safeInlineLinkHref` in `src/shared/webview-nav-guard.ts` (shares `ALLOWED_URL_SCHEMES` with `safeExternalUrlString`; `ftp` dropped so both paths agree)
+> **Last updated:** 2026-11-12 — schema counts after 0.2.8 removed the second runtime's messages (37 events / 16 commands)
+> **Earlier:** 2026-08-06 — `renderInline()` link-href guard consolidated into `safeInlineLinkHref` in `src/shared/webview-nav-guard.ts` (shares `ALLOWED_URL_SCHEMES` with `safeExternalUrlString`; `ftp` dropped so both paths agree)
 > **Earlier:** 2026-07-24 — `renderInline()` hardened (escape inline `html` tokens; link-href scheme allowlist)
 > **Earlier:** 2026-06-25 — inbound `validateWebviewToExtension` is now wired (warn-only) at `onDidReceiveMessage`; schema is 38 events / 18 commands (added `switchRuntime`)
 > **Earlier:** 2026-06-24 — corrected schema counts (38 events / 17 commands) and removed the false "webview→extension is Zod-validated" claim

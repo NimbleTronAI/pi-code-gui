@@ -1,77 +1,60 @@
-# Batch 0.2.8 — status and next steps
+# Batch 0.2.8 — status
 
 > **Status:** evolving
 
-> Handover page. Written 2026-11-11 before a container restart, so a fresh session can resume from
-> the repo alone. Read this first, then the archive it links.
+> The record of release 0.2.8: what the branch ships, what was proven, and what was deferred.
+> The batch plan (units U1–U5, decisions D1–D6, contracts C1–C13) was retired when the batch
+> finished; it was last present at commit `3d0b264`.
 
-## Where things stand
+## What ships
 
-- **Branch:** `release/0.2.8` (pushed; **no PR** — the founder decides when). Rebased on main 0.2.7.
-- **The founder's decision (2026-11-04): 0.2.8 drops Rust Pi entirely.** 0.2.3 is locked as the last
-  release that supported the Rust interfaces. Much of what is committed on this branch is Rust work
-  that the removal will delete — it is kept in history, not because it ships.
-- **Tests:** 819 passing at the last full run (phase D landed).
-- **README:** rewritten for the removal and approved by the founder — a one-line pointer near the
-  top, and a "Rust Pi support has ended" section (why, apology, three ways to keep Rust Pi incl.
-  forking `v0.2.3`, cleanup) near the bottom, above Credits.
-- **CHANGELOG `[0.2.8]`:** still describes Rust features. Rewrite it as part of the removal.
+- **One runtime.** The extension runs Pi through its in-process SDK only. The second runtime,
+  its settings and commands, the runtime choice in the UI, plan/approval modes, and the
+  clean-room machinery that came with it are gone. The README explains this to users. 0.2.3 is
+  the last release that had the second runtime.
+- **models.json cleanup** on every start ([SDK Resolution](sdk-resolution.md) for loading;
+  `src/managed-models-cleanup.ts`): the entries earlier versions wrote are removed, and nothing
+  else changes.
+- **Pi 1.5.2:** the bundled catalog is pi-ai 1.5.2, and `testedAgainst` is 1.5.2
+  ([findings](pi-1.5.2-findings.md)).
+- **Fixes:** the summarization retry card; the 1.3.0 verification fixes; `/tools` no longer
+  cuts a reopened session's model history.
 
-## What this branch contains (oldest first, since main)
+## Proven
 
-| Work | Ships in 0.2.8? |
-|---|---|
-| Catalog refreshed to pi-ai 1.3.0 (Unit 1) | yes — and needs bumping to **1.4.0** (see below) |
-| TypeScript runtime verified on pi-coding-agent 1.3.0; entry_appended and ModelRuntime fixes (Unit 2) | yes |
-| Summarization-retry shown as a retry, not a junk card (Unit 6) | yes |
-| rust-pi pin, startup diagnostics, managed install, stale-default recovery (Units 3–5) | **no — remove** |
-| Catalog source backed by Pi's ModelRuntime (Unit 7 phase A) | decide in the removal plan — it was built to feed Rust |
-| Overrides-only merge into the shared models.json (phase B) | **no — remove**; but see "Cleanup" below |
-| Rust cost from the binary; `$??` rules (phases C, D) | **no — remove** |
-| Coordination protocol + documentation discipline (agent-wiki/discipline) | yes (repo law) |
+- `pnpm run package` green at `3d0b264`; 435/435 unit tests.
+- The models.json cleanup, run on a file shaped the way 0.2.3 writes it (32 providers): 156
+  items removed, the user's provider intact, Pi's own loader accepts the result, and a second
+  run writes nothing.
+- The SDK path ran live on pi-coding-agent 1.5.2: a tool call, compaction, persist, reopen, and
+  bridge tools in a resumed session. That run was on the code **before** the runtime removal.
+  The founder's manual check of the installed build covers the code after it.
+- The `/tools` fix has a red-first test that reopens the session file the way Pi does.
+- Acceptance greps: the word appears only in README.md, CHANGELOG.md, agent-wiki/log.md, and
+  in highlight.js language support plus the page documenting it (syntax highlighting for code
+  blocks, kept deliberately). The grep for second-runtime wording is clean.
 
-## Next steps, in order
+## Deferred
 
-0. **2026-11-11: the founder said go, and asked for the newest TypeScript Pi (1.5.2) instead of
-   1.4.0.** The plan is written: [Rust removal plan](rust-removal-plan.md). It supersedes steps 1–4
-   below, and D1–D6 were accepted as recommended the same day. **U1** (top tier, worktree `/workspaces/rr-u1`) and **U3** (mid tier, `/workspaces/rr-u3`) were started from `69c2e74`. U2 starts when U1 lands. **U3 landed (staged, not committed) 2026-11-11:** the clean-room law and gate, `.githooks/` (and `core.hooksPath` unset), the Rust scripts and the devcontainer Rust provisioning are removed; `pnpm run package` was green with 819/819 in the U3 worktree. One `TS backend` row key stays in the currency issue tooling, because renaming it would post a spurious issue comment.
-1. ~~Wait for the founder's signal~~, then build the Rust **removal plan** (not before). Its inputs:
-   [archive/batch-0.2.8/rust-removal-inputs.md](../archive/batch-0.2.8/rust-removal-inputs.md).
-   Acceptance: afterwards `rust` appears only in README.md, CHANGELOG.md and agent-wiki logs. Scope
-   includes the clean-room policy and its machinery, the devcontainer Rust provisioning, every
-   `rust*` setting and source file, and redrawing `media/architecture.svg`.
-2. **Cleanup the removal release must do:** on first start, delete every entry carrying
-   `"_managedBy": "pi-code-gui@…"` from `~/.pi/agent/models.json` (and providers left empty), touching
-   nothing else — the README already promises this. Phase B's migration code recognises exactly these
-   entries and is the starting point.
-3. **Bump the catalog to pi-ai 1.4.0** (Unit 1's shape: `pnpm add -D @earendil-works/pi-ai@1.4.0` +
-   `gen:model-registry`, both together). Proven clean on a scratch copy — findings:
-   [archive/batch-0.2.8/pi-1.4.0-findings.md](../archive/batch-0.2.8/pi-1.4.0-findings.md).
-4. **Verify the TypeScript runtime live on 1.4.0** before moving `src/pi-sdk-version.json`
-   `testedAgainst` to 1.4.0 (one trivial prompt, as Unit 2 did for 1.3.0). Also exercise resumed
-   sessions' bridge tools (1.4.0 re-enables them, pi#11062 — never run live).
-5. **Rewrite CHANGELOG `[0.2.8]`** for what actually ships, per
-   [Documentation Discipline](../discipline/documentation-discipline.md).
-6. Consider (optional, from the 1.4.0 findings): validate any models.json we write against Pi's
-   shipped `models.schema.json`; cite Pi's documented override contract.
-
-## Open items not tied to Rust
-
-From the contracts note C17 (the full list is in the archived contracts): 381 OpenRouter models
-flattened to one protocol by the generator (F2); per-model `headers` dropped (N1); the currency gate
-fails open when npm is unreachable (N2); custom-message events with non-object `details` fail
-validation (N3).
+- Old workspace/global state keys and the extension-installed binary folder from the second
+  runtime are inert and left in place. The README promises that upgrading removes nothing from
+  disk, and says where the binary lives.
+- A models.json under a custom agent folder that only the second runtime used is not cleaned.
+- `/reload` during a response now fails (Pi #9222). The extension does not pre-check this yet.
+- `Usage.cost.totalFromProvider` (Pi 1.5.0) could tell billed totals from estimates. Not used yet.
+- The upstream-currency tooling keeps a `pi-coding-agent (TS backend)` row key, because renaming
+  it would post a spurious issue comment.
+- Open items not tied to this batch: [Open items](open-items.md).
 
 ## Process notes
 
-The batch ran under [Agent Coordination](../discipline/agent-coordination.md). Its contracts note,
-with every ruling and decision, is archived:
-[archive/batch-0.2.8/contracts-batch-0.2.8.md](../archive/batch-0.2.8/contracts-batch-0.2.8.md).
-The catalog design history (spike → Design S v4) is in the same folder. The review of record caught
-a real defect in nearly every unit that the member's own reviewer had passed — keep running it.
+The batch ran under [Agent Coordination](../discipline/agent-coordination.md). The coordinator's
+review of record caught something in most units that the member's own reviewer had passed. In
+this batch it found a shared test case dropped along with a deleted file, a user-facing message
+that needed wording, and a stale README claim. Keep running it.
 
-Signing: commits and pushes go through the founder's 1Password SSH agent; when it refuses, ask the
-founder to approve the prompt — never bypass signing.
+Signing: commits go through the founder's 1Password SSH agent. When it refuses, ask the founder to
+approve the prompt. Never bypass signing. No push until the founder says so.
 
-> **Last updated:** 2026-11-11 — step 0: the plan is written, targeting pi 1.5.2
+> **Last updated:** 2026-11-12 — batch finished; plan retired (last at `3d0b264`)
 > **Earlier:** 2026-11-11 — written as the handover before a container restart
