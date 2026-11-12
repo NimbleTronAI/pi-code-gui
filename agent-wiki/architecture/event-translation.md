@@ -50,7 +50,7 @@ The translation layer:
 | `message_update` (thinking_end) | `thinking-delta` (done:true) |
 | `message_update` (error) | `error` |
 | `turn_end` | *(consumed by tree view — triggers refresh)* |
-| `message_end` (assistant) | `assistant-end` + `status-update` |
+| `message_end` (assistant) | `assistant-end` + `status-update`; a failing stop reason adds an error card ("turn ended early"). An `error` card is held in `pendingStopNote` until `agent_end`, and dropped when `agent_end.willRetry` is true (Pi retries the attempt; the retry indicator covers it). `aborted` posts at once |
 | `tool_execution_start` | `tool-start` or `bash-start` |
 | `tool_execution_update` | `tool-update` or `bash-output` |
 | `tool_execution_end` | `tool-end` or `bash-end` |
@@ -82,7 +82,8 @@ three `tool-start` emit sites — the two live ones and the replay loop in
 - [Webview Panel](webview-panel.md) — consumes the translated events
 - [Types](https://github.com/NimbleTronAI/pi-code-gui/blob/main/src/types.ts) — the `PiServiceEvent` type union
 
-> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): one event source, no second routing path.
+> **Last updated:** 2026-11-12 — error cards for attempts Pi retries are held until `agent_end` and dropped on `willRetry` (pi 1.5.2)
+> **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): one event source, no second routing path.
 > **Earlier:** 2026-10-17 — `summarization_retry_*` (provider error mid-compaction) mapped to the retry indicator instead of the "Unhandled agent event" card (verified against pi-coding-agent 1.3.0)
 > **Earlier:** 2026-10-16 — `entry_appended` renders displayed `custom_message` and `compaction` entries and is otherwise a recognised no-op; it used to fall to the diagnostic default and put a visible "Unhandled agent event" card in the chat on every extension `appendEntry` (verified against pi-coding-agent 1.3.0)
 > **Earlier:** 2026-06-25 — documented `normalizeToolArgs`: `tool-start` `data.args` is always coerced to a record across all three emit sites (fixes null-args validation noise on historical replay)

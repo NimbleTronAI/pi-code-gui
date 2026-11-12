@@ -190,7 +190,75 @@ test("abort kills bash then the agent turn", () => {
 test("getUsage sums assistant entries + reads live context", () => {
   const { svc } = makeService();
   const u = svc.getUsage();
-  assert.deepEqual(u, { input: 30, output: 12, cacheRead: 2, cacheWrite: 1, cost: 0.03, contextPercent: 42, contextWindow: 200000 });
+  assert.deepEqual(u, { input: 30, output: 12, cacheRead: 2, cacheWrite: 1, cost: 0.03, costFromProvider: "none", contextPercent: 42, contextWindow: 200000 });
+});
+
+// The same entries Pi's own getSessionStats() counts: cache warm-ups ("usage" entries),
+// compaction and branch summaries, and tool results that carry usage. Before this, the panel's
+// $ left out warm-up and compaction spend (pi 1.5.1 made cache warming the default).
+test("getUsage also counts warm-up, compaction, branch-summary and tool-result usage", () => {
+  const { svc } = makeService();
+  const use = (input: number, total: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total } });
+  svc.sessionManager = { getEntries: () => [
+    { type: "message", message: { role: "assistant", usage: use(10, 0.01) } },
+    { type: "usage", kind: "cache_warm", usage: use(100, 0.1) },
+    { type: "compaction", usage: use(1000, 1) },
+    { type: "branch_summary", usage: use(10000, 10) },
+    { type: "compaction" },
+    { type: "message", message: { role: "toolResult", usage: use(100000, 100) } },
+    { type: "message", message: { role: "toolResult" } },
+  ] } as Any;
+  const u = svc.getUsage();
+  assert.equal(u.input, 111110);
+  assert.equal(Math.round(u.cost * 100) / 100, 111.11);
+});
+
+test("getUsage reports whether the cost was billed by the provider: all, some or none", () => {
+  const { svc } = makeService();
+  const billed = (total: number) => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total, totalFromProvider: true } });
+  const est = (total: number) => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total } });
+  const msg = (usage: Any) => ({ type: "message", message: { role: "assistant", usage } });
+  const run = (entries: Any[]) => { svc.sessionManager = { getEntries: () => entries } as Any; return svc.getUsage().costFromProvider; };
+  assert.equal(run([msg(billed(0.1)), msg(billed(0))]), "all");
+  assert.equal(run([msg(billed(0.1)), msg(est(0.2))]), "some");
+  assert.equal(run([msg(est(0.2))]), "none");
+  assert.equal(run([]), "none", "nothing billed yet");
+  // An errored turn with no tokens and no cost says nothing about billing either way.
+  assert.equal(run([msg(billed(0.1)), msg({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } })]), "all");
+});
+
+// pi 1.5.1 (#9222): reload() throws while a response or compaction runs. Check first and say
+// which, so the user gets "wait", not a failure.
+test("reloadContext: busy responding → not reloaded, says so", async () => {
+  const { svc, calls } = makeService({ isStreaming: true, reload: async () => calls.push(["reload"]) });
+  assert.equal(await svc.reloadContext(), "busy-response");
+  assert.deepEqual(calls, []);
+});
+
+test("reloadContext: busy compacting → not reloaded, says so", async () => {
+  const { svc, calls } = makeService({ isCompacting: true, reload: async () => calls.push(["reload"]) });
+  assert.equal(await svc.reloadContext(), "busy-compaction");
+  assert.deepEqual(calls, []);
+});
+
+test("reloadContext: idle → reloads", async () => {
+  const { svc, calls } = makeService({ reload: async () => calls.push(["reload"]) });
+  assert.equal(await svc.reloadContext(), "reloaded");
+  assert.deepEqual(calls, [["reload"]]);
+});
+
+test("reloadContext: a session without reload → unsupported", async () => {
+  const { svc } = makeService();
+  assert.equal(await svc.reloadContext(), "unsupported");
+});
+
+test("reloadContext: a turn that starts between the check and the call still reads as busy", async () => {
+  const { svc } = makeService({ reload: async () => { throw new Error("Wait for the current response to finish before reloading."); } });
+  assert.equal(await svc.reloadContext(), "busy-response");
+  const c = makeService({ reload: async () => { throw new Error("Wait for compaction to finish before reloading."); } });
+  assert.equal(await c.svc.reloadContext(), "busy-compaction");
+  const other = makeService({ reload: async () => { throw new Error("disk on fire"); } });
+  await assert.rejects(other.svc.reloadContext(), /disk on fire/);
 });
 
 test("getSlashCommands: extension-runner commands + builtin templates", () => {

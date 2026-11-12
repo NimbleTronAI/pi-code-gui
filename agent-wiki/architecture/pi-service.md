@@ -78,7 +78,12 @@ on `PiBackend`.
   and written through `getAgentRunActive()`/`setAgentRunActive()` on `PiBackend`.
 - **`getUsageStats()`** takes raw token counts and context from the backend and applies the cost
   policy in the pure `computeUsageStats`; a model whose catalog rates cannot be right is priced
-  as unknown (`$??`) instead of with wrong rates.
+  as unknown (`$??`) instead of with wrong rates. A cost the provider billed
+  (`costFromProvider: "all"`) is shown regardless, and `costSource` says billed, estimated or
+  mixed.
+- **`reloadContext()`** returns a `ReloadOutcome` (`reloaded`, `unsupported`, `busy-response`,
+  `busy-compaction`); anything but `reloaded` means nothing reloaded, and `reloadNotDoneText`
+  says why.
 
 ## Related
 

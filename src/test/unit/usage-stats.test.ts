@@ -75,7 +75,7 @@ test("negative sentinel rates render $?? — never a negative cost", () => {
 });
 
 // ── withheld cost: a price the catalog cannot express ────────────────
-// Native DeepSeek V4 bills on a clock (peak 2x off-peak) and the catalog holds one flat scalar —
+// Native DeepSeek bills on a clock (peak 2x off-peak) and the catalog holds one flat scalar —
 // which cannot be right at both ends of the clock. DeepSeek reports no cost of its own (verified live: token counts only), so there is
 // nothing to fall back on. Show nothing rather than a confident wrong number.
 test("withheld rates force $?? even over an SDK-COMPUTED cost, with the reason attached", () => {
@@ -111,4 +111,36 @@ test("a priced session carries no note to explain", () => {
   const s = computeUsageStats(u, { input: 3, output: 6, cacheRead: 0, cacheWrite: 0 });
   assert.equal(s.costKnown, true);
   assert.equal(s.costNote, undefined);
+});
+
+// ── billed vs estimated: Usage.cost.totalFromProvider (pi-ai 1.5.0) ────────────
+// A provider-reported total (OpenRouter today) is what the user is billed, not a catalog
+// estimate, so the catalog-based "$??" rules don't apply to it.
+test("an all-billed session shows its figure even where the catalog would withhold it", () => {
+  const u = { ...USED, cost: 0.37, costFromProvider: "all" as const };
+  const s = computeUsageStats(u, null, "because clocks");
+  assert.equal(s.costKnown, true);
+  assert.equal(s.cost, 0.37);
+  assert.equal(s.costSource, "billed");
+  assert.equal(s.costNote, undefined);
+});
+
+test("a billed $0 (a free model on a reporting provider) is a real $0.00, not $??", () => {
+  const s = computeUsageStats({ ...USED, cost: 0, costFromProvider: "all" as const }, ZERO);
+  assert.equal(s.costKnown, true);
+  assert.equal(s.costSource, "billed");
+});
+
+test("an estimated session is labelled as an estimate", () => {
+  const s = computeUsageStats({ ...USED, cost: 0.02 }, PAID);
+  assert.equal(s.costSource, "estimated");
+});
+
+test("a mixed session keeps the estimate rules and is labelled mixed", () => {
+  const shown = computeUsageStats({ ...USED, cost: 0.5, costFromProvider: "some" as const }, PAID);
+  assert.equal(shown.costKnown, true);
+  assert.equal(shown.costSource, "mixed");
+  const withheld = computeUsageStats({ ...USED, cost: 0.5, costFromProvider: "some" as const }, PAID, "because clocks");
+  assert.equal(withheld.costKnown, false, "the estimated part is still not trustworthy");
+  assert.equal(withheld.costSource, undefined, "no source for a figure we don't show");
 });

@@ -168,6 +168,11 @@ test("no DeepSeek model id escapes the rule, whatever upstream renames it to", (
 });
 
 test("the withheld reason is present exactly when the rates are withheld", () => {
-  assert.ok((costWithheldReason("deepseek", "deepseek-v4-pro") ?? "").includes("time of day"));
+  const why = costWithheldReason("deepseek", "deepseek-v4-pro") ?? "";
+  assert.ok(why.includes("time of day"));
+  // The facts as of DeepSeek's pricing page, 2026-11-12: the peak windows, off-peak is half, and
+  // the catalog's (peak) price can only overstate. The old "understate by 4.6x" is gone.
+  assert.ok(why.includes("01:00") && why.includes("06:00") && why.includes("2\u00d7 too high"), why);
+  assert.ok(!why.includes("4.6"), why);
   assert.equal(costWithheldReason("openrouter", "deepseek-v4-pro"), null);
 });

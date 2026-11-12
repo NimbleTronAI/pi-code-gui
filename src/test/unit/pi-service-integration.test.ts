@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiService } from "../../pi-service.js";
 import bundledRegistry from "../../model-registry.generated.json";
-import type { PiBackend, BackendUsage } from "../../pi-backend.js";
+import type { PiBackend, BackendUsage, ReloadOutcome } from "../../pi-backend.js";
 import type { PiServiceEvent } from "../../types.js";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
@@ -46,7 +46,8 @@ class FakeBackend implements PiBackend {
   setAgentRunActive(v: boolean) { this._active = v; }
   isStreaming() { return this._streaming; }
   setStreaming(v: boolean) { this._streaming = v; }
-  async reloadContext() { this.log("reloadContext"); return true; }
+  reloadOutcome: ReloadOutcome = "reloaded";
+  async reloadContext() { this.log("reloadContext"); return this.reloadOutcome; }
   async setAutoCompaction(enabled: boolean) { this.log("setAutoCompaction", enabled); }
   async setAutoRetry(enabled: boolean) { this.log("setAutoRetry", enabled); }
   async exportToHtml(p: string) { this.log("exportToHtml", p); return p; }
@@ -261,4 +262,24 @@ test("setActiveTools chains its entry to the current leaf, so a reopened session
   const branch: string[] = [];
   for (let cur = tools; cur; cur = cur.parentId ? byId.get(cur.parentId) : undefined) { branch.unshift(cur.id); }
   assert.deepEqual(branch, ["m1", "m2", tools.id], "the reopened branch still holds the conversation");
+});
+
+// pi 1.5.1 (#9222) refuses a reload during a response or compaction. Chat /reload must say
+// "wait", not fail, and must not re-send the transcript as if it had reloaded.
+test("/reload while Pi is responding says to wait, and reloads nothing", async () => {
+  const { pi, backend, events } = makePi();
+  backend.reloadOutcome = "busy-response";
+  backend.setAgentRunActive(true);
+  await pi.sendPrompt("/reload", undefined, undefined);
+  assert.equal(backend.saw("reloadContext").length, 1);
+  const notes = events.filter((e) => e.type === "custom-message").map((e) => String((e as Any).data.content));
+  assert.ok(notes.some((n) => n.includes("still responding") && n.includes("nothing was reloaded")), notes.join(" | "));
+  assert.ok(!notes.some((n) => n.includes("Ignored a duplicate prompt")), "/reload is not dropped as a duplicate");
+});
+
+test("/reload when idle reloads without a notice", async () => {
+  const { pi, backend, events } = makePi();
+  await pi.sendPrompt("/reload", undefined, undefined);
+  assert.equal(backend.saw("reloadContext").length, 1);
+  assert.ok(!events.some((e) => e.type === "custom-message" && String((e as Any).data.content).includes("nothing was reloaded")));
 });

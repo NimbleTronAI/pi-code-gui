@@ -32,7 +32,7 @@ Decision logic, no `vscode` import, directly unit-tested:
 
 | Module | Decides | Extracted from |
 | --- | --- | --- |
-| `usage-stats.ts` | cost + `costKnown` (`$??` vs `$0.00`) | `PiService.getUsageStats` |
+| `usage-stats.ts` | cost + `costKnown` (`$??` vs `$0.00`) + `costSource` (billed/estimated/mixed) | `PiService.getUsageStats` |
 | `model-catalog.ts` | thinking capability, clamping, pricing lookup, cost-withheld policy | `PiService` |
 | `model-picker.ts` | picker rows, pricing/context detail line | `PiService.pickModel` |
 | `thinking-dial.ts` | dial rows, status text, on/off toggle target | `PiService` status + picker |

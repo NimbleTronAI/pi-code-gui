@@ -121,8 +121,10 @@ byte-identical output when re-run.
 
 ## 5. Opportunities (not done)
 
-- `Usage.cost.totalFromProvider` (1.5.0) could mark the cost readout as billed rather than estimated.
-- Count `usage` entries in `getUsage()`, or use `session.getSessionStats()`, to close the cache-warm/compaction gap.
+- ~~`Usage.cost.totalFromProvider` (1.5.0) could mark the cost readout as billed rather than estimated.~~ Done in
+  0.2.8: `costSource` billed/estimated/mixed. Only OpenRouter sets it in pi-ai 1.5.2 (`utils/openrouter-cost.js`).
+- ~~Count `usage` entries in `getUsage()` to close the cache-warm/compaction gap.~~ Done in 0.2.8: `getUsage()` counts
+  the same entries as `getSessionStats()`.
 - `ModelRuntime.settleCredentialWrites()` is called only by `AgentSessionRuntime.dispose`. We use `createAgentSession`,
   so we would call it on dispose ourselves to keep the #11692 OAuth-refresh protection.
 - Users get these fixes on upgrade: resized images in steer/follow-up (#11738), resume keeps the right thinking level
@@ -130,11 +132,11 @@ byte-identical output when re-run.
 
 ## Hand-off (for the session-service owner)
 
-1. `/reload` (chat slash command and the Reload Context command): check `isStreaming`/`isCompacting` first and show a
-   notice instead of an error. Optional; today's behaviour is safe.
-2. `SdkService.getUsage()`: include `usage` entries (cache_warm, compaction) in the cost readout.
+1. ~~`/reload`: check `isStreaming`/`isCompacting` first and show a notice instead of an error.~~ Done in 0.2.8.
+2. ~~`SdkService.getUsage()`: include `usage` entries (cache_warm, compaction) in the cost readout.~~ Done in 0.2.8.
 3. **`PiService.setActiveTools`**: write the entry as `parentId: this.sessionManager?.getLeafId?.() ?? null` (the
    probe shape above), with a red test that reopens a file ending in `tools_active_change` and asserts the context
    still holds its messages. The founder decides whether 0.2.8 carries the fix.
 
-> **Last updated:** 2026-11-11 — created for the pi-ai 1.5.2 catalog bump and the 1.5.2 live verification (batch 0.2.8, unit U4).
+> **Last updated:** 2026-11-12 — hand-off items 1 and 2 and the `totalFromProvider` opportunity done in 0.2.8.
+> **Earlier:** 2026-11-11 — created for the pi-ai 1.5.2 catalog bump and the 1.5.2 live verification (batch 0.2.8, unit U4).

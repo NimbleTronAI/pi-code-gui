@@ -31,6 +31,7 @@ import type { ThinkingBlock } from "../components/thinking-block.js";
  *  handle and not alongside the element expandos in global.d.ts. */
 type ThinkingComponent = ThinkingBlock & { _rawText?: string };
 import { Dialog } from "../components/dialog.js";
+import { costSourceText } from "../../shared/cost-source.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
   bashToolRenderer, insertToolBlock,
@@ -691,7 +692,10 @@ export function handleStatusUpdate(data: MsgData<"status-update">): void {
       // clickable, so APPEND — assigning the note alone silently destroyed the click hint that
       // ships in the markup, which is a worse trade than the note is worth.
       var budgetHint = "Click to set context budget";
-      sbUsage.title = (!u.costKnown && u.costNote) ? (u.costNote + "\n\n" + budgetHint) : budgetHint;
+      // A shown cost says what it is (billed by the provider, or an estimate); a withheld one
+      // says why.
+      var costTip = u.costKnown ? ((u.input > 0 || u.output > 0) ? costSourceText(u.costSource) : undefined) : u.costNote;
+      sbUsage.title = costTip ? (costTip + "\n\n" + budgetHint) : budgetHint;
       if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }

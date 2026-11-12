@@ -51,12 +51,11 @@ For people who prefer a GUI experience, this extension embeds Pi directly in VS 
 
 ## Gotchas
 
-- **⚠️ Cost & token figures are estimates, not your bill.** The token counts and dollar amounts in the status bar are computed locally — from the model catalog's per-model rates and the usage Pi reports back — purely for at-a-glance guidance. They can be wrong or incomplete: published rates change, the catalog can lag a provider's current pricing, and providers meter in ways a flat rate doesn't capture (cache reads/writes, request minimums, batch/volume discounts, taxes). Some providers report no usage for a turn, in which case the figure stays `0`; where we have no rate for a model we show `$??` rather than a misleading `$0`. **Always rely on your provider account's usage/billing dashboard for actual cost — never on these in-app summaries.**
-- **DeepSeek V4 sessions show `$??` instead of a cost.** DeepSeek bills those models at
-  different rates by time of day (peak is 2x off-peak), the bundled price catalog has no field
-  for time-varying rates, and DeepSeek's API doesn't report the billed amount. Any figure shown
-  would be wrong — currently by up to 4.6x, since the catalog also still carries pre-August-2026
-  rates. Token counts and context % are unaffected, and the same models reached through a
+- **⚠️ Cost & token figures are estimates, not your bill.** The token counts and dollar amounts in the status bar are computed locally — from the model catalog's per-model rates and the usage Pi reports back — purely for at-a-glance guidance. They can be wrong or incomplete: published rates change, the catalog can lag a provider's current pricing, and providers meter in ways a flat rate doesn't capture (cache reads/writes, request minimums, batch/volume discounts, taxes). Some providers report no usage for a turn, in which case the figure stays `0`; where we have no rate for a model we show `$??` rather than a misleading `$0`. Hover the cost to see whether it is an estimate or, for providers that report it (OpenRouter), the billed amount. **Always rely on your provider account's usage/billing dashboard for actual cost — never on these in-app summaries.**
+- **DeepSeek sessions show `$??` instead of a cost.** DeepSeek's price changes with the time of
+  day, the bundled price catalog can hold only one price per model, and DeepSeek's API doesn't
+  report what it billed. So we can't compute a figure we would trust, and we show none rather
+  than a wrong one. Hover the `$??` for details. Token counts and context % are unaffected, and the same models reached through a
   gateway (OpenRouter, Vercel AI Gateway) still price normally. Tracked upstream as
   [pi#8510](https://github.com/earendil-works/pi/issues/8510) and
   [pi#8491](https://github.com/earendil-works/pi/issues/8491).
@@ -266,7 +265,7 @@ pnpm run vsix         # Creates pi-code-gui-x.x.x.vsix
 
 ## Rust Pi support has ended
 
-**Version 0.2.3 is the last release of Pi Code Gui that supports Rust Pi** ([`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust)). From the next release on, the extension runs on Pi alone, and Rust sessions, the plan-mode and approval strip, and all `rust*` settings are gone.
+**Version 0.2.3 is the last release of Pi Code Gui that supports Rust Pi** ([`pi_agent_rust`](https://github.com/Dicklesworthstone/pi_agent_rust)). From 0.2.8 on, the extension runs on Pi alone, and Rust sessions, the plan-mode and approval strip, and all `rust*` settings are gone.
 
 **Why.** Pi Code Gui could offer Rust Pi as a second engine because it was built as a drop-in replacement for Pi: the same sessions, the same model catalog, the same behaviour, so one interface could drive both. That is no longer its direction. Rust Pi's own [product direction](https://github.com/Dicklesworthstone/pi_agent_rust#current-product-direction) now says it *"is no longer trying to be a strict drop-in replacement for the legacy TypeScript Pi"*, takes a different project as its reference, and *"may intentionally differ"* from Pi. That is a sound choice for Rust Pi — but it means every release would move the two engines further apart, and this extension would keep falling behind both of them. We would rather do one engine well than two badly.
 
@@ -297,10 +296,10 @@ Pick whichever suits you:
 
 ### Cleaning up after Rust Pi
 
-Upgrading removes nothing from your disk. Three things you may want to tidy:
+Upgrading removes nothing from your disk except the model entries described below. Three things you may want to tidy:
 
-- **Your Rust sessions** are still in `~/.pi/agent/sessions-rust/`. The next release no longer lists them, but they are untouched and remain readable by Rust Pi itself — and by 0.2.3, if you go back.
-- **Model entries this extension wrote for Rust are removed for you.** Rust sessions added entries to `~/.pi/agent/models.json`, each marked `"_managedBy": "pi-code-gui@…"`. That file is shared with Pi and the `pi` CLI, and those entries replace Pi's own definitions of the same models — which can cap long outputs and drop thinking-level settings. The first time the new release starts, we remove the marked entries. If you edited one, we keep it whole, since it is yours now. Older releases also filled in a provider's `api` and `baseUrl` without a marker; we remove those too, but only when it is a connection we shipped for that provider and every model listed under it is one of our unedited entries. Your own settings on that provider, such as an API key, stay. A provider our removal leaves empty is removed as well. Nothing else in the file changes, though we rewrite it with two-space indentation. If the file isn't plain JSON (comments or trailing commas, say), we leave it untouched and write the reason to the Pi Code Gui output log. If you go back to 0.2.3, it writes them again.
+- **Your Rust sessions** are still in `~/.pi/agent/sessions-rust/`. 0.2.8 no longer lists them, but they are untouched and remain readable by Rust Pi itself — and by 0.2.3, if you go back.
+- **Model entries this extension wrote for Rust are removed for you.** Rust sessions added entries to `~/.pi/agent/models.json`, each marked `"_managedBy": "pi-code-gui@…"`. That file is shared with Pi and the `pi` CLI, and those entries replace Pi's own definitions of the same models — which can cap long outputs and drop thinking-level settings. Each time the extension starts, it removes any marked entries it finds. If you edited one, we keep it whole, since it is yours now. Older releases also filled in a provider's `api` and `baseUrl` without a marker; we remove those too, but only when it is a connection we shipped for that provider and every model listed under it is one of our unedited entries. Your own settings on that provider, such as an API key, stay. A provider our removal leaves empty is removed as well. Nothing else in the file changes, though we rewrite it with two-space indentation. If the file isn't plain JSON (comments or trailing commas, say), we leave it untouched and write the reason to the Pi Code Gui output log. If you go back to 0.2.3, it writes them again.
 - **The Rust Pi binary, if you let the extension install it for you,** stays in VS Code's extension storage, in a `rust-pi` folder under `<globalStorage>/nimbletron.pi-code-gui/`. That is `~/.config/Code/User/globalStorage/` on Linux, `~/Library/Application Support/Code/User/globalStorage/` on macOS and `%APPDATA%\Code\User\globalStorage\` on Windows (other VS Code builds use their own folder name in place of `Code`). You can delete the `rust-pi` folder. We don't touch it.
 
 ## Credits

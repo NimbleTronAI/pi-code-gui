@@ -85,7 +85,11 @@ export function findCatalogThinkingModel(
  *     rates: deepseek-v4-pro output at $0.87 against a real $1.98 off-peak / $3.96 peak,
  *     understating by 2.3x to 4.6x. pi-ai 0.86.1 moved it to $3.96 — now exact at peak and 2x
  *     OVER off-peak, i.e. no longer stale and still not right. Bumping pi-ai cannot fix this;
- *     only a catalog field for the clock could.
+ *     only a catalog field for the clock could. Rechecked 2026-11-12 against DeepSeek's pricing
+     page with the pi-ai 1.5.2 catalog: the catalog carries the peak rates for both
+     deepseek-flash and deepseek-v4-pro, off-peak is half, and Chinese public holidays are
+     off-peak. Pi's computed figure is therefore never low, and up to 2x high. The founder chose
+     to keep $?? rather than price each message by its timestamp or show an upper bound.
  *   - The provider does not report cost. Verified against api.deepseek.com: the usage object
  *     carries token counts only (prompt_tokens, completion_tokens, prompt_cache_hit_tokens,
  *     prompt_cache_miss_tokens) with no cost field and no billing headers, so there is nothing
@@ -116,7 +120,7 @@ export function catalogRatesAreUnexpressible(provider: string | undefined, model
 /** Why a cost is being withheld, for the status chip's tooltip. Null when it is not. */
 export function costWithheldReason(provider: string | undefined, modelId: string | undefined): string | null {
   return catalogRatesAreUnexpressible(provider, modelId)
-    ? "DeepSeek V4 bills at different rates by time of day (peak is 2\u00d7 off-peak), which the bundled price catalog can't express, and DeepSeek doesn't report the billed cost. Showing a number here would understate it by up to 4.6\u00d7, so it's left unknown."
+    ? "DeepSeek bills by time of day. Peak hours (01:00\u201304:00 and 06:00\u201310:00 UTC, Monday to Friday) cost twice the off-peak rate, which applies at all other times, including weekends and Chinese public holidays. The bundled catalog holds only the peak price, and DeepSeek doesn't report what it billed, so any figure here could be up to 2\u00d7 too high. Your DeepSeek dashboard shows the actual cost."
     : null;
 }
 

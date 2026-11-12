@@ -119,6 +119,11 @@ export interface AgentTranslateState {
   now: number;
   /** Apply the live SDK tool's prepareArguments hook; identity when there is no def. */
   prepareArgs: (toolName: string, args: any) => any;
+  /** Holds an "error" stop card from message_end until agent_end, mutated in place. Pi decides
+   *  whether to retry only after the failed message ends, and reports it as agent_end's
+   *  `willRetry`; a retried attempt gets the retry indicator, not a failure card. Absent →
+   *  the card is emitted at message_end. */
+  pendingStopNote?: { note: string | null };
 }
 
 /** Non-event side-effects the shell runs after applying mutations + emitting. */
@@ -189,6 +194,13 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       result.setStreaming = false;
       result.clearToolCalls = true;
       events.push({ type: "agent-end", data: { messages: event.messages } });
+      // An errored attempt's card waits here: shown only if Pi is not about to retry it.
+      if (state.pendingStopNote?.note) {
+        if (event.willRetry !== true) {
+          events.push({ type: "custom-message", data: { customType: "error", content: `⚠ ${state.pendingStopNote.note}`, timestamp: state.now } });
+        }
+        state.pendingStopNote.note = null;
+      }
       effects.reportStatus = true;
       break;
 
@@ -275,7 +287,10 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
         // ceiling looked like the model trailing off. Emitted as its own card so it survives
         // whatever the message renderer does.
         const stopNote = explainAgentStop(event.message.stopReason, event.message.errorMessage);
-        if (stopNote) {
+        if (stopNote && event.message.stopReason === "error" && state.pendingStopNote) {
+          // Pi may retry this attempt (connection drops, overload, rate limits); agent_end says.
+          state.pendingStopNote.note = stopNote;
+        } else if (stopNote) {
           events.push({ type: "custom-message", data: { customType: "error", content: `⚠ ${stopNote}`, timestamp: Date.now() } });
         }
         effects.reportStatus = true;

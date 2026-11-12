@@ -18,6 +18,8 @@ import { planPanelRestore } from "./panel-restore.js";
 // one implementation instead of a second copy (this file's copy also threw on a null content
 // item and could join `undefined` into the label).
 import { extractMessageText as extractText } from "./agent-events.js";
+import { reloadNotDoneText } from "./pi-backend.js";
+import { costSourceText } from "./shared/cost-source.js";
 
 // ── Session window management ──────────────────────────
 
@@ -623,10 +625,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        // Goes through the PiBackend seam. A session with no in-session reload reports false
-        // rather than exposing a raw session.
-        if (!(await sw.piService.reloadContext())) {
-          vscode.window.showInformationMessage("This Pi session can't reload its context in place — start a new session to pick up changed extensions and skills.");
+        // Goes through the PiBackend seam. Pi refuses a reload while a response or compaction
+        // runs (pi 1.5.1, #9222); that, and a session with no in-session reload, come back as an
+        // outcome to explain rather than an error.
+        const notDone = reloadNotDoneText(await sw.piService.reloadContext());
+        if (notDone) {
+          vscode.window.showInformationMessage(notDone);
           return;
         }
         await sw.piService.sendInitialMessages();
@@ -1845,7 +1849,7 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
     if (stats.output > 0) { statsParts.push(`\u2193${formatTokens(stats.output)}`); }
     if (stats.cacheRead > 0) { statsParts.push(`R${formatTokens(stats.cacheRead)}`); }
     if (stats.cacheWrite > 0) { statsParts.push(`W${formatTokens(stats.cacheWrite)}`); }
-    if (stats.cost > 0) { statsParts.push(`$${stats.cost.toFixed(3)}`); }
+    if (stats.costKnown && (stats.cost > 0 || stats.costSource === "billed")) { statsParts.push(`$${stats.cost.toFixed(3)}`); }
     if (stats.contextWindow > 0 && stats.contextPercent !== null) {
       statsParts.push(`${stats.contextPercent.toFixed(1)}%`);
     } else if (stats.contextWindow > 0) { statsParts.push("?%"); }
@@ -1853,6 +1857,9 @@ class MultiSessionTreeProvider implements vscode.TreeDataProvider<SessionTreeIte
       const usageItem = new SessionTreeItem(statsParts.join(" "), "usage");
       usageItem.contextValue = "session-usage";
       usageItem.description = "tokens / cost";
+      // Say what the $ is: billed by the provider, a catalog estimate, or withheld and why.
+      const costTip = stats.costKnown ? costSourceText(stats.costSource) : stats.costNote;
+      if (costTip) { usageItem.tooltip = costTip; }
       children.push(usageItem);
     }
 

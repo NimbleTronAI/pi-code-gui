@@ -472,3 +472,40 @@ test("shouldEmitToolPreviewUpdate: respects a custom interval", () => {
   assert.equal(shouldEmitToolPreviewUpdate(0, 50, 100), false);
   assert.equal(shouldEmitToolPreviewUpdate(0, 100, 100), true);
 });
+
+// ── a failed attempt Pi is about to retry is not a failure card ─────────────────
+// Pi decides to retry after the failed message ends, and says so on agent_end (willRetry).
+// Posting the "turn ended early" card at message_end left one stuck card per recovered
+// connection drop (seen live: four UND_ERR_SOCKET cards in a turn that finished fine).
+const errEnd = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error.: other side closed (UND_ERR_SOCKET)" } };
+const isStopCard = (e: { type: string; data?: unknown }): boolean =>
+  e.type === "custom-message" && String((e.data as { content?: unknown })?.content).includes("turn ended early");
+
+test("an errored attempt that Pi will retry leaves no failure card", () => {
+  const st = makeState({ pendingStopNote: { note: null } });
+  const end = translateAgentEvent(errEnd, st);
+  assert.ok(!end.events.some(isStopCard), "held at message_end");
+  assert.ok(types(end).includes("assistant-end"), "the message itself still ends");
+  const agentEnd = translateAgentEvent({ type: "agent_end", messages: [], willRetry: true }, st);
+  assert.ok(!agentEnd.events.some(isStopCard), "dropped: Pi is retrying");
+  assert.equal(st.pendingStopNote?.note, null, "nothing carried into the next attempt");
+});
+
+test("an errored attempt Pi will NOT retry shows the card at agent_end", () => {
+  const st = makeState({ pendingStopNote: { note: null } });
+  translateAgentEvent(errEnd, st);
+  const agentEnd = translateAgentEvent({ type: "agent_end", messages: [] }, st);
+  assert.equal(agentEnd.events.filter(isStopCard).length, 1, "willRetry absent → shown");
+  assert.equal(st.pendingStopNote?.note, null);
+});
+
+test("an aborted turn still shows its card at once", () => {
+  const st = makeState({ pendingStopNote: { note: null } });
+  const r = translateAgentEvent({ type: "message_end", message: { role: "assistant", content: [], stopReason: "aborted" } }, st);
+  assert.ok(r.events.some((e) => e.type === "custom-message"), "abort is never retried");
+});
+
+test("without a holder (older callers) the error card is emitted at message_end as before", () => {
+  const r = translateAgentEvent(errEnd, makeState());
+  assert.equal(r.events.filter(isStopCard).length, 1);
+});

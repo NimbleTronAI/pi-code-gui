@@ -184,6 +184,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
             costKnown: z.boolean().optional(),
             // Why a cost is withheld — the status chip's tooltip, so "$??" explains itself.
             costNote: z.string().optional(),
+            // What a shown cost is: billed by the provider, a catalog estimate, or mixed.
+            costSource: z.enum(["billed", "estimated", "mixed"]).optional(),
             contextPercent: z.number().nullable(),
           })
           .optional(),

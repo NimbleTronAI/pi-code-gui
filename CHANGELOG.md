@@ -7,9 +7,12 @@
 - **Rust sessions** in `~/.pi/agent/sessions-rust` are no longer listed and are left untouched; a tab restored from one is closed with a message. **The model entries earlier 0.2.x versions wrote into `~/.pi/agent/models.json` are removed** each time the extension starts; entries you edited are kept (see "Cleaning up after Rust Pi" in the README).
 
 ### Changed
-- **Model catalog refreshed to pi-ai 1.5.2**, and tested against pi-coding-agent 1.5.2. On Pi 1.5.x, `/reload` during a response or compaction fails with a "wait" message; run it again when Pi is idle.
+- **Model catalog refreshed to pi-ai 1.5.2**, and tested against pi-coding-agent 1.5.2.
+- **`/reload` and Reload Context while Pi is responding or compacting** now tell you to wait and reload nothing. Pi 1.5.x refuses a reload at those times; run it again when Pi is idle.
+- **The session cost and token counts now include everything Pi records**: cache warm-ups (on by default since Pi 1.5.1), compaction and summaries, as well as model turns. Hover the cost to see whether it is the provider's bill or an estimate from catalog prices. A cost billed by the provider (OpenRouter today) is shown even for models with no catalog price, where it used to show `$??`. DeepSeek still shows `$??`; hover it for DeepSeek's peak and off-peak hours and why the figure is withheld.
 
 ### Fixed
+- **A dropped connection that Pi retried successfully** no longer leaves a "turn ended early" card behind; the retry indicator shows while Pi retries, and a card appears only if it gives up.
 - **A session closed right after `/tools` reopened with the model having lost the conversation.** It now reopens complete.
 - **Summarization retries and messages added by extensions** no longer show as "Unhandled agent event" cards.
 

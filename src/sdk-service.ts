@@ -22,7 +22,7 @@ import bundledRegistry from "./model-registry.generated.json";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import type { PiServiceEvent } from "./types.js";
-import type { BackendUsage, PiBackend } from "./pi-backend.js";
+import type { BackendUsage, PiBackend, ReloadOutcome } from "./pi-backend.js";
 
 /** The bundled pi-ai catalog providers map shape (a subset of
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
@@ -888,11 +888,23 @@ export class SdkService implements PiBackend {
   setStreaming(v: boolean): void { this._isStreaming = v; }
 
   /** Toggle auto-compaction on the session (if the SDK build exposes the setter). */
-  /** The SDK session reloads extensions/skills/context files in place. */
-  async reloadContext(): Promise<boolean> {
-    if (!this.session?.reload) { return false; }
-    await this.session.reload();
-    return true;
+  /** The SDK session reloads extensions/skills/context files in place. Since pi 1.5.1 (#9222)
+   *  `reload()` throws while a response or compaction runs; check first and report which, so the
+   *  caller can say "wait" instead of showing a failure. A turn that starts between the check
+   *  and the call throws the same messages, which map to the same outcomes. */
+  async reloadContext(): Promise<ReloadOutcome> {
+    if (!this.session?.reload) { return "unsupported"; }
+    if (this.session.isStreaming) { return "busy-response"; }
+    if (this.session.isCompacting) { return "busy-compaction"; }
+    try {
+      await this.session.reload();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/^Wait for the current response/.test(msg)) { return "busy-response"; }
+      if (/^Wait for compaction/.test(msg)) { return "busy-compaction"; }
+      throw e;
+    }
+    return "reloaded";
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
@@ -926,32 +938,38 @@ export class SdkService implements PiBackend {
     };
   }
 
-  /** Cumulative token/cost usage from the session manager's assistant entries, plus
-   *  live context %/window. Cost here is the SDK's own per-turn cost; the catalog-rate
-   *  fallback + costKnown policy stay in PiService.getUsageStats. */
+  /** Cumulative token/cost usage from the session's entries, plus live context %/window. Counts
+   *  the same entries Pi's own `getSessionStats()` does: assistant turns, cache warm-ups
+   *  ("usage" entries, on by default since pi 1.5.1), compaction and branch summaries, and tool
+   *  results that carry usage. Cost is the SDK's own per-record total; `costFromProvider` says
+   *  whether those totals were billed by the provider (pi-ai 1.5.0 `totalFromProvider`). The
+   *  costKnown policy stays in computeUsageStats. */
   getUsage(): BackendUsage {
-    if (!this.sessionManager) { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 }; }
+    if (!this.sessionManager) { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costFromProvider: "none", contextPercent: null, contextWindow: 0 }; }
     const entries = this.sessionManager.getEntries();
     let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+    let billed = 0, estimated = 0;
     for (const entry of entries) {
-      if (entry.type === "message" && entry.message?.role === "assistant") {
-        const usage = entry.message.usage;
-        if (usage) {
-          input += usage.input ?? 0;
-          output += usage.output ?? 0;
-          cacheRead += usage.cacheRead ?? 0;
-          cacheWrite += usage.cacheWrite ?? 0;
-          cost += usage.cost?.total ?? 0;
-        }
-      }
+      const usage = usageOf(entry);
+      if (!usage) { continue; }
+      input += usage.input ?? 0;
+      output += usage.output ?? 0;
+      cacheRead += usage.cacheRead ?? 0;
+      cacheWrite += usage.cacheWrite ?? 0;
+      cost += usage.cost?.total ?? 0;
+      // A record with no tokens and no cost (an errored turn) says nothing about billing.
+      const counts = (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) > 0 || (usage.cost?.total ?? 0) > 0;
+      if (!counts) { continue; }
+      if (usage.cost?.totalFromProvider === true) { billed++; } else { estimated++; }
     }
+    const costFromProvider = billed > 0 && estimated === 0 ? "all" : billed > 0 ? "some" : "none";
     let contextPercent: number | null = null;
     let contextWindow = 0;
     try {
       const contextUsage = this.session?.getContextUsage?.();
       if (contextUsage) { contextPercent = contextUsage.percent; contextWindow = contextUsage.contextWindow; }
     } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
-    return { input, output, cacheRead, cacheWrite, cost, contextPercent, contextWindow };
+    return { input, output, cacheRead, cacheWrite, cost, costFromProvider, contextPercent, contextWindow };
   }
 
   /** Session entries for the Open Sessions tree (display only). */
@@ -1036,4 +1054,16 @@ export class SdkService implements PiBackend {
     this.AI = null;
     this.piRoot = null;
   }
+}
+
+/** The usage record an entry carries, for the entry kinds Pi's getSessionStats() counts. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function usageOf(entry: any): any {
+  if (entry?.type === "usage") { return entry.usage; }
+  if (entry?.type === "compaction" || entry?.type === "branch_summary") { return entry.usage; }
+  if (entry?.type === "message") {
+    const role = entry.message?.role;
+    if (role === "assistant" || role === "toolResult") { return entry.message.usage; }
+  }
+  return undefined;
 }

@@ -13,6 +13,18 @@ import type { RawUsage } from "./usage-stats.js";
 /** A backend's usage snapshot: the cost policy's input (usage-stats.ts RawUsage). */
 export type BackendUsage = RawUsage;
 
+export type ReloadOutcome = "reloaded" | "unsupported" | "busy-response" | "busy-compaction";
+
+/** What to tell the user when a reload didn't happen. Undefined for "reloaded". */
+export function reloadNotDoneText(outcome: ReloadOutcome): string | undefined {
+  switch (outcome) {
+    case "busy-response": return "Pi is still responding, so nothing was reloaded. Reload again when the response finishes.";
+    case "busy-compaction": return "Pi is compacting the session, so nothing was reloaded. Reload again when compaction finishes.";
+    case "unsupported": return "This Pi session can't reload its context in place — start a new session to pick up changed extensions and skills.";
+    default: return undefined;
+  }
+}
+
 /** The primitive operations PiService delegates to SdkService. Orchestration and UI stay in
  *  PiService and call through this. */
 export interface PiBackend {
@@ -50,9 +62,10 @@ export interface PiBackend {
   setAgentRunActive(v: boolean): void;
   isStreaming(): boolean;
   setStreaming(v: boolean): void;
-  /** Reload context files / extensions / skills in-session. Returns false when the session has
-   *  no reload, so the caller can say so instead of reaching through to a raw session object. */
-  reloadContext(): Promise<boolean>;
+  /** Reload context files / extensions / skills in-session. "unsupported" when the session has
+   *  no reload; "busy-response" / "busy-compaction" when Pi refuses because a response or
+   *  compaction is running (pi 1.5.1, #9222). Nothing is reloaded in those cases. */
+  reloadContext(): Promise<ReloadOutcome>;
   /** Toggle auto-compaction on the backend. */
   setAutoCompaction(enabled: boolean): Promise<void>;
   /** Toggle auto-retry on the backend. */

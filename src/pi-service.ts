@@ -23,7 +23,7 @@ import { replaySessionEntries, indexEntries } from "./session-replay.js";
 import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps, type CatalogProviders } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
-import type { PiBackend } from "./pi-backend.js";
+import { reloadNotDoneText, type PiBackend, type ReloadOutcome } from "./pi-backend.js";
 import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
@@ -167,6 +167,9 @@ export class PiService {
 
   // User message history for the resend/reuse feature (#2)
   private _userMessages: Array<{ id: string; text: string; timestamp?: number }> = [];
+  /** An errored attempt's "turn ended early" card, held until agent_end says whether Pi will
+   *  retry it. See AgentTranslateState.pendingStopNote. */
+  private _pendingStopNote: { note: string | null } = { note: null };
 
   // Settings state (#3)
   private _autoCompactionEnabled = true;
@@ -501,6 +504,7 @@ export class PiService {
       toolCalls: this.currentAssistantToolCalls,
       now: Date.now(),
       prepareArgs: (toolName, args) => this._prepareToolArgs(toolName, args),
+      pendingStopNote: this._pendingStopNote,
     });
 
     // The run/streaming flags are owned by the backend — apply the event-stream mutations
@@ -718,7 +722,12 @@ export class PiService {
         return true;
 
       case "reload": {
-        await this.backend?.reloadContext();
+        const outcome = await this.reloadContext();
+        const notDone = reloadNotDoneText(outcome);
+        if (notDone) {
+          this.emit({ type: "custom-message", data: { customType: "info", content: notDone, timestamp: Date.now() } });
+          return true;
+        }
         // Re-send initial messages so the webview reflects updated extensions/skills
         await this.sendInitialMessages();
         this.emitSlashCommands();
@@ -1221,7 +1230,7 @@ export class PiService {
   getUsageStats(): UsageStats {
     // Raw token counts + context come from the backend primitive (SdkService sums its session
     // entries). The cost policy is the pure, tested computeUsageStats (src/usage-stats.ts).
-    const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+    const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costFromProvider: "none" as const, contextPercent: null, contextWindow: 0 };
     return computeUsageStats(u, this.activeCostRates(),
       costWithheldReason(this._model?.provider, this._model?.id));
   }
@@ -1255,12 +1264,10 @@ export class PiService {
   get sessionIdValue(): string | null { return this.sessionId; }
   get initialized(): boolean { return this.session !== null; }
 
-  /** Reload context files / extensions / skills in-session. False when the session has no
-   *  in-session reload, so callers can explain instead of reaching for a raw session.
-   *  Replaces the former `rawSession: any` getter that let extension.ts call .reload() straight
-   *  through the PiBackend seam. */
-  async reloadContext(): Promise<boolean> {
-    return (await this.backend?.reloadContext()) ?? false;
+  /** Reload context files / extensions / skills in-session. Anything but "reloaded" means
+   *  nothing was reloaded; reloadNotDoneText says why. */
+  async reloadContext(): Promise<ReloadOutcome> {
+    return (await this.backend?.reloadContext()) ?? "unsupported";
   }
   /** Expose the model runtime for dynamic model pickers in the webview */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
