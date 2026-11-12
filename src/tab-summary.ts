@@ -1,6 +1,6 @@
 // Tab-title summary — the pure core of PiService.generateTabSummary (the lightweight side-call
-// that turns the first user message into a 3-word tab title, given to BOTH runtimes since the
-// Rust binary has no summarize RPC). The ModelRuntime call stays in PiService; the prompt/
+// that turns the first user message into a 3-word tab title). The ModelRuntime call stays in
+// PiService; the prompt/
 // context construction and the output cleaning live here so they're unit-tested.
 
 export const TAB_SUMMARY_SYSTEM_PROMPT =

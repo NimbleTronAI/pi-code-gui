@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { PiPackageService, InstalledPackage, MarketplacePackage, RustPackageInfo } from "./pi-package-service.js";
+import type { PiPackageService, InstalledPackage, MarketplacePackage } from "./pi-package-service.js";
 import type { Runtime } from "./types.js";
 
 /**
@@ -82,8 +82,6 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
   private focusedRuntime: Runtime = "typescript";
   /** Sources actually loaded ("active") by the focused runtime. */
   private activeSources = new Set<string>();
-  /** Provenance / safety signals per installed source (from `rust-pi info`). */
-  private installedSafety = new Map<string, RustPackageInfo>();
 
   constructor(private pkgService: PiPackageService) {}
 
@@ -107,31 +105,10 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
 
   private async recomputeActive(): Promise<void> {
     try {
-      this.activeSources = await this.pkgService.computeActiveSources(this.focusedRuntime, this.installed);
+      this.activeSources = await this.pkgService.computeActiveSources(this.installed);
     } catch {
       this.activeSources = new Set(this.installed.map((p) => p.source));
     }
-  }
-
-  /** Fetch provenance/safety signals for installed packages (background, cached). */
-  private loadSafetyInfo(): void {
-    for (const pkg of this.installed) {
-      if (this.installedSafety.has(pkg.source)) { continue; }
-      this.pkgService.getSafetyInfo(pkg.source).then((info) => {
-        if (info) { this.installedSafety.set(pkg.source, info); this.fireRefresh(); }
-      }).catch(() => {});
-    }
-  }
-
-  /** "risk: low · caps: none · npm" style summary, or "" when no signals known. */
-  private safetySummary(source: string): string {
-    const s = this.installedSafety.get(source);
-    if (!s) { return ""; }
-    const parts: string[] = [];
-    if (s.risk) { parts.push(`risk: ${s.risk}`); }
-    if (s.capabilities) { parts.push(`caps: ${s.capabilities}`); }
-    if (s.source) { parts.push(s.source); }
-    return parts.join("  ·  ");
   }
 
   // ── Refresh ──────────────────────────────────────────
@@ -141,7 +118,6 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     if (explicitSearch) { this.searchQuery = searchQuery; }
     await this.loadInstalled();
     await this.recomputeActive();
-    this.loadSafetyInfo();
     await this.loadUpdates();
     await this.loadInstalledEnrichment();
     // Re-search when an explicit query was given (including clearing to ""),
@@ -445,25 +421,6 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
       hpItem.command = { command: "pi-code-gui.openUrl", title: "Open Homepage", arguments: [mp.homepage] };
       hpItem.tooltip = mp.homepage;
       children.push(hpItem);
-    }
-
-    // ── 4b. Safety / provenance (installed; from rust-pi info) ──
-    if (installed) {
-      const summary = this.safetySummary(installed.source);
-      if (summary) {
-        const safetyItem = new PkgTreeItem(summary, "pkg-overview-safety");
-        safetyItem.iconPath = new vscode.ThemeIcon("shield");
-        const s = this.installedSafety.get(installed.source);
-        safetyItem.tooltip = new vscode.MarkdownString(
-          `**Safety signals** (Rust catalog)\n\n` +
-          (s?.risk ? `- Risk: ${s.risk}\n` : "") +
-          (s?.confidence ? `- Confidence: ${s.confidence}\n` : "") +
-          (s?.capabilities ? `- Capabilities: ${s.capabilities}\n` : "") +
-          (s?.categories ? `- Categories: ${s.categories}\n` : "") +
-          (s?.source ? `- Source: ${s.source}\n` : ""),
-        );
-        children.push(safetyItem);
-      }
     }
 
     // ── 5. Actions ──

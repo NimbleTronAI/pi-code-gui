@@ -7,17 +7,12 @@ type Any = ReturnType<typeof JSON.parse>;
 const STAR = "★";
 const CHECK = "$(check)";
 
-test("composeThinkingStatus: not live → read-only reasoning badge", () => {
-  assert.deepEqual(composeThinkingStatus({ live: false, reasoningOn: true, level: "high" }), { text: "reasoning: on", clickable: false });
-  assert.deepEqual(composeThinkingStatus({ live: false, reasoningOn: false, level: "off" }), { text: "reasoning: off", clickable: false });
+test("composeThinkingStatus: off → 'thinking: off'", () => {
+  assert.equal(composeThinkingStatus("off"), "thinking: off");
 });
 
-test("composeThinkingStatus: live + off → clickable 'thinking: off'", () => {
-  assert.deepEqual(composeThinkingStatus({ live: true, reasoningOn: false, level: "off" }), { text: "thinking: off", clickable: true });
-});
-
-test("composeThinkingStatus: live + a level → 'thinking: on · reasoning: <level>', clickable", () => {
-  assert.deepEqual(composeThinkingStatus({ live: true, reasoningOn: true, level: "xhigh" }), { text: "thinking: on · reasoning: xhigh", clickable: true });
+test("composeThinkingStatus: a level → 'thinking: on · reasoning: <level>'", () => {
+  assert.equal(composeThinkingStatus("xhigh"), "thinking: on · reasoning: xhigh");
 });
 
 test("pickDefaultReasoningLevel: restores the last level when still supported", () => {

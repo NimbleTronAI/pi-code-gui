@@ -4,13 +4,10 @@
 // thinking.type + reasoning_effort/effort fields). vscode-free so the composed chip text, the
 // restore-last-level rule, the toggle target, and the picker rows are all unit-tested.
 
-/** The composed status-bar chip: text + whether it's an actionable (clickable) control. A
- *  transport that can't transmit the level (some Rust provider apis) degrades to a read-only
- *  "reasoning: on/off" badge — the only real axis there. Pure. */
-export function composeThinkingStatus(opts: { live: boolean; reasoningOn: boolean; level: string }): { text: string; clickable: boolean } {
-  if (!opts.live) { return { text: `reasoning: ${opts.reasoningOn ? "on" : "off"}`, clickable: false }; }
-  if (opts.level === "off") { return { text: "thinking: off", clickable: true }; }
-  return { text: `thinking: on · reasoning: ${opts.level}`, clickable: true };
+/** The composed status-bar chip text: "thinking: off", or "thinking: on · reasoning: <level>".
+ *  Pure. */
+export function composeThinkingStatus(level: string): string {
+  return level === "off" ? "thinking: off" : `thinking: on · reasoning: ${level}`;
 }
 
 /** The reasoning level to apply when Thinking is turned on with no explicit choice: the last

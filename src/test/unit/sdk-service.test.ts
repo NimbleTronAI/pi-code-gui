@@ -1,7 +1,6 @@
 // Headless tests for SdkService.initialize() — the 12-step TS-SDK resolve→load→
 // adapt→auth→model→resources→tools→session sequence. This was the audits' #1
-// coverage gap (the DEFAULT runtime's init had zero tests, while the Rust init is
-// fully covered). SdkService is vscode-free: every environment dependency (config,
+// coverage gap (the init had zero tests). SdkService is vscode-free: every environment dependency (config,
 // cwd, dynamic module import, fs, bridge-tool assembly, UI nudge) is injected via
 // SdkDeps, so the real init path runs here against fake SDK/AI modules + stubbed deps.
 import { test } from "node:test";
@@ -87,7 +86,7 @@ function makeEnv(opts: {
     readFileUtf8: async () => { if (opts.piAiPackageJson === undefined) { throw new Error("no pkg (skip version check)"); } return opts.piAiPackageJson; },
     notifyOutdatedPiAi: (installed, supported, belowFloor) => { notified.push(installed); notices.push([installed, supported, belowFloor]); },
     buildBridgeTools: () => [],
-    catalogProviders: async () => ({}),
+    catalogProviders: () => ({}),
     confirmRendererConsent: async () => true,
   };
   return { host, deps, notified, notices };
@@ -322,10 +321,9 @@ test("createAgentSession throwing → 'createAgentSession failed'", async () => 
   assert.match(out.error ?? "", /createAgentSession failed/);
 });
 
-test("the first TS session reconciles against the runtime catalog", async () => {
-  // R9: the reconcile awaits deps.catalogProviders() — PiService's waits for the catalog source — so
-  // even the window's first session takes the model's thinking capability from Pi's catalog, not
-  // from whatever the source held while it was still loading.
+test("a session reconciles its model's thinking capability against the injected catalog", async () => {
+  // The runtime model reports no reasoning; the catalog (deps.catalogProviders, the bundled
+  // registry in production) says it reasons, so the configured level survives the init clamp.
   const rt = { setRuntimeApiKey: async () => {}, getAvailable: async () => [{ provider: "acme", id: "m1", name: "m1" }], getModel: () => null, getAuth: async () => undefined, refresh: async () => {} };
   const modules = (absPath: string): Any => {
     if (absPath.includes("pi-ai/dist/index.js")) { return fakeAi(); }
@@ -335,7 +333,7 @@ test("the first TS session reconciles against the runtime catalog", async () => 
     throw new Error(`unexpected import: ${absPath}`);
   };
   const { host, deps } = makeEnv({ modules, config: { defaultThinkingLevel: "high" } });
-  deps.catalogProviders = async () => { await new Promise((r) => setTimeout(r, 30)); return { acme: { models: [{ id: "m1", reasoning: true }] } }; };
+  deps.catalogProviders = () => ({ acme: { models: [{ id: "m1", reasoning: true }] } });
   const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
   assert.ok(out.success, out.error ?? "initialize() reported failure with no error message");
   assert.equal(out.thinkingLevel, "high", "the catalog's reasoning flag kept the configured level");
@@ -473,8 +471,7 @@ test("defaultModelProvider/defaultModelId override the auto-selected model", asy
 // It was applied once, at init, so switching models mid-session silently dropped it: the SDK
 // reads model.contextWindow for BOTH the auto-compaction trigger and the context-% denominator,
 // so the user kept a budget in settings while the session quietly reverted to the model's native
-// window. Rust never had the gap (applyState re-clamps on every get_state), so the same action
-// behaved differently per runtime.
+// window.
 test("setModel re-applies the context budget, like initialize does", async () => {
   const setModels: Any[] = [];
   const { svc } = makeService();

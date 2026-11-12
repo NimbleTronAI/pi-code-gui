@@ -83,24 +83,21 @@ test("commands register BEFORE anything in activate() that can block", () => {
   const iEarly = body.indexOf("registerEarlyCommands(context)");
   const iPhase = body.indexOf("registerPhaseCommands(context)");
   const iWait = body.indexOf("Waiting for workspace folders");
-  const iDetect = body.indexOf("Step 3c: Detect installed runtimes");
 
-  assert.ok(iEarly > 0 && iPhase > 0 && iWait > 0 && iDetect > 0, "all four anchors present");
+  assert.ok(iEarly > 0 && iPhase > 0 && iWait > 0, "all three anchors present");
   assert.ok(iEarly < iWait, "early commands must precede the workspace-folder wait (up to 2.5s)");
   assert.ok(iPhase < iWait, "phase commands must precede it too");
-  assert.ok(iEarly < iDetect && iPhase < iDetect, "…and precede runtime detection / the install offer");
 });
 
-test("the runtime detection + install offer is NOT awaited by activate()", () => {
+// The user closed a tab while its session was starting: SdkService's dispose nulls the session, so
+// initialize() reports a failure — but nothing failed from the user's side, and a "Pi init failed …
+// Retry" there would offer to reopen the tab they just closed. initSessionInBackground needs a real
+// VS Code (panels, toasts), so this is structural.
+test("a session the user closed while it was starting shows no init-failed error and offers no Retry", () => {
   const ext = readFileSync(join(srcDir, "extension.ts"), "utf-8");
-  // offerInitialRuntimeChoice awaits a QuickPick with ignoreFocusOut AND an install, so awaiting
-  // that chain at activation level meant activate() never resolved until the user finished.
-  const detect = ext.slice(ext.indexOf("Step 3c: Detect installed runtimes"));
-  const block = detect.slice(0, detect.indexOf("Step 4"));
-  assert.match(block, /void \(async \(\) => \{/, "the detection chain must be detached");
-  assert.doesNotMatch(
-    block,
-    /^\s{2}await (refreshRuntimeContext|offerInitialRuntimeChoice|warnIfUntestedRustBinary)/m,
-    "no activate()-level await on the detection/install chain",
-  );
+  const body = ext.slice(ext.indexOf("async function initSessionInBackground("));
+  const guard = body.search(/if \(!sessions\.includes\(sw\)\) \{\s*return;\s*\}/);
+  assert.notEqual(guard, -1, "initSessionInBackground returns quietly for a session that was closed");
+  assert.ok(guard > body.indexOf("sw.piService.initialize("), "the guard follows the initialize call");
+  assert.ok(guard < body.indexOf("if (!result.success)"), "and comes before any failure is shown");
 });

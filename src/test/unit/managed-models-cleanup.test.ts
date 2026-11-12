@@ -409,9 +409,7 @@ test("activate() runs the cleanup on every activation, before its first await, w
   assert.doesNotMatch(src.slice(src.indexOf("export async function activate("), src.indexOf("cleanupManagedModelsAtStartup(")).split("\n").slice(-3).join("\n"), /\bif\s*\(/, "not behind a flag");
 });
 
-test("C4: the cleanup module stands alone — no Rust, no rust-* or catalog-source import, no vscode", () => {
+test("C4: the cleanup module stands alone — no vscode import", () => {
   const text = readFileSync(join(repo, "src", "managed-models-cleanup.ts"), "utf-8");
-  assert.doesNotMatch(text, /rust/i);
-  assert.doesNotMatch(text, /from\s+["']\.\/(rust-|catalog-source)/);
   assert.doesNotMatch(text, /from\s+["']vscode["']/);
 });

@@ -1,6 +1,6 @@
 // Tests for secret redaction. The output channel persists to on-disk log files that users attach
-// to bug reports, and the same strings reach the webview as error cards (init failures, and the
-// Rust child's stderr tail attached to RPC rejections). Before this, nothing filtered them.
+// to bug reports, and the same strings reach the webview as error cards (init failures).
+// Before this, nothing filtered them.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { redactSecrets, registerSecret, clearRegisteredSecrets } from "../../logger.js";
@@ -48,7 +48,7 @@ test("registration ignores empty/short values so ordinary text isn't mangled", (
 
 test("ordinary log lines pass through untouched", () => {
   clearRegisteredSecrets();
-  const line = "RustProcess: spawn /home/node/.local/bin/rust-pi --mode rpc --model deepseek-v4-pro";
+  const line = "[pi] session started: model deepseek/deepseek-v4-pro, cwd /home/node/project";
   assert.equal(redactSecrets(line), line);
   assert.equal(redactSecrets(""), "");
 });

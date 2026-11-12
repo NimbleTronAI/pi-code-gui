@@ -97,7 +97,7 @@ test("an expired-OAuth failure is reported as a sign-in problem, not a missing A
   const doc = (globalThis as any).document;
   doc.getElementById("chat-container").innerHTML = "";
   handlers.addErrorMessage(
-    "Pi init failed: Failed to start Rust Pi: Rust process exited immediately (code 1) — last stderr: " +
+    "Pi init failed: " +
     "Error: Authentication error: OAuth token refresh failed for: anthropic " +
     '(Anthropic token refresh failed: {"error":"invalid_grant"})\n' +
     "OAuth token expired or invalid\nSuggestions:\n  • Run 'pi login <provider>' to re-authenticate\n" +
@@ -122,7 +122,7 @@ test("a genuine missing-API-key error still classifies as one", () => {
 // /login — and the only place to type it was the box we had just disabled, so a session that
 // failed to authenticate could not be recovered from inside its own tab.
 test("a failed init leaves the input USABLE, not disabled", () => {
-  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  handlers.handleStatus({ ready: false, model: "init failed" });
   const st = stateMod.state;
   assert.equal(st.promptInput.disabled, false, "disabling this is what trapped the user");
   assert.equal(st.sendButton.disabled, false);
@@ -132,7 +132,7 @@ test("a failed init leaves the input USABLE, not disabled", () => {
 
 test("with no backend, a local slash command is still dispatched", () => {
   const doc = (globalThis as any).document;
-  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  handlers.handleStatus({ ready: false, model: "init failed" });
   const st = stateMod.state;
   const sent: any[] = [];
   (globalThis as any).window.__vscode.postMessage = (m: any) => sent.push(m);
@@ -145,7 +145,7 @@ test("with no backend, a local slash command is still dispatched", () => {
 
 test("with no backend, a free-form prompt is refused with a way forward — not swallowed", () => {
   const doc = (globalThis as any).document;
-  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  handlers.handleStatus({ ready: false, model: "init failed" });
   const st = stateMod.state;
   const sent: any[] = [];
   (globalThis as any).window.__vscode.postMessage = (m: any) => sent.push(m);
@@ -157,7 +157,7 @@ test("with no backend, a free-form prompt is refused with a way forward — not 
 });
 
 test("a ready session clears the limited mode", () => {
-  handlers.handleStatus({ runtime: "rust", ready: true, model: { provider: "anthropic", id: "x" } });
+  handlers.handleStatus({ ready: true, model: { provider: "anthropic", id: "x" } });
   assert.equal(stateMod.state.sessionUnavailable, false);
   assert.equal(stateMod.state.promptInput.disabled, false);
 });

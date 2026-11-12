@@ -1,103 +1,21 @@
-// PiBackend — the formal contract for the ~15% of a session that genuinely diverges
-// between the two runtimes. PiService (the orchestrator) holds one `PiBackend` and
-// delegates the primitive operations to it. This REDUCED the old `if (_backendKind === "rust")`
-// branching (which appeared in ~15 methods and forced null-returning SDK getters) — it did not
-// eliminate it: a handful of runtime-IDENTITY checks remain in PiService (backend selection,
-// init/dispose routing), and extension.ts still reaches past this seam via
-// PiService.sessionManagerInstance for the clone/fork/export session-file paths. Those are
-// genuinely SDK-shaped and not yet modelled here; do not read this interface as a complete
-// boundary.
+// PiBackend — the contract between PiService (the orchestrator) and SdkService (the in-process
+// Pi SDK runtime). PiService holds one `PiBackend` and delegates the primitive operations to it;
+// the interface is also the test seam that lets PiService be driven headlessly with a fake.
+// extension.ts still reaches past it via PiService.sessionManagerInstance for the
+// clone/fork/export session-file paths, so do not read it as a complete boundary.
 //
 // The split is deliberate: PRIMITIVES (send a prompt, abort, set the model on the wire,
-// read usage, …) live behind this interface and are implemented by SdkService /
-// RustService. ORCHESTRATION that merely sequences primitives + UI (cycleModel,
-// toggleAutoCompaction, pickModel, the slash-command handler, status formatting) stays
-// in PiService — it's runtime-agnostic and calls these primitives. Backends advertise
-// what they can do via `capabilities` (a data flag) rather than PiService hard-coding
-// `!isRust` conditionals.
-import { assertNever, type Runtime, type PlanMode, type ApprovalMode } from "./types.js";
+// read usage, …) live behind this interface and are implemented by SdkService. ORCHESTRATION
+// that merely sequences primitives + UI (cycleModel, toggleAutoCompaction, pickModel, the
+// slash-command handler, status formatting) stays in PiService and calls these primitives.
 import type { RawUsage } from "./usage-stats.js";
 
-/** A backend's usage snapshot. Shared shape across runtimes (RustService already used
- *  it; SdkService now computes the same from its SessionManager). It IS the cost policy's input
- *  (usage-stats.ts RawUsage), the Rust-only fields included (`uncosted*`, `costUnknown`), so a
- *  field-by-field copy of it cannot silently drop what makes a Rust cost "$??". */
+/** A backend's usage snapshot: the cost policy's input (usage-stats.ts RawUsage). */
 export type BackendUsage = RawUsage;
 
-/** What a runtime can do — replaces scattered `_backendKind === "rust"` feature gates.
- *  A capability is a property of the backend, checked by PiService's shared UI. */
-export interface BackendCapabilities {
-  readonly kind: Runtime;
-  /** In-process VS Code editor-bridge tools (vscode_*). */
-  /** Interactive custom message cards (vs. markdown fallback). */
-  /** Per-session /tools enable-disable picker. */
-  readonly toolsPicker: boolean;
-  /** Whether this backend has plan mode and an approval posture (rust-pi 0.3.0 does; the
-   *  in-process SDK has neither concept). Gates the mode strip. */
-  readonly sessionModes: boolean;
-  /** Fork/clone a session from an entry. */
-  readonly fork: boolean;
-  /** Reload context files mid-session (/reload). */
-  readonly reloadContext: boolean;
-  /** Export the conversation to HTML. */
-  readonly exportHtml: boolean;
-  /** Rename a session (/name). */
-  /** Whether PiService should intercept builtin slash commands before sending (TS),
-   *  or forward everything raw because the backend handles its own slashes (Rust). */
-  readonly interceptSlashCommands: boolean;
-  /** Whether the thinking level is transmitted on the active transport (a no-op
-   *  transport shows a read-only reasoning on/off badge rather than a graded picker).
-   *  Depends on the active model's api, so it's a method, not a static flag. */
-  thinkingLevelLive(): boolean;
-}
-
-/** Whether PiService should flip its own settings state EAGERLY on a toggle, or wait for the
- *  backend to echo the change back.
- *
- *  This is the one genuine state divergence between the runtimes: the SDK applies the setting
- *  in-process, so flipping immediately is safe and keeps the UI responsive; the Rust RPC may
- *  reject or clamp the request, so its state is only flipped by the host callback on success.
- *
- *  Exhaustive on Runtime — a third runtime is a compile error here, which is the point: it must
- *  declare a flip policy rather than silently inheriting "eager". Expressed as a predicate
- *  because the previous inline form needed an if-branch whose only body was a comment. */
-export function flipsStateEagerly(runtime: Runtime): boolean {
-  switch (runtime) {
-    case "typescript": return true;
-    case "rust": return false;
-    default: return assertNever(runtime, "runtime");
-  }
-}
-
-/** The single source of truth for a runtime's DEFAULT capability flags. Both backends and the
- *  PiService no-backend fallback derive from this so the defaults can't drift apart (adding a
- *  capability to BackendCapabilities is now one edit here, compile-checked everywhere).
- *
- *  Every gated feature is TS-only (out-of-process RPC has no host-tool injection, no
- *  fork/reload/rename RPCs, and owns its own slash handling), so the flags are `!rust` — EXCEPT
- *  exportHtml, which both runtimes support. `thinkingLevelLive` here is the STATIC default
- *  (`!rust`, correct for the SDK and for the no-model fallback); RustService overrides it with a
- *  per-model check (`thinkingLevelIsLive(model.api)`) since it's dynamic there. */
-export function backendCapabilityDefaults(runtime: Runtime): BackendCapabilities {
-  const rust = runtime === "rust";
-  return {
-    kind: runtime,
-    toolsPicker: !rust,
-    sessionModes: rust,
-    fork: !rust,
-    reloadContext: !rust,
-    exportHtml: true,
-    interceptSlashCommands: !rust,
-    thinkingLevelLive: () => !rust,
-  };
-}
-
-/** The primitive, runtime-divergent operations PiService delegates. Implemented by
- *  SdkService (in-process SDK) and RustService (out-of-process RPC). Orchestration
- *  and UI stay in PiService and call through this. */
+/** The primitive operations PiService delegates to SdkService. Orchestration and UI stay in
+ *  PiService and call through this. */
 export interface PiBackend {
-  readonly capabilities: BackendCapabilities;
-
   /** Send a user turn / steer / follow-up. `mode` is "steer" | "queue" | undefined. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendPrompt(text: string, images: any[] | undefined, mode: string | undefined): Promise<void>;
@@ -107,59 +25,33 @@ export interface PiBackend {
   abortBash(): void;
   /** Compact the conversation context. */
   compact(): Promise<void>;
-  /** The active model identity — OWNED by the backend (Rust captures it from get_state /
-   *  applyState; the SDK sets it at init + on setModel). PiService reads this instead of
-   *  holding its own `_model`. `api`/`reasoning` carry the transport + reasoning flag the
-   *  UI uses to decide whether the thinking level is actually transmitted. */
+  /** The active model identity — OWNED by the backend (set at init + on setModel). PiService
+   *  reads this instead of holding its own `_model`. */
   getModel(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null;
   /** Set the active model on the wire. Returns the resolved model identity applied
    *  (or null if it couldn't be set); the backend also updates its own getModel(). */
   setModel(provider: string, id: string): Promise<{ id?: string; name?: string; provider?: string } | null>;
-
-  // ── Session modes (capabilities.sessionModes) ──────────────────────────────
-  // Present on every backend so PiService can call them without narrowing to a concrete class.
-  // The SDK's are inert; rust-pi's drive set_plan_mode / approve_plan / reject_plan. These
-  // exist because the first cut reached through the seam with `as unknown as` casts, which
-  // compiled while asserting a shape the interface never promised.
-
-  /** Plan-mode lifecycle, tracked client-side: rust-pi reports none of it. */
-  readonly planMode: PlanMode;
-  /** The approval posture this session was SPAWNED with — fixed for its lifetime. */
-  readonly approvalMode: ApprovalMode;
-  /** The session file, so a restart can resume rather than start empty. */
-  readonly currentSessionPath: string | null;
-  setPlanMode(on: boolean): Promise<PlanMode>;
-
-  /** Persist a display name for this session. Both runtimes own a native way to do it — the SDK
-   *  through its session, rust-pi through the set_session_name RPC — so this is a plain seam
-   *  method rather than a capability flag with nothing to gate. */
+  /** Persist a display name for this session through the SDK session. */
   setSessionName(name: string): Promise<boolean>;
-  /** Approve the submitted plan; returns its text. Does not resume the agent. */
-  approvePlan(): Promise<string | null>;
-  rejectPlan(): Promise<boolean>;
-  /** The active thinking level — OWNED by the backend (Rust captures it from
-   *  get_state/applyState; the SDK sets it at init + on setThinkingLevel). PiService reads
-   *  this instead of holding its own `_thinkingLevel`. */
+  /** The active thinking level — OWNED by the backend (set at init + on setThinkingLevel).
+   *  PiService reads this instead of holding its own `_thinkingLevel`. */
   getThinkingLevel(): string;
-  /** Set the thinking level on the wire. Returns the level actually in effect after
-   *  the backend clamps/validates (may differ from the request); the backend also updates
-   *  its own getThinkingLevel(). */
+  /** Set the thinking level on the wire. Returns the level actually in effect; the backend also
+   *  updates its own getThinkingLevel(). */
   setThinkingLevel(level: string): Promise<string>;
   /** Update the STORED thinking level WITHOUT a wire call — the echo path for a streamed
    *  `thinking_level_changed` event (the wire already changed; we're just syncing state). */
   applyThinkingLevel(level: string): void;
   /** The in-flight run flag + the streaming flag — OWNED by the backend (both are driven from
    *  the agent event stream via translateAgentEvent, which PiService applies through these
-   *  setters). PiService reads them for the preempting-prompt guard and the status bar; RustService
-   *  reads its OWN copy directly for the agent_end dedupe and the mid-turn usage guard, so its
-   *  event loop doesn't round-trip through a host callback. */
+   *  setters). PiService reads them for the preempting-prompt guard, the abort watchdog and the
+   *  status bar. */
   getAgentRunActive(): boolean;
   setAgentRunActive(v: boolean): void;
   isStreaming(): boolean;
   setStreaming(v: boolean): void;
-  /** Reload context files / extensions / skills in-session. Returns false when the runtime has
-   *  no in-session reload (Rust loads them at startup), so the caller can say so instead of
-   *  reaching through to a raw session object. Guarded by capabilities.reloadContext. */
+  /** Reload context files / extensions / skills in-session. Returns false when the session has
+   *  no reload, so the caller can say so instead of reaching through to a raw session object. */
   reloadContext(): Promise<boolean>;
   /** Toggle auto-compaction on the backend. */
   setAutoCompaction(enabled: boolean): Promise<void>;
@@ -172,14 +64,10 @@ export interface PiBackend {
   /** Session entries for the Open Sessions tree (display only). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getEntries(): any[];
-  /** The runtime's own slash commands — the agent-provided ones only (Rust reports its
-   *  extensions/templates/skills over RPC; the SDK introspects its extension runner and
-   *  adds the builtin prompt templates). PiService appends the shared GUI + capability
-   *  commands, so this returns just the per-runtime slice. */
+  /** The agent-provided slash commands (the session's extension commands + the builtin prompt
+   *  templates). PiService appends the GUI/session commands. */
   getSlashCommands(): Array<{ cmd: string; desc: string; source: string }>;
-  /** Models available for the /model picker. Rust returns its own get_available_models
-   *  catalog (includes custom models.json entries); the SDK queries its ModelRuntime. The
-   *  picker reads this instead of branching on runtime for the data source. */
+  /** Models available for the /model picker (the SDK's ModelRuntime). */
   getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>>;
   /** Promote a queued follow-up to a steer message. */
   promoteToSteer(text: string): void;

@@ -16,7 +16,7 @@ let _warnedNoWorkspace = false;
  * there makes it treat VS Code's internals as "the project" (grepping
  * extensionHostProcess.js, writing sessions under that path, EEXIST collisions),
  * and made the Past Sessions list filter against a different path than session
- * creation, silently dropping Rust sessions.
+ * creation, silently dropping sessions.
  */
 export function resolveWorkspaceCwd(): string {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;

@@ -17,7 +17,6 @@
   "keywords": [
     "pi",
     "coding-agent",
-    "pi-agent-rust",
     "ai",
     "chat",
     "agent",
@@ -126,28 +125,8 @@
         }
       },
       {
-        "command": "pi-code-gui.addSessionWithRuntime",
-        "title": "PiGui: Add Pi Session (Choose Runtime)"
-      },
-      {
         "command": "pi-code-gui.addSessionTypescript",
         "title": "PiGui: Add TypeScript Pi Session"
-      },
-      {
-        "command": "pi-code-gui.addSessionRust",
-        "title": "PiGui: Add Rust Pi Session"
-      },
-      {
-        "command": "pi-code-gui.setDefaultRuntime",
-        "title": "PiGui: Set Default Runtime"
-      },
-      {
-        "command": "pi-code-gui.switchRuntime",
-        "title": "PiGui: Switch Runtime (New Session)"
-      },
-      {
-        "command": "pi-code-gui.installRust",
-        "title": "PiGui: Install Rust Pi"
       },
       {
         "command": "pi-code-gui.revealEntry",
@@ -343,103 +322,13 @@
         "pi-code-gui.contextBudget": {
           "type": "number",
           "default": 0,
-          "description": "Per-session token budget, for TypeScript sessions only (Rust Pi always compacts at the model's own context window). 0 = use model default. Increase for longer conversations before auto-compaction."
+          "description": "Per-session token budget, for TypeScript sessions only. 0 = use model default. Increase for longer conversations before auto-compaction."
         },
         "pi-code-gui.sessionDir": {
           "type": "string",
           "default": "",
           "description": "Custom session storage directory for session .jsonl files. Empty = use the pi SDK default (~/.pi/agent/sessions/). Equivalent to --session-dir.",
           "scope": "machine-overridable"
-        },
-        "pi-code-gui.defaultRuntime": {
-          "type": "string",
-          "enum": [
-            "typescript",
-            "rust"
-          ],
-          "default": "typescript",
-          "enumDescriptions": [
-            "TypeScript Pi — runs in-process for the deepest VS Code integration: 16 editor-bridge tools (diagnostics, symbols, types, format, apply-edit), interactive extension cards, and per-session tool control. Needs Node.js + npm.",
-            "Rust Pi — a fast, self-contained binary (no Node.js): ~100 ms startup, low memory, strong built-in safety. Trade-off: no VS Code editor-bridge tools, and extension cards fall back to plain markdown."
-          ],
-          "markdownDescription": "The Pi runtime used for **new** sessions. Resuming a session always reuses the runtime that created it, and if only one runtime is installed that one is used regardless of this setting. Change it anytime via **PiGui: Set Default Runtime** — your choice is remembered."
-        },
-        "pi-code-gui.sessionHistoryScope": {
-          "type": "string",
-          "enum": [
-            "unified",
-            "perRuntime"
-          ],
-          "default": "unified",
-          "enumDescriptions": [
-            "Show sessions from both runtimes in one list, each tagged with a TS or Rust badge.",
-            "Show only sessions created by your current default runtime."
-          ],
-          "markdownDescription": "Which past sessions appear under **Sessions → Past Sessions**. The runtimes store history separately; this only controls what the list shows. Each session is always reopened with the runtime that created it."
-        },
-        "pi-code-gui.rustBinaryPath": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Absolute path to the Rust Pi `pi` binary. Leave empty to auto-detect (`PI_BINARY_PATH`, the extension-managed install, `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin`, then `PATH`; also tries `legacy-pi`/`rust-pi`). Set this only if your binary lives somewhere unusual. The managed install no longer sets this; if it holds a `…/globalStorage/nimbletron.pi-code-gui/rust-pi/pi` path written by an older version, you can remove it. While it is empty, a managed install takes precedence over binaries in the common locations and on `PATH`; to switch to one you installed yourself, run **PiGui: Install Rust Pi → Detect an existing binary**, which removes the extension-managed copy once the other binary runs.",
-          "scope": "machine"
-        },
-        "pi-code-gui.rustInstallMethod": {
-          "type": "string",
-          "enum": [
-            "managed",
-            "curl",
-            "manual"
-          ],
-          "default": "managed",
-          "enumDescriptions": [
-            "Download the verified prebuilt binary from GitHub releases into an extension-managed location (falls back to `cargo install` if a Rust toolchain is present). No PATH changes, no remote scripts.",
-            "Run the official `curl | sh` installer in a terminal. Easiest and sets up PATH, but runs a remote script and may rename an existing TypeScript `pi` command to `legacy-pi`.",
-            "Open the install guide; the extension detects the binary after you finish installing it yourself."
-          ],
-          "markdownDescription": "How **PiGui: Install Rust Pi** installs the binary when you opt in. You can still choose at install time; this just pre-selects an option.",
-          "scope": "machine"
-        },
-        "pi-code-gui.rustExtensionPolicy": {
-          "type": "string",
-          "enum": [
-            "safe",
-            "balanced",
-            "permissive"
-          ],
-          "default": "balanced",
-          "enumDescriptions": [
-            "Most restrictive — extensions get minimal capabilities. Best if you run untrusted extensions.",
-            "Recommended — sensible capability limits for everyday use.",
-            "Most open — grants extensions broad capabilities. Choose only for extensions you trust."
-          ],
-          "markdownDescription": "Capability access granted to Rust Pi **extensions** (passed as `--extension-policy`). Governs third-party extension hostcalls (exec/http/file) only — built-in tools and Rust's catastrophic-command blocking are always enforced regardless of this setting."
-        },
-        "pi-code-gui.rustExtensions": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "enabled",
-            "disabled"
-          ],
-          "default": "auto",
-          "enumDescriptions": [
-            "Recommended — load extensions unless the workspace has TypeScript-format Pi extensions under .pi/ (which the Rust runtime can't parse). Avoids the startup conflict automatically.",
-            "Always let Rust discover extensions. Use only when your workspace has Rust-compatible extensions; a TypeScript-format .pi/ will prevent Rust sessions from starting.",
-            "Never load extensions under Rust (pure built-in tools). Most robust."
-          ],
-          "markdownDescription": "Whether **Rust** Pi sessions discover and load Pi extensions (controls the `--no-extensions` flag). The Rust runtime aborts startup when it meets the in-process TypeScript SDK's `.pi/` extensions (`missing field 'parameters'`). `auto` disables discovery only when such extensions are detected; `disabled` always disables it; `enabled` never does. Does not affect the TypeScript runtime."
-        },
-        "pi-code-gui.maxToolIterations": {
-          "type": "number",
-          "default": 0,
-          "minimum": 0,
-          "markdownDescription": "Maximum tool calls the **Rust** agent may make in a single turn (`PI_MAX_TOOL_ITERATIONS`). `0` (default) uses Rust Pi's own limit of 50. When a turn hits the ceiling it stops mid-task — the reply is cut off and the agent has not finished — so raise this for long refactors or codebase-wide reviews, which reach 50 routinely. Applies to sessions started after the change."
-        },
-        "pi-code-gui.startupBudgetSeconds": {
-          "type": "number",
-          "default": 15,
-          "minimum": 15,
-          "markdownDescription": "How long to wait for a **Rust** session to answer its first request before giving up. Rust Pi usually replies in well under a second; slow starts of 30-90s have been seen on healthy machines, but nobody waits a minute at a blank panel, so the default stays at 15s and the extension tells you it is still waiting rather than making you guess. Raise it only if you actually hit slow starts. A genuine failure (the process exits, or answers with an error) fails immediately rather than waiting this out."
         },
         "pi-code-gui.autoOpenOnStart": {
           "type": "boolean",
@@ -458,30 +347,6 @@
             "Open the chat as a tab in the active editor group, leaving your layout as it is."
           ],
           "markdownDescription": "Where a Pi chat opens. `beside` splits off a second group (the default, and the previous behaviour); `active` opens the chat as a tab in the group you are already in — useful on a single screen where a split costs half the width. Only affects newly opened chats: a chat restored after a reload returns to wherever it was."
-        },
-        "pi-code-gui.defaultMode": {
-          "type": "string",
-          "enum": [
-            "code",
-            "plan"
-          ],
-          "default": "code",
-          "enumDescriptions": [
-            "Start sessions ready to edit — the agent runs changes as it decides.",
-            "Start sessions in plan mode — the agent drafts a plan and edits wait for your approval."
-          ],
-          "markdownDescription": "Which mode a **Rust** session starts in. Changeable per session from the strip above the prompt, where the same choice can be made the new default. Plan mode holds writes until you approve a plan. Not used by the TypeScript runtime, which has no plan mode."
-        },
-        "pi-code-gui.rustAgentDir": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Directory used as the **Rust** agent home (`PI_CODING_AGENT_DIR`). Empty (default) shares your own `~/.pi/agent`, so the Rust runtime reads the same `auth.json` as the Pi CLI and a `/login` applies to both with nothing copied. The extension merges per-model entries into that folder's `models.json`, each marked `_managedBy`, and never touches entries you wrote yourself — only for providers you have credentials for. Set this to another path to keep the Rust runtime's agent home separate; its credentials are then separate too, so OAuth logins made against `~/.pi/agent` will not apply there (API keys from the environment still work). Does not move your sessions — use `pi-code-gui.sessionDir` for that.",
-          "scope": "machine-overridable"
-        },
-        "pi-code-gui.confirmApprovalRestart": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "Confirm before changing the approval mode. Rust Pi reads that setting only when a session starts, so a change restarts the session (the conversation is reloaded from disk and carries forward). Turn this off — or choose **Restart, don't ask again** in the prompt — to switch without confirming."
         }
       }
     },
@@ -535,11 +400,6 @@
           "group": "3_sessionActions"
         },
         {
-          "command": "pi-code-gui.switchRuntime",
-          "when": "view == pi-code-gui.sessions && viewItem == session && pi-code-gui.bothAvailable",
-          "group": "3_sessionActions"
-        },
-        {
           "command": "pi-code-gui.resumePastSession",
           "when": "view == pi-code-gui.sessions && viewItem == pastSessionEntry",
           "group": "navigation"
@@ -572,19 +432,9 @@
           "group": "navigation"
         },
         {
-          "command": "pi-code-gui.addSessionRust",
-          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
-          "group": "1_runtime@1"
-        },
-        {
           "command": "pi-code-gui.addSessionTypescript",
           "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
           "group": "1_runtime@2"
-        },
-        {
-          "command": "pi-code-gui.setDefaultRuntime",
-          "when": "view == pi-code-gui.sessions && pi-code-gui.bothAvailable",
-          "group": "1_runtime@3"
         },
         {
           "command": "pi-code-gui.filterPastSessions",
@@ -678,12 +528,9 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Pi runs an agent that executes tools and can spawn the Rust Pi binary. In an untrusted workspace the binary path, install method and agent/session directories are ignored from workspace settings.",
+      "description": "Pi runs an agent that executes tools. In an untrusted workspace the session directory is ignored from workspace settings.",
       "restrictedConfigurations": [
-        "pi-code-gui.rustBinaryPath",
-        "pi-code-gui.rustInstallMethod",
-        "pi-code-gui.sessionDir",
-        "pi-code-gui.rustAgentDir"
+        "pi-code-gui.sessionDir"
       ]
     }
   }

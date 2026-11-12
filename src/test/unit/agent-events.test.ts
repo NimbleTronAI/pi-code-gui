@@ -5,12 +5,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { translateAgentEvent, extractToolCalls, normalizeToolArgs, toolArgsPreviewText, type AgentTranslateState } from "../../agent-events.js";
+import { translateAgentEvent, extractToolCalls, normalizeToolArgs, toolArgsPreviewText, extractMessageText, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, type AgentTranslateState } from "../../agent-events.js";
 
 function makeState(over: Partial<AgentTranslateState> = {}): AgentTranslateState {
   return {
-    backendKind: "typescript",
-    agentRunActive: false,
     lookups: { entries: [], byMessageId: new Map(), byToolCallId: new Map() },
     userMessages: [],
     toolCalls: new Map(),
@@ -31,27 +29,11 @@ test("agent_start: emits agent-start and sets streaming/active, resets turn, cle
   assert.equal(r.clearToolCalls, true);
 });
 
-test("agent_end (rust, run not active): treated as the duplicate — no-op", () => {
-  const r = translateAgentEvent({ type: "agent_end", messages: [] }, makeState({ backendKind: "rust", agentRunActive: false }));
-  assert.deepEqual(r.events, []);
-  assert.equal(r.setAgentRunActive, undefined);
-  assert.equal(r.effects.reportStatus, undefined);
-  assert.equal(r.effects.rustClearQueue, undefined);
-});
-
-test("agent_end (rust, active): emits agent-end, clears rust queue, reports status", () => {
-  const r = translateAgentEvent({ type: "agent_end", messages: ["m"] }, makeState({ backendKind: "rust", agentRunActive: true }));
+test("agent_end: emits agent-end, clears the run + streaming flags, reports status", () => {
+  const r = translateAgentEvent({ type: "agent_end", messages: ["m"] }, makeState());
   assert.deepEqual(types(r), ["agent-end"]);
   assert.equal(r.setAgentRunActive, false);
   assert.equal(r.setStreaming, false);
-  assert.equal(r.effects.rustClearQueue, true);
-  assert.equal(r.effects.reportStatus, true);
-});
-
-test("agent_end (typescript): reports status but does NOT touch a rust queue", () => {
-  const r = translateAgentEvent({ type: "agent_end", messages: [] }, makeState({ backendKind: "typescript" }));
-  assert.deepEqual(types(r), ["agent-end"]);
-  assert.equal(r.effects.rustClearQueue, undefined);
   assert.equal(r.effects.reportStatus, true);
 });
 
@@ -212,15 +194,6 @@ test("message_end assistant (typescript): emits assistant-end, reports status, n
   assert.deepEqual(types(r), ["assistant-end"]);
   assert.deepEqual((r.events[0] as any).data.toolCalls, ["t1"]);
   assert.equal(r.effects.reportStatus, true);
-  assert.equal(r.effects.captureContext, undefined);
-});
-
-test("message_end assistant (rust): captures context usage before reporting status", () => {
-  const usage = { input: 42 };
-  const r = translateAgentEvent({ type: "message_end", message: { role: "assistant", content: [], usage } }, makeState({ backendKind: "rust" }));
-  assert.equal(r.effects.captureContext, true);
-  assert.deepEqual(r.effects.captureUsage, usage);
-  assert.equal(r.effects.reportStatus, true);
 });
 
 test("message_end custom: emits custom-message with entryId from the last custom entry", () => {
@@ -296,7 +269,7 @@ test("compaction_start: emits compaction-start", () => {
   assert.deepEqual(types(r), ["compaction-start"]);
 });
 
-test("compaction_end with result, no entry (Rust): falls back to a synthetic compaction entryId", () => {
+test("compaction_end with result, no entry: falls back to a synthetic compaction entryId", () => {
   const r = translateAgentEvent({ type: "compaction_end", result: { summary: "s", tokensBefore: 10 } }, makeState({ now: 5000 }));
   assert.deepEqual(types(r), ["compaction-end", "compaction-summary-message"]);
   assert.equal((r.events[1] as any).data.entryId, "compaction-5000");
@@ -327,20 +300,13 @@ test("auto_retry_start clears tool-call correlation (the retry re-runs the turn 
   assert.notEqual(translateAgentEvent({ type: "auto_retry_end", success: true, attempt: 2 }, makeState()).clearToolCalls, true);
 });
 
-// ── agent_settled (v0.1.22 terminal event) ──────────────────────────
-test("agent_settled: recognized (no unknown-drift warning), clears streaming/active, reports status", () => {
-  const r = translateAgentEvent({ type: "agent_settled" }, makeState({ backendKind: "rust", agentRunActive: true }));
+// ── agent_settled (the SDK's terminal event) ─────────────────────────
+test("agent_settled: recognized (no unknown-drift warning), clears streaming, reports status, leaves the run flag", () => {
+  const r = translateAgentEvent({ type: "agent_settled" }, makeState());
   assert.equal(r.effects.unknownType, undefined); // NOT treated as protocol drift
   assert.deepEqual(r.events, []);                  // no UI event of its own
   assert.equal(r.setStreaming, false);
-  assert.equal(r.setAgentRunActive, false);        // safety-net: un-latch the run
-  assert.equal(r.effects.reportStatus, true);
-});
-
-test("agent_settled on the SDK path: clears streaming + reports, but doesn't touch the run flag", () => {
-  const r = translateAgentEvent({ type: "agent_settled" }, makeState({ backendKind: "typescript" }));
-  assert.equal(r.setStreaming, false);
-  assert.equal(r.setAgentRunActive, undefined);    // rust-only latch guard
+  assert.equal(r.setAgentRunActive, undefined);
   assert.equal(r.effects.reportStatus, true);
 });
 
@@ -443,4 +409,66 @@ test("summarization_retry_attempt_start (compaction + branchSummary) and _finish
     assertNoJunk(r);
     assert.deepEqual(r.events, [{ type: "auto-retry-end", data: { success: true, attempt: 0 } }]);
   }
+});
+
+// ── extractMessageText (pure) ─────────────────────────────────────────
+test("extractMessageText: bare string passes through", () => {
+  assert.equal(extractMessageText("hello"), "hello");
+});
+
+test("extractMessageText: null/undefined/number/object -> ''", () => {
+  assert.equal(extractMessageText(null), "");
+  assert.equal(extractMessageText(undefined), "");
+  assert.equal(extractMessageText(42), "");
+  assert.equal(extractMessageText({ text: "x" }), "");
+});
+
+test("extractMessageText: joins only text blocks with newlines", () => {
+  const content = [{ type: "text", text: "a" }, { type: "toolCall", name: "read" }, { type: "text", text: "b" }];
+  assert.equal(extractMessageText(content), "a\nb");
+});
+
+test("extractMessageText: tolerates a null array entry (no throw)", () => {
+  const content = [null, { type: "text", text: "ok" }];
+  assert.equal(extractMessageText(content), "ok");
+});
+
+// ── shouldEmitToolPreview (the "{} null" orphan-placeholder guard) ─────
+test("shouldEmitToolPreview: requires a non-empty id (partial stream)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "read" }), true);
+  assert.equal(shouldEmitToolPreview({ id: "", name: "read" }), false);
+  assert.equal(shouldEmitToolPreview({ id: undefined, name: "read" }), false);
+  assert.equal(shouldEmitToolPreview({ id: null, name: "read" }), false);
+});
+
+test("shouldEmitToolPreview: id-less call with no name yet is skipped (the exact '{} null' case)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "", name: "" }), false);
+  assert.equal(shouldEmitToolPreview({}), false);
+});
+
+test("shouldEmitToolPreview: bash/exec skipped even with an id (own render path)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "bash" }), false);
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "exec" }), false);
+});
+
+// ── shouldEmitToolPreviewUpdate (streaming tool-arg preview throttle) ──
+test("shouldEmitToolPreviewUpdate: always emits the first update (no prior emit)", () => {
+  assert.equal(shouldEmitToolPreviewUpdate(undefined, 1000), true);
+});
+
+test("shouldEmitToolPreviewUpdate: suppresses updates within the throttle window", () => {
+  const t0 = 100000;
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + TOOL_PREVIEW_THROTTLE_MS - 1), false);
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + 5), false);
+});
+
+test("shouldEmitToolPreviewUpdate: emits again once the interval has elapsed", () => {
+  const t0 = 100000;
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + TOOL_PREVIEW_THROTTLE_MS), true);
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + 1000), true);
+});
+
+test("shouldEmitToolPreviewUpdate: respects a custom interval", () => {
+  assert.equal(shouldEmitToolPreviewUpdate(0, 50, 100), false);
+  assert.equal(shouldEmitToolPreviewUpdate(0, 100, 100), true);
 });

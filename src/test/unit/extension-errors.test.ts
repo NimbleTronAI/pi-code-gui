@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyProviderConfigError, classifyRustLoadError, humanizeProviderError, formatRustLoadError, humanizeRustLoadError, explainAgentStop } from "../../extension-errors.js";
+import { classifyProviderConfigError, humanizeProviderError, explainAgentStop } from "../../extension-errors.js";
 
 test("provider key: the deepseek $ENV legacy-syntax failure", () => {
   const r = classifyProviderConfigError(
@@ -51,100 +51,19 @@ test("humanizeProviderError: composes title + detail + remediation, else null", 
   assert.equal(humanizeProviderError("some unrelated error"), null);
 });
 
-test("rust load: digest mismatch extracts package + remediation", () => {
-  const line =
-    "Warning: Failed to load skills/prompts/themes/extensions: Tool error: package_manager: " +
-    "Package lock/provenance verification failed [digest_mismatch]: digest changed for " +
-    "npm:pi-web-access: expected 1be41cf, got ed06a4c";
-  const r = classifyRustLoadError(line);
-  assert.ok(r);
-  assert.equal(r.kind, "digest-mismatch");
-  assert.equal(r.packageName, "pi-web-access");
-  // Remediation quotes what the binary itself recommends for this failure
-  // ("Use `pi update npm:pi-web-access` …"), using the full source spec the package
-  // manager expects rather than the bare name.
-  assert.match(r.remediation ?? "", /pi update npm:pi-web-access/);
-});
-
-test("rust load: unsupported module specifier extracts module + package", () => {
-  const line =
-    "Error: Extension error: Error resolving module 'node:dns/promises' from " +
-    "'/home/node/.npm-global/lib/node_modules/pi-web-access/ssrf-protection.ts': " +
-    "Unsupported module specifier: node:dns/promises";
-  const r = classifyRustLoadError(line);
-  assert.ok(r);
-  assert.equal(r.kind, "unsupported-module");
-  assert.equal(r.packageName, "pi-web-access");
-  assert.match(r.detail, /node:dns\/promises/);
-});
-
-test("formatRustLoadError / humanizeRustLoadError: one-line user message", () => {
-  const digestLine =
-    "Warning: Failed to load extensions: [digest_mismatch]: digest changed for npm:pi-web-access: expected a, got b";
-  const out = humanizeRustLoadError(digestLine);
-  assert.ok(out);
-  assert.match(out, /Pi extension "pi-web-access" failed to load \(digest-mismatch\)/);
-  assert.match(out, /pi update npm:pi-web-access/);
-  // direct format from a structured value (no package)
-  assert.equal(
-    formatRustLoadError({ kind: "load-failed", detail: "Failed to load themes: bad" }),
-    "A Pi extension failed to load (load-failed): Failed to load themes: bad",
-  );
-  assert.equal(humanizeRustLoadError("ordinary stderr noise"), null);
-});
-
-test("rust load: generic load failure + non-load lines return null", () => {
-  const generic = classifyRustLoadError("Warning: Failed to load extensions: something odd happened");
-  assert.ok(generic);
-  assert.equal(generic.kind, "load-failed");
-
-  assert.equal(classifyRustLoadError(""), null);
-  assert.equal(classifyRustLoadError("RustProcess: spawn /usr/bin/pi --mode rpc"), null);
-});
-
-// ── digest/provenance mismatch: name the right package ──────────────
-// Captured verbatim from rust-pi 0.3.0 stderr. The previous pattern required a trailing colon
-// after the package, so on this line it backtracked into capturing the SOURCE SCHEME: the user
-// was told Pi extension "npm" had failed and advised to run `pi remove npm` — not a package,
-// and no help at all in finding the one that actually broke.
-const PROVENANCE_LINE =
-  "Warning: Failed to load skills/prompts/themes/extensions: Tool error: package_manager: " +
-  "Package lock/provenance verification failed [provenance_mismatch]: resolved provenance " +
-  "changed for npm:pi-web-access while source is immutable in this operation";
-
-test("classifyRustLoadError: names the package, not its source scheme", () => {
-  const e = classifyRustLoadError(PROVENANCE_LINE);
-  assert.ok(e);
-  assert.equal(e.kind, "digest-mismatch");
-  assert.equal(e.packageName, "pi-web-access", "the scheme prefix is not the package");
-  assert.ok(!/\bnpm\b/.test(e.packageName ?? ""), "must never surface as \"npm\"");
-});
-
-test("classifyRustLoadError: remediation uses the full source spec", () => {
-  // The package manager wants the spec, not the bare name.
-  const e = classifyRustLoadError(PROVENANCE_LINE);
-  assert.ok((e?.remediation ?? "").includes("npm:pi-web-access"));
-});
-
-test("classifyRustLoadError: still works when the package has no scheme or is scoped", () => {
-  const bare = classifyRustLoadError("provenance verification failed: changed for pi-memory while immutable");
-  assert.equal(bare?.packageName, "pi-memory");
-  const scoped = classifyRustLoadError("digest_mismatch for npm:@acme/pi-thing while source is immutable");
-  assert.equal(scoped?.packageName, "@acme/pi-thing");
-});
-
 // ── terminal stop reasons ───────────────────────────────────────────
 // A turn ending with stopReason "error" rendered as SILENCE: the webview handled only
 // "aborted", so everything else fell through and the conversation stopped mid-thought. Seen
 // live — a codebase review cut off as it was about to write its report, with the reason sitting
 // unread in the transcript.
 
-test("explainAgentStop: the tool ceiling names the setting that raises it", () => {
+test("explainAgentStop: guidance never names a setting the extension no longer contributes", () => {
+  // The tool-ceiling advice pointed at a setting that existed only for the retired runtime. Any
+  // such stop now gets the generic treatment, with its own message intact.
   const out = explainAgentStop("error", "Maximum tool iterations (50) exceeded");
   assert.ok(out);
-  assert.match(out, /50 tool calls/, "says what happened");
-  assert.match(out, /cut off mid-task/, "says the work is unfinished, not merely stopped");
-  assert.match(out, /pi-code-gui\.maxToolIterations/, "names the lever the user owns");
+  assert.match(out, /Maximum tool iterations \(50\) exceeded/, "the message is surfaced as-is");
+  assert.doesNotMatch(out, /pi-code-gui\.maxToolIterations/, "no advice to change a setting that is gone");
 });
 
 test("explainAgentStop: an unrecognised error still surfaces its message", () => {

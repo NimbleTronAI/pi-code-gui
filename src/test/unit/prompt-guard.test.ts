@@ -1,5 +1,5 @@
 // Headless tests for shouldDropPreemptingPrompt — the guard that stops a mode-less
-// prompt from preempting an in-flight turn (the Rust double-bill of 2026-07-06).
+// prompt from preempting an in-flight turn (the double-bill of 2026-07-06).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { shouldDropPreemptingPrompt } from "../../prompt-guard.js";
