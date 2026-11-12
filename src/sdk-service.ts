@@ -352,11 +352,18 @@ export class SdkService implements PiBackend {
   constructor(private readonly host: SdkHost, private readonly deps: SdkDeps) {}
 
   async setSessionName(name: string): Promise<boolean> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sess = (this as any).sessionManager ?? (this as any).session;
-    if (typeof sess?.setSessionName !== "function") { return false; }
-    sess.setSessionName(name);
-    return true;
+    // The AgentSession names the session: it appends the session_info entry (which Past Sessions
+    // reads) and emits session_info_changed. Pi's SessionManager has no setSessionName — asking
+    // it first returned "no such method" and silently saved nothing (59a7226 to 0.2.8).
+    if (typeof this.session?.setSessionName === "function") {
+      this.session.setSessionName(name);
+      return true;
+    }
+    if (typeof this.sessionManager?.appendSessionInfo === "function") {
+      this.sessionManager.appendSessionInfo(name);
+      return true;
+    }
+    return false;
   }
 
   /** Resolve, load, and wire the TypeScript SDK up to a live agent session

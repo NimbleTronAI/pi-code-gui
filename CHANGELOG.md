@@ -12,6 +12,7 @@
 - **The session cost and token counts now include everything Pi records**: cache warm-ups (on by default since Pi 1.5.1), compaction and summaries, as well as model turns. Hover the cost to see whether it is the provider's bill or an estimate from catalog prices. A cost billed by the provider (OpenRouter today) is shown even for models with no catalog price, where it used to show `$??`. DeepSeek still shows `$??`; hover it for DeepSeek's peak and off-peak hours and why the figure is withheld.
 
 ### Fixed
+- **Session names weren't saved** (since 0.2.1), so Past Sessions showed a session's first message instead of the name on its tab, and a reopened session got a new name. Names are saved again; a session from the affected versions gets its name saved the next time you open it.
 - **A dropped connection that Pi retried successfully** no longer leaves a "turn ended early" card behind; the retry indicator shows while Pi retries, and a card appears only if it gives up.
 - **A session closed right after `/tools` reopened with the model having lost the conversation.** It now reopens complete.
 - **Summarization retries and messages added by extensions** no longer show as "Unhandled agent event" cards.

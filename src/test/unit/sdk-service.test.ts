@@ -616,3 +616,27 @@ test("initialize: pi-ai 0.80.7 (no ModelRuntime upstream) gets the below-floor w
   await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
   assert.deepEqual(notices, [["0.80.7", "0.80.8", true]]);
 });
+
+// Pi's SessionManager has no setSessionName (it is appendSessionInfo); the AgentSession has
+// setSessionName, which appends the session_info entry and emits session_info_changed. Since
+// 59a7226 (shipped in 0.2.1) we asked the SessionManager first, got "no such method", and never
+// saved a name, so Past Sessions showed the first message instead of the tab's name.
+test("setSessionName saves through the AgentSession, shaped like pi 1.5.2", async () => {
+  const { svc, calls } = makeService({ setSessionName: (n: string) => calls.push(["session.setSessionName", n]) });
+  svc.sessionManager = { getEntries: () => [], appendSessionInfo: (n: string) => calls.push(["appendSessionInfo", n]) } as Any;
+  assert.equal(await svc.setSessionName("analyze rust pi removal"), true);
+  assert.deepEqual(calls, [["session.setSessionName", "analyze rust pi removal"]]);
+});
+
+test("setSessionName falls back to the SessionManager's appendSessionInfo", async () => {
+  const { svc, calls } = makeService();
+  svc.sessionManager = { getEntries: () => [], appendSessionInfo: (n: string) => calls.push(["appendSessionInfo", n]) } as Any;
+  assert.equal(await svc.setSessionName("x"), true);
+  assert.deepEqual(calls, [["appendSessionInfo", "x"]]);
+});
+
+test("setSessionName reports false when nothing can save a name", async () => {
+  const { svc } = makeService();
+  svc.sessionManager = { getEntries: () => [] } as Any;
+  assert.equal(await svc.setSessionName("x"), false);
+});
