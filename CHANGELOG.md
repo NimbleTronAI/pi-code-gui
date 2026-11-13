@@ -3,14 +3,13 @@
 ## [0.2.8]
 
 ### Removed
-- **Rust Pi support has ended.** 0.2.3 was the last release with it; see "Rust Pi support has ended" in the README. Add Pi Session is now the only way to start a session. The Add TypeScript Pi Session, Add Rust Pi Session, Add Pi Session (Choose Runtime), Switch Runtime, Set Default Runtime and Install Rust Pi commands are gone, along with the runtime pill and badges, the plan/approval strip, and the settings `defaultRuntime`, `sessionHistoryScope`, `rustBinaryPath`, `rustInstallMethod`, `rustExtensionPolicy`, `rustExtensions`, `rustAgentDir`, `defaultMode`, `maxToolIterations`, `startupBudgetSeconds` and `confirmApprovalRestart`.
+- **Rust Pi support has ended.** 0.2.3 was the last release with it; see "Rust Pi support has ended" in the README. 
 - **Rust sessions** in `~/.pi/agent/sessions-rust` are no longer listed and are left untouched; a tab restored from one is closed with a message. **The model entries earlier 0.2.x versions wrote into `~/.pi/agent/models.json` are removed** each time the extension starts; entries you edited are kept (see "Cleaning up after Rust Pi" in the README).
 
 ### Changed
 - **Model catalog refreshed to pi-ai 1.5.2**, and tested against pi-coding-agent 1.5.2.
 - **`/reload` and Reload Context while Pi is responding or compacting** now tell you to wait and reload nothing. Pi 1.5.x refuses a reload at those times; run it again when Pi is idle.
 - **The session cost and token counts now include everything Pi records**: cache warm-ups (on by default since Pi 1.5.1), compaction and summaries, as well as model turns. Hover the cost to see whether it is the provider's bill or an estimate from catalog prices. A cost billed by the provider (OpenRouter today) is shown even for models with no catalog price, where it used to show `$??`. DeepSeek still shows `$??`; hover it for DeepSeek's peak and off-peak hours and why the figure is withheld.
-- **When npm's package search is down** (HTTP 5xx), the Marketplace says it is temporarily unavailable and to try again in a minute, instead of showing a bare status code.
 
 ### Fixed
 - **Session names weren't saved** (since 0.2.1), so Past Sessions showed a session's first message instead of the name on its tab, and a reopened session got a new name. Names are saved again; a session from the affected versions gets its name saved the next time you open it.
