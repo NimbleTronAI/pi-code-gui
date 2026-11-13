@@ -145,8 +145,8 @@ export class PiWebviewPanel {
     let statusInterval: any = null;
     let statusPolls = 0;
     // Bound the initial-status poll: it normally stops as soon as the model
-    // resolves, but if a session never reports a model (e.g. a Rust session that
-    // failed to authenticate), an unbounded 500ms poll would spam status forever.
+    // resolves, but if a session never reports a model (e.g. a session that failed
+    // to authenticate), an unbounded 500ms poll would spam status forever.
     // Status is also pushed event-driven via reportStatus(), so giving up here is safe.
     const MAX_STATUS_POLLS = 40; // ~20s
     const startPolling = (): void => {
@@ -159,7 +159,6 @@ export class PiWebviewPanel {
             model: model?.id ?? "loading...",
             thinkingLevel: this.piService.thinkingLevel,
             ready: model !== null,
-            runtime: this.piService.runtime,
           },
         });
         if ((model !== null || ++statusPolls >= MAX_STATUS_POLLS) && statusInterval) {
@@ -210,9 +209,6 @@ export class PiWebviewPanel {
             void this.triggerThinkingPicker();
             break;
 
-          case "switchRuntime":
-            void vscode.commands.executeCommand("pi-code-gui.switchRuntime");
-            break;
 
           case "openUrl": {
             // The sender is a blanket handler over MODEL-RENDERED content: handlers/index.ts
@@ -287,26 +283,6 @@ export class PiWebviewPanel {
 
           case "clearQueue":
             await this.piService.clearQueue();
-            break;
-
-          case "setPlanMode":
-            await this.piService.setPlanMode(message.on, message.makeDefault === true);
-            break;
-
-          case "setApprovalMode":
-            await this.piService.setApprovalMode(message.mode);
-            break;
-
-          case "openApprovalPicker":
-            await this.piService.pickApprovalMode();
-            break;
-
-          case "approvePlan":
-            await this.piService.approvePlan();
-            break;
-
-          case "rejectPlan":
-            await this.piService.rejectPlan();
             break;
         }
       },
@@ -456,20 +432,12 @@ export class PiWebviewPanel {
         await this.triggerSettingsPicker();
         break;
       case "tools":
-        // Extension-serviced (SDK only). pickActiveTools opens the picker on TS and shows the
-        // honest "not available on Rust" message on Rust — instead of the raw /tools text
-        // leaking to the Rust binary as a prompt.
+        // Extension-serviced: pickActiveTools opens the per-session tool picker.
         await this.piService.pickActiveTools();
         break;
       default:
-        // The TypeScript SDK parses slash commands out of forwarded prompt text
-        // (and extension command handlers like /tldr respond), so the path below
-        // is correct for TypeScript and is intentionally left UNCHANGED. The Rust
-        // RPC does NOT parse slash commands — "/compact" would just be sent to the
-        // model — so route Rust's built-in session commands to real actions first.
-        if (this.piService.runtime === "rust" && await this.handleRustSlashCommand(command)) {
-          break;
-        }
+        // The SDK parses slash commands out of forwarded prompt text (and extension command
+        // handlers like /tldr respond).
         // Forward to pi session so extension command handlers (e.g. /tldr) can respond
         try {
           await this.piService.sendPrompt(`/${command}`);
@@ -484,30 +452,6 @@ export class PiWebviewPanel {
     }
   }
 
-  /**
-   * Route built-in session commands to real actions under the **Rust** runtime,
-   * whose RPC `prompt` does not parse slash commands. Returns true if handled.
-   * Only invoked for Rust sessions — the TypeScript dispatch is untouched.
-   * Commands not listed here fall through to the normal forward (e.g. a Rust
-   * extension command). GUI-only actions (resume/fork/export) aren't offered to
-   * Rust in the first place (see PiService.getAllSlashCommands).
-   */
-  private async handleRustSlashCommand(command: string): Promise<boolean> {
-    switch (command) {
-      case "new":
-      case "clear":
-        await this.piService.newSession();
-        return true;
-      case "compact":
-        await this.piService.compact();
-        return true;
-      case "export":
-        await this.piService.exportSessionInteractive();
-        return true;
-      default:
-        return false;
-    }
-  }
 
   private getNonce(): string {
     let text = "";
@@ -547,22 +491,6 @@ export class PiWebviewPanel {
 
   <div id="attachment-bar"></div>
 
-  <!-- Mode strip. Sits ABOVE the composer because it declares what the NEXT prompt will do —
-       the status bar below reports what IS. Rust only; hidden otherwise. -->
-  <div id="pi-mode-strip" class="hidden">
-    <div id="pi-mode-seg" role="group" aria-label="Session mode">
-      <button id="pi-mode-code" class="pi-mode-opt" title="Edits run as the agent decides">code</button>
-      <button id="pi-mode-plan" class="pi-mode-opt" title="Draft a plan first; edits wait for approval">plan</button>
-    </div>
-    <span id="pi-mode-hint"></span>
-    <div id="pi-plan-actions" class="hidden">
-      <button id="pi-plan-approve" class="pi-plan-btn primary">Approve</button>
-      <button id="pi-plan-reject" class="pi-plan-btn">Reject</button>
-    </div>
-    <span class="pi-mode-spacer"></span>
-    <button id="pi-approval-chip" title="Which actions need your approval">approval: always-ask ▾</button>
-  </div>
-
   <div id="input-area">
     <textarea id="prompt-input" placeholder="Ask pi to do something..." rows="1" disabled></textarea>
     <div id="steer-split">
@@ -574,7 +502,6 @@ export class PiWebviewPanel {
 
   <div id="pi-status-bar">
     <span id="pi-sb-dot" style="flex-shrink:0; font-weight:700;">○</span>
-    <div class="pi-sb-item pi-sb-runtime--ts" id="pi-sb-runtime" title="Runtime for this session — click to start a session on the other runtime">π TS</div>
     <div class="pi-sb-item" id="pi-sb-model" title="Click to change model">π Pi</div>
     <div class="pi-sb-item" id="pi-sb-thinking" title="Click to change thinking &amp; reasoning">thinking: off</div>
     <div id="pi-extension-status" class="pi-sb-item"></div>

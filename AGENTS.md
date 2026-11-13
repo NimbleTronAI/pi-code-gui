@@ -8,7 +8,7 @@
 ## Project overview
 
 Pi Code Gui is a VS Code extension that embeds the Pi coding agent into VS Code's
-native UI. It provides a webview-based chat panel, 17 bridge tools that give the
+native UI. It provides a webview-based chat panel, 16 bridge tools that give the
 AI agent access to VS Code editor state (diagnostics, symbols, hover, definitions,
 references, and workspace edits), a sidebar with session and package tree views,
 multi-session tab support with per-session model/thinking settings, and session
@@ -18,12 +18,11 @@ Key concepts:
 - **SessionWindow** (`src/extension.ts`) — paired PiService + PiWebviewPanel, one per chat tab
 - **PiService** (`src/pi-service.ts`) — SDK lifecycle bridge, event translation, model/settings
 - **PiWebviewPanel** (`src/webview-panel.ts`) — webview creation, bidirectional messaging, rendering
-- **Bridge Tools** (`src/bridge-tools.ts`) — 17 VS Code API tools for the AI agent
+- **Bridge Tools** (`src/bridge-tools.ts`) — 16 VS Code API tools for the AI agent
 - **Event Translation** (`src/pi-service.ts` handleAgentEvent) — SDK events → webview messages
 - **Extension UI Bridge** (`src/pi-service.ts` bindExtensionUI) — TUI widgets → webview
 - **Webview Frontend** (`media/`) — chat UI, morphdom streaming, marked rendering
 - **Tree Views** (`src/extension.ts` MultiSessionTreeProvider, `src/pi-packages-tree-provider.ts`)
-- **Runtime Selection** (`src/pi-service.ts` `_backendKind`; `src/rust-*.ts`; `src/runtime-detection.ts`) — per-session TypeScript (in-process SDK) or Rust (out-of-process `pi --mode rpc`) Pi; default TypeScript; see `agent-wiki/architecture/runtime-selection.md`
 
 See `agent-wiki/index.md` for the full topic catalog.
 
@@ -48,34 +47,6 @@ Install locally: `code --install-extension pi-code-gui-*.vsix --force`.
 **CI/CD:** GitHub Actions (`publish.yml`) triggers on GitHub Release.
 Publishes to VS Code Marketplace (`vsce publish`) and Open VSX (`ovsx publish`).
 Requires the `marketplace` environment with reviewer gates.
-
-## pi clean-room — license law
-
-Do not read, fetch, paste, or reference the source of `pi_agent_rust` and its restricted
-runtime deps `asupersync`, `franken-decision`, `franken-evidence`, `franken-kernel` into
-any agent context — **by any channel**: the Read tool, Bash (`cat`/`grep`/`sed`/`git
-show`/`git log -p` on a checkout), or WebFetch of the repo's source/blob/raw/commit
-pages. That covers local clones (e.g. a `~/pi_agent_rust` checkout), the `~/.cargo`
-checkout/registry copies, and fork diffs (a fork's diff of restricted source is a
-derivative work — same rule). These crates ship under "MIT + OpenAI/Anthropic Rider":
-the Software and derivatives may not be made available to a Restricted Party (OpenAI,
-Anthropic, their affiliates/agents), and Claude Code is an Anthropic surface — content
-read into it is provided to Anthropic.
-
-Work black-box instead: drive `pi --mode rpc` and capture its stdout (wire probes are
-the established pattern), read its version/`--help` output, read its GitHub *issues*
-(prose), and keep our own API notes in `agent-wiki/`. Reading the binary's observable
-behavior is fine; reading its source is not.
-
-`github.com/earendil-works/pi` (plain MIT © 2025 Mario Zechner) is the ancestor
-`pi_agent_rust` was ported from. It carries no rider and MAY be read and fetched freely
-as a clean-room reference. If you port ancestor code verbatim, carry its LICENSE note in
-the module header + a NOTICE entry.
-
-Enforced, not just prose: `permissions.deny` Read()/WebFetch rules + a Bash PreToolUse
-hook in `.claude/settings.json`, and `scripts/check-cleanroom.sh` (+ `-smoke.sh`) at
-pre-commit (`.githooks/`), `pretest`, and `package`. Removing a deny rule fails the
-commit.
 
 ## Tool discipline
 
@@ -131,7 +102,8 @@ a monolith. Start at `agent-wiki/index.md` for the catalog.
 own categories as the project grows:
 - `architecture/` — system design, decision flow, key abstractions
 - `operations/` — build, deploy, CI/CD, release process
-- `discipline/` — think-before-acting, TDD, strong-opinions, verify, research
+- `discipline/` — think-before-acting, TDD, strong-opinions, verify, research,
+  agent-coordination (delegated work), documentation-discipline
 - (add more as needed — patterns, domain-models, api, etc.)
 
 ### Wiki Maintenance
@@ -203,8 +175,9 @@ you name the next action.
 | How TUI extensions render in webview | `agent-wiki/architecture/extension-ui-bridge.md` |
 | How the build pipeline works | `agent-wiki/operations/build-pipeline.md` |
 | How the SDK is found and initialized | `agent-wiki/operations/sdk-resolution.md` |
+| How delegated agent work is run | `agent-wiki/discipline/agent-coordination.md` |
+| What belongs in the CHANGELOG | `agent-wiki/discipline/documentation-discipline.md` |
 | How to think before acting | `agent-wiki/discipline/think-before-acting.md` |
 | How TDD works here | `agent-wiki/discipline/tdd.md` |
 | How the wiki is maintained | `agent-wiki/discipline/wiki-maintenance.md` |
 | Wiki change log | `agent-wiki/log.md` |
-| Why rust-pi source is off-limits (license wall) | `AGENTS.md` §"pi clean-room" + `scripts/check-cleanroom.sh` |

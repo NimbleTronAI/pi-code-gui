@@ -1,6 +1,6 @@
 {
   "note": "architecture.png is generated from architecture.svg by `npm run gen:diagram`. Do NOT hand-edit the PNG — edit the SVG and regenerate.",
   "source": "architecture.svg",
-  "sourceSha256": "87ca15005ac0802f4b5d00137ee8560516ba4df60bd7d14d713a444ba55ad181",
+  "sourceSha256": "f2ebfb07e6bff68a56e78ec7a9f9554648ee5c9b6b88852d7e635dae7d158046",
   "generator": "@resvg/resvg-js (fitTo zoom 2x)"
 }

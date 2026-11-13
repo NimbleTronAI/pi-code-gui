@@ -2,7 +2,7 @@
 // session.bindExtensions(). Without it, extensions like pi-tldr have hasUI=false and their
 // notify/setWidget calls silently do nothing.
 //
-// Extracted from PiService (both dual-runtime audits flagged it: a ~160-line Proxy layer
+// Extracted from PiService (two earlier audits flagged it: a ~160-line Proxy layer
 // with zero test coverage that coupled the orchestrator to TUI-extension internals). It's
 // vscode-free — every effect is an injected callback (emit / showDialog / now) — so the
 // widget rendering, ANSI stripping, status formatting, dialog routing, and the

@@ -128,10 +128,10 @@ test("makeAuthInteraction: a cancelled prompt (undefined input) throws 'Login ca
   await assert.rejects(() => it.prompt({ type: "text", message: "x" }), /Login cancelled/);
 });
 
-// ── /login on Rust ───────────────────────────────────────────
-// PiService passed `this.modelRuntime` into these deps — the SDK session's runtime, which is
-// null on Rust. runLogin's `if (!rt) throw` then fired before the first QuickPick, so /login
-// on a Rust session showed nothing at all and looked like an unimplemented command.
+// ── /login with no runtime ───────────────────────────────────
+// PiService once passed `this.modelRuntime` into these deps — the SDK session's runtime, which
+// is null before a session starts. runLogin's `if (!rt) throw` then fired before the first
+// QuickPick, so /login showed nothing at all and looked like an unimplemented command.
 
 test("runLogin: a null runtime throws rather than silently doing nothing", async () => {
   const { ui } = fakeUI();
@@ -142,26 +142,10 @@ test("runLogin: a null runtime throws rather than silently doing nothing", async
   );
 });
 
-test("runLogin: afterLogin fires once a credential is stored (Rust re-seeds auth on it)", async () => {
-  const seen: string[] = [];
-  const { ui } = fakeUI({ picks: [{ authType: "api_key" }, { id: "openai", name: "OpenAI" }] });
-  await runLogin({ ...deps(fakeRuntime(), ui), afterLogin: (name) => seen.push(name) });
-  assert.deepEqual(seen, ["OpenAI"]);
-});
-
-test("runLogin: afterLogin does NOT fire when the user cancels", async () => {
-  const seen: string[] = [];
-  const { ui } = fakeUI({ picks: [undefined] });
-  await runLogin({ ...deps(fakeRuntime(), ui), afterLogin: (name) => seen.push(name) });
-  assert.deepEqual(seen, [], "no credential was stored, so nothing should be re-seeded");
-});
-
-test("runLogin: afterLogin does NOT fire when the login call fails", async () => {
-  const seen: string[] = [];
+test("runLogin: a failed login call is reported as an error", async () => {
   const rt = fakeRuntime({ login: async () => { throw new Error("bad key"); } });
   const { ui, log } = fakeUI({ picks: [{ authType: "api_key" }, { id: "openai", name: "OpenAI" }] });
-  await runLogin({ ...deps(rt, ui), afterLogin: (name) => seen.push(name) });
-  assert.deepEqual(seen, []);
+  await runLogin(deps(rt, ui));
   assert.ok(log.some((l) => l.startsWith("error:Failed to log in")));
 });
 

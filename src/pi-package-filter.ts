@@ -33,3 +33,13 @@ export function isPiMarketplacePackage(pkg: PiPackageFields): boolean {
     desc.includes("pi extension")
   );
 }
+
+/** What the Marketplace shows when npm's search answers with an error status. 429 and 5xx are
+ *  npm's side and pass on their own, so they say "try again" instead of a bare code. */
+export function npmSearchFailureText(status: number): string {
+  if (status === 429) { return "npm rate limit — please wait a few seconds and try again."; }
+  if (status >= 500 && status <= 599) {
+    return `npm's package search is temporarily unavailable (HTTP ${status}) — try again in a minute.`;
+  }
+  return `npm search returned ${status}`;
+}

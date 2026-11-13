@@ -22,6 +22,7 @@ const HTML = `<!DOCTYPE html><html><body>
   <div id="settings-overlay"></div>
   <div id="slash-autocomplete"></div>
   <div id="live-panel"></div>
+  <div id="pi-sb-thinking"></div>
 </body></html>`;
 
 let handlers: any;
@@ -97,7 +98,7 @@ test("an expired-OAuth failure is reported as a sign-in problem, not a missing A
   const doc = (globalThis as any).document;
   doc.getElementById("chat-container").innerHTML = "";
   handlers.addErrorMessage(
-    "Pi init failed: Failed to start Rust Pi: Rust process exited immediately (code 1) — last stderr: " +
+    "Pi init failed: " +
     "Error: Authentication error: OAuth token refresh failed for: anthropic " +
     '(Anthropic token refresh failed: {"error":"invalid_grant"})\n' +
     "OAuth token expired or invalid\nSuggestions:\n  • Run 'pi login <provider>' to re-authenticate\n" +
@@ -122,7 +123,7 @@ test("a genuine missing-API-key error still classifies as one", () => {
 // /login — and the only place to type it was the box we had just disabled, so a session that
 // failed to authenticate could not be recovered from inside its own tab.
 test("a failed init leaves the input USABLE, not disabled", () => {
-  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  handlers.handleStatus({ ready: false, model: "init failed" });
   const st = stateMod.state;
   assert.equal(st.promptInput.disabled, false, "disabling this is what trapped the user");
   assert.equal(st.sendButton.disabled, false);
@@ -132,7 +133,7 @@ test("a failed init leaves the input USABLE, not disabled", () => {
 
 test("with no backend, a local slash command is still dispatched", () => {
   const doc = (globalThis as any).document;
-  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  handlers.handleStatus({ ready: false, model: "init failed" });
   const st = stateMod.state;
   const sent: any[] = [];
   (globalThis as any).window.__vscode.postMessage = (m: any) => sent.push(m);
@@ -145,7 +146,7 @@ test("with no backend, a local slash command is still dispatched", () => {
 
 test("with no backend, a free-form prompt is refused with a way forward — not swallowed", () => {
   const doc = (globalThis as any).document;
-  handlers.handleStatus({ runtime: "rust", ready: false, model: "init failed" });
+  handlers.handleStatus({ ready: false, model: "init failed" });
   const st = stateMod.state;
   const sent: any[] = [];
   (globalThis as any).window.__vscode.postMessage = (m: any) => sent.push(m);
@@ -157,7 +158,49 @@ test("with no backend, a free-form prompt is refused with a way forward — not 
 });
 
 test("a ready session clears the limited mode", () => {
-  handlers.handleStatus({ runtime: "rust", ready: true, model: { provider: "anthropic", id: "x" } });
+  handlers.handleStatus({ ready: true, model: { provider: "anthropic", id: "x" } });
   assert.equal(stateMod.state.sessionUnavailable, false);
   assert.equal(stateMod.state.promptInput.disabled, false);
+});
+
+test("summarization auto-retry-start shows the indicator and leaves a running tool block alone; compaction-end clears a leftover indicator", () => {
+  const doc = (globalThis as any).document;
+  toolsMod.handleToolStart({ toolCallId: "t-sum", toolName: "write", args: { path: "b.ts", content: "x" }, fromMessage: false });
+  handlers.handleAutoRetryStart({ attempt: 1, maxAttempts: 3, delayMs: 60000, summarization: true });
+  assert.ok(doc.getElementById("retry-indicator"), "retry indicator shown");
+  assert.ok(!doc.body.innerHTML.includes("retried"), "no tool block was marked retried");
+  assert.ok(stateMod.state.currentToolBlocks["t-sum"], "live tool correlation untouched");
+  handlers.handleCompactionEnd({ reason: "manual", aborted: false, willRetry: false, errorMessage: "boom" });
+  assert.equal(doc.getElementById("retry-indicator"), null, "compaction-end clears the leftover indicator");
+  assert.equal(stateMod.state.isRetrying, false);
+  toolsMod.handleToolEnd({ toolCallId: "t-sum", toolName: "write", result: { content: [] }, isError: false });
+});
+
+// ── what the webview saves for panel restore ──────────────────────────
+// VS Code hands this state back to deserializeWebviewPanel (panel-restore.ts) after a reload. The
+// session file is all a panel needs; a runtime field is no longer written (an earlier version's is
+// read only to close that version's panels).
+test("a status-update saves the session file, and nothing else, for panel restore", () => {
+  const vs = (globalThis as any).window.__vscode;
+  const saved: unknown[] = [];
+  const { getState, setState } = vs;
+  vs.getState = () => ({ sessionFilePath: "/s/old.jsonl", runtime: "typescript" });
+  vs.setState = (s: unknown) => { saved.push(s); };
+  try {
+    handlers.handleStatusUpdate({ sessionFile: "/s/new.jsonl" });
+    handlers.handleStatusUpdate({});
+  } finally { vs.getState = getState; vs.setState = setState; }
+  assert.deepEqual(saved, [{ sessionFilePath: "/s/new.jsonl" }, { sessionFilePath: "/s/old.jsonl" }]);
+});
+
+// ── the thinking chip ────────────────────────────────────────────────
+// The host composes the chip text (thinkingStatus) and Pi always transmits the level, so the chip
+// shows that text and always opens the picker; there is no read-only form.
+test("the thinking chip shows the host's text and is never read-only", () => {
+  const chip = (globalThis as any).document.getElementById("pi-sb-thinking");
+  handlers.handleStatusUpdate({ thinkingDisplay: "thinking: on · reasoning: high", thinkingLive: false, thinkingClickable: false });
+  assert.equal(chip.textContent, "thinking: on · reasoning: high");
+  assert.equal(chip.classList.contains("sb-readonly"), false);
+  handlers.handleStatusUpdate({ thinkingLevel: "low" });
+  assert.equal(chip.textContent, "thinking: low", "falls back to the level when no text is composed");
 });

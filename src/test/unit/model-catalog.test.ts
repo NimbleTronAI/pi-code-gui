@@ -1,13 +1,9 @@
-// Headless tests for the catalog maxTokens resolver (model-catalog.ts). rust-pi
-// 0.1.20 forwards a model's maxTokens to the provider verbatim, so the bundled
-// registry's placeholder values (a copy of contextWindow) must be OMITTED — not
-// sent — while genuine sub-window limits are kept. Boundaries are anchored on a
-// verified-live finding: deepseek rejects max_tokens outside [1, 393216] with an
-// HTTP 400 (silent empty turn), accepts deepseek-v4-pro's 384000, and completes
-// normally when the field is omitted entirely.
+// Headless tests for model-catalog.ts: thinking-capability reconcile/clamp against the bundled
+// catalog, the catalog lookups, and the DeepSeek unexpressible-rates rule.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveMaxOutputTokens, thinkingLevelIsLive, getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, computeTokenCost, buildThinkingCompat, catalogRatesAreUnexpressible, costWithheldReason } from "../../model-catalog.js";
+import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, reconcileThinkingCapability, THINKING_LEVELS, catalogRatesAreUnexpressible, costWithheldReason } from "../../model-catalog.js";
+import registry from "../../model-registry.generated.json";
 
 // reconcileThinkingCapability: a custom models.json that omits `reasoning` must not be
 // allowed to downgrade a known-reasoning model (the ~/.pi/agent/models.json deepseek-v4-pro
@@ -38,7 +34,7 @@ test("reconcile respects a deliberately non-reasoning model that is ABSENT from 
   assert.equal(out.reasoning, false); // unknown model — not upgraded
 });
 
-// First-class `max` (pi_agent_rust#139): a live `max`-keyed top tier is now surfaced AS `max`,
+// First-class `max`: a live `max`-keyed top tier is now surfaced AS `max`,
 // not folded into `xhigh` (aliasMaxToXhigh is retired). The reconcile pass passes it through
 // untouched — and returns the SAME object, since it already reasons (no clobber).
 test("reconcile surfaces a live `max`-keyed top tier as first-class max, unchanged", () => {
@@ -47,108 +43,6 @@ test("reconcile surfaces a live `max`-keyed top tier as first-class max, unchang
   assert.equal(out, live, "an already-reasoning model is returned by identity (same-object contract)");
   assert.equal((out as any).thinkingLevelMap.xhigh, undefined, "no phantom xhigh is aliased in");
   assert.deepEqual(getSupportedThinkingLevels(out), ["off", "high", "max"], "max is offered as its own rung");
-});
-
-test("computeTokenCost: tokens × per-million rates, summed (matches pi-ai calculateCost)", () => {
-  const rates = { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0 };
-  // 1000 input + 500 output → 1000/1e6*0.435 + 500/1e6*0.87 = 0.000435 + 0.000435
-  assert.equal(computeTokenCost({ input: 1000, output: 500 }, rates), 0.00087);
-  assert.equal(computeTokenCost({}, rates), 0); // no tokens → $0
-  assert.equal(computeTokenCost({ input: 1_000_000 }, rates), 0.435); // 1M input = the input rate
-});
-
-test("buildThinkingCompat nests Anthropic forceAdaptiveThinking under compat", () => {
-  assert.deepEqual(
-    buildThinkingCompat({ thinkingLevelMap: { xhigh: "xhigh" }, compat: { forceAdaptiveThinking: true } }),
-    { compat: { thinkingLevelMap: { xhigh: "xhigh" }, forceAdaptiveThinking: true } },
-  );
-});
-
-test("buildThinkingCompat filters null thinkingLevelMap entries (HashMap<String,String> rejects null)", () => {
-  // DeepSeek collapses minimal/low/medium → null; only string mappings survive.
-  assert.deepEqual(
-    buildThinkingCompat({ thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "max" }, compat: { thinkingFormat: "deepseek" } }),
-    { compat: { thinkingLevelMap: { high: "high", xhigh: "max" }, thinkingFormat: "deepseek" } },
-  );
-});
-
-test("buildThinkingCompat omits the compat key entirely for a model with no thinking metadata", () => {
-  assert.deepEqual(buildThinkingCompat({}), {});
-  // A map of only-null entries collapses to no map → no compat key.
-  assert.deepEqual(buildThinkingCompat({ thinkingLevelMap: { low: null, medium: null } }), {});
-});
-
-test("buildThinkingCompat preserves forceAdaptiveThinking:false (authoritative legacy signal)", () => {
-  assert.deepEqual(
-    buildThinkingCompat({ compat: { forceAdaptiveThinking: false } }),
-    { compat: { forceAdaptiveThinking: false } },
-  );
-});
-
-test("a real limit below the context window is kept verbatim", () => {
-  assert.equal(resolveMaxOutputTokens(8192, 200000), 8192);
-  assert.equal(resolveMaxOutputTokens(32768, 1047576), 32768);
-});
-
-test("deepseek-v4-pro 384,000 (< its 1,000,000 window) is kept, not omitted", () => {
-  assert.equal(resolveMaxOutputTokens(384000, 1000000), 384000);
-});
-
-test("a large but deliberate sub-window value is trusted (genuine capacity preserved)", () => {
-  assert.equal(resolveMaxOutputTokens(500000, 1000000), 500000);
-  assert.equal(resolveMaxOutputTokens(262143, 262144), 262143);
-});
-
-test("a placeholder (maxTokens == contextWindow) is omitted → provider default applies", () => {
-  assert.equal(resolveMaxOutputTokens(2000000, 2000000), undefined); // grok
-  assert.equal(resolveMaxOutputTokens(262144, 262144), undefined);   // kimi
-  assert.equal(resolveMaxOutputTokens(8192, 8192), undefined);       // any model where they're equal
-});
-
-test("a value above the context window is also omitted", () => {
-  assert.equal(resolveMaxOutputTokens(4096, 4095), undefined);
-});
-
-test("garbage / non-positive maxTokens is omitted (provider default keeps the model callable)", () => {
-  assert.equal(resolveMaxOutputTokens(0, 200000), undefined);
-  assert.equal(resolveMaxOutputTokens(-5, 200000), undefined);
-  assert.equal(resolveMaxOutputTokens(NaN, 200000), undefined);
-  assert.equal(resolveMaxOutputTokens(Infinity, 200000), undefined);
-});
-
-test("a real value is kept even when the context window is missing/zero (can't judge a placeholder)", () => {
-  assert.equal(resolveMaxOutputTokens(8192, 0), 8192);
-  assert.equal(resolveMaxOutputTokens(8192, NaN), 8192);
-});
-
-test("fractional input is floored to an integer", () => {
-  assert.equal(resolveMaxOutputTokens(8192.9, 200000), 8192);
-});
-
-test("a kept value is always a positive integer", () => {
-  for (const [mt, cw] of [[5, 100], [8192.9, 200000], [1, 2]] as Array<[number, number]>) {
-    const out = resolveMaxOutputTokens(mt, cw);
-    assert.ok(out !== undefined && Number.isInteger(out) && out >= 1, `expected positive int, got ${out} for (${mt}, ${cw})`);
-  }
-});
-
-// ── thinkingLevelIsLive (which transports actually transmit the thinking level) ──
-test("thinkingLevelIsLive: true for transports that serialize a reasoning field", () => {
-  assert.equal(thinkingLevelIsLive("anthropic-messages"), true);
-  assert.equal(thinkingLevelIsLive("openai-responses"), true);
-  assert.equal(thinkingLevelIsLive("google-generative-ai"), true);
-});
-
-test("thinkingLevelIsLive: true for openai-completions (DeepSeek) — pi_agent_rust 6c5f43b3 transmits thinking:{type} + reasoning_effort; verified live against the DeepSeek API", () => {
-  assert.equal(thinkingLevelIsLive("openai-completions"), true);
-});
-
-test("thinkingLevelIsLive: fails safe to false for unknown/unverified and empty transports", () => {
-  assert.equal(thinkingLevelIsLive("mistral-conversations"), false);
-  assert.equal(thinkingLevelIsLive("totally-new-api"), false);
-  assert.equal(thinkingLevelIsLive(""), false);
-  assert.equal(thinkingLevelIsLive(undefined), false);
-  assert.equal(thinkingLevelIsLive(null), false);
 });
 
 // ── getSupportedThinkingLevels (per-model levels from pi-ai metadata) ──
@@ -166,10 +60,10 @@ test("getSupportedThinkingLevels: a reasoning model with no map gets the full ra
     ["off", "minimal", "low", "medium", "high"]);
 });
 
-test("getSupportedThinkingLevels: max is offered only when explicitly mapped (first-class, #139)", () => {
+test("getSupportedThinkingLevels: max is offered only when explicitly mapped (first-class)", () => {
   const withMax = { reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" } };
   assert.deepEqual(getSupportedThinkingLevels(withMax), ["off", "high", "max"]);
-  // A pre-#139 catalog keys the top tier `xhigh:"max"` (no max KEY) → xhigh, never max.
+  // An older catalog keys the top tier `xhigh:"max"` (no max KEY) → xhigh, never max.
   const preFix = { reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "max" } };
   assert.deepEqual(getSupportedThinkingLevels(preFix), ["off", "high", "xhigh"]);
   // A model exposing BOTH distinct rungs (e.g. Anthropic effort:"max" above xhigh) offers both.
@@ -228,7 +122,7 @@ test("clampThinkingLevel: a non-reasoning model clamps everything to off", () =>
   assert.equal(clampThinkingLevel({ reasoning: false }, "garbage"), "off");
 });
 
-// ── findCatalogThinkingModel (Rust-path metadata lookup, no SDK registry) ──
+// ── findCatalogThinkingModel (bundled-catalog metadata lookup) ──
 const CATALOG = {
   deepseek: { models: [
     { id: "deepseek-v4-pro", reasoning: true, thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", xhigh: "max" } },
@@ -247,34 +141,8 @@ test("findCatalogThinkingModel: returns null for an unknown provider or model", 
   assert.equal(findCatalogThinkingModel(undefined, "deepseek", "deepseek-v4-pro"), null);
 });
 
-// ── `max` backend gate (upstream pi_agent_rust#139) ──────────────────
-// The bundled catalog (pi-ai 0.82.1) maps `max` for 131 models, but a mapping only says the
-// MODEL has the tier. Measured against a real pre-#139 binary (0.1.20): the catalog parses and
-// the model lists, but `set_thinking_level("max")` comes back
-// `Validation error: Invalid thinking level: max` — the same rejection a garbage value gets,
-// while `xhigh` is accepted and clamped to `high`. So the version gate is what stands between a
-// picker entry and a hard error.
-
-
-
-// ── the --thinking spawn argument (regression: Rust sessions died at startup) ──────
-// Gating the PICKER was not enough. defaultThinkingLevel also reaches the binary as a CLI
-// argument, `--thinking <level>`, and a pre-#139 build rejects `max` during ARGUMENT PARSING:
-//
-//   error: invalid value 'max' for '--thinking <THINKING>'
-//   [possible values: off, minimal, low, medium, high, xhigh]
-//
-// It exits 2 before any RPC channel exists, so the session never starts — the user saw
-// "Pi init failed: Rust process exited immediately (code 2)". `max` reaches that setting even
-// on a binary that can't honour it: it is user-editable, persisted, and shared with the
-// TypeScript runtime, where max IS legitimately offered.
-
-
-
-
-
 // ── unexpressible catalog rates ─────────────────────────────────────
-test("native DeepSeek V4 rates are treated as unexpressible; gateways are not", () => {
+test("native DeepSeek rates are treated as unexpressible; gateways are not", () => {
   assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-pro"), true);
   assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-flash"), true);
   assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-v4-flash-vision-exp"), true);
@@ -282,12 +150,29 @@ test("native DeepSeek V4 rates are treated as unexpressible; gateways are not", 
   // which the catalog CAN express — suppressing those would hide costs we actually know.
   assert.equal(catalogRatesAreUnexpressible("openrouter", "deepseek-v4-pro"), false);
   assert.equal(catalogRatesAreUnexpressible("vercel-ai-gateway", "deepseek-v4-pro"), false);
-  // Older flat-priced DeepSeek models are unaffected.
-  assert.equal(catalogRatesAreUnexpressible("deepseek", "deepseek-chat"), false);
   assert.equal(catalogRatesAreUnexpressible(undefined, undefined), false);
 });
 
+test("no DeepSeek model id escapes the rule, whatever upstream renames it to", () => {
+  // The rule keys on the provider alone BECAUSE it once keyed on /^deepseek-v4/: pi-ai 0.86.1
+  // renamed deepseek-v4-flash to deepseek-flash, which fell out of that pattern and put a
+  // confidently wrong number back on screen with nothing to notice it by. Every id the native
+  // provider carries must be covered, and so must any id it is renamed to next.
+  for (const id of ["deepseek-flash", "deepseek-chat", "deepseek-reasoner", "deepseek-v5", "anything"]) {
+    assert.equal(catalogRatesAreUnexpressible("deepseek", id), true, `${id} must be withheld`);
+  }
+  // Pin it against the catalog we actually ship, so a future rename cannot quietly re-open a gap.
+  for (const m of (registry.providers as Record<string, { models: Array<{ id: string }> }>)["deepseek"].models) {
+    assert.equal(catalogRatesAreUnexpressible("deepseek", m.id), true, `bundled ${m.id} must be withheld`);
+  }
+});
+
 test("the withheld reason is present exactly when the rates are withheld", () => {
-  assert.ok((costWithheldReason("deepseek", "deepseek-v4-pro") ?? "").includes("time of day"));
+  const why = costWithheldReason("deepseek", "deepseek-v4-pro") ?? "";
+  assert.ok(why.includes("time of day"));
+  // The facts as of DeepSeek's pricing page, 2026-11-12: the peak windows, off-peak is half, and
+  // the catalog's (peak) price can only overstate. The old "understate by 4.6x" is gone.
+  assert.ok(why.includes("01:00") && why.includes("06:00") && why.includes("2\u00d7 too high"), why);
+  assert.ok(!why.includes("4.6"), why);
   assert.equal(costWithheldReason("openrouter", "deepseek-v4-pro"), null);
 });

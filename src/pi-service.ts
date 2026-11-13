@@ -2,16 +2,12 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as vscode from "vscode";
 
-import { assertNever, type PiServiceEvent, type Runtime, validateExtensionToWebview } from "./types.js";
+import { type PiServiceEvent, validateExtensionToWebview } from "./types.js";
 import { piDebug, piWarn, registerSecret } from "./logger.js";
+import { piAiNoticeMessage } from "./version-compare.js";
 import { getApiKey } from "./secrets.js";
 import { confirmRendererConsent } from "./renderer-consent.js";
 
-import { RustService, type RustHost, type RustDeps } from "./rust-service.js";
-import { detectRustBinary, shouldDisableRustExtensions, rustExtensionsMode } from "./rust-resolver.js";
-import { setupRustModels, reseedRustAuth, readApprovalMode, writeApprovalMode, defaultRustAgentDir, providerHasCredential, oauthProviders } from "./rust-models.js";
-import { resolveRustSessionDir, RUST_SESSION_NAME_ENTRY } from "./rust-sessions.js";
-import { rustExportHtml } from "./rust-packages.js";
 import { getSupportedThinkingLevels, clampThinkingLevel, findCatalogThinkingModel, findCatalogModelCost, catalogRatesAreUnexpressible, costWithheldReason, reconcileThinkingCapability, THINKING_LEVELS, type ThinkingModel } from "./model-catalog.js";
 import { computeUsageStats, type UsageStats } from "./usage-stats.js";
 import { composeThinkingStatus, pickDefaultReasoningLevel, toggleThinkingTarget, buildThinkingPickerRows } from "./thinking-dial.js";
@@ -24,16 +20,16 @@ import { buildPiPackageCandidates, pickPiPackagePath } from "./pi-package-path.j
 import { resolveWorkspaceCwd } from "./workspace.js";
 import { translateAgentEvent, extractMessageText } from "./agent-events.js";
 import { replaySessionEntries, indexEntries } from "./session-replay.js";
-import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps } from "./sdk-service.js";
+import { SdkService, importWithRetry, type PiSdk, type PiAi, type SdkDeps, type CatalogProviders } from "./sdk-service.js";
 import { createBridgeTools } from "./bridge-tools.js";
-import { detectMissingRustTools } from "./rust-deps.js";
 import { shouldDropPreemptingPrompt } from "./prompt-guard.js";
-import { backendCapabilityDefaults, flipsStateEagerly, type BackendCapabilities, type PiBackend } from "./pi-backend.js";
+import { reloadNotDoneText, type PiBackend, type ReloadOutcome } from "./pi-backend.js";
 import { createExtensionUIBridge, type ExtensionUIBridge } from "./extension-ui-bridge.js";
 import { buildSlashCommandList, parseSlashCommand } from "./slash-commands.js";
 import { runLogin, runLogout, type AuthFlowDeps } from "./auth-flow.js";
 import { mapSessionTools, findLastActiveTools, buildToolPickerRows, summarizeToolSelection } from "./active-tools.js";
-import { FALLBACK_MODELS, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems, type ModelChoice } from "./model-picker.js";
+import { resolveFallbackModels, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems, type ModelChoice } from "./model-picker.js";
+
 
 export interface InstallStatus {
   installed: boolean;
@@ -103,58 +99,41 @@ function tokenFor(signal?: AbortSignal): vscode.CancellationToken | undefined {
 const ABORT_GRACE_MS = 5000;
 
 export class PiService {
-  /** The TypeScript SDK runtime (module loading, auth, registry, session manager,
-   *  agent session) — the TS-path counterpart of `_rust`. The legacy field names
+  /** The Pi SDK runtime (module loading, auth, registry, session manager,
+   *  agent session). The legacy field names
    *  (session, SDK, AI, …) are kept as thin getters over this service so the
-   *  class's many read sites stay unchanged and runtime-agnostic. */
+   *  class's many read sites stay unchanged. */
   private _sdk: SdkService | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private get session(): any { return this._sdk?.session ?? null; }
   private unsubscribe: (() => void) | null = null;
   /** The webview event bus (validate → dispatch, listener-error isolation). See event-bus.ts. */
   private readonly _bus = new EventBus(validateExtensionToWebview, piWarn);
-  /** The active model identity — now OWNED by the active backend (SdkService/RustService)
-   *  and read through the seam, not stored here. Kept as a getter so the ~38 read-sites
-   *  are unchanged; the backends update it on init / setModel / applyState. */
+  /** The active model identity — OWNED by the backend (SdkService) and read through the seam,
+   *  not stored here. Kept as a getter so the ~38 read-sites are unchanged; the backend updates
+   *  it on init / setModel. */
   private get _model(): { id?: string; name?: string; provider?: string; api?: string; reasoning?: boolean } | null {
     return this.backend?.getModel() ?? null;
   }
-  /** The active thinking level — now OWNED by the active backend and read through the
-   *  seam (getter, so the ~10 read-sites are unchanged). Backends update it on init /
+  /** The active thinking level — now OWNED by the backend and read through the
+   *  seam (getter, so the ~10 read-sites are unchanged). The backend updates it on init /
    *  setThinkingLevel / applyThinkingLevel. */
   private get _thinkingLevel(): string { return this.backend?.getThinkingLevel() ?? "off"; }
   /** Last non-"off" thinking level chosen, so turning Thinking back on restores the
    *  user's prior Reasoning level (falls back to the model's highest). */
   private _lastReasoningLevel: string | undefined;
-  // The run/streaming flags are OWNED by the active backend now (see PiBackend); PiService reads
-  // them via `this.backend` and applies the event-stream mutations through its setters. The
-  // agent_end double-emit dedupe (which the run flag guards) lives in RustService.handleEvent.
+  // The run/streaming flags are OWNED by the backend (see PiBackend); PiService reads them via
+  // `this.backend` and applies the event-stream mutations through its setters.
   /** Event types already logged as unhandled, so upstream protocol drift is
    *  surfaced once in the output channel rather than flooding it per event. */
   private _warnedUnknownEvents = new Set<string>();
   private sessionId: string | null = null;
 
-  // ── Runtime selection: in-process TypeScript SDK vs out-of-process Rust ──
-  private _backendKind: Runtime = "typescript";
-  /** The out-of-process Rust runtime (process lifecycle, RPC handshake, event
-   *  translation, synthetic queue, usage/entries). Non-null only for a Rust
-   *  session; PiService delegates the Rust branch of each backend-aware method
-   *  here. See src/rust-service.ts (and the RustHost contract it consumes). */
-  private _rust: RustService | null = null;
-
-  /** The active runtime as a PiBackend (in-process SDK or out-of-process Rust), or
-   *  null before init / after a failed init. PiService delegates the primitive,
-   *  runtime-divergent operations (sendPrompt, abort, compact, setModel, …) here
-   *  instead of branching on `_backendKind` at each call site. Orchestration and UI
-   *  (pickers, slash dispatch, status/cost formatting) stay in PiService. */
+  /** The SDK runtime as a PiBackend, or null before init / after a failed init. PiService
+   *  delegates the primitive operations (sendPrompt, abort, compact, setModel, …) here;
+   *  orchestration and UI (pickers, slash dispatch, status/cost formatting) stay in PiService. */
   private get backend(): PiBackend | null {
-    // Exhaustive on Runtime: a third runtime becomes a compile error here (and at the other
-    // _backendKind branch points) rather than silently routing to the SDK.
-    switch (this._backendKind) {
-      case "rust": return this._rust;
-      case "typescript": return this._sdk;
-      default: return assertNever(this._backendKind, "runtime");
-    }
+    return this._sdk;
   }
 
   // SDK state — owned by SdkService; exposed under the legacy names as getters.
@@ -188,6 +167,9 @@ export class PiService {
 
   // User message history for the resend/reuse feature (#2)
   private _userMessages: Array<{ id: string; text: string; timestamp?: number }> = [];
+  /** An errored attempt's "turn ended early" card, held until agent_end says whether Pi will
+   *  retry it. See AgentTranslateState.pendingStopNote. */
+  private _pendingStopNote: { note: string | null } = { note: null };
 
   // Settings state (#3)
   private _autoCompactionEnabled = true;
@@ -277,32 +259,12 @@ export class PiService {
     await fs.promises.unlink(filePath);
   }
 
-  async initialize(opts?: { fresh?: boolean; openPath?: string; runtime?: Runtime }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
+  async initialize(opts?: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string }> {
     const fresh = opts?.fresh ?? false;
     const openPath = opts?.openPath ?? null;
-
-    // ── Runtime branch: Rust runs out-of-process via the RPC subprocess ──
-    const runtime = opts?.runtime ?? this._backendKind;
-    if (runtime === "rust") {
-      return this.initializeRust({ fresh, openPath: openPath ?? undefined });
-    }
-    if (runtime !== "typescript") { assertNever(runtime, "runtime"); }
-    this._backendKind = "typescript";
-    // Re-init replaces any prior session: drop the stale reference NOW so a failed
-    // init reports `initialized === false` instead of pointing at the abandoned
-    // session (the getter can't otherwise distinguish "init succeeded" from
-    // "stale leftover"). A live Rust runtime here is unexpected (runtimes never
-    // hot-swap within a session window) — dispose it rather than leak the subprocess.
-    // Re-init replaces any prior runtime state. A live Rust runtime here is
-    // unexpected (runtimes never hot-swap within a session window) — dispose it
-    // rather than leak the subprocess. Constructing a fresh SdkService below drops
+    // Re-init replaces any prior runtime state. Constructing a fresh SdkService below drops
     // any stale session reference, so a failed init reports `initialized === false`
     // instead of pointing at the abandoned session.
-    if (this._rust) {
-      piWarn("TypeScript init found a live Rust runtime on this service (unexpected) — disposing it");
-      this._rust.dispose();
-      this._rust = null;
-    }
 
     // ── SDK plumbing (former init Steps 1–9) — owned by SdkService ──
     // Resolves/loads the SDK, adapts pi-ai ≥0.80, sets up auth/registry/settings,
@@ -316,7 +278,7 @@ export class PiService {
     }, this.makeSdkDeps());
     const init = await this._sdk.initialize({ fresh, openPath });
     if (!init.success || !this.session) {
-      return { success: false, error: init.error ?? "SDK initialization produced no session.", errorKind: init.errorKind, warning: init.warning };
+      return { success: false, error: init.error ?? "SDK initialization produced no session." };
     }
     // _model is owned by SdkService now (set during initialize); PiService reads it via
     // the getter. cycleModels remains PiService orchestration; _thinkingLevel is owned by
@@ -352,8 +314,8 @@ export class PiService {
     // Seed the settings toggles from the SESSION's real state before advertising them. They
     // used to be hardcoded `true` and never read back, so a resumed session whose settings
     // differed showed a UI that disagreed with its own behaviour — and, until setAutoRetry was
-    // wired, a retry toggle that had never done anything anyway. The Rust path never had this
-    // gap (applyState syncs both from get_state). Absent values keep the current default.
+    // wired, a retry toggle that had never done anything anyway. Absent values keep the
+    // current default.
     const sessionSettings = this._sdk?.readSessionSettings() ?? {};
     if (typeof sessionSettings.autoCompaction === "boolean") { this._autoCompactionEnabled = sessionSettings.autoCompaction; }
     if (typeof sessionSettings.autoRetry === "boolean") { this._autoRetryEnabled = sessionSettings.autoRetry; }
@@ -367,85 +329,6 @@ export class PiService {
     }
 
     return { success: true };
-  }
-
-  // ── Rust runtime (out-of-process RPC) ──────────────────
-
-  /**
-   * Initialize a session backed by the Rust Pi binary (`pi --mode rpc`).
-   * The subprocess owns persistence and tool execution; we drive it over the
-   * line-delimited JSON RPC protocol and route its events through the existing
-   * handleAgentEvent path (the event shapes mirror the TS SDK's).
-   */
-  private async initializeRust(opts: { fresh?: boolean; openPath?: string }): Promise<{ success: boolean; error?: string; errorKind?: string; warning?: string }> {
-    this._backendKind = "rust";
-    // Dispose any prior runtime before overwriting the handle. Every caller currently
-    // disposes first, so this is a no-op today — but without it, a future caller that
-    // doesn't would orphan a live subprocess (the same leak fixed in RustService's
-    // spawn-failure paths). Cheap invariant, not a behavior change.
-    this._rust?.dispose();
-    this._rust = new RustService(this.makeRustHost(), this.makeRustDeps());
-    const result = await this._rust.initialize(opts);
-    // Mirror the pre-extraction contract: a failed init nulls the live runtime
-    // (the old code nulled `this.rust`), so `initialized` reports false.
-    // INVARIANT: `_backendKind` deliberately STAYS "rust" on failure (not reset to
-    // "typescript") so a retry — e.g. the user reopening the session — re-enters
-    // this Rust path rather than silently switching the session to the TS SDK.
-    if (!result.success) { this._rust = null; }
-    return result;
-  }
-
-  /** Real (vscode-backed) implementations of RustService's environment deps.
-   *  RustService itself is vscode-free so its init/handshake sequence can be
-   *  driven headlessly in unit tests with stubbed deps (see rust-service.test.ts). */
-  private makeRustDeps(): RustDeps {
-    return {
-      detectBinary: () => detectRustBinary(),
-      shouldDisableExtensions: (cwd) => shouldDisableRustExtensions(cwd),
-      workspaceIsTrusted: () => vscode.workspace.isTrusted,
-      extensionsMode: () => rustExtensionsMode(),
-      setupModels: () => setupRustModels(),
-      hasCredential: (prov: string) => providerHasCredential(prov, process.env, oauthProviders(defaultRustAgentDir())),
-      sessionDir: () => resolveRustSessionDir(),
-      workspaceCwd: () => resolveWorkspaceCwd(),
-      config: () => {
-        const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-        return {
-          defaultModelProvider: cfg.get<string>("defaultModelProvider"),
-          defaultModelId: cfg.get<string>("defaultModelId"),
-          defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel")?.trim() || "off",
-          rustExtensionPolicy: cfg.get<string>("rustExtensionPolicy")?.trim() || "balanced",
-          // Register before use: the logger scrubs these exact values from every log line and
-          // from the error text that reaches the webview (a custom/self-hosted key matches no
-          // vendor prefix, so pattern-matching alone would miss it).
-          // SecretStorage is the source of truth (settings are migrated + cleared at activation);
-          // the settings read remains as a fallback for a value written after startup.
-          anthropicApiKey: getApiKey("anthropicApiKey") ?? registerAndReturnSecret(cfg.get<string>("anthropicApiKey")),
-          openaiApiKey: getApiKey("openaiApiKey") ?? registerAndReturnSecret(cfg.get<string>("openaiApiKey")),
-          contextBudget: cfg.get<number>("contextBudget") ?? 0,
-          readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
-        };
-      },
-      showError: (message) => { void vscode.window.showErrorMessage(message); },
-      exportHtml: (sessionFile, outputPath) => rustExportHtml(sessionFile, outputPath),
-      detectMissingTools: async () => {
-        const missing = await detectMissingRustTools();
-        if (missing.length === 0) { return null; }
-        return missing.map((m) => ({ name: m.cmds[0], docs: m.docs }));
-      },
-      offerReopen: (sessionFile) => {
-        // The session JSONL persists on disk; offer one-click recovery into a fresh
-        // window via the existing resume flow — avoids in-place re-init (which would
-        // replay history into the dead tab) and crash-loops (user-initiated).
-        void vscode.window
-          .showWarningMessage("Rust Pi exited unexpectedly.", "Reopen session")
-          .then((choice) => {
-            if (choice === "Reopen session") {
-              void vscode.commands.executeCommand("pi-code-gui.resumePastSession", sessionFile);
-            }
-          });
-      },
-    };
   }
 
   /** Real (vscode-backed) implementations of SdkService's environment deps.
@@ -468,7 +351,6 @@ export class PiService {
           defaultModelId: cfg.get<string>("defaultModelId"),
           defaultThinkingLevel: cfg.get<string>("defaultThinkingLevel") ?? "off",
           contextBudget: cfg.get<number>("contextBudget") ?? 0,
-          readyBudgetMs: Math.max(15, cfg.get<number>("startupBudgetSeconds") ?? 15) * 1000,
           sessionDir: cfg.get<string>("sessionDir")?.trim() || undefined,
         };
       },
@@ -476,17 +358,15 @@ export class PiService {
       fileExists: (p) => fs.existsSync(p),
       readFileUtf8: (p) => fs.promises.readFile(p, "utf-8"),
       buildBridgeTools: (defineTool, typebox) => createBridgeTools(defineTool, typebox),
-      catalogProviders: () => this.bundledProviders,
+      catalogProviders: () => this.catalogProviders,
       // Arbitrary JS in the webview — ask once per custom type and remember the answer.
       confirmRendererConsent: (customType) => confirmRendererConsent(customType),
       notifyOutdatedPiAi: (installed, supported, belowFloor) => {
         const UPDATE = "Update";
-        // Below the floor is a compatibility problem (we drop to a legacy code path); merely
+        // Below the floor the Pi SDK cannot start (breakage); merely
         // behind this build's target is a nudge. Same one-click offer either way, different
         // severity and wording, so a routine "newer version exists" doesn't read as breakage.
-        const message = belowFloor
-          ? `The installed Pi (TypeScript) SDK is outdated: pi-ai ${installed}, but this extension targets ${supported}+. It still works via a legacy path, but update for full compatibility.`
-          : `A newer Pi (TypeScript) SDK is available: you have pi-ai ${installed}, this extension is built against ${supported}. Updating keeps model support and pricing in step.`;
+        const message = piAiNoticeMessage(installed, supported, belowFloor);
         const show = belowFloor ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
         void show(message, UPDATE).then((choice) => {
           if (choice === UPDATE) {
@@ -501,30 +381,9 @@ export class PiService {
     };
   }
 
-  /** Build the RustHost callback surface RustService writes through — the explicit
-   *  contract for the shared PiService state and capabilities the Rust subsystem
-   *  needs (see src/rust-service.ts). Created fresh per Rust session. */
-  private makeRustHost(): RustHost {
-    return {
-      emit: (e) => this.emit(e),
-      handleAgentEvent: (e) => this.handleAgentEvent(e),
-      reportStatus: () => this.reportStatus(),
-      sendInitialMessages: (entries) => this.sendInitialMessages(entries),
-      emitPostInitState: () => { this.emitSettings(); this.emitSlashCommands(); void this.applyDefaultModes(); },
-      emitModeState: () => { this.emitModeState(); },
-      showDialog: (type, prompt, extras) => this._showDialog(type, prompt, extras),
-      rememberReasoning: () => { this.rememberReasoning(); },
-      setSessionId: (id) => { this.sessionId = id; },
-      getCycleModels: () => this.cycleModels,
-      setCycleModels: (list) => { this.cycleModels = list; },
-      setAutoCompactionEnabled: (v) => { this._autoCompactionEnabled = v; },
-      setAutoRetryEnabled: (v) => { this._autoRetryEnabled = v; },
-    };
-  }
 
-  /** Runtime-agnostic session entries for the Open Sessions tree. The TS SDK
-   *  exposes them via sessionManager.getEntries(); the out-of-process Rust
-   *  runtime supplies them through the cached get_messages reply. */
+  /** Session entries for the Open Sessions tree (the SDK's sessionManager.getEntries()). */
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getDisplayEntries(): any[] {
     return this.backend?.getEntries() ?? [];
@@ -578,14 +437,11 @@ export class PiService {
    *  and builtin prompt templates.  Each entry carries a `source`
    *  field so the UI can group or label them. */
   getAllSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
-    // Assembly is pure + tested (buildSlashCommandList): the active backend's agent commands
-    // (Rust reports its extensions/templates/skills over RPC; the SDK introspects its
-    // extension runner + builtin templates) + the GUI/session commands + the capability-gated
-    // ones. No runtime branch here.
-    return buildSlashCommandList(this.backend?.getSlashCommands() ?? [], this.capabilities);
+    // Assembly is pure + tested (buildSlashCommandList): the session's agent commands (the SDK
+    // introspects its extension runner + builtin templates) + the GUI/session commands.
+    return buildSlashCommandList(this.backend?.getSlashCommands() ?? []);
   }
 
-  /** Map a Rust `get_commands` reply into slash-command entries (tolerant of field naming). */
   /** Emit all registered slash commands to the webview for autocomplete. */
   emitSlashCommands(): void {
     const all = this.getAllSlashCommands();
@@ -603,8 +459,7 @@ export class PiService {
    *  that would crash the extension host on large sessions. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendInitialMessages(providedEntries?: any[]): Promise<void> {
-    // Build session context from the session manager, or from caller-provided
-    // entries (the Rust runtime supplies these from its `get_messages` reply).
+    // Build session context from the session manager, or from caller-provided entries.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let entries: any[];
     if (providedEntries) {
@@ -641,30 +496,23 @@ export class PiService {
   private handleAgentEvent(event: any): void {
     // The decision logic lives in the pure, unit-tested translateAgentEvent
     // (src/agent-events.ts). This shell builds the state snapshot, applies the
-    // returned mutations, emits the events, then runs the trailing effects in
-    // the original order: Rust subprocess effects before the data emits
-    // (rust queue-clear emits its own queue-update first; captureContext feeds
-    // the % reportStatus emits), and reportStatus after, reflecting post-event state.
+    // returned mutations, emits the events, then reports status after, reflecting
+    // post-event state.
     const r = translateAgentEvent(event, {
-      backendKind: this._backendKind,
-      agentRunActive: this.backend?.getAgentRunActive() ?? false,
       lookups: indexEntries(this.sessionManager?.getEntries?.() ?? []),
       userMessages: this._userMessages,
       toolCalls: this.currentAssistantToolCalls,
       now: Date.now(),
       prepareArgs: (toolName, args) => this._prepareToolArgs(toolName, args),
+      pendingStopNote: this._pendingStopNote,
     });
 
-    // The run/streaming flags are owned by the backend now — apply the event-stream mutations
-    // through it (RustService reads its own copy directly in its event loop).
+    // The run/streaming flags are owned by the backend — apply the event-stream mutations
+    // through it.
     if (r.setAgentRunActive !== undefined) { this.backend?.setAgentRunActive(r.setAgentRunActive); }
-    // A run just ended → the binary is idle again, so a title deferred mid-turn can land now.
     if (r.setStreaming !== undefined) { this.backend?.setStreaming(r.setStreaming); }
     if (r.setThinkingLevel !== undefined) { this.backend?.applyThinkingLevel(r.setThinkingLevel); this.rememberReasoning(); }
     if (r.clearToolCalls) { this.currentAssistantToolCalls.clear(); }
-
-    if (r.effects.rustClearQueue) { this._rust?.clearQueueIfAny(); }
-    if (r.effects.captureContext) { this._rust?.captureContext(r.effects.captureUsage); }
 
     for (const ev of r.events) { this.emit(ev); }
 
@@ -680,7 +528,7 @@ export class PiService {
    * validated/transformed args (e.g. the edit tool's legacy oldText/newText →
    * edits[]). The SDK runs prepareArguments internally but only AFTER emitting
    * tool_execution_start, so raw LLM args would otherwise leak through. Returns
-   * args unchanged when there is no matching tool def (e.g. under Rust).
+   * args unchanged when there is no matching tool def.
    */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _prepareToolArgs(toolName: string, args: any): any {
@@ -705,20 +553,13 @@ export class PiService {
     return full ? clampThinkingLevel(full, this._thinkingLevel) : this._thinkingLevel;
   }
 
-  /** The composed Thinking/Reasoning status for the single status-bar chip, and
-   *  whether it's an actionable (clickable) control. Thinking and Reasoning are two
-   *  axes of ONE dial: "off" disables thinking; any other level enables it at that
-   *  reasoning effort (mirrors the wire's `thinking.type` + `reasoning_effort`/`effort`
-   *  fields). A Rust transport that can't transmit the level degrades to a read-only
-   *  "reasoning: on/off" badge — the only real axis there. */
-  thinkingStatus(): { text: string; clickable: boolean } {
-    // Chip composition is pure + tested (composeThinkingStatus). thinkingLevelLive() is always
-    // true for the SDK, so the read-only reasoning badge only appears under Rust — as before.
-    return composeThinkingStatus({
-      live: this.capabilities.thinkingLevelLive(),
-      reasoningOn: !!this._model?.reasoning,
-      level: this.realThinkingLevel(),
-    });
+  /** The composed Thinking/Reasoning status for the single status-bar chip. Thinking and
+   *  Reasoning are two axes of ONE dial: "off" disables thinking; any other level enables it at
+   *  that reasoning effort (mirrors the wire's `thinking.type` + `reasoning_effort`/`effort`
+   *  fields). */
+  thinkingStatus(): { text: string } {
+    // Chip composition is pure + tested (composeThinkingStatus).
+    return { text: composeThinkingStatus(this.realThinkingLevel()) };
   }
 
   /** Remember the active reasoning level so toggling Thinking off→on can restore it. */
@@ -734,17 +575,12 @@ export class PiService {
 
   /** Toggle Thinking on/off (the Thinking axis of the one dial). Off→on restores the
    *  last reasoning level (defaultReasoningLevel); on→off goes to "off". Returns false
-   *  (after an honest notice) when there is nothing to toggle — a non-reasoning model
-   *  or a Rust transport that can't transmit the level — so callers don't claim success. */
+   *  (after an honest notice) when there is nothing to toggle — a non-reasoning model —
+   *  so callers don't claim success. */
   async toggleThinking(): Promise<boolean> {
     const onLevels = this.supportedThinkingLevels().filter((l) => l !== "off");
     if (onLevels.length === 0) {
       vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't use reasoning, so there's nothing to toggle.`);
-      return false;
-    }
-    if (!this.capabilities.thinkingLevelLive()) {
-      const on = this._model?.reasoning ?? false;
-      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — reasoning depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
       return false;
     }
     await this.setThinkingLevel(toggleThinkingTarget(this.realThinkingLevel(), this.defaultReasoningLevel()));
@@ -761,16 +597,8 @@ export class PiService {
       data: {
         model: this._model?.id ?? this._model?.name ?? "pi",
         thinkingLevel: this.realThinkingLevel(),
-        // Composed Thinking/Reasoning chip text + whether it's clickable (a no-op
-        // Rust transport renders a read-only reasoning on/off badge). See thinkingStatus.
+        // Composed Thinking/Reasoning chip text. See thinkingStatus.
         thinkingDisplay: thinking.text,
-        thinkingClickable: thinking.clickable,
-        // Whether the active transport actually transmits the thinking level. Under
-        // Rust this depends on the provider api (openai-completions = no-op); the TS
-        // SDK handles thinking per-provider in-process, so it's always "live" there.
-        // Both are expressed by the backend's capability flag.
-        thinkingLive: this.capabilities.thinkingLevelLive(),
-        reasoning: this._model?.reasoning,
         isStreaming: this.backend?.isStreaming() ?? false,
         sessionId: this.sessionId ?? undefined,
         // On-disk session file (null until the first write). The webview persists this
@@ -779,7 +607,6 @@ export class PiService {
         sessionFile: this.sessionFilePath ?? undefined,
         usage: stats,
         contextBudget: budget,
-        runtime: this._backendKind,
       },
     });
   }
@@ -788,33 +615,25 @@ export class PiService {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async sendPrompt(text: string, images?: any[], mode?: string): Promise<void> {
-    if (!this.backend) { throw new Error(this._backendKind === "rust" ? "Rust Pi session not initialized" : "Pi session not initialized"); }
+    if (!this.backend) { throw new Error("Pi session not initialized"); }
 
     // Dispatch trace (debug-level): mode + the streaming state the decision keys off.
     // Enable the "Pi Code Gui" output channel's Debug level to capture this — it's how
     // we pin the trigger of a preempting dispatch (see prompt-guard.ts).
     const agentRunActive = this.backend?.getAgentRunActive() ?? false;
-    piDebug(`sendPrompt runtime=${this._backendKind} mode=${mode ?? "prompt"} agentRunActive=${agentRunActive} streaming=${this.backend?.isStreaming() ?? false} len=${text.length}`);
+    piDebug(`sendPrompt mode=${mode ?? "prompt"} agentRunActive=${agentRunActive} streaming=${this.backend?.isStreaming() ?? false} len=${text.length}`);
 
     // Never let a mode-less conversational prompt preempt an in-flight turn: a real
-    // mid-stream follow-up arrives as steer/queue, so this is a stale/duplicate dispatch
-    // that on Rust forks the session from root and orphans + double-bills the live run.
+    // mid-stream follow-up arrives as steer/queue, so this is a stale/duplicate dispatch.
     // Drop it and log the call site so the (still-unconfirmed) trigger is captured.
     if (shouldDropPreemptingPrompt(mode, agentRunActive, text)) {
-      piWarn(`Dropped a fresh prompt that would preempt an in-flight turn (runtime=${this._backendKind}, streaming=${this.backend?.isStreaming() ?? false}). A mid-stream follow-up should arrive as steer/queue — a mode-less prompt here is a stale/duplicate dispatch. Text: ${JSON.stringify(text.slice(0, 80))}`);
+      piWarn(`Dropped a fresh prompt that would preempt an in-flight turn (streaming=${this.backend?.isStreaming() ?? false}). A mid-stream follow-up should arrive as steer/queue — a mode-less prompt here is a stale/duplicate dispatch. Text: ${JSON.stringify(text.slice(0, 80))}`);
       piDebug(`Preempting-prompt call site:\n${new Error("preempting-prompt dispatch").stack}`);
       this.emit({ type: "custom-message", data: { customType: "info", content: "Ignored a duplicate prompt that arrived while the current turn was still running.", timestamp: Date.now() } });
       return;
     }
 
-    // Runtimes that own their own slash handling (Rust: capabilities.interceptSlashCommands
-    // = false) take the raw turn — no interception, no vision auto-switch; the binary
-    // manages both. The steer/queue/prompt wire send is the backend primitive.
-    if (!this.capabilities.interceptSlashCommands) {
-      return this.backend.sendPrompt(text, images, mode);
-    }
-
-    // TS path: intercept builtin slash commands before sending. Builtin commands map
+    // Intercept builtin slash commands before sending. Builtin commands map
     // to PiService methods; unhandled slash commands (extension commands like /tldr,
     // and unknown ones) MUST go through the plain prompt path even while streaming —
     // the SDK runs them immediately, whereas steer()/followUp() reject them
@@ -903,7 +722,12 @@ export class PiService {
         return true;
 
       case "reload": {
-        await this.backend?.reloadContext();
+        const outcome = await this.reloadContext();
+        const notDone = reloadNotDoneText(outcome);
+        if (notDone) {
+          this.emit({ type: "custom-message", data: { customType: "info", content: notDone, timestamp: Date.now() } });
+          return true;
+        }
         // Re-send initial messages so the webview reflects updated extensions/skills
         await this.sendInitialMessages();
         this.emitSlashCommands();
@@ -934,18 +758,14 @@ export class PiService {
   }
 
   async abort(): Promise<void> {
-    // Both backends kill any running bash before stopping the LLM turn (agent.abort
-    // alone would orphan child processes). See SdkService.abort / RustService.abort.
-    // Both impls are synchronous (send / local calls); the union return is voided.
+    // The backend kills any running bash before stopping the LLM turn (agent.abort alone would
+    // orphan child processes). See SdkService.abort. The union return is voided.
     const backend = this.backend;
     void backend?.abort();
 
-    // Watchdog. RustService.abort() is two fire-and-forget writes down a pipe: nothing
-    // correlates them, nothing confirms them, and a subprocess busy inside a tool call may not
-    // read stdin for a while. So a Stop that never lands is indistinguishable from one still in
-    // flight — the user gets a silent, permanently "stopping" turn. If the run is still active
-    // after the grace period, say so rather than leave them guessing. (The SDK aborts in-process
-    // and effectively always lands, so this only ever fires for Rust in practice.)
+    // Watchdog: a Stop that never lands is indistinguishable from one still in flight — the user
+    // gets a silent, permanently "stopping" turn. If the run is still active after the grace
+    // period, say so rather than leave them guessing.
     if (!backend) { return; }
     setTimeout(() => {
       // Only complain about the run we actually tried to stop — not a later one, and not a
@@ -956,25 +776,16 @@ export class PiService {
   }
 
   /**
-   * Compact the conversation context. Delegated to the active backend: the Rust RPC
-   * has an explicit `compact` command (with the auto-compaction-gate explanation);
-   * the SDK path calls the in-process session (same call as the command-palette
-   * `pi-code-gui.compact`). PiService no longer branches.
+   * Compact the conversation context. Delegated to the backend, which calls the in-process
+   * session (same call as the command-palette `pi-code-gui.compact`).
    */
   async compact(): Promise<void> {
-    piDebug(`compact() invoked (backend=${this._backendKind})`);
+    piDebug("compact() invoked");
     await this.backend?.compact();
   }
 
-  /**
-   * Export the conversation to HTML at `outputPath`. Runtime-aware: the
-   * TypeScript SDK session exports directly; Rust shells out to `pi --export`
-   * (there is no in-process session under Rust). Returns the written path.
-   */
-  /** `/export` from the chat, on EITHER runtime: resolve a default path when none was given,
-   *  export through the PiBackend seam, and report where it landed. Shared by the TypeScript
-   *  slash handler and the Rust slash router so the two cannot diverge — reaching for
-   *  `this.session` here was the only reason the command had to be TypeScript-only. */
+  /** `/export` from the chat: resolve a default path when none was given, export through the
+   *  PiBackend seam, and report where it landed. */
   async exportSessionInteractive(arg?: string): Promise<void> {
     const outputPath = arg || vscode.Uri.joinPath(
       vscode.Uri.file(resolveWorkspaceCwd()),
@@ -984,16 +795,15 @@ export class PiService {
       const result = await this.exportToHtml(outputPath);
       vscode.window.showInformationMessage(`Session exported to: ${result}`);
     } catch (e: unknown) {
-      // Rust refuses to export a session with no file yet ("send a message first"). That is a
-      // real, actionable answer — put it in the chat rather than swallowing it.
+      // A failed export is a real, actionable answer — put it in the chat rather than
+      // swallowing it.
       const msg = e instanceof Error ? e.message : String(e);
       this.emit({ type: "custom-message", data: { customType: "error", content: `Export failed: ${msg}`, timestamp: Date.now() } });
     }
   }
 
   async exportToHtml(outputPath: string): Promise<string> {
-    // Delegated to the active backend (PiBackend.exportToHtml): Rust shells out to
-    // `pi --export`, the SDK exports the in-process session — PiService no longer branches.
+    // Delegated to the backend (PiBackend.exportToHtml): the SDK exports the in-process session.
     if (!this.backend) { throw new Error("No active session to export."); }
     return this.backend.exportToHtml(outputPath);
   }
@@ -1040,8 +850,7 @@ export class PiService {
 
   async newSession(): Promise<void> {
     if (!this.session) {
-      // No in-process session to quiesce — the normal Rust path (this.session is the SDK's,
-      // always null there), and an SDK session that never initialized.
+      // No in-process session to quiesce — an SDK session that never initialized.
       piWarn("newSession(): no in-process session to quiesce — starting fresh");
       this.emit({ type: "sessionReset" });
       this.dispose();
@@ -1082,8 +891,8 @@ export class PiService {
     }
     // Append ONLY to a file the SDK has already created. The SDK defers session
     // writes — it buffers entries in memory and flushes them with the session
-    // header via an EXCLUSIVE create (openSync wx) on the first assistant message
-    // (session-manager.js). If we appendFileSync first we'd (a) create the file
+    // header via an EXCLUSIVE create (openSync wx) once the session has its first user
+    // or assistant message (session-manager.js _hasConversation). If we appendFileSync first we'd (a) create the file
     // early, so the SDK's wx open throws EEXIST and the turn fails, and (b) leave a
     // headerless, malformed file. So never create it here — skip until it exists.
     if (!fs.existsSync(sf)) {
@@ -1099,11 +908,9 @@ export class PiService {
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
-    // The backend applies the switch on the wire (Rust: RPC + applyState so the budget
-    // clamp / context-% reflect the new model immediately; SDK: registry/catalog resolve
-    // + session.setModel) and returns the applied identity, or null when it couldn't
-    // (the Rust path already surfaced the error; the SDK path no-op'd). PiService owns
-    // the shared post-step: active model, cycle index, status.
+    // The backend applies the switch (registry/catalog resolve + session.setModel) and returns
+    // the applied identity, or null when it couldn't. PiService owns the post-step: cycle index,
+    // status.
     const applied = await this.backend?.setModel(provider, modelId);
     if (!applied) { return; }
     // The backend already stored the applied identity (getModel()); PiService just owns
@@ -1125,9 +932,8 @@ export class PiService {
     this.cycleIndex = (this.cycleIndex + 1) % this.cycleModels.length;
     const next = this.cycleModels[this.cycleIndex];
     const prevId = this._model?.id ?? "?";
-    // Delegated to the backend primitive (same wire switch as setModel); PiService
-    // owns the shared post-step + the cycle notice, now uniform across runtimes
-    // (previously Rust showed only "Model: <id>" — it now shows prev → next too).
+    // Delegated to the backend primitive (same switch as setModel); PiService owns the
+    // post-step + the cycle notice.
     const applied = await this.backend.setModel(next.provider, next.id);
     if (!applied) { return; }
     // Backend owns the applied identity (getModel()); PiService owns the notice + status.
@@ -1140,40 +946,21 @@ export class PiService {
   }
 
   async setThinkingLevel(level: string): Promise<void> {
-    // A transport that can't serialize the level (some Rust provider apis —
-    // mistral-conversations and any unverified/unknown api) makes this a silent no-op
-    // the binary still reports as success. Don't pretend: reasoning is then a fixed
-    // on/off model property, not an adjustable depth. capabilities.thinkingLevelLive()
-    // is true for the SDK (handled per-provider in-process) and, under Rust, tracks
-    // thinkingLevelIsLive(model.api) — so openai-completions/DeepSeek still pass.
-    if (!this.capabilities.thinkingLevelLive()) {
-      const on = this._model?.reasoning ?? false;
-      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
-      return;
-    }
     if (!this.backend) {
       piWarn(`setThinkingLevel("${level}") ignored: session not initialized`);
       return;
     }
-    // Clamp centrally rather than per-caller. The picker is gated, but it is not the only way
-    // in: the off<->on toggle derives its target from the SAVED DEFAULT, which is user-editable,
-    // persisted, and shared with the TypeScript runtime where `max` is legitimately offered. On
-    // a pre-#139 binary that reaches the wire as a rejected request; clamping here means every
-    // caller — picker, toggle, or any future one — is covered by construction.
-    // The backend sets it on the wire and returns the EFFECTIVE level after its own
-    // clamp (Rust re-reads get_state; the SDK records the clamped level itself and
-    // echoes the request). No force-persist here — both runtimes record the change
-    // via their deferred append path (a direct write would duplicate it and create
-    // the file early, EEXIST on first prompt).
+    // The backend sets the level and returns the EFFECTIVE level (the SDK records the clamped
+    // level itself and echoes the request). No force-persist here — the SDK records the change
+    // via its deferred append path (a direct write would duplicate it and create the file
+    // early, EEXIST on first prompt).
     const effective = await this.backend.setThinkingLevel(level);
     // The backend stored the effective level (getThinkingLevel()); PiService keeps the
     // off→on toggle memory + status.
     this.rememberReasoning();
     this.reportStatus();
-    // A clamp means the model genuinely doesn't support the requested level (we
-    // override Rust's model list with the Pi catalog's correct reasoning flags), so
-    // say so rather than leaving the switch a silent no-op. The SDK always echoes the
-    // request, so this only fires under Rust.
+    // A clamp means the model genuinely doesn't support the requested level, so say so rather
+    // than leaving the switch a silent no-op.
     if (effective !== level) {
       vscode.window.showInformationMessage(`${this._model?.id ?? "This model"} doesn't support thinking levels — staying at "${effective}".`);
     }
@@ -1182,14 +969,14 @@ export class PiService {
   // ── Default model / thinking persistence ──────────────
 
   /** Save the current model as the default for future sessions. */
-  saveDefaultModel(): void {
-    if (!this._model?.provider || !this._model?.id) {
+  saveDefaultModel(target: { provider?: string; id?: string } | null = this._model, scope: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global): void {
+    if (!target?.provider || !target?.id) {
       piWarn("saveDefaultModel() called but no model is active — ignoring");
       return;
     }
     const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    cfg.update("defaultModelProvider", this._model.provider, vscode.ConfigurationTarget.Global);
-    cfg.update("defaultModelId", this._model.id, vscode.ConfigurationTarget.Global);
+    cfg.update("defaultModelProvider", target.provider, scope);
+    cfg.update("defaultModelId", target.id, scope);
   }
 
   /** Save the current thinking level as the default for future sessions. */
@@ -1232,8 +1019,7 @@ export class PiService {
 
   /** Get available models from the model runtime (for dynamic model pickers). */
   async getAvailableModels(): Promise<Array<{ provider: string; id: string; name?: string; cost?: { input: number; output: number }; contextWindow?: number }>> {
-    // Delegated to the active backend (SDK: ModelRuntime.getAvailable; Rust: its cached
-    // get_available_models catalog) — works for BOTH runtimes now, not just the SDK.
+    // Delegated to the backend (the SDK's ModelRuntime.getAvailable).
     return (await this.backend?.getAvailableModels()) ?? [];
   }
 
@@ -1241,9 +1027,8 @@ export class PiService {
    *  The choice list + item labelling is pure + tested (model-picker.ts); this owns the vscode
    *  glue and the setModel/save-default side effects. */
   async pickModel(): Promise<boolean> {
-    // One data source for both runtimes: getAvailableModels() delegates to the backend
-    // (Rust's own catalog — including custom models.json — or the SDK's ModelRuntime).
-    // No runtime branch here; the picker doesn't know which backend it's talking to.
+    // getAvailableModels() delegates to the backend (the SDK's ModelRuntime); the bundled
+    // catalog is the fallback when it returns nothing.
     let models: ModelChoice[] = [];
     try {
       const available = await this.getAvailableModels();
@@ -1252,7 +1037,7 @@ export class PiService {
     } catch (e: any) {
       piWarn(`pickModel: getAvailableModels failed (${e.message}), using static fallback`);
     }
-    if (models.length === 0) { models = FALLBACK_MODELS; }
+    if (models.length === 0) { models = resolveFallbackModels(this.catalogProviders); }
 
     const items = buildModelPickerItems(models, this.model?.id, this.getDefaultModel());
     const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select model (\u2605 = default)", matchOnDetail: true });
@@ -1274,37 +1059,30 @@ export class PiService {
     return true;
   }
 
-  /** The full pi-ai model object for the active model (carries reasoning +
-   *  thinkingLevelMap), or null when it can't be resolved from the registry. */
-  /** The bundled pi-ai catalog providers map — the authoritative capability source of
-   *  record (each model owner's published spec; e.g. DeepSeek documents reasoning_effort
-   *  = high|max with low/medium→high and xhigh→max, encoded as a model's thinkingLevelMap). */
-  private get bundledProviders(): Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> | undefined {
-    return (bundledRegistry as { providers?: Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> }).providers;
+  /** The model catalog — the authoritative capability and price source of record (each model
+   *  owner's published spec; e.g. DeepSeek documents reasoning_effort = high|max with
+   *  low/medium→high and xhigh→max, encoded as a model's thinkingLevelMap). It is the bundled
+   *  registry (model-registry.generated.json), generated from pi-ai. */
+  private get catalogProviders(): CatalogProviders {
+    return (bundledRegistry as unknown as { providers: CatalogProviders }).providers;
   }
 
+  /** The full pi-ai model object for the active model (carries reasoning +
+   *  thinkingLevelMap), or null when it can't be resolved. */
   private currentFullModel(): ThinkingModel | null {
     const id = this._model?.id; const provider = this._model?.provider;
     if (!id || !provider) { return null; }
-    // TS SDK path: resolve the live pi-ai model from the registry, then reconcile it
-    // against the bundled catalog so a custom ~/.pi/agent/models.json that omits
-    // `reasoning` can't downgrade a known-reasoning model (shared with the init clamp).
+    // Resolve the live pi-ai model from the registry, then reconcile it against the model
+    // catalog so a custom ~/.pi/agent/models.json that omits `reasoning` can't downgrade a
+    // known-reasoning model (shared with the init clamp).
     if (this.modelRuntime) {
       try {
         const m = this.modelRuntime.getModel(provider, id) as ThinkingModel | undefined;
-        if (m) { return reconcileThinkingCapability(this.bundledProviders, provider, id, m); }
-      } catch { /* fall through to the bundled catalog */ }
+        if (m) { return reconcileThinkingCapability(this.catalogProviders, provider, id, m); }
+      } catch { /* fall through to the model catalog */ }
     }
-    // Rust path (no SDK ModelRegistry — see initializeRust) or registry miss: use the
-    // bundled catalog. NOT rust-pi's get_state.reasoning, which is only the executor's
-    // heuristic and has classified models wrongly before.
-    const bundled = findCatalogThinkingModel(this.bundledProviders, provider, id);
-    if (bundled) { return bundled; }
-    // Absent from the bundled catalog: last resort, rust-pi's reported reasoning flag —
-    // only to avoid offering a graded picker the runtime would no-op. A fallback
-    // heuristic, not an authoritative capability source.
-    if (this._model?.reasoning === undefined) { return null; }
-    return { reasoning: this._model.reasoning };
+    // Registry miss: use the model catalog.
+    return findCatalogThinkingModel(this.catalogProviders, provider, id);
   }
 
   /** Thinking levels meaningful for the active model (per pi-ai metadata), lowest→
@@ -1315,33 +1093,11 @@ export class PiService {
     // When the model is fully unknown, offer the graded range speculatively — but NOT `max`:
     // an unresolved model gives us no evidence the backend supports it (getSupportedThinkingLevels
     // surfaces max only from an explicit per-model mapping, which this fallback has none of).
-    const levels = full ? getSupportedThinkingLevels(full) : THINKING_LEVELS.filter((l) => l !== "max");
-    return this.backendHonorsMax() ? levels : levels.filter((l) => l !== "max");
-  }
-
-  /** Whether the ACTIVE backend accepts `max`. The bundled catalog maps `max` for 131 models,
-   *  but a mapping only says the MODEL has the tier — the backend still has to accept it:
-   *  a pre-#139 rust-pi rejects `set_thinking_level("max")` as a validation error, so offering
-   *  it there turns a picker entry into a hard failure. TS goes through the in-process SDK,
-   *  which carries its own post-#139 pi-ai and clamps rather than rejecting. */
-  private backendHonorsMax(): boolean {
-    // Always. The gate existed for pre-#139 rust-pi builds that rejected
-    // set_thinking_level("max") outright; 0.2.0 requires rust-pi 0.3.0, so there is no
-    // supported binary that refuses it. It also re-probed detectRustBinary() from here — a
-    // version check standing in for a capability, which the backend seam exists to avoid.
-    return true;
+    return full ? getSupportedThinkingLevels(full) : THINKING_LEVELS.filter((l) => l !== "max");
   }
 
   /** Open a QuickPick to choose a thinking level, set it on this session, and optionally save as default. */
   async pickThinkingLevel(): Promise<boolean> {
-    // On a transport that doesn't transmit the level (some Rust provider apis), a
-    // graded picker would be a no-op — surface the honest reasoning on/off state
-    // instead. Always live for the SDK, so this only fires under Rust.
-    if (!this.capabilities.thinkingLevelLive()) {
-      const on = this._model?.reasoning ?? false;
-      vscode.window.showInformationMessage(`${this._model?.provider ?? "This provider"} self-allocates reasoning (currently ${on ? "on" : "off"}) — thinking depth isn't adjustable for ${this._model?.id ?? "this model"}.`);
-      return false;
-    }
     // off + the reasoning tiers this model honors, from the authoritative catalog
     // (currentFullModel) — e.g. DeepSeek collapses to off/high/xhigh.
     const supported = this.supportedThinkingLevels();
@@ -1388,11 +1144,9 @@ export class PiService {
 
   async toggleAutoCompaction(): Promise<boolean> {
     const next = !this._autoCompactionEnabled;
-    // State-flip policy is the one genuine divergence: the Rust RPC flips PiService
-    // state via the RustHost callback only on success (optimistic-safe); the SDK
-    // flips eagerly then pushes to the session. The wire call itself is now the
-    // backend primitive (setAutoCompaction), not inline RPC/session plumbing.
-    if (flipsStateEagerly(this._backendKind)) { this._autoCompactionEnabled = next; }
+    // The SDK applies the setting in-process, so flip eagerly (keeps the UI responsive), then
+    // push it to the session through the backend primitive.
+    this._autoCompactionEnabled = next;
     await this.backend?.setAutoCompaction(next);
     this.emitSettings();
     return this._autoCompactionEnabled;
@@ -1400,9 +1154,8 @@ export class PiService {
 
   async toggleAutoRetry(): Promise<boolean> {
     const next = !this._autoRetryEnabled;
-    // Same flip policy as auto-compaction. setAutoRetry is a no-op on the SDK (no
-    // session toggle); Rust applies it over RPC and echoes state via the host callback.
-    if (flipsStateEagerly(this._backendKind)) { this._autoRetryEnabled = next; }
+    // Same eager flip as auto-compaction.
+    this._autoRetryEnabled = next;
     await this.backend?.setAutoRetry(next);
     this.emitSettings();
     return this._autoRetryEnabled;
@@ -1415,18 +1168,16 @@ export class PiService {
   }
 
 
-  /** Generate a short 3-word tab title summary for the first user input in a session. */
-  /** A ModelRuntime for the tab-summary side-call: the SDK session's own on the TS runtime,
-   *  or a lazily-created one on Rust (which has no in-process SdkService). Cached. Null when
-   *  the TS SDK can't be resolved (a Rust-only box with no npm SDK), so the caller falls
-   *  back to the raw first message. ModelRuntime.create() resolves auth from env/auth.json
-   *  itself, so no key plumbing is needed. */
+  /** A ModelRuntime for side-calls (tab summary, /login): the SDK session's own when a session
+   *  is up, else a lazily-created one (e.g. /login before a session could start). Cached. Null
+   *  when the SDK can't be resolved, so the caller falls back. ModelRuntime.create() resolves
+   *  auth from env/auth.json itself, so no key plumbing is needed. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _sharedRuntime: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async sharedModelRuntime(): Promise<any> {
-    if (this.modelRuntime) { return this.modelRuntime; }      // TS: reuse the session's runtime
-    if (this._sharedRuntime) { return this._sharedRuntime; }  // Rust: cached lazy one
+    if (this.modelRuntime) { return this.modelRuntime; }      // reuse the session's runtime
+    if (this._sharedRuntime) { return this._sharedRuntime; }  // cached lazy one
     try {
       const SDK = await importWithRetry(path.join(resolvePiPackagePath(), "dist/index.js"), 2, 300);
       this._sharedRuntime = await SDK.ModelRuntime.create();
@@ -1437,10 +1188,8 @@ export class PiService {
     }
   }
 
-  /** Generate a short 3-word tab-title summary for the first user input. Works on BOTH
-   *  runtimes: the Rust binary exposes no summarize RPC, so the extension makes this
-   *  lightweight side-call itself via a ModelRuntime (the same model the session uses),
-   *  giving Rust the same nice tab title TS already gets instead of the raw first command. */
+  /** Generate a short 3-word tab-title summary for the first user input, via a lightweight
+   *  side-call on a ModelRuntime (the same model the session uses). */
   async generateTabSummary(userInput: string): Promise<string | null> {
     if (!this._model) { return null; }
     try {
@@ -1469,22 +1218,20 @@ export class PiService {
 
   // ── Usage / token stats ──────────────────────────────
 
-  /** Per-million-token cost rates for the active model, from the bundled catalog, or
+  /** Per-million-token cost rates for the active model, from the model catalog, or
    *  null when we have no rate info (→ the status bar shows "$??" rather than $0). */
   private activeCostRates(): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
     const p = this._model?.provider; const id = this._model?.id;
-    // Withhold rates we know cannot be right rather than pricing with them — the Rust path
-    // multiplies these directly, so returning them would produce a confident wrong figure.
+    // Withhold rates we know cannot be right rather than pricing with them.
     if (catalogRatesAreUnexpressible(p, id)) { return null; }
-    return (p && id) ? findCatalogModelCost(this.bundledProviders, p, id) : null;
+    return (p && id) ? findCatalogModelCost(this.catalogProviders, p, id) : null;
   }
 
   getUsageStats(): UsageStats {
-    // Raw token counts + context come from the active backend primitive (SdkService sums its
-    // session entries; RustService caches get_session_stats). The cost policy — the genuine
-    // runtime divergence — is the pure, tested computeUsageStats (src/usage-stats.ts).
-    const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-    return computeUsageStats(u, this.activeCostRates(), this._backendKind,
+    // Raw token counts + context come from the backend primitive (SdkService sums its session
+    // entries). The cost policy is the pure, tested computeUsageStats (src/usage-stats.ts).
+    const u = this.backend?.getUsage() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costFromProvider: "none" as const, contextPercent: null, contextWindow: 0 };
+    return computeUsageStats(u, this.activeCostRates(),
       costWithheldReason(this._model?.provider, this._model?.id));
   }
 
@@ -1496,29 +1243,14 @@ export class PiService {
    *  what the model honors) — so the status bar, picker, and cycle all show what's
    *  real, not a level the model silently ignores. */
   get thinkingLevel(): string { return this.realThinkingLevel(); }
-  /** Which runtime backs this session: "typescript" (in-process SDK) or "rust" (RPC subprocess). */
-  get runtime(): Runtime { return this._backendKind; }
 
-  /** The active backend's capability flags — the data-driven replacement for scattered
-   *  `_backendKind === "rust"` feature gates. Falls back to a runtime-appropriate default
-   *  when the service isn't live yet (e.g. mid-init or after a failed init). */
-  get capabilities(): BackendCapabilities {
-    const active = this._backendKind === "rust" ? this._rust : this._sdk;
-    if (active) { return active.capabilities; }
-    // No live service (mid-init / failed init): the shared runtime default. Same source the
-    // backends derive from, so this fallback can't drift from the real thing.
-    return backendCapabilityDefaults(this._backendKind);
-  }
-
-  /** Promote a follow-up message to a steering message. Delegated to the backend:
-   *  the SDK re-queues its steers then appends; Rust moves it in the synthetic queue
-   *  and re-sends over the steer channel (it auto-processes steers). */
+  /** Promote a follow-up message to a steering message. Delegated to the backend: the SDK
+   *  re-queues its steers then appends. */
   async promoteToSteer(text: string): Promise<void> {
     this.backend?.promoteToSteer(text);
   }
 
-  /** Clear all queued messages. The SDK clears the session queue; Rust clears only
-   *  its local pending indicator (rust-pi has already accepted/auto-processed them). */
+  /** Clear all queued messages (the SDK clears the session queue). */
   async clearQueue(): Promise<void> {
     await this.backend?.clearQueue();
   }
@@ -1527,72 +1259,31 @@ export class PiService {
   get sessionManagerInstance(): any { return this.sessionManager; }
   /** The file path of the session file on disk (for persistence across reloads). */
   get sessionFilePath(): string | null {
-    return this.sessionManager?.getSessionFile?.() ?? this._rust?.getSessionPath() ?? null;
+    return this.sessionManager?.getSessionFile?.() ?? null;
   }
   get sessionIdValue(): string | null { return this.sessionId; }
-  get initialized(): boolean { return this.session !== null || this._rust !== null; }
+  get initialized(): boolean { return this.session !== null; }
 
-  /** Reload context files / extensions / skills in-session. False when the active runtime has no
-   *  in-session reload (Rust), so callers can explain instead of reaching for a raw session.
-   *  Replaces the former `rawSession: any` getter that let extension.ts call .reload() straight
-   *  through the PiBackend seam. */
-  async reloadContext(): Promise<boolean> {
-    if (!this.capabilities.reloadContext) { return false; }
-    return (await this.backend?.reloadContext()) ?? false;
+  /** Reload context files / extensions / skills in-session. Anything but "reloaded" means
+   *  nothing was reloaded; reloadNotDoneText says why. */
+  async reloadContext(): Promise<ReloadOutcome> {
+    return (await this.backend?.reloadContext()) ?? "unsupported";
   }
   /** Expose the model runtime for dynamic model pickers in the webview */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   get modelRuntimeInstance(): any { return this.modelRuntime; }
 
-  /** Cached Rust session name (rust-pi tracks none — we persist/read a `session_info`
-   *  entry in its JSONL ourselves, the same entry type the SDK writes). */
-  private _rustSessionName: string | undefined;
-  private _rustSessionNameRead = false;
-
-  /** Get the session display name. TS: the SDK's SessionManager. Rust: the last
-   *  `session_info` entry we persisted to the JSONL (read once, then cached) — so a
-   *  reopened Rust session shows its title just like TS. */
+  /** The session display name (the SDK's SessionManager). */
   get sessionName(): string | undefined {
-    if (this._backendKind === "rust") {
-      if (!this._rustSessionNameRead) { this._rustSessionName = this._readRustSessionName(); this._rustSessionNameRead = true; }
-      return this._rustSessionName;
-    }
     return this.sessionManager?.getSessionName?.();
   }
 
-  /** Persist a display name so it survives tab close AND shows in the Past Sessions tree
-   *  (summarizeSessionFile reads the `session_info` name for both runtimes).
-   *
-   *  Both runtimes now do this natively, through the seam: the SDK writes the entry, and
-   *  rust-pi's `set_session_name` writes an equivalent `session_info` line with its own tree
-   *  fields. The extension used to hand-append that entry to the Rust JSONL itself, gated on
-   *  the binary being idle because an interleaved write might clobber it — a risk it documented
-   *  and could not rule out. The binary owns the file; it writes its own name now.
-   *
-   *  The in-memory copy is kept so the tab label updates immediately rather than waiting for a
-   *  round trip. */
+  /** Persist a display name so it survives tab close AND shows in the Past Sessions tree. The
+   *  SDK writes the entry through the seam. */
   setSessionName(name: string): void {
-    this._rustSessionName = name;
-    this._rustSessionNameRead = true;
     void this.backend?.setSessionName(name).then((ok) => {
-      if (!ok) { piWarn(`Session name "${name}" was not persisted by the ${this._backendKind} backend.`); }
+      if (!ok) { piWarn(`Session name "${name}" was not persisted by the session.`); }
     });
-  }
-
-  /** Read the last `session_info` name from the Rust session JSONL, or undefined. */
-  private _readRustSessionName(): string | undefined {
-    const sf = this._rust?.getSessionPath();
-    if (!sf) { return undefined; }
-    try {
-      const lines = fs.readFileSync(sf, "utf-8").trim().split("\n");
-      for (let i = lines.length - 1; i >= 0; i--) {
-        // Accept the legacy `session_info` too: sessions titled before the entry type changed
-        // still carry their name that way, and reading it costs nothing.
-        try { const e = JSON.parse(lines[i]); if ((e?.type === RUST_SESSION_NAME_ENTRY || e?.type === "session_info") && typeof e.name === "string") { return e.name; } }
-        catch { /* skip a malformed line */ }
-      }
-    } catch { /* no file yet (fresh session pre-first-turn) */ }
-    return undefined;
   }
 
   
@@ -1621,11 +1312,13 @@ export class PiService {
     // Verify the update took effect
     const actualNames = this.session.getActiveToolNames();
     piDebug(`setActiveTools: requested ${toolNames.length}, actual ${actualNames.length} — ${actualNames.join(", ") || "(none)"}`);
-    // Force-persist the tool selection so it survives session close/reopen
+    // Force-persist the tool selection so it survives session close/reopen. Chain it to the
+    // current leaf: Pi reopens a session from its last entry and walks parentId back to the
+    // root, so a parentless entry here would reopen the session with no history.
     this._forcePersistEntry({
       type: "tools_active_change",
       id: `pi-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      parentId: null,
+      parentId: this.sessionManager?.getLeafId?.() ?? null,
       timestamp: new Date().toISOString(),
       toolNames,
     });
@@ -1643,12 +1336,6 @@ export class PiService {
 
   /** Open a QuickPick to select which tools are active for this session. */
   async pickActiveTools(): Promise<boolean> {
-    if (!this.capabilities.toolsPicker) {
-      // In the chat, not a notification popup: /tools is typed in the chat, so the answer
-      // belongs where the question was asked.
-      this.emit({ type: "custom-message", data: { customType: "info", content: "Per-session tool selection isn't available for Rust sessions — Rust uses its full built-in tool set.", timestamp: Date.now() } });
-      return false;
-    }
     if (!this.session) {
       vscode.window.showWarningMessage("Pi session not ready yet.");
       return false;
@@ -1700,200 +1387,15 @@ export class PiService {
    */
   async login(): Promise<void> { return runLogin(await this.makeAuthFlowDeps()); }
 
-  /** Apply the configured default mode at session start and publish the strip.
-   *
-   *  Plan mode is per-session state in the binary with no way to read it back, so the default is
-   *  ASSERTED rather than assumed: if the setting says plan, we send set_plan_mode. Approval is
-   *  the opposite — it lives in a file the binary reads at startup, so the setting is applied by
-   *  writing it before the session starts, and here we only report what the file says. */
-  async applyDefaultModes(): Promise<void> {
-    if (!this.capabilities.sessionModes || !this.backend) { this.emitModeState(); return; }
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    if (cfg.get<string>("defaultMode") === "plan") {
-      try { await this.backend.setPlanMode(true); }
-      catch { /* a session that cannot enter plan mode still runs; the strip will show "code" */ }
-    }
-    this.emitModeState();
-  }
-
-  // ═══ Mode strip ═════════════════════════════════════════════
-  // The binary reports neither plan mode nor approval mode, so the extension owns both: plan
-  // mode as per-session state on RustService, approval mode as a key in the shared agent home's
-  // settings.json. Every change re-emits the whole strip rather than patching it, so the webview
-  // can never drift from the session.
-
-  /** Push the current mode state to the webview. Safe to call on any runtime. */
-  emitModeState(plan?: string): void {
-    const b = this.backend;
-    this.emit({
-      type: "mode-update",
-      data: {
-        // capabilities.sessionModes, not a kind check: the strip follows the CAPABILITY.
-        available: !!b && this.capabilities.sessionModes,
-        planMode: b?.planMode ?? "off",
-        // The RUNNING session's posture, fixed at spawn — never the file's current value, which
-        // this session would not be obeying.
-        approval: b?.approvalMode ?? "always-ask",
-        ...(plan ? { plan } : {}),
-      },
-    });
-  }
-
-  async setPlanMode(on: boolean, makeDefault: boolean): Promise<void> {
-    if (!this.capabilities.sessionModes || !this.backend) { return; }
-    try {
-      await this.backend.setPlanMode(on);
-    } catch (e) {
-      this.emit({ type: "custom-message", data: { customType: "error", timestamp: Date.now(),
-        content: `⚠ Couldn't change plan mode — ${e instanceof Error ? e.message : String(e)}` } });
-    }
-    if (makeDefault) {
-      await vscode.workspace.getConfiguration("pi-code-gui")
-        .update("defaultMode", on ? "plan" : "code", vscode.ConfigurationTarget.Global);
-    }
-    this.emitModeState();
-  }
-
-  /** The approval picker — VS Code's own QuickPick, matching every other picker here, including
-   *  pickModel's shape: `$(check)` marks what this session is running, ★ marks the saved default,
-   *  and choosing a non-default offers to save it in a second step. */
-  async pickApprovalMode(): Promise<void> {
-    if (!this.capabilities.sessionModes || !this.backend) { return; }
-    const current = this.backend.approvalMode;
-    // ★ = what a NEW session would start in, read from the same file rust-pi reads at startup.
-    // There is no second store: an extension setting for this would be a duplicate of a value
-    // the file already owns, and the two could disagree — which is exactly the bug that made
-    // the ★ decorative in the first place. It also means ★ and ✓ differing is real information:
-    // the file has changed (from here or from the pi CLI) since this session started.
-    const saved = readApprovalMode(defaultRustAgentDir());
-    const rows: Array<{ id: "always-ask" | "write" | "yolo"; detail: string }> = [
-      { id: "always-ask", detail: "Every edit and command needs a yes" },
-      { id: "write", detail: "File edits go through; commands still ask" },
-      { id: "yolo", detail: "Nothing asks — edits and commands run" },
-    ];
-    const items = rows.map((r) => ({
-      label: `${r.id}${r.id === current ? " $(check)" : ""}${r.id === saved ? " \u2605" : ""}`,
-      detail: r.detail,
-      id: r.id,
-      isDefault: r.id === saved,
-    }));
-    const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: "Approval for this session (\u2605 = default)",
-      matchOnDetail: true,
-    });
-    if (!picked) { return; }
-
-    // No "save as default?" step. rust-pi reads approval ONLY from that file at startup and
-    // offers no per-session override (--approval-mode and --yolo are inert over RPC), so every
-    // change is necessarily a change to the default. Offering "just this session" would be
-    // offering something that cannot exist.
-    await this.setApprovalMode(picked.id);
-  }
-
-  async setApprovalMode(mode: "always-ask" | "write" | "yolo"): Promise<void> {
-    const current = this.backend?.approvalMode ?? "always-ask";
-    if (mode === current) { return; }
-
-    // rust-pi reads approval config ONLY at startup and offers no RPC to change it. Writing the
-    // file and carrying on would leave the strip claiming a posture the running session is not
-    // obeying — so the restart is the change, and the user is asked before losing the session.
-    const cfg = vscode.workspace.getConfiguration("pi-code-gui");
-    const RESTART = "Restart session";
-    const RESTART_QUIET = "Restart, don't ask again";
-    // A modal cannot carry a checkbox, so the suppression is its own button — the same shape
-    // VS Code's own "don't show again" prompts use.
-    const proceed = cfg.get<boolean>("confirmApprovalRestart") === false ? RESTART : await vscode.window.showWarningMessage(
-      `Switch approval to "${mode}"?`,
-      {
-        modal: true,
-        detail:
-          `Rust Pi reads the approval mode only when a session starts, so this session is `
-          + `restarted to apply it. Your conversation is reloaded from disk and carries forward; `
-          + `anything still streaming is interrupted.\n\n`
-          + `This setting is shared with the \`pi\` CLI, so it applies there too.`,
-      },
-      RESTART, RESTART_QUIET,
-    );
-    if (proceed !== RESTART && proceed !== RESTART_QUIET) { return; }
-    if (proceed === RESTART_QUIET) {
-      await cfg.update("confirmApprovalRestart", false, vscode.ConfigurationTarget.Global);
-    }
-
-    const warning = writeApprovalMode(defaultRustAgentDir(), mode);
-    if (warning) {
-      this.emit({ type: "custom-message", data: { customType: "error", content: `⚠ ${warning}`, timestamp: Date.now() } });
-      return;
-    }
-    // RESUME rather than start fresh: rust-pi has already persisted this conversation, and
-    // reopening the same JSONL replays it into the webview (sendInitialMessages). Restarting
-    // fresh would make an approval change cost the user their transcript — a steep price for a
-    // setting, and an avoidable one.
-    const resumePath = this.backend?.currentSessionPath ?? null;
-    this.emit({ type: "sessionReset" });
-    this.dispose();
-    await this.initialize(resumePath ? { openPath: resumePath } : { fresh: true });
-    this.emitModeState();
-  }
-
-  async approvePlan(): Promise<void> {
-    if (!this.capabilities.sessionModes || !this.backend) { return; }
-    const plan = await this.backend.approvePlan();
-    this.emitModeState(plan ?? undefined);
-    // approve_plan does NOT resume the agent — measured against 0.3.0. Rather than leave the
-    // user in front of an idle session wondering, offer the next move as one keystroke.
-    this.emit({ type: "insertCommand", command: "Carry out the plan" });
-  }
-
-  async rejectPlan(): Promise<void> {
-    if (!this.capabilities.sessionModes || !this.backend) { return; }
-    await this.backend.rejectPlan();
-    this.emitModeState();
-    // reject_plan carries no feedback field, so a reason has to travel as a follow-up prompt —
-    // the input is left for the user to type it, not pre-filled with words they did not choose.
-  }
-
-  /** Provider logout. Lists stored credentials and removes the chosen one; env vars /
-   *  models.json config are untouched. See auth-flow.ts. */
   async logout(): Promise<void> { return runLogout(await this.makeAuthFlowDeps()); }
-
-  /** After a credential is stored. On Rust the binary reads auth.json from its own agent dir,
-   *  so re-seed it — and say plainly that a RUNNING session won't pick the credential up, since
-   *  rust-pi reads auth at startup. Silent on TS, where the session already holds the runtime. */
-  private afterLoginForRuntime(providerName: string): void {
-    if (this.capabilities.kind !== "rust") { return; }
-    const warning = reseedRustAuth();
-    if (warning) { piWarn(`Rust auth re-seed after login: ${warning}`); }
-
-    // If the session never started — the usual reason someone reaches for /login — the new
-    // credential is exactly what it was missing, so restart it here. Telling the user to "start
-    // a new session" left them stranded in a tab that answered every prompt with "this session
-    // isn't running", when the fix was already in hand. rust-pi only reads auth at startup, so a
-    // restart is genuinely required; it just shouldn't be the user's manual chore.
-    if (!this.initialized) {
-      this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Restarting this session with the new credential…`, timestamp: Date.now() } });
-      void (async (): Promise<void> => {
-        this.emit({ type: "sessionReset" });
-        this.dispose();
-        const r = await this.initialize({ fresh: true });
-        if (!r.success) {
-          this.emit({ type: "custom-message", data: { customType: "error", content: `Still couldn't start after logging in: ${r.error ?? "unknown error"}`, timestamp: Date.now() } });
-        }
-      })();
-      return;
-    }
-    // A LIVE session can't adopt the credential in place — the binary read auth at startup.
-    this.emit({ type: "custom-message", data: { customType: "info", content: `Logged in to ${providerName}. Rust reads credentials at startup, so run /new for it to take effect.`, timestamp: Date.now() } });
-  }
 
   /** Real (vscode-backed) deps for the extracted, headlessly-tested login/logout flow. */
   private async makeAuthFlowDeps(): Promise<AuthFlowDeps> {
     return {
-      // NOT this.modelRuntime — that is the SDK session's runtime and is null on Rust, so
-      // runLogin threw "Pi session not initialized" before showing a single prompt and the
-      // whole command looked like it did nothing. sharedModelRuntime() is the same lazily
-      // built runtime that already gives Rust its tab titles.
+      // NOT this.modelRuntime — that is the SDK session's runtime and is null before a session
+      // starts, so runLogin would throw "Pi session not initialized" before showing a single
+      // prompt. sharedModelRuntime() falls back to a lazily built runtime.
       modelRuntime: await this.sharedModelRuntime(),
-      afterLogin: (providerName) => this.afterLoginForRuntime(providerName),
       getActiveModel: () => this._model,
       setModel: (provider, id) => this.setModel(provider, id),
       ui: {
@@ -1932,22 +1434,6 @@ export class PiService {
     }
     this._pendingDialogs.clear();
 
-    // Rust runtime: tear down the subprocess (it owns its own persistence).
-    if (this._backendKind === "rust") {
-      // No name flush here any more. The extension used to capture the session file before
-      // teardown and append a `session_info` entry afterwards, to cover a title set before the
-      // binary had written the file and any title deferred mid-turn. set_session_name makes
-      // both cases the binary's problem: it writes the entry itself, while it still owns the
-      // file, so there is nothing left to reconcile at teardown.
-      this._uiBridge?.dispose(); this._uiBridge = null;
-      this._rust?.dispose();
-      this._rust = null;
-      return;
-    }
-    // Exhaustive: the SDK teardown below is the "typescript" path. A third runtime added to
-    // Runtime becomes a compile error here (this._backendKind narrows to it) until it declares
-    // its own teardown above. Dead/no-op today.
-    if (this._backendKind !== "typescript") { assertNever(this._backendKind, "runtime"); }
 
     // Force-flush the session file to disk before tearing down.
     // The SDK defers all disk writes until the first assistant message

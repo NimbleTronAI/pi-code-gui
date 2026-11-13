@@ -2,24 +2,19 @@
 // Pure, vscode-free translation of agent stream events → PiServiceEvents.
 //
 // Extracted from PiService.handleAgentEvent — a ~230-line state machine that
-// BOTH runtimes drive (TS SDK and Rust) and that has historically shipped
-// streaming bugs with no automated coverage. This module makes the DECISIONS;
-// the thin shell in PiService applies the returned mutations/effects and does
-// the actual emit(). Precedent: routeRustEvent (rust-events.ts).
+// has historically shipped streaming bugs with no automated coverage. This module makes the
+// DECISIONS; the thin shell in PiService applies the returned mutations/effects and does
+// the actual emit().
 //
-// `any` is enabled file-wide because the SDK/Rust event payloads are
+// `any` is enabled file-wide because the SDK event payloads are
 // dynamically shaped — the original dispatcher used per-line `any` disables
 // throughout for exactly this reason. The containers in AgentTranslateState
-// (userMessages, toolCalls) are mutated IN PLACE, the same idiom as
-// dropQueuedMessage/promoteQueuedToSteer in rust-events.ts.
+// (userMessages, toolCalls) are mutated IN PLACE.
 
-import type { PiServiceEvent, Runtime } from "./types.js";
-// (These shared helpers live HERE — the runtime-agnostic translator — and are
-// imported by the Rust-specific modules, never the reverse. They were moved out
-// of rust-events.ts, whose name wrongly implied Rust-only ownership.)
+import type { PiServiceEvent } from "./types.js";
 
 /**
- * Extract the plain-text portion of a message `content` payload. Runtime-agnostic:
+ * Extract the plain-text portion of a message `content` payload:
  * a bare string is returned as-is; an array yields the joined `text` blocks;
  * anything else (incl. null/undefined) yields "".
  */
@@ -45,7 +40,7 @@ export const TOOL_PREVIEW_THROTTLE_MS = 200;
 
 /**
  * Throttle the streaming `tool-update` previews emitted as a tool call's args
- * accumulate. rust-pi streams a `toolcall_delta` per token — tens of thousands
+ * accumulate. A provider can stream a `toolcall_delta` per token — tens of thousands
  * for a large `write` — each carrying the full growing args; re-emitting a
  * preview (with the whole re-serialized args) on every one floods the webview
  * O(n²) and freezes it until the backlog drains. Capping the rate keeps the
@@ -76,13 +71,10 @@ export function shouldEmitToolPreview(tc: { id?: string | null; name?: string | 
  * progress a `tool-update` preview shows — or null when there's nothing meaningful to
  * render yet, so the caller skips the frame.
  *
- * rust-pi with the upstream #124 fix (released in v0.1.22) grows the tool-call
- * `arguments` field as deltas stream in, instead of leaving it null until the JSON is
- * complete (verified from raw `--mode rpc` captures of both binaries). That partial
- * value can arrive as a partially-parsed OBJECT or, defensively, a raw partial-JSON
- * STRING; both are rendered as-is. null / undefined / empty-string / empty-`{}` return
- * null so a preview never flashes a literal "null" or a blank "{}" (the pre-fix binary
- * sent null the whole way through, which this also cleans up).
+ * The tool-call `arguments` field grows as deltas stream in. That partial value can
+ * arrive as a partially-parsed OBJECT or, defensively, a raw partial-JSON STRING; both
+ * are rendered as-is. null / undefined / empty-string / empty-`{}` return null so a
+ * preview never flashes a literal "null" or a blank "{}".
  */
 export function toolArgsPreviewText(args: unknown): string | null {
   if (args === null || args === undefined) { return null; }
@@ -95,7 +87,7 @@ export function toolArgsPreviewText(args: unknown): string | null {
 }
 import { humanizeProviderError, explainAgentStop } from "./extension-errors.js";
 
-/** Coerce a raw error value to a display string. rust-pi/DeepSeek can deliver an error
+/** Coerce a raw error value to a display string. A provider can deliver an error
  *  as a structured object ({error, errorHints, …}); extract a nested string field when
  *  present, else stringify — so downstream string-typed schemas never receive an object. */
 export function errorToText(e: unknown): string {
@@ -113,32 +105,30 @@ export function errorToText(e: unknown): string {
 /** Streaming tool-call preview state, tracked across message_update deltas. */
 export interface ToolCallState { toolName: string; toolCallId: string; args: any; lastPreviewEmit?: number; }
 
-/** Session entries plus the lookups used to resolve stable entryIds.
- *  Empty under Rust (no sessionManager), which the callers tolerate. */
+/** Session entries plus the lookups used to resolve stable entryIds. May be empty (no
+ *  sessionManager yet), which the callers tolerate. */
 export interface EntryLookups { entries: any[]; byMessageId: Map<string, any>; byToolCallId: Map<string, any>; }
 
 /** Everything translateAgentEvent reads. `userMessages` and `toolCalls` are
  *  mutated in place; the shell passes the live PiService containers. */
 export interface AgentTranslateState {
-  backendKind: Runtime;
-  /** Read by the agent_end duplicate guard BEFORE the mutation is applied. */
-  agentRunActive: boolean;
   lookups: EntryLookups;
   userMessages: Array<{ id: string; text: string; timestamp?: number }>;
   toolCalls: Map<string, ToolCallState>;
   /** Single clock for this dispatch (Date.now()), injected for test determinism. */
   now: number;
-  /** Apply the live SDK tool's prepareArguments hook; identity under Rust / no def. */
+  /** Apply the live SDK tool's prepareArguments hook; identity when there is no def. */
   prepareArgs: (toolName: string, args: any) => any;
+  /** Holds an "error" stop card from message_end until agent_end, mutated in place. Pi decides
+   *  whether to retry only after the failed message ends, and reports it as agent_end's
+   *  `willRetry`; a retried attempt gets the retry indicator, not a failure card. Absent →
+   *  the card is emitted at message_end. */
+  pendingStopNote?: { note: string | null };
 }
 
 /** Non-event side-effects the shell runs after applying mutations + emitting. */
 export interface AgentTranslateEffects {
   reportStatus?: boolean;
-  rustClearQueue?: boolean;
-  /** When true, the shell calls `_rust.captureContext(captureUsage)`. */
-  captureContext?: boolean;
-  captureUsage?: unknown;
   /** Unknown event type — the shell warns once per type. */
   unknownType?: string;
 }
@@ -170,7 +160,7 @@ export function extractToolCalls(content: any): Array<{ name: string; id: string
 /**
  * Coerce tool-call arguments to a plain record for the `tool-start` event's
  * `args` field (the protocol schema requires a record). Historical sessions —
- * especially replayed Rust ones — can carry `arguments: null` for a param-less
+ * can carry `arguments: null` for a param-less
  * tool, which would otherwise fail outbound validation. Anything that isn't a
  * plain object (null, array, primitive) collapses to `{}`.
  */
@@ -200,15 +190,17 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       break;
 
     case "agent_end":
-      // rust-pi can emit agent_end twice for one run (abort/error path); ignore
-      // the duplicate so we don't double-emit or double-refresh.
-      if (state.backendKind === "rust" && !state.agentRunActive) { break; }
       result.setAgentRunActive = false;
       result.setStreaming = false;
       result.clearToolCalls = true;
-      // Safety net: clear any synthetic queue entries the consume-path missed.
-      if (state.backendKind === "rust") { effects.rustClearQueue = true; }
       events.push({ type: "agent-end", data: { messages: event.messages } });
+      // An errored attempt's card waits here: shown only if Pi is not about to retry it.
+      if (state.pendingStopNote?.note) {
+        if (event.willRetry !== true) {
+          events.push({ type: "custom-message", data: { customType: "error", content: `⚠ ${state.pendingStopNote.note}`, timestamp: state.now } });
+        }
+        state.pendingStopNote.note = null;
+      }
       effects.reportStatus = true;
       break;
 
@@ -244,7 +236,7 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
         case "text_delta": events.push({ type: "stream-delta", data: { delta: d.delta } }); break;
         case "thinking_delta": events.push({ type: "thinking-delta", data: { delta: d.delta } }); break;
         case "thinking_end": events.push({ type: "thinking-delta", data: { delta: "", done: true } }); break;
-        // d.error can be a structured object (rust-pi/DeepSeek attach errorHints), but
+        // d.error can be a structured object (DeepSeek attaches errorHints), but
         // the error event's schema requires data.message to be a STRING — passing the
         // object raw fails protocol validation ("expected string, received object").
         // Coerce to a string first (prefer a nested .error/.message field).
@@ -265,7 +257,7 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
             const existing = state.toolCalls.get(tc.id);
             if (existing) {
               existing.args = tc.arguments;
-              // Throttle the streaming preview: rust-pi emits a toolcall_delta
+              // Throttle the streaming preview: a provider can emit a toolcall_delta
               // per token (tens of thousands for a large write); re-emitting the
               // full re-serialized args each time floods the webview O(n²) and
               // freezes it. The final args still arrive via tool_execution_start.
@@ -288,16 +280,17 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
     case "message_end":
       if (event.message?.role === "user") { break; }
       if (event.message?.role === "assistant") {
-        // Rust: the turn's input(+cacheRead) ≈ current context fill → context %.
-        if (state.backendKind === "rust") { effects.captureContext = true; effects.captureUsage = event.message.usage; }
         const toolCalls = extractToolCalls(event.message.content);
         events.push({ type: "assistant-end", data: { stopReason: event.message.stopReason, errorMessage: event.message.errorMessage, toolCalls: toolCalls.map((tc) => tc.id) } });
         // A terminal stopReason is a FAILURE the user must see. It rode along in this payload
         // for releases while the webview handled only "aborted", so a turn killed by the tool
         // ceiling looked like the model trailing off. Emitted as its own card so it survives
-        // whatever the message renderer does, and reads the same on both runtimes.
+        // whatever the message renderer does.
         const stopNote = explainAgentStop(event.message.stopReason, event.message.errorMessage);
-        if (stopNote) {
+        if (stopNote && event.message.stopReason === "error" && state.pendingStopNote) {
+          // Pi may retry this attempt (connection drops, overload, rate limits); agent_end says.
+          state.pendingStopNote.note = stopNote;
+        } else if (stopNote) {
           events.push({ type: "custom-message", data: { customType: "error", content: `⚠ ${stopNote}`, timestamp: Date.now() } });
         }
         effects.reportStatus = true;
@@ -364,21 +357,16 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       events.push({ type: "compaction-end", data: { reason: event.reason, aborted: event.aborted, willRetry: event.willRetry, result: event.result, errorMessage: event.errorMessage } });
       if (event.result) {
         const compactEntry = reverseFind(state.lookups.entries, (e: any) => e.type === "compaction");
-        // Under Rust, lookups are empty → compactEntry is undefined and entryId
-        // would be undefined, leaving the summary unaddressable. Fall back to a
-        // synthetic id. (Scoped to compaction_end; message/tool ids already align.)
+        // With no compaction entry in the lookups, entryId would be undefined, leaving the
+        // summary unaddressable. Fall back to a synthetic id. (Scoped to compaction_end;
+        // message/tool ids already align.)
         const compactionEntryId = compactEntry?.id ?? `compaction-${state.now}`;
         events.push({ type: "compaction-summary-message", data: { summary: event.result.summary, tokensBefore: event.result.tokensBefore, timestamp: state.now, entryId: compactionEntryId } });
       }
       break;
 
     case "auto_retry_start":
-      // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. The
-      // in-flight tool-call correlation (state.toolCalls, keyed by tool-call id) is from the
-      // FAILED attempt — leaving it in place lets the re-run's streaming preview reconcile
-      // against a stale entry (e.g. a wrong/partial file path from the aborted attempt sticks
-      // until the run ends). Clear it so the retry's tool calls correlate fresh. The rendered
-      // history blocks stay; only the live-preview correlation resets.
+      // Auto-retry re-sends the FAILED request. The in-flight tool-call correlation (state.toolCalls) is from that failed attempt — leaving it lets the retry's streaming preview reconcile against a stale entry. Clear it so the retry's tool calls correlate fresh. The rendered history blocks stay; only the live-preview correlation resets.
       result.clearToolCalls = true;
       events.push({ type: "auto-retry-start", data: { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage } });
       break;
@@ -387,17 +375,47 @@ export function translateAgentEvent(event: any, state: AgentTranslateState): Age
       events.push({ type: "auto-retry-end", data: { success: event.success, attempt: event.attempt, finalError: event.finalError } });
       break;
 
-    case "agent_settled":
-      // rust-pi terminal "run fully settled" event (added to the protocol after the agent_end
-      // pair — v0.1.22). Not a UI event of its own; used as a safety net so the streaming/active
-      // flags are cleared and a final authoritative status refresh happens even if the double-
-      // agent_end dedupe latched agentRunActive false (which otherwise starves the cost snap —
-      // see the turn_end/agent_settled refresh in rust-service.handleEvent). Recognized here so
-      // it no longer trips the "unhandled agent event" drift warning.
-      result.setStreaming = false;
-      if (state.backendKind === "rust") { result.setAgentRunActive = false; }
-      effects.reportStatus = true;
+    // SDK 1.3.0 (agent-session.d.ts:91-104): a provider error while summarizing (compaction or branch
+    // summary) is retried with backoff. Shown with the auto-retry indicator (flagged `summarization` so
+    // the webview does not touch tool blocks — no tools re-run). attempt_start/finished end the wait; the
+    // real outcome arrives as compaction_end. Previously these fell to the default "Unhandled" card.
+    case "summarization_retry_scheduled":
+      events.push({ type: "auto-retry-start", data: { attempt: event.attempt ?? 0, maxAttempts: event.maxAttempts ?? 0, delayMs: event.delayMs ?? 0, errorMessage: event.errorMessage, summarization: true } });
       break;
+
+    case "summarization_retry_attempt_start":
+    case "summarization_retry_finished":
+      events.push({ type: "auto-retry-end", data: { success: true, attempt: 0 } });
+      break;
+
+    case "agent_settled":
+      // The SDK's terminal "run fully settled" event (after agent_end). Not a UI event of its
+      // own; used as a safety net so the streaming flag is cleared and a final authoritative
+      // status refresh happens. Recognized here so it doesn't trip the "unhandled agent event"
+      // drift warning.
+      result.setStreaming = false;
+      effects.reportStatus = true;
+
+      break;
+
+    case "entry_appended": {
+      // SDK session event: a persisted entry was appended outside the message stream — an
+      // extension's pi.appendEntry, the cache warmer, and (pi-coding-agent 1.3.0) virtual-model
+      // route state, turn_end/agent_before_settle boundary drafts and recovery context edits.
+      // A known event, NOT protocol drift: in the default branch below every occurrence put a
+      // visible "Unhandled agent event" card in the chat panel. Boundary drafts' custom_message
+      // and compaction entries have no other live signal, so those two are rendered here (data
+      // shapes copy the message_end-custom and replay-compaction emitters).
+      // custom_message (display) and compaction entries are rendered; custom / usage / context_edit
+      // entries have no UI here, and replay does not show custom or custom_message entries either.
+      const e = event.entry;
+      if (e?.type === "custom_message" && e.display === true) {
+        events.push({ type: "custom-message", data: { customType: e.customType, content: e.content, display: true, details: e.details, timestamp: Date.parse(e.timestamp) || state.now, entryId: e.id } });
+      } else if (e?.type === "compaction") {
+        events.push({ type: "compaction-summary-message", data: { summary: e.summary ?? "", tokensBefore: e.tokensBefore ?? 0, timestamp: Date.parse(e.timestamp) || state.now, entryId: e.id } });
+      }
+      break;
+    }
 
     default:
       // Surface unknown events so they aren't silently lost — an unhandled type

@@ -1,106 +1,15 @@
-// Pure, vscode-free model-catalog helpers SHARED BY BOTH RUNTIMES: thinking-level
-// capability (picker/clamp/reconcile), cost computation, and the maxTokens/compat
-// shaping used when writing the Rust binary's models.json. Formerly rust-catalog.ts —
-// renamed because that name wrongly implied Rust-only ownership (audit finding).
-// Kept separate from rust-models.ts (which imports vscode) for headless testing.
+// Pure, vscode-free model-catalog helpers: thinking-level capability (picker/clamp/reconcile)
+// against the bundled catalog, and catalog cost lookup. Kept free of vscode for headless testing.
 
-/**
- * Resolve the `maxTokens` to write for a catalog model — or `undefined` to OMIT
- * the field entirely, letting rust-pi/the provider apply its own default.
+/** The full graded thinking range, lowest→highest, matching pi-ai's EXTENDED_THINKING_LEVELS.
+ *  "off" is the floor. This is the *superset*; the levels a concrete model actually honors are
+ *  a subset — see getSupportedThinkingLevels.
  *
- * Background: rust-pi 0.1.20 forwards a catalog model's `maxTokens` to the
- * provider VERBATIM as the request's max_tokens (0.1.18 ignored it and hard-
- * capped at 4096). The bundled pi-ai registry gives a `maxTokens` for every
- * model, but for some it's a PLACEHOLDER that merely copies `contextWindow`
- * (grok 2,000,000; kimi 262,144) rather than a real output limit. Sending such a
- * value is a hard provider 400 ("Invalid max_tokens value, valid range [1, N]")
- * that surfaces as a SILENT empty turn — verified live against deepseek.
- *
- * The rule mirrors the TS SDK's openai-completions provider, which only sends
- * max_tokens when a real value is set and otherwise omits it:
- *  - a real limit (maxTokens < contextWindow) is used VERBATIM, so genuine large
- *    capacity is preserved (deepseek-v4-pro's 384,000 is kept and works);
- *  - a placeholder (maxTokens >= contextWindow — you can never emit the entire
- *    window, since input always consumes some) or a garbage/non-positive value
- *    is treated as absent and omitted, which is safer than guessing a number
- *    (verified live: deepseek rejects an over-range max_tokens but completes
- *    normally when the field is absent).
- */
-export function resolveMaxOutputTokens(maxTokens: number, contextWindow: number): number | undefined {
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0) { return undefined; }
-  const mt = Math.floor(maxTokens);
-  const cw = Number.isFinite(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow) : 0;
-  if (cw > 0 && mt >= cw) { return undefined; }
-  return mt;
-}
-
-/**
- * Provider transports whose request body actually carries a thinking/reasoning
- * control, so the chosen thinking *level* has a real effect on generation. Each
- * emits a thinking/effort/budget field on the wire that the provider honors:
- *  - `anthropic-messages`     → `thinking: {budget_tokens}` (level → token budget)
- *  - `openai-responses`       → `reasoning_effort` (level → effort category)
- *  - `google-generative-ai`   → thinking config
- *  - `openai-completions`     → `thinking: {type: enabled|disabled}`, plus
- *      `reasoning_effort: "high"` at high/xhigh.
- *
- * `openai-completions` was historically EXCLUDED here because rust-pi serialized
- * no reasoning field for it. That changed in pi_agent_rust 6c5f43b3 (the DeepSeek
- * thinking-level fix, ahead of the published v0.1.18 — the extension ships a local
- * build until upstream releases it). Verified end-to-end 2026-06-26 against the
- * real DeepSeek API: `off` → zero reasoning tokens / no `reasoning_content`; every
- * other level → real `reasoning_content`, accepted with no 400. So the level is
- * genuinely transmitted now. Two honest limits:
- *  - The grading is COARSE: on the wire minimal/low/medium are identical
- *    ({type: enabled}, no effort) and high/xhigh are identical (+effort high), so
- *    the effective control on DeepSeek is ~on/off, not a fine budget.
- *  - `openai-completions` is a BROAD transport (~50 providers). Only DeepSeek is
- *    verified to honor the field; others may ignore it. The per-model `reasoning`
- *    flag still gates the picker (a non-reasoning model clamps to off), so we
- *    only over-claim for a reasoning-capable model on a provider that silently
- *    drops the field — a tolerable failure (level shown, mildly ineffective)
- *    versus the prior guaranteed no-op for DeepSeek.
- *
- * `mistral-conversations` and anything unknown are treated as NOT live until
- * confirmed, which fails safe (we under-claim control rather than overstate it).
- */
-const THINKING_LIVE_TRANSPORTS: ReadonlySet<string> = new Set([
-  "anthropic-messages",
-  "openai-responses",
-  "google-generative-ai",
-  "openai-completions",
-]);
-
-/** True when the model's transport (`api`) actually transmits the thinking level,
- *  so a graded picker is meaningful. False for unknown/unverified transports,
- *  where the level is a no-op and only reasoning on/off (a property of the model,
- *  not an adjustable knob) is real. */
-export function thinkingLevelIsLive(api: string | null | undefined): boolean {
-  return typeof api === "string" && THINKING_LIVE_TRANSPORTS.has(api);
-}
-
-/** The full graded thinking range, lowest→highest, matching rust-pi's `--thinking`
- *  possible-values and pi-ai's EXTENDED_THINKING_LEVELS. "off" is the floor. This
- *  is the *superset*; the levels a concrete model actually honors are a subset —
- *  see getSupportedThinkingLevels.
- *
- *  `max` is the first-class 7th tier added upstream (pi_agent_rust#139) — distinct from
- *  `xhigh`, since some models (e.g. Kimi K3) accept only `max` and Anthropic exposes
- *  `effort:"max"` above xhigh. Like `xhigh` it is offered ONLY when a model explicitly maps it.
- *
- *  A per-model mapping is necessary but NOT sufficient: the bundled catalog (pi-ai 0.82.1) now
- *  carries 131 `max` keys, but whether the level can actually be SENT depends on the backend.
- *  Measured against a real pre-#139 binary (0.1.20): a `max` key in models.json parses fine and
- *  the model still lists, but `set_thinking_level("max")` is rejected —
- *  `Validation error: Invalid thinking level: max` — identically to a garbage value, while
- *  `xhigh` is accepted and clamped to `high`. So the catalog alone can't gate it; see
- *  rustHonorsMaxThinkingLevel. */
+ *  `max` is a first-class 7th tier, distinct from `xhigh`: some models (e.g. Kimi K3) accept
+ *  only `max`, and Anthropic exposes `effort:"max"` above xhigh. Like `xhigh` it is offered ONLY
+ *  when a model explicitly maps it. */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
-
-/** First rust-pi release whose thinking-level validator accepts `max` (upstream #139). */
-
-
 
 /** The thinking-capability shape read off a catalog/SDK model. Mirrors the fields
  *  @earendil-works/pi-ai carries per model. `thinkingLevelMap` maps each graded
@@ -115,7 +24,7 @@ export interface ThinkingModel {
 
 /** Levels actually meaningful for `model`, lowest→highest. Ported verbatim from
  *  pi-ai's getSupportedThinkingLevels so the extension's picker only ever offers
- *  levels the SDK/binary will honor: a non-reasoning model → ["off"]; a level
+ *  levels the SDK will honor: a non-reasoning model → ["off"]; a level
  *  mapped to null is dropped; xhigh is offered only when explicitly mapped. */
 export function getSupportedThinkingLevels(model: ThinkingModel): ThinkingLevel[] {
   if (!model.reasoning) { return ["off"]; }
@@ -123,8 +32,7 @@ export function getSupportedThinkingLevels(model: ThinkingModel): ThinkingLevel[
     const mapped = model.thinkingLevelMap?.[level];
     if (mapped === null) { return false; }
     // xhigh and max are top-tier rungs offered ONLY when the model explicitly maps them —
-    // an absent key means the model doesn't distinguish that tier (a pre-#139 catalog never
-    // carries a `max` key), so it must not be surfaced.
+    // an absent key means the model doesn't distinguish that tier, so it must not be surfaced.
     if (level === "xhigh" || level === "max") { return mapped !== undefined; }
     return true;
   });
@@ -148,49 +56,13 @@ export function clampThinkingLevel(model: ThinkingModel, level: string): Thinkin
   return available[0] ?? "off";
 }
 
-/** The `compat` block pi_agent_rust reads for per-model thinking control. */
-export interface RustThinkingCompat {
-  thinkingLevelMap?: Record<string, string>;
-  forceAdaptiveThinking?: boolean;
-  thinkingFormat?: string;
-}
-
-/** Build the `{ compat }` fragment to write into pi_agent_rust's models.json so the
- *  Rust backend serializes thinking the same way the TS path does (gh #116/#117). It
- *  nests `thinkingLevelMap` / `forceAdaptiveThinking` / `thinkingFormat` under `compat`
- *  — the shape the binary deserializes (`model.compat.*`, camelCase); a top-level
- *  thinkingLevelMap is silently dropped. Null map entries (e.g. DeepSeek collapses
- *  minimal/low/medium → null) are FILTERED OUT: the binary's `thinking_level_map` is a
- *  `HashMap<String,String>` that rejects null values, and an absent level just falls
- *  back to the transport's built-in mapping. Returns `{}` (no `compat` key) when the
- *  model carries no thinking metadata, keeping models.json minimal. */
-export function buildThinkingCompat(model: {
-  thinkingLevelMap?: Record<string, string | null> | null;
-  compat?: { thinkingFormat?: string; forceAdaptiveThinking?: boolean };
-}): { compat?: RustThinkingCompat } {
-  const compat: RustThinkingCompat = {};
-  if (model.thinkingLevelMap) {
-    const tlm: Record<string, string> = {};
-    for (const [level, mapped] of Object.entries(model.thinkingLevelMap)) {
-      if (typeof mapped === "string") { tlm[level] = mapped; }
-    }
-    if (Object.keys(tlm).length) { compat.thinkingLevelMap = tlm; }
-  }
-  if (typeof model.compat?.forceAdaptiveThinking === "boolean") {
-    compat.forceAdaptiveThinking = model.compat.forceAdaptiveThinking;
-  }
-  if (model.compat?.thinkingFormat) { compat.thinkingFormat = model.compat.thinkingFormat; }
-  return Object.keys(compat).length ? { compat } : {};
-}
-
 /** A catalog model entry carrying an `id` alongside its thinking metadata. */
 type CatalogThinkingEntry = ThinkingModel & { id: string };
 
 /** Resolve a model's thinking metadata (reasoning + thinkingLevelMap) from the
- *  bundled catalog by provider + id. The Rust path has no SDK ModelRegistry to
- *  resolve against (it's built only on the TS path), so the thinking-level picker
- *  reads metadata from here instead. Returns null for an unknown provider/model so
- *  callers fall back to the full graded range rather than over-narrowing. */
+ *  bundled catalog by provider + id — the fallback when no SDK model object is at hand.
+ *  Returns null for an unknown provider/model so callers fall back to the full graded
+ *  range rather than over-narrowing. */
 export function findCatalogThinkingModel(
   providers: Record<string, { models: CatalogThinkingEntry[] }> | undefined,
   provider: string,
@@ -200,10 +72,6 @@ export function findCatalogThinkingModel(
   return entry ? { reasoning: entry.reasoning, thinkingLevelMap: entry.thinkingLevelMap } : null;
 }
 
-/** The per-million-token cost rates a model's catalog entry carries, or null when
- *  absent. Used to restore billing rates a stripped runtime `models.json` override
- *  omits — without which pi-ai's calculateCost (rate/1e6 × tokens) yields exactly $0
- *  and the status bar shows no cost at all. */
 /**
  * Models whose PUBLISHED price the catalog's four flat rates cannot express, so any cost we
  * compute from them is wrong by construction rather than merely stale.
@@ -212,11 +80,16 @@ export function findCatalogThinkingModel(
  * weekdays; weekends always off-peak). A single scalar cannot be right at both ends of that, and
  * the catalog has no field for it. Two independent facts make this worse than a rounding error:
  *
- *   - pi-ai 0.84.3 (latest at the time of writing) still ships the PRE-August-16 rates, so the
- *     figures are stale AND unexpressible. Measured against DeepSeek's published page,
- *     deepseek-v4-pro output is listed at $0.87 against a real $1.98 off-peak / $3.96 peak —
- *     understating by 2.3x to 4.6x. Bumping pi-ai does not fix it; 0.84.1 and 0.84.3 are byte-
- *     identical here.
+ *   - The single figure the catalog can carry is wrong half the time whichever end it picks, and
+ *     which end it picks has already moved under us. Through 0.85.1 it shipped the pre-August-16
+ *     rates: deepseek-v4-pro output at $0.87 against a real $1.98 off-peak / $3.96 peak,
+ *     understating by 2.3x to 4.6x. pi-ai 0.86.1 moved it to $3.96 — now exact at peak and 2x
+ *     OVER off-peak, i.e. no longer stale and still not right. Bumping pi-ai cannot fix this;
+ *     only a catalog field for the clock could. Rechecked 2026-11-12 against DeepSeek's pricing
+     page with the pi-ai 1.5.2 catalog: the catalog carries the peak rates for both
+     deepseek-flash and deepseek-v4-pro, off-peak is half, and Chinese public holidays are
+     off-peak. Pi's computed figure is therefore never low, and up to 2x high. The founder chose
+     to keep $?? rather than price each message by its timestamp or show an upper bound.
  *   - The provider does not report cost. Verified against api.deepseek.com: the usage object
  *     carries token counts only (prompt_tokens, completion_tokens, prompt_cache_hit_tokens,
  *     prompt_cache_miss_tokens) with no cost field and no billing headers, so there is nothing
@@ -230,41 +103,37 @@ export function findCatalogThinkingModel(
  * Deliberately keyed to the NATIVE `deepseek` provider. The same models reached through a
  * gateway (openrouter, vercel-ai-gateway, opencode) are billed and priced by that gateway under
  * its own provider id and its own rates, which are not affected by DeepSeek's clock.
+ *
+ * Keyed to the provider ALONE, deliberately: the clock is a property of DeepSeek's billing, not
+ * of any one model id. This used to also match `/^deepseek-v4/`, and pi-ai 0.86.1 renamed
+ * `deepseek-v4-flash` to `deepseek-flash` — which silently dropped it out of the match and put a
+ * confidently wrong number back on screen. A model-name pattern cannot survive upstream renames,
+ * and the failure is invisible when it happens, so there is nothing to pattern-match on. If
+ * DeepSeek ever ships a flat-rate model we will over-withhold on it; that error is visible and
+ * harmless, which the other direction is not.
  */
 export function catalogRatesAreUnexpressible(provider: string | undefined, modelId: string | undefined): boolean {
-  return provider === "deepseek" && /^deepseek-v4/.test(modelId ?? "");
+  void modelId;   // intentionally unused — see above
+  return provider === "deepseek";
 }
 
 /** Why a cost is being withheld, for the status chip's tooltip. Null when it is not. */
 export function costWithheldReason(provider: string | undefined, modelId: string | undefined): string | null {
   return catalogRatesAreUnexpressible(provider, modelId)
-    ? "DeepSeek V4 bills at different rates by time of day (peak is 2\u00d7 off-peak), which the bundled price catalog can't express, and DeepSeek doesn't report the billed cost. Showing a number here would understate it by up to 4.6\u00d7, so it's left unknown."
+    ? "DeepSeek bills by time of day. Peak hours (01:00\u201304:00 and 06:00\u201310:00 UTC, Monday to Friday) cost twice the off-peak rate, which applies at all other times, including weekends and Chinese public holidays. The bundled catalog holds only the peak price, and DeepSeek doesn't report what it billed, so any figure here could be up to 2\u00d7 too high. Your DeepSeek dashboard shows the actual cost."
     : null;
 }
 
+/** The per-million-token cost rates a model's catalog entry carries, or null when
+ *  absent. Used to restore billing rates a stripped runtime `models.json` override
+ *  omits — without which pi-ai's calculateCost (rate/1e6 × tokens) yields exactly $0
+ *  and the status bar shows no cost at all. */
 export function findCatalogModelCost(
   providers: Record<string, { models: Array<{ id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }> | undefined,
   provider: string,
   id: string,
 ): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
   return providers?.[provider]?.models.find((m) => m.id === id)?.cost ?? null;
-}
-
-/** Compute a turn/session cost from token counts and per-million-token rates — the
- *  same arithmetic as pi-ai's calculateCost (rate / 1e6 × tokens, summed). Used to
- *  derive cost EXTENSION-SIDE for the Rust backend, whose binary reports cost:0 even
- *  with full rates in its catalog (it doesn't compute cost). */
-export function computeTokenCost(
-  usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
-  rates: { input: number; output: number; cacheRead: number; cacheWrite: number },
-): number {
-  const n = (v?: number): number => (typeof v === "number" ? v : 0);
-  return (
-    n(usage.input) * rates.input +
-    n(usage.output) * rates.output +
-    n(usage.cacheRead) * rates.cacheRead +
-    n(usage.cacheWrite) * rates.cacheWrite
-  ) / 1_000_000;
 }
 
 /** Reconcile a runtime model's thinking capability against the authoritative bundled

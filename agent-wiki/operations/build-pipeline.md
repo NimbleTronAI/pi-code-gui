@@ -49,7 +49,7 @@ both development and production builds.
 |--------|-------|-----|
 | `compile` | check-types → lint → esbuild | Dev build |
 | `watch` | esbuild (watch) + tsc (watch) in parallel | Dev loop |
-| `package` | check-types → lint → esbuild --production | Production build |
+| `package` | check-diagram → check-model-registry → check-types → lint → test:unit → esbuild --production (extension + webview) | Production build; the full gate |
 | `pretest` | compile-tests → compile → lint | Before tests |
 | `test` | vscode-test | Run tests |
 | `vsix` | package → vsce package --no-dependencies | Create .vsix |

@@ -83,24 +83,64 @@ test("commands register BEFORE anything in activate() that can block", () => {
   const iEarly = body.indexOf("registerEarlyCommands(context)");
   const iPhase = body.indexOf("registerPhaseCommands(context)");
   const iWait = body.indexOf("Waiting for workspace folders");
-  const iDetect = body.indexOf("Step 3c: Detect installed runtimes");
 
-  assert.ok(iEarly > 0 && iPhase > 0 && iWait > 0 && iDetect > 0, "all four anchors present");
+  assert.ok(iEarly > 0 && iPhase > 0 && iWait > 0, "all three anchors present");
   assert.ok(iEarly < iWait, "early commands must precede the workspace-folder wait (up to 2.5s)");
   assert.ok(iPhase < iWait, "phase commands must precede it too");
-  assert.ok(iEarly < iDetect && iPhase < iDetect, "…and precede runtime detection / the install offer");
 });
 
-test("the runtime detection + install offer is NOT awaited by activate()", () => {
+// The user closed a tab while its session was starting: SdkService's dispose nulls the session, so
+// initialize() reports a failure — but nothing failed from the user's side, and a "Pi init failed …
+// Retry" there would offer to reopen the tab they just closed. initSessionInBackground needs a real
+// VS Code (panels, toasts), so this is structural.
+test("a session the user closed while it was starting shows no init-failed error and offers no Retry", () => {
   const ext = readFileSync(join(srcDir, "extension.ts"), "utf-8");
-  // offerInitialRuntimeChoice awaits a QuickPick with ignoreFocusOut AND an install, so awaiting
-  // that chain at activation level meant activate() never resolved until the user finished.
-  const detect = ext.slice(ext.indexOf("Step 3c: Detect installed runtimes"));
-  const block = detect.slice(0, detect.indexOf("Step 4"));
-  assert.match(block, /void \(async \(\) => \{/, "the detection chain must be detached");
-  assert.doesNotMatch(
-    block,
-    /^\s{2}await (refreshRuntimeContext|offerInitialRuntimeChoice|warnIfUntestedRustBinary)/m,
-    "no activate()-level await on the detection/install chain",
-  );
+  const body = ext.slice(ext.indexOf("async function initSessionInBackground("));
+  const guard = body.search(/if \(!sessions\.includes\(sw\)\) \{\s*return;\s*\}/);
+  assert.notEqual(guard, -1, "initSessionInBackground returns quietly for a session that was closed");
+  assert.ok(guard > body.indexOf("sw.piService.initialize("), "the guard follows the initialize call");
+  assert.ok(guard < body.indexOf("if (!result.success)"), "and comes before any failure is shown");
+});
+
+/** Every `when` / `enablement` clause anywhere under package.json `contributes`. */
+function contributedWhenClauses(): string[] {
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf-8"));
+  const out: string[] = [];
+  const walk = (o: unknown): void => {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (!o || typeof o !== "object") { return; }
+    for (const [k, v] of Object.entries(o)) {
+      if ((k === "when" || k === "enablement") && typeof v === "string") { out.push(v); } else { walk(v); }
+    }
+  };
+  walk(pkg.contributes);
+  return out;
+}
+
+// A menu entry gated on a context key nobody sets is hidden forever: the command is still
+// contributed, but the only button for it never appears. Every key in our own namespace must be
+// set by a setContext call in src/ (VS Code's own keys — view, viewItem, resourceScheme — are not
+// ours to set).
+test("every pi-code-gui context key in a when clause is set somewhere in src/", () => {
+  const clauses = contributedWhenClauses();
+  assert.ok(clauses.length > 5, "sanity: found the when clauses");
+  // A KEY is the left side of a term: strip comparison right-hand sides (`view == pi-code-gui.sessions`
+  // names a view id, not a context key), then collect what is left in our namespace.
+  const keys = new Set<string>();
+  for (const c of clauses) {
+    const lhs = c.replace(/(==|!=|=~|\bin\b|\bnot in\b)\s*(\/[^/]*\/|[^\s&|)]+)/g, "");
+    for (const m of lhs.matchAll(/pi-code-gui\.[\w.-]+/g)) { keys.add(m[0]); }
+  }
+  const src = allSrcText();
+  const unset = [...keys].filter((k) => !new RegExp(`"setContext",\\s*"${k.replace(/[.-]/g, "\\$&")}"`).test(src));
+  assert.deepEqual(unset, [], `when clauses read context keys that nothing sets: ${unset.join(", ")}`);
+});
+
+test("every menu entry names a contributed command", () => {
+  const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf-8"));
+  const contributed = new Set((pkg.contributes?.commands ?? []).map((c: { command: string }) => c.command));
+  const menus: Record<string, Array<{ command?: string }>> = pkg.contributes?.menus ?? {};
+  const orphans = Object.entries(menus).flatMap(([where, entries]) =>
+    entries.filter((e) => e.command && !contributed.has(e.command)).map((e) => `${where}: ${e.command}`));
+  assert.deepEqual(orphans, [], `menu entries for commands that are not contributed: ${orphans.join(", ")}`);
 });

@@ -1,15 +1,26 @@
 # Change Log
 
+## [0.2.8]
+
+### Removed
+- **Rust Pi support has ended.** 0.2.3 was the last release with it; see "Rust Pi support has ended" in the README. 
+- **Rust sessions** in `~/.pi/agent/sessions-rust` are no longer listed and are left untouched; a tab restored from one is closed with a message. **The model entries earlier 0.2.x versions wrote into `~/.pi/agent/models.json` are removed** each time the extension starts; entries you edited are kept (see "Cleaning up after Rust Pi" in the README).
+
+### Changed
+- **Model catalog refreshed to pi-ai 1.5.2**, and tested against pi-coding-agent 1.5.2.
+- **`/reload` and Reload Context while Pi is responding or compacting** now tell you to wait and reload nothing. Pi 1.5.x refuses a reload at those times; run it again when Pi is idle.
+- **The session cost and token counts now include everything Pi records**: cache warm-ups (on by default since Pi 1.5.1), compaction and summaries, as well as model turns. Hover the cost to see whether it is the provider's bill or an estimate from catalog prices. A cost billed by the provider (OpenRouter today) is shown even for models with no catalog price, where it used to show `$??`. DeepSeek still shows `$??`; hover it for DeepSeek's peak and off-peak hours and why the figure is withheld.
+
+### Fixed
+- **Session names weren't saved** (since 0.2.1), so Past Sessions showed a session's first message instead of the name on its tab, and a reopened session got a new name. Names are saved again; a session from the affected versions gets its name saved the next time you open it.
+- **A dropped connection that Pi retried successfully** no longer leaves a "turn ended early" card behind; the retry indicator shows while Pi retries, and a card appears only if it gives up.
+- **A session closed right after `/tools` reopened with the model having lost the conversation.** It now reopens complete.
+- **Summarization retries and messages added by extensions** no longer show as "Unhandled agent event" cards.
+
 ## [0.2.3]
 
 ### Changed
 - **Refreshed the bundled model catalog from pi-ai 0.85.1** (was 0.84.4; model data 5 Sep). 82 models added, 20 withdrawn, and **38 repriced** — several sharply: `openrouter/deepseek/deepseek-v4-pro-0813` output went 1.98 → 3.36 (+70%), `opencode-go/hy3` output 0.0725 → 0.58 (+700%), while `openrouter/meta-llama/llama-3.3-70b-instruct` fell 0.71 → 0.32. Native DeepSeek pricing is unchanged, and `claude-fable-5-1` is now in the catalog. Withdrawn models show `$??` rather than a stale figure, as before.
-
-## [0.2.2]
-
-Tagged and released, but never reached either marketplace — the publish refused to ship a
-catalog three releases behind upstream, which is what that gate is for. Its contents (the
-advisory-currency fix) are carried by 0.2.3. Nothing to install here.
 
 ## [0.2.1]
 

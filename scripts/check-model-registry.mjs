@@ -37,9 +37,8 @@ if (!haveInstalled) {
 // ── Second question: is what's INSTALLED actually current? ──────────────────
 //
 // The check above only proves the registry matches the installed pi-ai. Both can be stale
-// together, and were: the bundled catalog sat at 0.84.1 while 0.84.4 was published, so the Rust
-// picker was missing deepseek-v4-flash-vision-exp while the TypeScript one — which reads the SDK
-// live — had it. This gate passed the whole time, because internal consistency was all it asked.
+// together, and were: the bundled catalog sat at 0.84.1 while 0.84.4 was published, so the picker
+// was missing deepseek-v4-flash-vision-exp while a live read of the SDK had it. This gate passed the whole time, because internal consistency was all it asked.
 //
 // The dependency range is `^0.84.1`, so a lockfile refresh picks up 0.84.4 on its own and never
 // touches package.json — meaning Dependabot has nothing to raise a PR about, and CI's

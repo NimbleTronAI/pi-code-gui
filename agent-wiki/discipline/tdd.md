@@ -26,35 +26,28 @@ The project runs two tiers of tests:
 - **Headless unit tests (primary, default).** `pnpm run test:unit` →
   `compile-tests` (tsc → `out/`), then `compile-tests:webview` (compiles
   `src/webview` + `src/shared` to `out/` via `tsconfig.test-webview.json` for the
-  jsdom seam), then `node --test out/test/unit/*.test.js`. The Node built-in test
+  jsdom seam), then `node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js` (`vscode` is stubbed). The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
-  exception being the jsdom dispatch seam (see below). As of 2026-07, there are
-  **461 tests across 47 files** in `src/test/unit/` (rust-events, rust-ingress,
-  rust-process, rust-service, sdk-service, model-catalog, panel-restore,
-  session-format, rust-deps, agent-events, rust-interop, bridge-limits,
-  pi-package-path, runtime-pick, pi-package-filter, rust-doctor, webview-format,
-  version-compare, dispatch, logger, extension-errors). This is the suite to run
+  exception being the jsdom dispatch seam (see below). As of 2026-11, there are
+  **about 455 tests across 40 files** in `src/test/unit/` (agent-events, sdk-service,
+  pi-service-integration, model-catalog, managed-models-cleanup, panel-restore,
+  pi-package-path, pi-package-filter, bridge-limits, webview-format, version-compare,
+  dispatch, logger, extension-errors, and more). This is the suite to run
   before presenting work.
 
-  **Both runtimes' init is now headlessly tested.** `rust-service.test.ts` drives the
-  REAL RustService init/handshake against a fake rust-pi subprocess (RustService is
-  vscode-free via injected RustDeps). `sdk-service.test.ts` (added 2026-07-06, the
-  tenth-audit's #1 gap) drives the REAL `SdkService.initialize()` — resolve → load →
-  pi-ai-version adapt → auth → model → resources → tools → session — against fake
-  SDK/AI modules + stubbed `SdkDeps` (config, cwd, module import, fs, bridge-tool
-  assembly, catalog providers, UI nudge all injected, so SdkService is vscode-free
-  AND json-import-free). It also covers SdkService's `PiBackend` primitives
-  (sendPrompt / setModel / setThinkingLevel / abort / getUsage / promoteToSteer)
-  against a fake session — the TS halves of the runtime seam that PiService delegates
-  to (the +10 tests added with the seam migration). Coverage matrix — headlessly tested: the pure decision
-  modules + BOTH service init paths + the RustProcess transport. Not unit-tested
-  (vscode-coupled UI shells): PiService orchestration/pickers, extension.ts,
-  rust-install/rust-packages interactive flows.
-  There is also an opt-in REAL-binary contract probe: `pnpm run test:rust-smoke`
-  (scripts/rust-smoke.mjs) — get_state round-trip against PI_RUST_BIN or
-  ~/.local/bin/rust-pi; skips cleanly when no binary is present.
-- **Integration tests.** `pnpm test` (runs the node:test suite; `pnpm run test:vscode` is the separate VS Code harness) → `@vscode/test-cli` +
-  `@vscode/test-electron` launches the Extension Development Host against real
+  **The SDK init is headlessly tested.** `sdk-service.test.ts` drives the REAL
+  `SdkService.initialize()` (resolve, load, pi-ai-version adapt, auth, model, resources,
+  tools, session) against fake SDK/AI modules and stubbed `SdkDeps` (config, cwd, module
+  import, fs, bridge-tool assembly, catalog providers, UI nudge all injected, so SdkService
+  is vscode-free AND json-import-free). It also covers SdkService's `PiBackend` primitives
+  (sendPrompt / setModel / setThinkingLevel / abort / getUsage / promoteToSteer) against a
+  fake session, the half of the seam that PiService delegates to. Coverage matrix:
+  headlessly tested are the pure decision modules and the `SdkService` init path. Not
+  unit-tested (vscode-coupled UI shells): PiService orchestration and pickers beyond what
+  `pi-service-integration.test.ts` drives, and `extension.ts` registration beyond
+  `command-registration.test.ts`.
+- **Integration tests.** `pnpm test` runs `test:unit`; `pnpm run test:vscode` runs `@vscode/test-cli` +
+  `@vscode/test-electron`, which launches the Extension Development Host against real
   VS Code APIs (`out/test/**/*.test.js`, config in `.vscode-test.mjs`).
   `@vscode/test-electron` downloads a portable VS Code for CI.
 - **Preflight:** `pnpm run pretest` → compile-tests + compile + lint, before
@@ -62,13 +55,13 @@ The project runs two tiers of tests:
 
 ### The extract-then-test pattern (how coverage actually grows here)
 
-`pi-service.ts`, `extension.ts`, and the webview frontend **cannot load
-headlessly** — they import `vscode` or touch the DOM, so a `node:test` file that
+`extension.ts` and the webview frontend **cannot load
+headlessly** (`pi-service.ts` loads only through the vscode stub, see `pi-service-integration.test.ts`) — they import `vscode` or touch the DOM, so a `node:test` file that
 imports them fails at import. The proven recipe, used for nearly all of the unit
 tests, is: **extract the decision logic into a pure, vscode-free module, then
-unit-test that module.** Precedents: `routeRustEvent`/`normalizeRustEvent` and
-`translateAgentEvent` (`src/agent-events.ts`), the `parseRust*` parsers,
-`summarizeSessionFile`, and the DOM-free webview helpers in
+unit-test that module.** Precedents: `translateAgentEvent` (`src/agent-events.ts`),
+`planPanelRestore` (`src/panel-restore.ts`), `cleanupManagedModels`
+(`src/managed-models-cleanup.ts`), and the DOM-free webview helpers in
 `src/shared/webview-format.ts`. When adding behavior to an untestable file, pull
 the new logic into a pure helper first — that is what creates the test net.
 
@@ -106,7 +99,9 @@ silently add full module coverage beyond the scope of the change.
 - [Think Before Acting](think-before-acting.md) — the plan phase before TDD
 - [Verify, Don't Assume](verify-dont-assume.md) — what "tests pass" actually means
 
-> **Last updated:** 2026-07-21 — count at 461 tests across 47 files (adversarial-review remediation: security, activation, lifecycle, perf)
+> **Last updated:** 2026-11-12 — count corrected to about 455 tests across 40 files (0.2.8, after the /reload, cost, retry-card and session-name fixes).
+> **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): the second runtime's init and transport tests and precedents are gone.
+> **Earlier:** 2026-07-21 — count at 461 tests across 47 files (adversarial-review remediation: security, activation, lifecycle, perf)
 > **Earlier:** 2026-06-25 — count to 199 tests across 18 files (added `extension-errors` — runtime-error classifiers)
 > **Earlier:** 2026-06-25 — count to 190 tests across 17 files (added `logger` + `normalizeToolArgs` cases)
 > **Earlier:** 2026-06-25 — refreshed the count to 182 tests across 16 files; documented the jsdom dispatch seam (`tsconfig.test-webview.json` + variable-specifier import)

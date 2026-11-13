@@ -31,6 +31,7 @@ import type { ThinkingBlock } from "../components/thinking-block.js";
  *  handle and not alongside the element expandos in global.d.ts. */
 type ThinkingComponent = ThinkingBlock & { _rawText?: string };
 import { Dialog } from "../components/dialog.js";
+import { costSourceText } from "../../shared/cost-source.js";
 import {
   handleToolStart, handleToolUpdate, handleToolEnd,
   bashToolRenderer, insertToolBlock,
@@ -82,7 +83,7 @@ export function defaultMessageRenderer(data: CustomMessageData): HTMLElement {
       label = content.split("\n")[0].split("  ")[0].substring(0, 60);
     }
     if (customType === "error") { label = "Error"; }
-    // A note is not a failure — see the --no-extensions path in rust-service.ts.
+    // A note is not a failure.
     if (customType === "notice") { label = "Note"; }
 
     // Unique key so cards stack instead of overwriting each other.
@@ -164,7 +165,6 @@ export function createLiveCard(key: string, customType: string, label: string, c
       // Session events
       case "status-update":       handleStatusUpdate(msg.data); break;
       case "status":              handleStatus(msg.data); break;
-      case "mode-update":         handleModeUpdate(msg.data); break;
       case "queue-update":        logEvent("queue-update", { s: msg.data?.steering?.length, f: msg.data?.followUp?.length }); handleQueueUpdate(msg.data); break;
       case "compaction-start":    handleCompactionStart(msg.data); break;
       case "compaction-end":      handleCompactionEnd(msg.data); break;
@@ -431,8 +431,8 @@ export function handleAssistantEnd(data: MsgData<"assistant-end">): void {
 
       // Handle error/abort stop reasons (like TUI)
       if (data && data.stopReason) {
-        // "error" was NOT handled here, so a turn cut short by rust-pi's tool ceiling rendered
-        // as a reply that simply stopped. Any terminal reason attaches its message to the turn.
+        // "error" was once NOT handled here, so a turn that ended in an error rendered as a reply
+        // that simply stopped. Any terminal reason attaches its message to the turn.
         if (data.stopReason === "aborted" || data.stopReason === "error") {
           addErrorToElement(state.currentAssistantEl,
             data.errorMessage || (data.stopReason === "aborted" ? "Operation aborted" : "The turn ended early"));
@@ -632,48 +632,23 @@ export function handleThinkingDelta(data: MsgData<"thinking-delta">): void {
   // ═══ In-webview status bar ═══════════════════════════
 
 let sbDot = document.getElementById("pi-sb-dot");
-let sbRuntime = document.getElementById("pi-sb-runtime");
 let sbModel = document.getElementById("pi-sb-model");
 let sbThinking = document.getElementById("pi-sb-thinking");
 let sbUsage = document.getElementById("pi-sb-usage");
-
-function setSbRuntime(runtime: string | undefined): void {
-    if (!sbRuntime || !runtime) {return;}
-    const isRust = runtime === "rust";
-    sbRuntime.textContent = isRust ? "π Rust" : "π TS";
-    // Solid-fill runtime pill: blue for TypeScript, tan for Rust (see style.css).
-    sbRuntime.classList.toggle("pi-sb-runtime--rust", isRust);
-    sbRuntime.classList.toggle("pi-sb-runtime--ts", !isRust);
-  }
 
 export function setSbDot(state: string): void {
     if (!sbDot) {return;}
     sbDot.textContent = state === "streaming" ? "\u25CF" : "\u25CB";
   }
 
-// Render the thinking indicator. On transports that actually transmit the level
-// (thinkingLive !== false) it's the graded, clickable "thinking: <level>", showing
-// the level actually in effect for the model (clamped \u2014 see realThinkingLevel).
-// When the level is a no-op on the active transport (thinkingLive === false, e.g.
-// mistral-conversations or an unverified transport under Rust) it becomes a
-// read-only "reasoning: on/off" badge \u2014 the only real axis there. (DeepSeek /
-// openai-completions IS live since pi_agent_rust 6c5f43b3.) Undefined thinkingLive
-// (e.g. the init "status" event) keeps the graded form; status-update corrects it.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function renderThinkingBadge(data: any): void {
+// Render the thinking chip: the level actually in effect for the model (clamped \u2014 see
+// realThinkingLevel). It always opens the thinking picker.
+function renderThinkingBadge(data: { thinkingDisplay?: string; thinkingLevel?: string }): void {
     if (!sbThinking) {return;}
-    // The backend composes the single Thinking/Reasoning chip (pi-service thinkingStatus):
-    // "thinking: off", "thinking: on · reasoning: <level>", or a read-only
-    // "reasoning: on/off" badge on a transport that can't transmit the level. Fall back
-    // to thinkingLevel for older/placeholder payloads that omit the composed form.
-    const text = data.thinkingDisplay
-      || (data.thinkingLive === false
-            ? "reasoning: " + (data.reasoning ? "on" : "off")
-            : "thinking: " + (data.thinkingLevel || "off"));
-    const clickable = data.thinkingClickable !== false && data.thinkingLive !== false;
-    sbThinking.textContent = text;
-    if (clickable) { sbThinking.classList.remove("sb-readonly"); }
-    else { sbThinking.classList.add("sb-readonly"); }
+    // The host composes the single Thinking/Reasoning chip (pi-service thinkingStatus):
+    // "thinking: off" or "thinking: on · reasoning: <level>". Fall back to thinkingLevel for
+    // placeholder payloads (the init "status" event) that omit the composed form.
+    sbThinking.textContent = data.thinkingDisplay || "thinking: " + (data.thinkingLevel || "off");
   }
 
 export function sbModelText(modelId: string): string {
@@ -692,17 +667,14 @@ export function handleStatusUpdate(data: MsgData<"status-update">): void {
     // Persist the session identity into VS Code's webview state store. On reload,
     // VS Code revives this panel and hands the blob to deserializeWebviewPanel
     // (extension.ts), which re-attaches a live session from it. Merge instead of
-    // overwrite: early status-updates may not carry sessionFile yet (TS sessions
-    // write their file on the first assistant message; Rust reports it via get_state).
+    // overwrite: early status-updates may not carry sessionFile yet (it is absent until
+    // the session has initialized). Only the session file is saved; a
+    // runtime an earlier version saved here is dropped on this first write.
     try {
-      var prev = (window.__vscode.getState() || {}) as { sessionFilePath?: string; runtime?: string };
-      window.__vscode.setState({
-        sessionFilePath: data.sessionFile || prev.sessionFilePath,
-        runtime: data.runtime || prev.runtime,
-      });
+      var prev = (window.__vscode.getState() || {}) as { sessionFilePath?: string };
+      window.__vscode.setState({ sessionFilePath: data.sessionFile || prev.sessionFilePath });
     } catch { /* state persistence is best-effort; the session itself is unaffected */ }
 
-    setSbRuntime(data.runtime);
     if (sbModel && data.model) {
       sbModel.textContent = sbModelText(data.model);
     }
@@ -720,7 +692,10 @@ export function handleStatusUpdate(data: MsgData<"status-update">): void {
       // clickable, so APPEND — assigning the note alone silently destroyed the click hint that
       // ships in the markup, which is a worse trade than the note is worth.
       var budgetHint = "Click to set context budget";
-      sbUsage.title = (!u.costKnown && u.costNote) ? (u.costNote + "\n\n" + budgetHint) : budgetHint;
+      // A shown cost says what it is (billed by the provider, or an estimate); a withheld one
+      // says why.
+      var costTip = u.costKnown ? ((u.input > 0 || u.output > 0) ? costSourceText(u.costSource) : undefined) : u.costNote;
+      sbUsage.title = costTip ? (costTip + "\n\n" + budgetHint) : budgetHint;
       if (u.contextPercent !== undefined && u.contextPercent !== null) {parts.push(u.contextPercent.toFixed(0) + "%");}
       sbUsage.textContent = parts.length > 0 ? parts.join(" ") : "0%";
     }
@@ -728,7 +703,6 @@ export function handleStatusUpdate(data: MsgData<"status-update">): void {
   }
 
 export function handleStatus(data: MsgData<"status">): void {
-    setSbRuntime(data.runtime);
     if (data.ready) {
       state.sessionUnavailable = false;
       state.promptInput.disabled = false;
@@ -863,6 +837,9 @@ export function handleCompactionStart(data: MsgData<"compaction-start">): void {
 export function handleCompactionEnd(data: MsgData<"compaction-end">): void {
     state.isCompacting = false;
     removeCompactionIndicator();
+    // A summarization retry whose attempt_start/finished never arrived must not leave its indicator up.
+    state.isRetrying = false;
+    removeRetryIndicator();
     if (data.aborted) {
       addStatusMessage(data.reason === "manual" ? "Compaction cancelled" : "Auto-compaction cancelled");
     } else if (data.errorMessage) {
@@ -875,13 +852,13 @@ export function handleCompactionEnd(data: MsgData<"compaction-end">): void {
 
 export function handleAutoRetryStart(data: MsgData<"auto-retry-start">): void {
     state.isRetrying = true;
-    // rust-pi auto-retry re-runs the WHOLE turn, re-executing every tool call. Finalize the
+    // An auto-retry runs the failed attempt again, with fresh tool calls. Finalize the
     // FAILED attempt's still-running tool/bash blocks (muted "retried" — not success, not
     // error) and drop them from the live maps, so the re-run's tool calls create FRESH blocks
     // instead of reconciling against a stale entry (a wrong/partial file path from the aborted
     // attempt sticking on screen). Mirrors the translate-side clearToolCalls on auto_retry_start
     // so both sides reset in lockstep. Rendered blocks stay as muted history.
-    finalizeInFlightBlocksForRetry();
+    if (!data.summarization) { finalizeInFlightBlocksForRetry(); }
     removeRetryIndicator();
     addRetryIndicator(data.attempt, data.maxAttempts, data.delayMs);
     updateStreamingState();
@@ -1437,11 +1414,6 @@ export function sendPrompt(): void {
   });
 
   // ── In-webview status bar click handlers ─────────────
-  if (sbRuntime) {
-    sbRuntime.addEventListener("click", function (): void {
-      window.__vscode.postMessage({ type: "switchRuntime" });
-    });
-  }
   if (sbModel) {
     sbModel.addEventListener("click", function (): void {
       window.__vscode.postMessage({ type: "pickModel" });
@@ -1449,8 +1421,6 @@ export function sendPrompt(): void {
   }
   if (sbThinking) {
     sbThinking.addEventListener("click", function (): void {
-      // Read-only reasoning badge (no-op transport): not clickable.
-      if (sbThinking && sbThinking.classList.contains("sb-readonly")) {return;}
       window.__vscode.postMessage({ type: "pickThinkingLevel" });
     });
   }
@@ -2379,59 +2349,3 @@ export function handleDebugCommand(): void {
     state.chatContainer.appendChild(el);
     scrollToBottom();
   }
-
-// ═══ Mode strip ═══════════════════════════════════════════════════
-// Renders what the NEXT prompt will do. All state comes from the extension — the webview never
-// guesses, because the binary reports none of this and a divergent guess would be worse than a
-// stale one.
-
-let modeStripWired = false;
-
-function postMode(msg: Record<string, unknown>): void {
-  if (typeof window.__vscode !== "undefined") { window.__vscode.postMessage(msg); }
-}
-
-export function handleModeUpdate(data: MsgData<"mode-update">): void {
-  const strip = document.getElementById("pi-mode-strip");
-  if (!strip || !data) { return; }
-  strip.classList.toggle("hidden", !data.available);
-  if (!data.available) { return; }
-
-  const codeBtn = document.getElementById("pi-mode-code") as HTMLButtonElement | null;
-  const planBtn = document.getElementById("pi-mode-plan") as HTMLButtonElement | null;
-  const hint    = document.getElementById("pi-mode-hint");
-  const actions = document.getElementById("pi-plan-actions");
-  const chip    = document.getElementById("pi-approval-chip") as HTMLButtonElement | null;
-  if (!codeBtn || !planBtn || !hint || !actions || !chip) { return; }
-
-  const plan = data.planMode;
-  codeBtn.className = "pi-mode-opt" + (plan === "off" ? " on-code" : "");
-  planBtn.className = "pi-mode-opt" + (plan === "planning" || plan === "pending" ? " on-plan"
-                                     : plan === "approved" ? " on-approved" : "");
-  planBtn.textContent = plan === "approved" ? "plan ✓" : "plan";
-
-  hint.className = plan === "off" ? "" : "warn";
-  hint.textContent =
-    plan === "off"       ? "runs edits directly" :
-    plan === "planning"  ? "writes held until you approve a plan" :
-    plan === "pending"   ? "plan ready for review" :
-                           "plan approved — writes allowed";
-
-  actions.classList.toggle("hidden", plan !== "pending");
-
-  chip.textContent = `approval: ${data.approval} ▾`;
-  chip.title = "What this session asks approval for. Rust Pi reads it only at startup, "
-    + "so changing it restarts the session.";
-  chip.className = data.approval === "yolo" ? "appr-yolo" : data.approval === "write" ? "appr-write" : "";
-
-  if (modeStripWired) { return; }
-  modeStripWired = true;
-
-  // The segmented control switches directly — two options, both visible, no menu needed.
-  codeBtn.addEventListener("click", () => postMode({ type: "setPlanMode", on: false }));
-  planBtn.addEventListener("click", () => postMode({ type: "setPlanMode", on: true }));
-  document.getElementById("pi-plan-approve")?.addEventListener("click", () => postMode({ type: "approvePlan" }));
-  document.getElementById("pi-plan-reject")?.addEventListener("click", () => postMode({ type: "rejectPlan" }));
-  // Three options with real consequences — VS Code's QuickPick, like every other picker here.
-  chip.addEventListener("click", () => postMode({ type: "openApprovalPicker" }));
-}

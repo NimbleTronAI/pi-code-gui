@@ -1,7 +1,6 @@
-// Generate a SLIM model registry from @earendil-works/pi-ai (the same source the
-// TypeScript runtime uses) and stamp the pi-ai version it came from. The extension
-// bundles the output and uses it to override the Rust binary's stale built-in model
-// list, so Rust gets the same fresh catalog as Pi — with no per-model config.
+// Generate a SLIM model registry from @earendil-works/pi-ai (the same source
+// Pi uses) and stamp the pi-ai version it came from. The extension
+// bundles the output as the fallback model catalog (pricing, context windows, thinking levels).
 //
 //   npm run gen:model-registry   ← run after a pi-ai bump (a manual pi-ai bump (there is no dependabot.yml)), then commit.
 //
@@ -11,8 +10,7 @@
 //
 // Scope: only API-key providers (those with a real baseUrl). Special-auth cloud
 // providers — Bedrock, Azure, Vertex, Copilot — carry an empty baseUrl and can't be
-// expressed as a plain models.json entry, so they stay on the Rust binary's native
-// handling and are intentionally skipped.
+// expressed as a plain models.json entry, so they are intentionally skipped.
 // pi-ai 0.81.0 removed the module-level getProviders()/getModels() this script was built on
 // (0.82.1 fails at import: "does not provide an export named 'getModels'"). The built-in catalog
 // moved behind ./providers/all, which exposes the same data through getBuiltinProviders() /
@@ -29,7 +27,7 @@ const piAiVersion = JSON.parse(
   readFileSync(join(root, "node_modules", "@earendil-works", "pi-ai", "package.json"), "utf8"),
 ).version;
 
-// Non-API-key providers stay on the Rust binary's native handling, identified by:
+// Non-API-key providers are skipped, identified by:
 //   - a special api (AWS SigV4, Azure, GCP Vertex, ChatGPT/Codex OAuth backend),
 //   - an OAuth provider (github-copilot), or
 //   - an empty/templated baseUrl that needs account/region substitution
@@ -63,11 +61,10 @@ for (const provId of getBuiltinProviders()) {
     };
     // Keep the per-model thinking metadata: thinkingLevelMap drives the extension's
     // dynamic level picker (which levels a model actually honors — e.g. DeepSeek
-    // collapses minimal/low/medium) for BOTH backends, and is forwarded into rust-pi's
-    // models.json so the Rust backend clamps identically. compat carries the wire
+    // collapses minimal/low/medium) and compat carries the wire
     // dialect (thinkingFormat, e.g. "deepseek") and forceAdaptiveThinking — the flag
     // that selects Anthropic's modern adaptive `effort` API over deprecated
-    // budget_tokens. pi_agent_rust reads these under model.compat (gh #116/#117).
+    // budget_tokens.
     if (m.thinkingLevelMap && typeof m.thinkingLevelMap === "object") {
       slim.thinkingLevelMap = m.thinkingLevelMap;
     }

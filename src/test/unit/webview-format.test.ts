@@ -13,7 +13,7 @@ test("isRenderableImageSrc: only loadable webview schemes pass; relative/externa
   assert.equal(isRenderableImageSrc("vscode-webview://abc/media/x.png"), true);
   assert.equal(isRenderableImageSrc("https://aaa.vscode-cdn.net/x.png"), true);
   // NOT loadable -> caller shows alt text instead of a 403'ing <img>
-  assert.equal(isRenderableImageSrc("pi_agent_rust_illustration.webp"), false); // the real 403 case
+  assert.equal(isRenderableImageSrc("illustration.webp"), false); // a bare relative src: the real 403 case
   assert.equal(isRenderableImageSrc("./diagram.png"), false);
   assert.equal(isRenderableImageSrc("https://example.com/x.png"), false);       // CSP-blocked
   assert.equal(isRenderableImageSrc(""), false);

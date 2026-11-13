@@ -1,109 +1,55 @@
-# PiBackend — the runtime seam
+# PiBackend: the SDK seam
 
 > **Status:** stable
 
-`src/pi-backend.ts` (175 lines) defines the contract for the ~15% of a session that
-genuinely differs between the two runtimes, plus `BackendCapabilities` — the data flags
-that replaced scattered `_backendKind === "rust"` conditionals.
-
-Two implementations: `SdkService` (in-process TypeScript SDK) and `RustService`
-(out-of-process `pi --mode rpc`). [PiService](pi-service.md) holds exactly one and
-delegates primitives to it.
+`src/pi-backend.ts` defines the `PiBackend` interface: the primitive operations
+[PiService](pi-service.md) delegates to `SdkService`, the in-process Pi SDK runtime. There is one
+implementation. The interface stays because it is the test seam: PiService can be driven
+headlessly with a fake backend, and `SdkService` is driven with injected deps
+(`src/test/unit/sdk-service.test.ts`).
 
 ## The split
 
-**Primitives** live behind the interface — send a prompt, abort, set the model on the
-wire, read usage. **Orchestration** stays in PiService — cycleModel, the pickers, slash
-routing, status formatting — because sequencing primitives plus UI is runtime-agnostic.
+**Primitives** live behind the interface: send a prompt, abort, compact, get and set the model
+and thinking level, toggle auto-compaction and auto-retry, export to HTML, read usage, list
+entries and slash commands, list available models, promote or clear the steer queue, dispose.
+**Orchestration** stays in PiService: `cycleModel`, the pickers, slash routing, status
+formatting. It sequences primitives plus UI.
 
-The test for where something belongs: if the two runtimes would implement it
-*differently*, it is a primitive. If one implementation calls primitives in an order
-that works for both, it is orchestration.
+The test for where something belongs: if it needs the SDK's objects directly (the session, the
+session manager, the model runtime), it is a primitive. If it calls primitives in an order and
+talks to VS Code, it is orchestration.
 
-## Capabilities, not identity
+## State the backend owns
 
-```ts
-export interface BackendCapabilities {
-  readonly kind: Runtime;
-  readonly bridgeTools: boolean;          // in-process vscode_* editor tools
-  readonly customCards: boolean;          // interactive cards vs markdown fallback
-  readonly toolsPicker: boolean;          // per-session /tools
-  readonly fork: boolean;
-  readonly reloadContext: boolean;
-  readonly exportHtml: boolean;
-  readonly rename: boolean;
-  readonly interceptSlashCommands: boolean;
-  thinkingLevelLive(): boolean;           // depends on the active model's transport
-}
-```
-
-`backendCapabilityDefaults(runtime)` is the single source of truth. Every gated feature
-is TypeScript-only (out-of-process RPC has no host-tool injection and no
-fork/reload/rename RPCs) — so the flags are `!rust`, **except `exportHtml`, which both
-support**.
-
-Two things are deliberately NOT static flags, because they are not static facts:
-
-- **`thinkingLevelLive()`** is a method. Under Rust it depends on the active model's
-  transport (`thinkingLevelIsLive(model.api)`) — a provider that serialises no reasoning
-  field makes the level a no-op, so the UI shows a read-only badge instead of a graded
-  picker.
-- **`max` thinking-level support** is a *version* function, `rustHonorsMaxThinkingLevel`
-  in `src/model-catalog.ts`, gated on the DETECTED binary (≥ 0.1.23), not the pinned one.
-  A per-model catalog mapping says the MODEL has the tier and says nothing about whether
-  the backend accepts it. Measured: a pre-#139 binary rejects
-  `set_thinking_level("max")` exactly as it rejects garbage, and rejects
-  `--thinking max` at argv parse — exiting before any RPC exists.
-
-`flipsStateEagerly(runtime)` is the one genuine *state* divergence, expressed as an
-exhaustive predicate so a third runtime is a compile error rather than a silent
-inheritance of "eager".
+The active model identity, the thinking level, and the in-flight run and streaming flags are
+owned by the backend and read through the seam (`getModel()`, `getThinkingLevel()`,
+`getAgentRunActive()`, `isStreaming()`). PiService applies event-stream mutations through the
+setters (`setAgentRunActive`, `setStreaming`, `applyThinkingLevel`). `applyThinkingLevel` updates
+the stored level without a wire call, for the echo of a streamed `thinking_level_changed` event.
 
 ## Where the seam still leaks
 
-Read `pi-backend.ts`'s own header: it reduced the branching, it did not eliminate it.
-Honest inventory:
+The interface reduced coupling, it is not a complete boundary:
 
-- **Backend selection, init and dispose routing** branch on identity — unavoidable.
-- **`extension.ts`** reaches past the seam via `PiService.sessionManagerInstance` for
-  clone/fork/export session-file work. SDK-shaped, not yet modelled.
-- **`getUsageStats()`** keys its cost policy on `runtime === "rust"` rather than a
-  capability like `backendComputesCost`. Known and deliberate — see
-  [PiService](pi-service.md).
-- **The webview** keeps its own hardcoded local-slash list (`src/webview/state.ts`)
-  rather than deriving it from `interceptSlashCommands`, because capabilities are not
-  transmitted to the webview. The two can drift.
+- **`extension.ts`** reaches past it via `PiService.sessionManagerInstance` for clone, fork and
+  export session-file work. That is SDK-shaped and not modelled on `PiBackend`.
+- **PiService's legacy getters** (`session`, `SDK`, `AI`, `sessionManager`, `settingsManager`,
+  `resourceLoader`) read straight from `SdkService`.
 
-These are recorded rather than hidden. A reviewer who finds one has found something
-real; what they should NOT conclude is that the pattern is unintended.
+## Adding a primitive
 
-## Adding a capability
-
-1. Add the flag to `BackendCapabilities`.
-2. Add its default to `backendCapabilityDefaults` — this is compile-checked everywhere.
-3. Override it in the backend that differs (as `RustService` does for
-   `thinkingLevelLive`).
-4. Gate the feature on the flag, never on `capabilities.kind`.
-
-`src/test/unit/pi-backend.test.ts` asserts every flag's default per runtime.
+1. Add the method to `PiBackend` with a doc comment saying who owns the state.
+2. Implement it in `SdkService`.
+3. Call it from PiService through the private `backend` accessor.
+4. Cover it in the PiService integration tests with the fake backend.
 
 ## Related
 
-- [PiService](pi-service.md) — the orchestrator that holds one of these
-- [Runtime Selection](runtime-selection.md) — how a session picks its runtime
-- [Event Translation](event-translation.md) — the two event streams behind the seam
+- [PiService](pi-service.md): the orchestrator that holds the backend
+- [Event Translation](event-translation.md): the SDK event stream behind the seam
 
-## Modes are extension-owned state (0.2.0)
-
-`RustService` now also owns two things the binary does not report: `planMode` (the
-`set_plan_mode` / `submit_plan` / `approve_plan` lifecycle) and `approvalMode` — the
-posture the session was **spawned** with, since rust-pi reads approval only at startup
-and exposes no RPC to change it. Both are per-session state that a restart resets;
-neither appears in `get_state`. See [Session Modes](session-modes.md).
-
-This is the capability model doing its job in an awkward case: the flags describe what
-a runtime can do, but plan/approval are *state* the seam has to carry because only one
-runtime has the concept, and even there the binary will not answer for it.
-
-> **Last updated:** 2026-08-31 — noted the extension-owned plan/approval state
-> added in 0.2.0.
+> **Last updated:** 2026-11-12 — dropped the line count (it drifted); the interface gained `ReloadOutcome` and `reloadNotDoneText`.
+> **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): `BackendCapabilities`,
+> `backendCapabilityDefaults` and `flipsStateEagerly` deleted; one implementation remains.
+> **Earlier:** 2026-08-31 — noted the extension-owned plan/approval state added in 0.2.0 (since removed).

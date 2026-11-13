@@ -2,21 +2,59 @@
 // QuickPick item shapes are plain data the shell hands to vscode.window.showQuickPick, so the
 // available→choice mapping, the static fallback list, the check/★ labelling, and the
 // scoped-models mapping are all unit-tested.
- 
+
+import registry from "./model-registry.generated.json";
+
 
 export interface ModelCost { input: number; output: number; }
 export interface ModelChoice { label: string; provider: string; modelId: string; cost?: ModelCost; contextWindow?: number; }
 
-/** Static fallback shown when no runtime catalog is available (no pricing — only
- *  runtime-reported pricing is ever displayed). */
-export const FALLBACK_MODELS: ModelChoice[] = [
-  { label: "Claude Sonnet 4.5", provider: "anthropic", modelId: "claude-sonnet-4-5" },
-  { label: "Claude Haiku 4.5", provider: "anthropic", modelId: "claude-haiku-4-5" },
-  { label: "Claude Opus 4.5", provider: "anthropic", modelId: "claude-opus-4-5" },
-  { label: "GPT 4o", provider: "openai", modelId: "gpt-4o" },
-  { label: "Gemini 2.5 Pro", provider: "google", modelId: "gemini-2.5-pro" },
-  { label: "DeepSeek V3", provider: "deepseek", modelId: "deepseek-chat" },
+/**
+ * What the fallback list should OFFER, as a preference chain per row: the first id the bundled
+ * catalog actually carries wins, and its catalog name becomes the label.
+ *
+ * This was a literal list, and it rotted exactly as you would expect — it still offered GPT-4o
+ * and `deepseek-chat`, a model DeepSeek had withdrawn, so the one list shown when nothing else
+ * is available was partly pointing at models that no longer exist. Nothing failed; a row simply
+ * would not have worked if picked.
+ *
+ * Resolving against the bundle instead makes it self-healing. A pi-ai bump that withdraws or
+ * renames a model moves the row to the next preference on its own, and a row whose whole chain
+ * is gone drops out rather than lingering as a dead entry. Curation stays deliberate — these are
+ * chosen starting points, not "everything in the catalog" — but keeping them ALIVE is no longer
+ * a manual chore that only gets done when someone notices.
+ *
+ * Chains run newest-first and end on something long-lived, so an exotic flagship that vanishes
+ * degrades to a model that is still there.
+ */
+const FALLBACK_PREFERENCES: ReadonlyArray<{ provider: string; ids: readonly string[] }> = [
+  { provider: "anthropic", ids: ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-5"] },
+  { provider: "anthropic", ids: ["claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5"] },
+  { provider: "anthropic", ids: ["claude-haiku-4-5"] },
+  { provider: "openai", ids: ["gpt-5.5", "gpt-5.2", "gpt-5"] },
+  { provider: "google", ids: ["gemini-3.5-flash", "gemini-2.5-pro"] },
+  { provider: "deepseek", ids: ["deepseek-v4-pro", "deepseek-flash"] },
 ];
+
+/** Resolve a preference chain against the bundled catalog. Pure; exported for the tests. */
+export function resolveFallbackModels(
+  providers: Record<string, { models: Array<{ id: string; name?: string }> }>,
+  preferences: ReadonlyArray<{ provider: string; ids: readonly string[] }> = FALLBACK_PREFERENCES,
+): ModelChoice[] {
+  const out: ModelChoice[] = [];
+  for (const { provider, ids } of preferences) {
+    const models = providers[provider]?.models ?? [];
+    for (const id of ids) {
+      const hit = models.find((m) => m.id === id);
+      if (hit) { out.push({ label: hit.name || hit.id, provider, modelId: hit.id }); break; }
+    }
+  }
+  return out;
+}
+
+/** Static fallback shown when no runtime catalog is available (no pricing — only
+ *  runtime-reported pricing is ever displayed, and with no runtime there is none). */
+export const FALLBACK_MODELS: ModelChoice[] = resolveFallbackModels(registry.providers);
 
 /** Format model specs (pricing + context window) for the QuickPick `detail` line. Empty when
  *  there's no data. Pure. */

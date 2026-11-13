@@ -8,45 +8,26 @@ const usage = (over: Partial<RawUsage> = {}): RawUsage => ({
   input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0, ...over,
 });
 
-test("rust with rates: cost derived from tokens × rates, costKnown true", () => {
-  const u = usage({ input: 1_000_000, output: 1_000_000 });
-  const s = computeUsageStats(u, RATES, "rust");
-  assert.equal(s.cost, 18); // 1M×3 + 1M×15 = 18,000,000 / 1e6
-  assert.equal(s.costKnown, true);
-});
-
-test("rust without rates: cost 0, costKnown false (→ $??)", () => {
-  const s = computeUsageStats(usage({ input: 500_000 }), null, "rust");
-  assert.equal(s.cost, 0);
-  assert.equal(s.costKnown, false);
-});
-
-test("rust ignores any cost the binary reported and recomputes from tokens", () => {
-  // Binary reports cost:99 but Rust cost is always recomputed from rates.
-  const s = computeUsageStats(usage({ input: 1_000_000, cost: 99 }), RATES, "rust");
-  assert.equal(s.cost, 3);
-});
-
 test("sdk: keeps the SDK-computed cost; costKnown true when cost > 0", () => {
-  const s = computeUsageStats(usage({ cost: 0.42 }), null, "typescript");
+  const s = computeUsageStats(usage({ cost: 0.42 }), null);
   assert.equal(s.cost, 0.42);
   assert.equal(s.costKnown, true);
 });
 
 test("sdk: zero cost but rates present → costKnown true ($0.00, not $??)", () => {
-  const s = computeUsageStats(usage({ cost: 0 }), RATES, "typescript");
+  const s = computeUsageStats(usage({ cost: 0 }), RATES);
   assert.equal(s.cost, 0);
   assert.equal(s.costKnown, true);
 });
 
 test("sdk: zero cost and no rates → costKnown false ($??)", () => {
-  const s = computeUsageStats(usage({ cost: 0 }), null, "typescript");
+  const s = computeUsageStats(usage({ cost: 0 }), null);
   assert.equal(s.costKnown, false);
 });
 
 test("passes token counts and context through unchanged", () => {
   const u = usage({ input: 10, output: 20, cacheRead: 5, cacheWrite: 2, contextPercent: 42, contextWindow: 200_000 });
-  const s = computeUsageStats(u, RATES, "typescript");
+  const s = computeUsageStats(u, RATES);
   assert.deepEqual(
     { input: s.input, output: s.output, cacheRead: s.cacheRead, cacheWrite: s.cacheWrite, contextPercent: s.contextPercent, contextWindow: s.contextWindow },
     { input: 10, output: 20, cacheRead: 5, cacheWrite: 2, contextPercent: 42, contextWindow: 200_000 },
@@ -62,37 +43,24 @@ const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const PAID = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 const USED = { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 200_000 };
 
-test("rust: all-zero rates render $?? rather than a confident $0.00", () => {
-  const s = computeUsageStats(USED, ZERO, "rust");
-  assert.equal(s.costKnown, false, "a subscription plan's quota burn must not read as free");
-  assert.equal(s.cost, 0);
+test("all-zero rates and no SDK cost → $??", () => {
+  assert.equal(computeUsageStats(USED, ZERO).costKnown, false);
 });
 
-test("rust: real rates still price the turn", () => {
-  const s = computeUsageStats(USED, PAID, "rust");
-  assert.equal(s.costKnown, true);
-  assert.ok(s.cost > 0, "tokens x rates");
-});
-
-test("typescript: all-zero rates and no SDK cost → $??", () => {
-  assert.equal(computeUsageStats(USED, ZERO, "typescript").costKnown, false);
-});
-
-test("typescript: an SDK-COMPUTED cost wins over zero rates (a measurement, not an inference)", () => {
-  const s = computeUsageStats({ ...USED, cost: 0.02 }, ZERO, "typescript");
+test("an SDK-COMPUTED cost wins over zero rates (a measurement, not an inference)", () => {
+  const s = computeUsageStats({ ...USED, cost: 0.02 }, ZERO);
   assert.equal(s.costKnown, true);
   assert.equal(s.cost, 0.02);
 });
 
 test("a rates-bearing model with no turns yet still shows $0.00, not $??", () => {
   const idle = { ...USED, input: 0, output: 0 };
-  assert.equal(computeUsageStats(idle, PAID, "rust").costKnown, true);
-  assert.equal(computeUsageStats(idle, PAID, "typescript").costKnown, true);
+  assert.equal(computeUsageStats(idle, PAID).costKnown, true);
 });
 
 test("cache-only rates can't price a turn → still $??", () => {
   const cacheOnly = { input: 0, output: 0, cacheRead: 0.5, cacheWrite: 6.25 };
-  assert.equal(computeUsageStats(USED, cacheOnly, "rust").costKnown, false);
+  assert.equal(computeUsageStats(USED, cacheOnly).costKnown, false);
 });
 
 test("negative sentinel rates render $?? — never a negative cost", () => {
@@ -101,60 +69,78 @@ test("negative sentinel rates render $?? — never a negative cost", () => {
   // previous `rates !== null` test accepted them, and tokens x negative rates put a NEGATIVE
   // figure in the status bar (-$1500 after 1500 tokens, measured).
   const sentinel = { input: -1_000_000, output: -1_000_000, cacheRead: -1_000_000, cacheWrite: -1_000_000 };
-  for (const rt of ["rust", "typescript"] as const) {
-    const s = computeUsageStats(USED, sentinel, rt);
-    assert.equal(s.costKnown, false, `${rt}: unpriceable`);
-    assert.ok(s.cost >= 0, `${rt}: cost must never go negative`);
-  }
+  const s = computeUsageStats(USED, sentinel);
+  assert.equal(s.costKnown, false, "unpriceable");
+  assert.ok(s.cost >= 0, "cost must never go negative");
 });
 
 // ── withheld cost: a price the catalog cannot express ────────────────
-// Native DeepSeek V4 bills on a clock (peak 2x off-peak) and the catalog holds one flat scalar —
-// which is ALSO stale: pi-ai 0.84.3 still ships pre-August-16 rates understating output by up to
-// 4.6x. DeepSeek reports no cost of its own (verified live: token counts only), so there is
+// Native DeepSeek bills on a clock (peak 2x off-peak) and the catalog holds one flat scalar —
+// which cannot be right at both ends of the clock. DeepSeek reports no cost of its own (verified live: token counts only), so there is
 // nothing to fall back on. Show nothing rather than a confident wrong number.
-test("withheld rates force $?? on the Rust path, with the reason attached", () => {
-  const u = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-  const rates = { input: 0.435, output: 0.87, cacheRead: 0, cacheWrite: 0 };
-  const s = computeUsageStats(u, rates, "rust", "because clocks");
+test("withheld rates force $?? even over an SDK-COMPUTED cost, with the reason attached", () => {
+  // The subtle one. The SDK derives its cost from the same flat catalog rates, so a non-zero
+  // SDK cost is not a measurement.
+  const u = { input: 500_000, output: 500_000, cacheRead: 0, cacheWrite: 0, cost: 0.65, contextPercent: null, contextWindow: 0 };
+  const s = computeUsageStats(u, null, "because clocks");
   assert.equal(s.costKnown, false, "renders $??");
   assert.equal(s.cost, 0, "no figure is asserted");
   assert.equal(s.costNote, "because clocks", "the chip can explain itself");
 });
 
-test("withheld rates also beat a TypeScript-runtime COMPUTED cost", () => {
-  // The subtle one. The SDK derives its cost from the same flat catalog rates, so a non-zero
-  // SDK cost is not a measurement — without this, the TypeScript runtime would keep showing the
-  // very number the Rust runtime is suppressing.
-  const u = { input: 500_000, output: 500_000, cacheRead: 0, cacheWrite: 0, cost: 0.65, contextPercent: null, contextWindow: 0 };
-  const s = computeUsageStats(u, null, "typescript", "because clocks");
-  assert.equal(s.costKnown, false);
-  assert.equal(s.cost, 0);
-});
-
-test("no withheld reason leaves both runtimes exactly as they were", () => {
-  const u = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
+test("no withheld reason keeps the SDK's own figure", () => {
+  const u = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 2, contextPercent: null, contextWindow: 0 };
   const rates = { input: 2, output: 4, cacheRead: 0, cacheWrite: 0 };
-  const s = computeUsageStats(u, rates, "rust");
+  const s = computeUsageStats(u, rates);
   assert.equal(s.costKnown, true);
-  assert.equal(s.cost, 2);
+  assert.equal(s.cost, 2, "the SDK's figure, not a re-pricing");
   assert.equal(s.costNote, undefined);
 });
 
-test("an unpriceable model explains its own $?? too, on both runtimes", () => {
+test("an unpriceable model explains its own $?? too", () => {
   // The common case, and the one that actually shipped broken: DeepSeek is rare, a 0/0-rate model
   // is not. Without this the chip said "$??" and, worse, my first attempt blanked the tooltip.
   const u = { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-  for (const runtime of ["rust", "typescript"] as const) {
-    const s = computeUsageStats(u, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, runtime);
-    assert.equal(s.costKnown, false, runtime);
-    assert.ok((s.costNote ?? "").includes("subscription"), runtime + " explains why");
-  }
+  const s = computeUsageStats(u, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.equal(s.costKnown, false);
+  assert.ok((s.costNote ?? "").includes("subscription"), "explains why");
 });
 
 test("a priced session carries no note to explain", () => {
   const u = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 };
-  const s = computeUsageStats(u, { input: 3, output: 6, cacheRead: 0, cacheWrite: 0 }, "rust");
+  const s = computeUsageStats(u, { input: 3, output: 6, cacheRead: 0, cacheWrite: 0 });
   assert.equal(s.costKnown, true);
   assert.equal(s.costNote, undefined);
+});
+
+// ── billed vs estimated: Usage.cost.totalFromProvider (pi-ai 1.5.0) ────────────
+// A provider-reported total (OpenRouter today) is what the user is billed, not a catalog
+// estimate, so the catalog-based "$??" rules don't apply to it.
+test("an all-billed session shows its figure even where the catalog would withhold it", () => {
+  const u = { ...USED, cost: 0.37, costFromProvider: "all" as const };
+  const s = computeUsageStats(u, null, "because clocks");
+  assert.equal(s.costKnown, true);
+  assert.equal(s.cost, 0.37);
+  assert.equal(s.costSource, "billed");
+  assert.equal(s.costNote, undefined);
+});
+
+test("a billed $0 (a free model on a reporting provider) is a real $0.00, not $??", () => {
+  const s = computeUsageStats({ ...USED, cost: 0, costFromProvider: "all" as const }, ZERO);
+  assert.equal(s.costKnown, true);
+  assert.equal(s.costSource, "billed");
+});
+
+test("an estimated session is labelled as an estimate", () => {
+  const s = computeUsageStats({ ...USED, cost: 0.02 }, PAID);
+  assert.equal(s.costSource, "estimated");
+});
+
+test("a mixed session keeps the estimate rules and is labelled mixed", () => {
+  const shown = computeUsageStats({ ...USED, cost: 0.5, costFromProvider: "some" as const }, PAID);
+  assert.equal(shown.costKnown, true);
+  assert.equal(shown.costSource, "mixed");
+  const withheld = computeUsageStats({ ...USED, cost: 0.5, costFromProvider: "some" as const }, PAID, "because clocks");
+  assert.equal(withheld.costKnown, false, "the estimated part is still not trustworthy");
+  assert.equal(withheld.costSource, undefined, "no source for a figure we don't show");
 });

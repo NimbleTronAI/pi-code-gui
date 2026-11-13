@@ -6,7 +6,7 @@
 //
 // Extracted from the god class and unit-tested against fixture entries — previously the whole
 // replay path (user/assistant/tool/bash/custom/compaction ordering) had no coverage.
-/* eslint-disable @typescript-eslint/no-explicit-any -- SDK/Rust session entries are dynamically typed */
+/* eslint-disable @typescript-eslint/no-explicit-any -- SDK session entries are dynamically typed */
 import type { PiServiceEvent } from "./types.js";
 import { extractMessageText, extractToolCalls, normalizeToolArgs, type EntryLookups } from "./agent-events.js";
 

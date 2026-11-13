@@ -37,16 +37,6 @@ const ContentArraySchema = z.array(
 // ═══ Extension → Webview schemas ═══════════════════════════
 
 const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("mode-update"),
-    data: z.object({
-      // Rust only: the strip is hidden on the TypeScript runtime, which has neither concept.
-      available: z.boolean(),
-      planMode: z.enum(["off", "planning", "pending", "approved"]),
-      approval: z.enum(["always-ask", "write", "yolo"]),
-      plan: z.string().optional(),
-    }),
-  }),
   // Agent lifecycle
   z.object({ type: z.literal("agent-start"), data: z.undefined().optional() }),
   z.object({
@@ -186,12 +176,6 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
         thinkingDisplay: z.string().optional(),
-        thinkingClickable: z.boolean().optional(),
-        // Whether the active transport actually transmits the thinking level
-        // (false → webview shows a read-only "reasoning: on/off" badge instead of
-        // a graded "thinking: <level>"). `reasoning` is the model's fixed flag.
-        thinkingLive: z.boolean().optional(),
-        reasoning: z.boolean().optional(),
         usage: z
           .object({
             input: z.number(),
@@ -200,6 +184,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
             costKnown: z.boolean().optional(),
             // Why a cost is withheld — the status chip's tooltip, so "$??" explains itself.
             costNote: z.string().optional(),
+            // What a shown cost is: billed by the provider, a catalog estimate, or mixed.
+            costSource: z.enum(["billed", "estimated", "mixed"]).optional(),
             contextPercent: z.number().nullable(),
           })
           .optional(),
@@ -207,11 +193,10 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         ready: z.boolean().optional(),
         reset: z.boolean().optional(),
         sessionId: z.string().optional(),
-        // On-disk session file; the webview persists it (with runtime) into VS Code's
-        // webview state so the panel serializer can re-attach the session on reload.
+        // On-disk session file; the webview persists it into VS Code's webview state so
+        // the panel serializer can re-attach the session on reload.
         sessionFile: z.string().optional(),
         contextBudget: z.number().optional(),
-        runtime: z.enum(["typescript", "rust"]).optional(),
       }),
   }),
   z.object({
@@ -221,11 +206,7 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
         model: z.string().optional(),
         thinkingLevel: z.string().optional(),
         thinkingDisplay: z.string().optional(),
-        thinkingClickable: z.boolean().optional(),
-        thinkingLive: z.boolean().optional(),
-        reasoning: z.boolean().optional(),
         ready: z.boolean().optional(),
-        runtime: z.enum(["typescript", "rust"]).optional(),
       })
       .optional(),
   }),
@@ -270,6 +251,8 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
       maxAttempts: z.number(),
       delayMs: z.number(),
       errorMessage: z.string().optional(),
+      /** Summarization (compaction/branch-summary) retry: no turn re-run, so tool blocks stay untouched. */
+      summarization: z.literal(true).optional(),
     }),
   }),
   z.object({
@@ -385,11 +368,6 @@ const ExtensionToWebviewSchema = z.discriminatedUnion("type", [
 // ═══ Webview → Extension schemas ═══════════════════════════
 
 const WebviewToExtensionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("setPlanMode"), on: z.boolean(), makeDefault: z.boolean().optional() }),
-  z.object({ type: z.literal("setApprovalMode"), mode: z.enum(["always-ask", "write", "yolo"]) }),
-  z.object({ type: z.literal("openApprovalPicker") }),
-  z.object({ type: z.literal("approvePlan") }),
-  z.object({ type: z.literal("rejectPlan") }),
   z.object({
     type: z.literal("prompt"),
     text: z.string(),
@@ -405,7 +383,6 @@ const WebviewToExtensionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("toggleAutoCompaction") }),
   z.object({ type: z.literal("toggleAutoRetry") }),
   z.object({ type: z.literal("toggleShowImages") }),
-  z.object({ type: z.literal("switchRuntime") }),
   z.object({ type: z.literal("openUrl"), url: z.string() }),
   z.object({ type: z.literal("openFile"), path: z.string() }),
   z.object({ type: z.literal("promoteToSteer"), text: z.string() }),

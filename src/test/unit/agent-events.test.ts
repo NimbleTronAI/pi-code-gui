@@ -1,16 +1,14 @@
 // Unit tests for translateAgentEvent — the pure core extracted from
-// PiService.handleAgentEvent (the dual-runtime streaming dispatcher). One group
+// PiService.handleAgentEvent (the streaming dispatcher). One group
 // per event type; asserts the emitted events, the scalar state mutations, the
 // in-place container mutations, and the trailing effects.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { translateAgentEvent, extractToolCalls, normalizeToolArgs, toolArgsPreviewText, type AgentTranslateState } from "../../agent-events.js";
+import { translateAgentEvent, extractToolCalls, normalizeToolArgs, toolArgsPreviewText, extractMessageText, shouldEmitToolPreview, shouldEmitToolPreviewUpdate, TOOL_PREVIEW_THROTTLE_MS, type AgentTranslateState } from "../../agent-events.js";
 
 function makeState(over: Partial<AgentTranslateState> = {}): AgentTranslateState {
   return {
-    backendKind: "typescript",
-    agentRunActive: false,
     lookups: { entries: [], byMessageId: new Map(), byToolCallId: new Map() },
     userMessages: [],
     toolCalls: new Map(),
@@ -31,27 +29,11 @@ test("agent_start: emits agent-start and sets streaming/active, resets turn, cle
   assert.equal(r.clearToolCalls, true);
 });
 
-test("agent_end (rust, run not active): treated as the duplicate — no-op", () => {
-  const r = translateAgentEvent({ type: "agent_end", messages: [] }, makeState({ backendKind: "rust", agentRunActive: false }));
-  assert.deepEqual(r.events, []);
-  assert.equal(r.setAgentRunActive, undefined);
-  assert.equal(r.effects.reportStatus, undefined);
-  assert.equal(r.effects.rustClearQueue, undefined);
-});
-
-test("agent_end (rust, active): emits agent-end, clears rust queue, reports status", () => {
-  const r = translateAgentEvent({ type: "agent_end", messages: ["m"] }, makeState({ backendKind: "rust", agentRunActive: true }));
+test("agent_end: emits agent-end, clears the run + streaming flags, reports status", () => {
+  const r = translateAgentEvent({ type: "agent_end", messages: ["m"] }, makeState());
   assert.deepEqual(types(r), ["agent-end"]);
   assert.equal(r.setAgentRunActive, false);
   assert.equal(r.setStreaming, false);
-  assert.equal(r.effects.rustClearQueue, true);
-  assert.equal(r.effects.reportStatus, true);
-});
-
-test("agent_end (typescript): reports status but does NOT touch a rust queue", () => {
-  const r = translateAgentEvent({ type: "agent_end", messages: [] }, makeState({ backendKind: "typescript" }));
-  assert.deepEqual(types(r), ["agent-end"]);
-  assert.equal(r.effects.rustClearQueue, undefined);
   assert.equal(r.effects.reportStatus, true);
 });
 
@@ -206,20 +188,11 @@ test("message_end user: nothing", () => {
   assert.equal(r.effects.reportStatus, undefined);
 });
 
-test("message_end assistant (typescript): emits assistant-end, reports status, no context capture", () => {
+test("message_end assistant: emits assistant-end, reports status, no context capture", () => {
   const content = [{ type: "toolCall", id: "t1", name: "write", arguments: {} }];
   const r = translateAgentEvent({ type: "message_end", message: { role: "assistant", content, stopReason: "end", usage: { input: 5 } } }, makeState());
   assert.deepEqual(types(r), ["assistant-end"]);
   assert.deepEqual((r.events[0] as any).data.toolCalls, ["t1"]);
-  assert.equal(r.effects.reportStatus, true);
-  assert.equal(r.effects.captureContext, undefined);
-});
-
-test("message_end assistant (rust): captures context usage before reporting status", () => {
-  const usage = { input: 42 };
-  const r = translateAgentEvent({ type: "message_end", message: { role: "assistant", content: [], usage } }, makeState({ backendKind: "rust" }));
-  assert.equal(r.effects.captureContext, true);
-  assert.deepEqual(r.effects.captureUsage, usage);
   assert.equal(r.effects.reportStatus, true);
 });
 
@@ -296,7 +269,7 @@ test("compaction_start: emits compaction-start", () => {
   assert.deepEqual(types(r), ["compaction-start"]);
 });
 
-test("compaction_end with result, no entry (Rust): falls back to a synthetic compaction entryId", () => {
+test("compaction_end with result, no entry: falls back to a synthetic compaction entryId", () => {
   const r = translateAgentEvent({ type: "compaction_end", result: { summary: "s", tokensBefore: 10 } }, makeState({ now: 5000 }));
   assert.deepEqual(types(r), ["compaction-end", "compaction-summary-message"]);
   assert.equal((r.events[1] as any).data.entryId, "compaction-5000");
@@ -327,21 +300,49 @@ test("auto_retry_start clears tool-call correlation (the retry re-runs the turn 
   assert.notEqual(translateAgentEvent({ type: "auto_retry_end", success: true, attempt: 2 }, makeState()).clearToolCalls, true);
 });
 
-// ── agent_settled (v0.1.22 terminal event) ──────────────────────────
-test("agent_settled: recognized (no unknown-drift warning), clears streaming/active, reports status", () => {
-  const r = translateAgentEvent({ type: "agent_settled" }, makeState({ backendKind: "rust", agentRunActive: true }));
+// ── agent_settled (the SDK's terminal event) ─────────────────────────
+test("agent_settled: recognized (no unknown-drift warning), clears streaming, reports status, leaves the run flag", () => {
+  const r = translateAgentEvent({ type: "agent_settled" }, makeState());
   assert.equal(r.effects.unknownType, undefined); // NOT treated as protocol drift
   assert.deepEqual(r.events, []);                  // no UI event of its own
   assert.equal(r.setStreaming, false);
-  assert.equal(r.setAgentRunActive, false);        // safety-net: un-latch the run
+  assert.equal(r.setAgentRunActive, undefined);
   assert.equal(r.effects.reportStatus, true);
 });
 
-test("agent_settled on the SDK path: clears streaming + reports, but doesn't touch the run flag", () => {
-  const r = translateAgentEvent({ type: "agent_settled" }, makeState({ backendKind: "typescript" }));
-  assert.equal(r.setStreaming, false);
-  assert.equal(r.setAgentRunActive, undefined);    // rust-only latch guard
-  assert.equal(r.effects.reportStatus, true);
+// ── entry_appended (SDK session event: a persisted entry was appended) ─
+// The SDK emits this when an extension calls pi.appendEntry, and (1.3.0) for virtual-model route
+// state, turn_end/agent_before_settle boundary drafts and recovery context edits. It is a known
+// event, not protocol drift: before this case existed every occurrence put a visible
+// "Unhandled agent event: entry_appended" card in the chat panel.
+test("entry_appended: recognized no-op (no drift warning, no diagnostic card)", () => {
+  const r = translateAgentEvent({ type: "entry_appended", entry: { type: "custom", customType: "x", data: {} } }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, []);
+  assert.equal(r.effects.reportStatus, undefined);
+});
+
+// 1.3.0 boundary drafts (an extension's turn_end / agent_before_settle handler) commit
+// custom_message and compaction entries whose ONLY live signal is entry_appended; the 1.3.0 TUI
+// renders both, so we must too.
+test("entry_appended: a displayed custom_message entry renders as one custom-message", () => {
+  const entry = { type: "custom_message", id: "e-cm", parentId: null, timestamp: "2026-10-16T00:00:01.000Z", customType: "ext-note", content: "hello", display: true, details: { k: 1 } };
+  const r = translateAgentEvent({ type: "entry_appended", entry }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, [{ type: "custom-message", data: { customType: "ext-note", content: "hello", display: true, details: { k: 1 }, timestamp: Date.parse(entry.timestamp), entryId: "e-cm" } }]);
+});
+
+test("entry_appended: a custom_message entry with display:false stays a no-op", () => {
+  const r = translateAgentEvent({ type: "entry_appended", entry: { type: "custom_message", id: "e-h", timestamp: "x", customType: "c", content: "c", display: false } }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, []);
+});
+
+test("entry_appended: a compaction entry renders as one compaction-summary-message", () => {
+  const entry = { type: "compaction", id: "e-cp", parentId: null, timestamp: "2026-10-16T00:00:02.000Z", summary: "sum", firstKeptEntryId: "e1", tokensBefore: 1234 };
+  const r = translateAgentEvent({ type: "entry_appended", entry }, makeState());
+  assert.equal(r.effects.unknownType, undefined);
+  assert.deepEqual(r.events, [{ type: "compaction-summary-message", data: { summary: "sum", tokensBefore: 1234, timestamp: Date.parse(entry.timestamp), entryId: "e-cp" } }]);
 });
 
 // ── unknown ──────────────────────────────────────────────────────────
@@ -381,4 +382,130 @@ test("normalizeToolArgs: non-record junk (array, primitive) → {}", () => {
   assert.deepEqual(normalizeToolArgs("nope"), {});
   assert.deepEqual(normalizeToolArgs(42), {});
   assert.deepEqual(normalizeToolArgs(true), {});
+});
+
+// ── summarization_retry_* (SDK 1.3.0: provider error mid-compaction / branch summary) ─
+// Each used to fall to the default branch and put a visible "Unhandled agent event" card in chat.
+function assertNoJunk(r: ReturnType<typeof translateAgentEvent>): void {
+  assert.equal(r.effects.unknownType, undefined);
+  assert.ok(!r.events.some((e: any) => e.type === "custom-message"), "no diagnostic custom-message card");
+}
+
+test("summarization_retry_scheduled: shows the retry indicator (auto-retry-start, summarization-flagged, no tool-call reset)", () => {
+  const r = translateAgentEvent({ type: "summarization_retry_scheduled", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "overloaded" }, makeState());
+  assertNoJunk(r);
+  assert.deepEqual(r.events, [{ type: "auto-retry-start", data: { attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "overloaded", summarization: true } }]);
+  assert.notEqual(r.clearToolCalls, true);
+});
+
+test("summarization_retry_attempt_start (compaction + branchSummary) and _finished clear the indicator via auto-retry-end success", () => {
+  const evs = [
+    { type: "summarization_retry_attempt_start", source: "compaction", reason: "manual" },
+    { type: "summarization_retry_attempt_start", source: "branchSummary" },
+    { type: "summarization_retry_finished" },
+  ];
+  for (const ev of evs) {
+    const r = translateAgentEvent(ev, makeState());
+    assertNoJunk(r);
+    assert.deepEqual(r.events, [{ type: "auto-retry-end", data: { success: true, attempt: 0 } }]);
+  }
+});
+
+// ── extractMessageText (pure) ─────────────────────────────────────────
+test("extractMessageText: bare string passes through", () => {
+  assert.equal(extractMessageText("hello"), "hello");
+});
+
+test("extractMessageText: null/undefined/number/object -> ''", () => {
+  assert.equal(extractMessageText(null), "");
+  assert.equal(extractMessageText(undefined), "");
+  assert.equal(extractMessageText(42), "");
+  assert.equal(extractMessageText({ text: "x" }), "");
+});
+
+test("extractMessageText: joins only text blocks with newlines", () => {
+  const content = [{ type: "text", text: "a" }, { type: "toolCall", name: "read" }, { type: "text", text: "b" }];
+  assert.equal(extractMessageText(content), "a\nb");
+});
+
+test("extractMessageText: tolerates a null array entry (no throw)", () => {
+  const content = [null, { type: "text", text: "ok" }];
+  assert.equal(extractMessageText(content), "ok");
+});
+
+// ── shouldEmitToolPreview (the "{} null" orphan-placeholder guard) ─────
+test("shouldEmitToolPreview: requires a non-empty id (partial stream)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "read" }), true);
+  assert.equal(shouldEmitToolPreview({ id: "", name: "read" }), false);
+  assert.equal(shouldEmitToolPreview({ id: undefined, name: "read" }), false);
+  assert.equal(shouldEmitToolPreview({ id: null, name: "read" }), false);
+});
+
+test("shouldEmitToolPreview: id-less call with no name yet is skipped (the exact '{} null' case)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "", name: "" }), false);
+  assert.equal(shouldEmitToolPreview({}), false);
+});
+
+test("shouldEmitToolPreview: bash/exec skipped even with an id (own render path)", () => {
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "bash" }), false);
+  assert.equal(shouldEmitToolPreview({ id: "call_1", name: "exec" }), false);
+});
+
+// ── shouldEmitToolPreviewUpdate (streaming tool-arg preview throttle) ──
+test("shouldEmitToolPreviewUpdate: always emits the first update (no prior emit)", () => {
+  assert.equal(shouldEmitToolPreviewUpdate(undefined, 1000), true);
+});
+
+test("shouldEmitToolPreviewUpdate: suppresses updates within the throttle window", () => {
+  const t0 = 100000;
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + TOOL_PREVIEW_THROTTLE_MS - 1), false);
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + 5), false);
+});
+
+test("shouldEmitToolPreviewUpdate: emits again once the interval has elapsed", () => {
+  const t0 = 100000;
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + TOOL_PREVIEW_THROTTLE_MS), true);
+  assert.equal(shouldEmitToolPreviewUpdate(t0, t0 + 1000), true);
+});
+
+test("shouldEmitToolPreviewUpdate: respects a custom interval", () => {
+  assert.equal(shouldEmitToolPreviewUpdate(0, 50, 100), false);
+  assert.equal(shouldEmitToolPreviewUpdate(0, 100, 100), true);
+});
+
+// ── a failed attempt Pi is about to retry is not a failure card ─────────────────
+// Pi decides to retry after the failed message ends, and says so on agent_end (willRetry).
+// Posting the "turn ended early" card at message_end left one stuck card per recovered
+// connection drop (seen live: four UND_ERR_SOCKET cards in a turn that finished fine).
+const errEnd = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error.: other side closed (UND_ERR_SOCKET)" } };
+const isStopCard = (e: { type: string; data?: unknown }): boolean =>
+  e.type === "custom-message" && String((e.data as { content?: unknown })?.content).includes("turn ended early");
+
+test("an errored attempt that Pi will retry leaves no failure card", () => {
+  const st = makeState({ pendingStopNote: { note: null } });
+  const end = translateAgentEvent(errEnd, st);
+  assert.ok(!end.events.some(isStopCard), "held at message_end");
+  assert.ok(types(end).includes("assistant-end"), "the message itself still ends");
+  const agentEnd = translateAgentEvent({ type: "agent_end", messages: [], willRetry: true }, st);
+  assert.ok(!agentEnd.events.some(isStopCard), "dropped: Pi is retrying");
+  assert.equal(st.pendingStopNote?.note, null, "nothing carried into the next attempt");
+});
+
+test("an errored attempt Pi will NOT retry shows the card at agent_end", () => {
+  const st = makeState({ pendingStopNote: { note: null } });
+  translateAgentEvent(errEnd, st);
+  const agentEnd = translateAgentEvent({ type: "agent_end", messages: [] }, st);
+  assert.equal(agentEnd.events.filter(isStopCard).length, 1, "willRetry absent → shown");
+  assert.equal(st.pendingStopNote?.note, null);
+});
+
+test("an aborted turn still shows its card at once", () => {
+  const st = makeState({ pendingStopNote: { note: null } });
+  const r = translateAgentEvent({ type: "message_end", message: { role: "assistant", content: [], stopReason: "aborted" } }, st);
+  assert.ok(r.events.some((e) => e.type === "custom-message"), "abort is never retried");
+});
+
+test("without a holder (older callers) the error card is emitted at message_end as before", () => {
+  const r = translateAgentEvent(errEnd, makeState());
+  assert.equal(r.events.filter(isStopCard).length, 1);
 });

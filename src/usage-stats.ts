@@ -1,9 +1,9 @@
-// Usage / token cost policy — the pure decision behind PiService.getUsageStats. The genuine
-// runtime divergence lives here: the Rust binary reports cost:0 (it doesn't compute cost), so
-// we derive it from tokens × the catalog's published rates; the SDK computes its own per-turn
-// cost. Extracted so the costKnown ("$??" vs "$0.00") rules are unit-tested.
-import type { Runtime } from "./types.js";
-import { computeTokenCost } from "./model-catalog.js";
+// Usage / token cost policy — the pure decision behind PiService.getUsageStats. The SDK prices
+// its own turns; this decides whether that figure can be shown ("$0.00") or must be "$??", and
+// why. Extracted so the costKnown rules are unit-tested.
+
+import type { CostSource } from "./shared/cost-source.js";
+export type { CostSource };
 
 export interface RawUsage {
   input: number;
@@ -11,9 +11,16 @@ export interface RawUsage {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /** Whether `cost` is what the provider billed (pi-ai `Usage.cost.totalFromProvider`, 1.5.0):
+   *  "all" = every usage record that counts was billed by the provider, "some" = a mix of billed
+   *  and catalog-estimated records, "none" (or absent) = all estimated. Only OpenRouter reports
+   *  billed totals in pi-ai 1.5.2. */
+  costFromProvider?: CostFromProvider;
   contextPercent: number | null;
   contextWindow: number;
 }
+
+export type CostFromProvider = "all" | "some" | "none";
 
 export type CostRates = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
@@ -23,6 +30,9 @@ export interface UsageStats extends RawUsage {
   /** Why the cost is withheld, when it is — surfaced as the status chip's tooltip so "$??" is
    *  self-explanatory at the point a user meets it. Absent when a cost IS shown. */
   costNote?: string;
+  /** What a SHOWN cost is: the provider's bill, a catalog estimate, or a mix. Absent when the
+   *  cost is withheld. Its wording is costSourceText (src/shared/cost-source.ts). */
+  costSource?: CostSource;
 }
 
 /** Whether rates say anything we can price a turn with.
@@ -42,17 +52,22 @@ function ratesArePriceable(rates: CostRates | null): rates is CostRates {
 }
 
 /** Combine the backend's raw usage with the catalog rates into the display stats. Pure.
- *  - Rust: the binary reports cost:0, so cost = tokens × rates (0 when unpriceable); costKnown
- *    tracks whether we hold rates we can actually price with.
- *  - SDK: keeps the SDK's own computed cost; costKnown when it computed one OR we hold
- *    priceable rates (a rates-bearing model with no turns yet legitimately shows $0.00, not $??).
- *    An SDK-computed cost > 0 always wins — that is a measurement, not an inference. */
-export function computeUsageStats(u: RawUsage, rates: CostRates | null, runtime: Runtime, withheldReason?: string | null): UsageStats {
-  // An unexpressible price outranks BOTH runtimes' normal paths, including an SDK-computed cost.
-  // That cost is not a measurement here: the SDK derives it from the same flat catalog rates, so
-  // "the SDK computed one" is not evidence it is right. See catalogRatesAreUnexpressible.
+ *  Keeps the SDK's own computed cost; costKnown when it computed one OR we hold priceable rates
+ *  (a rates-bearing model with no turns yet legitimately shows $0.00, not $??). An SDK-computed
+ *  cost > 0 wins over missing rates — that is a measurement, not an inference — but a withheld
+ *  reason (rates the catalog cannot express) outranks everything. */
+export function computeUsageStats(raw: RawUsage, rates: CostRates | null, withheldReason?: string | null): UsageStats {
+  const u = { ...raw };
+  // A total the provider billed is a measurement, not an inference from catalog rates, so none
+  // of the rules below (all about trusting catalog rates) apply to it — not even a withheld
+  // reason, and a billed $0 is a real $0.00.
+  if (u.costFromProvider === "all") { return { ...u, costKnown: true, costSource: "billed" }; }
+  const shownSource: CostSource = u.costFromProvider === "some" ? "mixed" : "estimated";
+  // An unexpressible price outranks an SDK-computed cost. That cost is not a measurement here:
+  // the SDK derives it from the same flat catalog rates, so "the SDK computed one" is not
+  // evidence it is right. See catalogRatesAreUnexpressible.
   if (withheldReason) { return { ...u, cost: 0, costKnown: false, costNote: withheldReason }; }
-  const priceable = ratesArePriceable(rates);
+  const known = u.cost > 0 || ratesArePriceable(rates);
   // Whenever we render "$??" the reason travels with it. The unpriceable case is the COMMON one
   // (99 of 854 bundled models sit at 0/0 rates: genuinely free models and whole subscription
   // providers, which the catalog gives us no way to tell apart) — so leaving it unexplained is
@@ -61,10 +76,5 @@ export function computeUsageStats(u: RawUsage, rates: CostRates | null, runtime:
     "No per-token price is published for this model in the bundled catalog — it may be free, or " +
     "billed under a subscription plan — so the session cost can't be computed. Token counts above " +
     "are still exact.";
-  if (runtime === "rust") {
-    if (!priceable) { return { ...u, cost: 0, costKnown: false, costNote: NO_RATE_NOTE }; }
-    return { ...u, cost: computeTokenCost(u, rates), costKnown: true };
-  }
-  const known = u.cost > 0 || priceable;
-  return known ? { ...u, costKnown: true } : { ...u, costKnown: false, costNote: NO_RATE_NOTE };
+  return known ? { ...u, costKnown: true, costSource: shownSource } : { ...u, costKnown: false, costNote: NO_RATE_NOTE };
 }

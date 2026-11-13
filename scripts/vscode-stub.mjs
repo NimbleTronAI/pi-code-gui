@@ -13,6 +13,8 @@ const control = {
   inputBox: [],
   /** Scripted answers (shift()ed) for show*Message. Undefined models the user DISMISSING. */
   messageChoice: [],
+  /** Optional per-key scope breakdown for getConfiguration().inspect(); see below. */
+  inspect: {},
   /** Recorded calls for assertions. */
   calls: [],
 };
@@ -70,7 +72,14 @@ export const workspace = {
         : Object.prototype.hasOwnProperty.call(control.config, key) ? control.config[key]
         : dflt;
     },
-    update: async (key, value) => { control.config[section ? `${section}.${key}` : key] = value; rec("configUpdate", { key, value }); },
+    update: async (key, value, target) => { control.config[section ? `${section}.${key}` : key] = value; rec("configUpdate", { key, value, target }); },
+    // Scope breakdown. control.inspect["<section>.<key>"] scripts one; otherwise the flat config
+    // value is reported as the user (global) value.
+    inspect: (key) => {
+      const full = section ? `${section}.${key}` : key;
+      if (control.inspect && Object.prototype.hasOwnProperty.call(control.inspect, full)) { return { key: full, ...control.inspect[full] }; }
+      return { key: full, globalValue: control.config[full] };
+    },
   }),
 };
 

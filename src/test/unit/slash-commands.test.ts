@@ -7,59 +7,24 @@ import { dirname, join } from "node:path";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src");
 import { buildSlashCommandList, parseSlashCommand, type SlashCommand } from "../../slash-commands.js";
-import type { BackendCapabilities } from "../../pi-backend.js";
-
 const cmds = (list: SlashCommand[]): string[] => list.map((c) => c.cmd);
 
-/** A capabilities object with everything off except what a test flips on. */
-function caps(over: Partial<BackendCapabilities> = {}): BackendCapabilities {
-  return {
-    kind: "rust", toolsPicker: false, sessionModes: false, fork: false,
-    reloadContext: false, exportHtml: false, interceptSlashCommands: false,
-    thinkingLevelLive: () => true, ...over,
-  };
-}
-
-test("buildSlashCommandList: agent commands first, then the always-on GUI commands", () => {
+test("buildSlashCommandList: agent commands first, then the GUI commands", () => {
   const agent: SlashCommand[] = [{ cmd: "/tldr", desc: "summarize", source: "extension" }];
-  const list = buildSlashCommandList(agent, caps());
+  const list = buildSlashCommandList(agent);
   assert.equal(list[0].cmd, "/tldr"); // agent commands lead
   for (const c of ["/model", "/new", "/compact", "/settings", "/login", "/logout", "/debug"]) {
     assert.ok(cmds(list).includes(c), `${c} present`);
   }
 });
 
-test("buildSlashCommandList: capability-gated commands appear only when enabled", () => {
-  // All gates off (bare Rust) → none of the gated commands.
-  const off = cmds(buildSlashCommandList([], caps()));
-  for (const c of ["/resume", "/fork", "/export", "/tools"]) { assert.ok(!off.includes(c), `${c} absent`); }
-
-  // fork → resume + fork.
-  assert.ok(cmds(buildSlashCommandList([], caps({ fork: true }))).includes("/fork"));
-  assert.ok(cmds(buildSlashCommandList([], caps({ fork: true }))).includes("/resume"));
-
-  // toolsPicker → tools.
-  assert.ok(cmds(buildSlashCommandList([], caps({ toolsPicker: true }))).includes("/tools"));
+test("buildSlashCommandList: the session commands are always offered", () => {
+  // These used to sit behind capability flags that were always on for the SDK.
+  const list = cmds(buildSlashCommandList([]));
+  for (const c of ["/resume", "/fork", "/export", "/tools"]) { assert.ok(list.includes(c), `${c} present`); }
 });
 
-test("buildSlashCommandList: /export follows the CAPABILITY, on either runtime", () => {
-  // This test previously asserted `exportHtml AND kind === "typescript"` — enshrining a leak
-  // rather than protecting a behaviour. Both dual-runtime reviews flagged it independently: the
-  // identity conjunct existed only because the handler reached for `this.session.exportToHtml`
-  // (null on Rust). The handler now goes through PiBackend.exportToHtml, which BOTH backends
-  // implement, so the capability alone decides — as it always claimed to.
-  for (const kind of ["rust", "typescript"] as const) {
-    assert.ok(cmds(buildSlashCommandList([], caps({ kind, exportHtml: true }))).includes("/export"),
-      `${kind} advertises /export when the capability is on`);
-    assert.ok(!cmds(buildSlashCommandList([], caps({ kind, exportHtml: false }))).includes("/export"),
-      `${kind} hides /export when the capability is off`);
-  }
-});
-
-test("/export is intercepted by the webview, so Rust never forwards it to the model", () => {
-  // interceptSlashCommands is false on Rust, so anything not in the webview's local list is sent
-  // to the binary as a literal prompt — a billed turn answering a question about the word
-  // "/export" instead of exporting. Session artefacts show exactly that happening with /models.
+test("/export is intercepted by the webview, so it reaches the extension's export handler", () => {
   const state = readFileSync(join(SRC_DIR, "webview", "state.ts"), "utf-8");
   // Anchor on the ARRAY LITERAL, not the interface field (`localSlashCommands: string[]`),
   // whose `]` would truncate the slice to nothing and pass vacuously.
@@ -67,7 +32,7 @@ test("/export is intercepted by the webview, so Rust never forwards it to the mo
   assert.notEqual(start, -1, "the local-interception array must exist");
   const block = state.slice(start, state.indexOf("],", start));
   assert.match(block, /"\/export"/,
-    "/export must be locally intercepted or Rust bills a model turn for it");
+    "/export must be locally intercepted");
   assert.match(block, /"\/new"/, "sanity: the anchor really is the array");
 });
 

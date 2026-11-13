@@ -1,7 +1,8 @@
 // Headless tests for the extracted model picker core (src/model-picker.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FALLBACK_MODELS, formatModelDetail, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems } from "../../model-picker.js";
+import { FALLBACK_MODELS, resolveFallbackModels, formatModelDetail, toModelChoices, buildModelPickerItems, buildDefaultChoiceItems } from "../../model-picker.js";
+import registry from "../../model-registry.generated.json";
 
 const STAR = "★";
 const CHECK = "$(check)";
@@ -54,6 +55,41 @@ test("buildModelPickerItems: no default (null) → no stars, nothing isDefault",
 test("FALLBACK_MODELS is a non-empty static list with no pricing", () => {
   assert.ok(FALLBACK_MODELS.length >= 4);
   assert.ok(FALLBACK_MODELS.every((m) => m.provider && m.modelId && m.cost === undefined));
+});
+
+test("every fallback row names a model the bundled catalog actually carries", () => {
+  // This list was literal, and it went stale unnoticed: it offered `deepseek-chat` after DeepSeek
+  // withdrew it, so the one list shown when nothing else is available pointed at a dead model.
+  // Resolving from the bundle makes that impossible by construction; this pins the property.
+  const providers = registry.providers as Record<string, { models: Array<{ id: string; name?: string }> }>;
+  assert.ok(FALLBACK_MODELS.length >= 4, "the chains still resolve to a usable list");
+  for (const row of FALLBACK_MODELS) {
+    const hit = (providers[row.provider]?.models ?? []).find((m) => m.id === row.modelId);
+    assert.ok(hit, `${row.provider}/${row.modelId} is not in the bundled catalog`);
+    assert.equal(row.label, hit.name || hit.id, "the label is the catalog's own name");
+  }
+});
+
+test("resolveFallbackModels: takes the first id present and skips a chain with none", () => {
+  const providers = {
+    p: { models: [{ id: "old", name: "Old" }] },
+    q: { models: [{ id: "only", name: "Only" }] },
+  };
+  const got = resolveFallbackModels(providers, [
+    { provider: "p", ids: ["new", "old"] },        // newest is gone → falls back
+    { provider: "q", ids: ["only"] },
+    { provider: "q", ids: ["withdrawn"] },         // whole chain gone → row drops out
+    { provider: "absent", ids: ["anything"] },     // provider gone → row drops out
+  ]);
+  assert.deepEqual(got, [
+    { label: "Old", provider: "p", modelId: "old" },
+    { label: "Only", provider: "q", modelId: "only" },
+  ]);
+});
+
+test("resolveFallbackModels: an id with no name falls back to the id as the label", () => {
+  const got = resolveFallbackModels({ p: { models: [{ id: "bare" }] } }, [{ provider: "p", ids: ["bare"] }]);
+  assert.deepEqual(got, [{ label: "bare", provider: "p", modelId: "bare" }]);
 });
 
 

@@ -1,7 +1,6 @@
-// Headless tests for SdkService.initialize() — the 12-step TS-SDK resolve→load→
+// Headless tests for SdkService.initialize() — the 12-step Pi SDK resolve→load→
 // adapt→auth→model→resources→tools→session sequence. This was the audits' #1
-// coverage gap (the DEFAULT runtime's init had zero tests, while the Rust init is
-// fully covered). SdkService is vscode-free: every environment dependency (config,
+// coverage gap (the init had zero tests). SdkService is vscode-free: every environment dependency (config,
 // cwd, dynamic module import, fs, bridge-tool assembly, UI nudge) is injected via
 // SdkDeps, so the real init path runs here against fake SDK/AI modules + stubbed deps.
 import { test } from "node:test";
@@ -64,8 +63,10 @@ function makeEnv(opts: {
   piRoot?: string | (() => string);
   modules?: (absPath: string) => Any;   // override module resolution
   config?: Partial<SdkConfig>;
-} = {}): { host: SdkHost; deps: SdkDeps; notified: string[] } {
+  piAiPackageJson?: string;              // installed pi-ai package.json (undefined ⇒ version check skipped)
+} = {}): { host: SdkHost; deps: SdkDeps; notified: string[]; notices: Array<[string, string, boolean]> } {
   const notified: string[] = [];
+  const notices: Array<[string, string, boolean]> = [];
   const host: SdkHost = {
     emit: () => {},
     resolvePiRoot: typeof opts.piRoot === "function" ? opts.piRoot : () => (opts.piRoot as string) ?? "/fake/piroot",
@@ -82,13 +83,13 @@ function makeEnv(opts: {
     config: () => ({ ...baseConfig, ...opts.config }),
     importModule: async (absPath) => (opts.modules ?? defaultModules)(absPath),
     fileExists: () => false,
-    readFileUtf8: async () => { throw new Error("no pkg (skip version check)"); },
-    notifyOutdatedPiAi: (installed) => notified.push(installed),
+    readFileUtf8: async () => { if (opts.piAiPackageJson === undefined) { throw new Error("no pkg (skip version check)"); } return opts.piAiPackageJson; },
+    notifyOutdatedPiAi: (installed, supported, belowFloor) => { notified.push(installed); notices.push([installed, supported, belowFloor]); },
     buildBridgeTools: () => [],
     catalogProviders: () => ({}),
     confirmRendererConsent: async () => true,
   };
-  return { host, deps, notified };
+  return { host, deps, notified, notices };
 }
 
 // ── PiBackend primitives (post-init session operations) ──────────────
@@ -189,7 +190,75 @@ test("abort kills bash then the agent turn", () => {
 test("getUsage sums assistant entries + reads live context", () => {
   const { svc } = makeService();
   const u = svc.getUsage();
-  assert.deepEqual(u, { input: 30, output: 12, cacheRead: 2, cacheWrite: 1, cost: 0.03, contextPercent: 42, contextWindow: 200000 });
+  assert.deepEqual(u, { input: 30, output: 12, cacheRead: 2, cacheWrite: 1, cost: 0.03, costFromProvider: "none", contextPercent: 42, contextWindow: 200000 });
+});
+
+// The same entries Pi's own getSessionStats() counts: cache warm-ups ("usage" entries),
+// compaction and branch summaries, and tool results that carry usage. Before this, the panel's
+// $ left out warm-up and compaction spend (pi 1.5.1 made cache warming the default).
+test("getUsage also counts warm-up, compaction, branch-summary and tool-result usage", () => {
+  const { svc } = makeService();
+  const use = (input: number, total: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total } });
+  svc.sessionManager = { getEntries: () => [
+    { type: "message", message: { role: "assistant", usage: use(10, 0.01) } },
+    { type: "usage", kind: "cache_warm", usage: use(100, 0.1) },
+    { type: "compaction", usage: use(1000, 1) },
+    { type: "branch_summary", usage: use(10000, 10) },
+    { type: "compaction" },
+    { type: "message", message: { role: "toolResult", usage: use(100000, 100) } },
+    { type: "message", message: { role: "toolResult" } },
+  ] } as Any;
+  const u = svc.getUsage();
+  assert.equal(u.input, 111110);
+  assert.equal(Math.round(u.cost * 100) / 100, 111.11);
+});
+
+test("getUsage reports whether the cost was billed by the provider: all, some or none", () => {
+  const { svc } = makeService();
+  const billed = (total: number) => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total, totalFromProvider: true } });
+  const est = (total: number) => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total } });
+  const msg = (usage: Any) => ({ type: "message", message: { role: "assistant", usage } });
+  const run = (entries: Any[]) => { svc.sessionManager = { getEntries: () => entries } as Any; return svc.getUsage().costFromProvider; };
+  assert.equal(run([msg(billed(0.1)), msg(billed(0))]), "all");
+  assert.equal(run([msg(billed(0.1)), msg(est(0.2))]), "some");
+  assert.equal(run([msg(est(0.2))]), "none");
+  assert.equal(run([]), "none", "nothing billed yet");
+  // An errored turn with no tokens and no cost says nothing about billing either way.
+  assert.equal(run([msg(billed(0.1)), msg({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } })]), "all");
+});
+
+// pi 1.5.1 (#9222): reload() throws while a response or compaction runs. Check first and say
+// which, so the user gets "wait", not a failure.
+test("reloadContext: busy responding → not reloaded, says so", async () => {
+  const { svc, calls } = makeService({ isStreaming: true, reload: async () => calls.push(["reload"]) });
+  assert.equal(await svc.reloadContext(), "busy-response");
+  assert.deepEqual(calls, []);
+});
+
+test("reloadContext: busy compacting → not reloaded, says so", async () => {
+  const { svc, calls } = makeService({ isCompacting: true, reload: async () => calls.push(["reload"]) });
+  assert.equal(await svc.reloadContext(), "busy-compaction");
+  assert.deepEqual(calls, []);
+});
+
+test("reloadContext: idle → reloads", async () => {
+  const { svc, calls } = makeService({ reload: async () => calls.push(["reload"]) });
+  assert.equal(await svc.reloadContext(), "reloaded");
+  assert.deepEqual(calls, [["reload"]]);
+});
+
+test("reloadContext: a session without reload → unsupported", async () => {
+  const { svc } = makeService();
+  assert.equal(await svc.reloadContext(), "unsupported");
+});
+
+test("reloadContext: a turn that starts between the check and the call still reads as busy", async () => {
+  const { svc } = makeService({ reload: async () => { throw new Error("Wait for the current response to finish before reloading."); } });
+  assert.equal(await svc.reloadContext(), "busy-response");
+  const c = makeService({ reload: async () => { throw new Error("Wait for compaction to finish before reloading."); } });
+  assert.equal(await c.svc.reloadContext(), "busy-compaction");
+  const other = makeService({ reload: async () => { throw new Error("disk on fire"); } });
+  await assert.rejects(other.svc.reloadContext(), /disk on fire/);
 });
 
 test("getSlashCommands: extension-runner commands + builtin templates", () => {
@@ -257,6 +326,25 @@ test("pi-coding-agent module import failure → 'Failed to load pi-coding-agent'
   assert.match(out.error ?? "", /Failed to load pi-coding-agent/);
 });
 
+// pi-coding-agent < 0.80.8 has no ModelRuntime. The pi-ai floor check cannot catch this reliably
+// (a caret range nests a newer pi-ai under an old pi-coding-agent), so Step 3 feature-detects it.
+test("pi-coding-agent without ModelRuntime (<0.80.8) → actionable error naming 0.80.8, not a raw TypeError", async () => {
+  const { host, deps } = makeEnv({
+    modules: (p) => {
+      if (p.includes("pi-ai/dist/index.js")) { return fakeAi(); }
+      if (p.includes("typebox")) { return { Type: {} }; }
+      if (p.endsWith("dist/index.js")) { return fakeSdk({ ModelRuntime: undefined }); }
+      return {};
+    },
+  });
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.equal(out.success, false);
+  assert.match(out.error ?? "", /0\.80\.8/);
+  assert.match(out.error ?? "", /npm install -g @earendil-works\/pi-coding-agent/);
+  assert.doesNotMatch(out.error ?? "", /Cannot read properties/);
+  assert.doesNotMatch(out.error ?? "", /TypeScript/, "Pi has one runtime; the error names none");
+});
+
 test("pi-ai >=0.80 (no getModel) + providers/all import fails → actionable error", async () => {
   const { host, deps } = makeEnv({
     modules: (p) => {
@@ -302,6 +390,24 @@ test("createAgentSession throwing → 'createAgentSession failed'", async () => 
   assert.match(out.error ?? "", /createAgentSession failed/);
 });
 
+test("a session reconciles its model's thinking capability against the injected catalog", async () => {
+  // The runtime model reports no reasoning; the catalog (deps.catalogProviders, the bundled
+  // registry in production) says it reasons, so the configured level survives the init clamp.
+  const rt = { setRuntimeApiKey: async () => {}, getAvailable: async () => [{ provider: "acme", id: "m1", name: "m1" }], getModel: () => null, getAuth: async () => undefined, refresh: async () => {} };
+  const modules = (absPath: string): Any => {
+    if (absPath.includes("pi-ai/dist/index.js")) { return fakeAi(); }
+    if (absPath.includes("providers/all.js")) { return { getBuiltinModel: () => null, builtinModels: () => ({ getModels: () => [], complete: async () => ({}) }) }; }
+    if (absPath.includes("typebox")) { return { Type: {} }; }
+    if (absPath.endsWith("dist/index.js")) { return fakeSdk({ ModelRuntime: { create: async () => rt } }); }
+    throw new Error(`unexpected import: ${absPath}`);
+  };
+  const { host, deps } = makeEnv({ modules, config: { defaultThinkingLevel: "high" } });
+  deps.catalogProviders = () => ({ acme: { models: [{ id: "m1", reasoning: true }] } });
+  const out = await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.ok(out.success, out.error ?? "initialize() reported failure with no error message");
+  assert.equal(out.thinkingLevel, "high", "the catalog's reasoning flag kept the configured level");
+});
+
 test("runtime API keys from config are applied to the model runtime", async () => {
   const applied: Array<[string, string]> = [];
   const { host, deps } = makeEnv({
@@ -327,7 +433,7 @@ test("runtime API keys from config are applied to the model runtime", async () =
 });
 
 // ── init: session-open branches + resume restore (audit H12) ─────────
-// The DEFAULT runtime's most common real-world path — continueRecent after a VS Code restart —
+// The most common real-world path — continueRecent after a VS Code restart —
 // plus openPath resume, the EEXIST regenerate guard, the context-budget clamp and the
 // default-model override, none of which had coverage.
 
@@ -434,8 +540,7 @@ test("defaultModelProvider/defaultModelId override the auto-selected model", asy
 // It was applied once, at init, so switching models mid-session silently dropped it: the SDK
 // reads model.contextWindow for BOTH the auto-compaction trigger and the context-% denominator,
 // so the user kept a budget in settings while the session quietly reverted to the model's native
-// window. Rust never had the gap (applyState re-clamps on every get_state), so the same action
-// behaved differently per runtime.
+// window.
 test("setModel re-applies the context budget, like initialize does", async () => {
   const setModels: Any[] = [];
   const { svc } = makeService();
@@ -463,9 +568,9 @@ test("setModel leaves the native window alone when no budget is set", async () =
 });
 
 // ── the Auto-retry toggle actually has to toggle something ────────────
-// setAutoRetry was an empty method, so on TypeScript the settings toggle flipped an
+// setAutoRetry was an empty method, so the settings toggle flipped an
 // extension-local flag, told the webview it had changed, and left the session retrying exactly
-// as before — a control that lied, on the DEFAULT runtime, about re-billing. The SDK exposes
+// as before — a control that lied about re-billing. The SDK exposes
 // AgentSession.setAutoRetryEnabled (verified in pi-coding-agent 0.83.0); it was never wired.
 test("setAutoRetry reaches the SDK session", async () => {
   const calls: Any[] = [];
@@ -497,4 +602,41 @@ test("readSessionSettings returns undefined rather than guessing when the SDK is
   assert.deepEqual(svc.readSessionSettings(), { autoCompaction: undefined, autoRetry: undefined });
   (svc as Any).session = null;
   assert.deepEqual(svc.readSessionSettings(), {});
+});
+
+// ── pi-ai floor (the outdated-SDK nudge) ─────────────────────────────
+// Step 3 calls SDK.ModelRuntime.create() unconditionally and pi-coding-agent exports ModelRuntime
+// only from 0.80.8 (0.80.7 and 0.79.x tarballs have none). A pi-ai below 0.80.8 is a best-effort
+// early sign of that (a caret range can nest a newer pi-ai under an old pi-coding-agent; Step 3's
+// feature-detect is the hard stop), so it gets the below-FLOOR warning, not the soft
+// "newer version available" nudge it used to get. NOTE: the nudge latches once per module
+// (_piAiVersionWarned) — this must stay the only test in this file that reaches notifyOutdatedPiAi.
+test("initialize: pi-ai 0.80.7 (no ModelRuntime upstream) gets the below-floor warning naming 0.80.8", async () => {
+  const { host, deps, notices } = makeEnv({ piAiPackageJson: JSON.stringify({ version: "0.80.7" }) });
+  await new SdkService(host, deps).initialize({ fresh: true, openPath: null });
+  assert.deepEqual(notices, [["0.80.7", "0.80.8", true]]);
+});
+
+// Pi's SessionManager has no setSessionName (it is appendSessionInfo); the AgentSession has
+// setSessionName, which appends the session_info entry and emits session_info_changed. Since
+// 59a7226 (shipped in 0.2.1) we asked the SessionManager first, got "no such method", and never
+// saved a name, so Past Sessions showed the first message instead of the tab's name.
+test("setSessionName saves through the AgentSession, shaped like pi 1.5.2", async () => {
+  const { svc, calls } = makeService({ setSessionName: (n: string) => calls.push(["session.setSessionName", n]) });
+  svc.sessionManager = { getEntries: () => [], appendSessionInfo: (n: string) => calls.push(["appendSessionInfo", n]) } as Any;
+  assert.equal(await svc.setSessionName("analyze the removal"), true);
+  assert.deepEqual(calls, [["session.setSessionName", "analyze the removal"]]);
+});
+
+test("setSessionName falls back to the SessionManager's appendSessionInfo", async () => {
+  const { svc, calls } = makeService();
+  svc.sessionManager = { getEntries: () => [], appendSessionInfo: (n: string) => calls.push(["appendSessionInfo", n]) } as Any;
+  assert.equal(await svc.setSessionName("x"), true);
+  assert.deepEqual(calls, [["appendSessionInfo", "x"]]);
+});
+
+test("setSessionName reports false when nothing can save a name", async () => {
+  const { svc } = makeService();
+  svc.sessionManager = { getEntries: () => [] } as Any;
+  assert.equal(await svc.setSessionName("x"), false);
 });

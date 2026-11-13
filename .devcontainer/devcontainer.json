@@ -8,6 +8,11 @@
     "updateRemoteUserUID": false,
     "workspaceFolder": "/workspaces/pi-vscode-gui",
 
+    // The compose volumes are `external` (so `compose down -v` can't delete them), which means
+    // compose won't create them either. Runs on the host; `docker volume create` is a no-op
+    // when the volume already exists.
+    "initializeCommand": "docker volume create pi-vscode-gui-node-modules >/dev/null && docker volume create pi-vscode-gui-pi >/dev/null",
+
     "postCreateCommand": "sudo chown -R node:node /home/node/.pi /workspaces/pi-vscode-gui/node_modules && pnpm install",
 
     "postStartCommand": "bash .devcontainer/post-start.sh",

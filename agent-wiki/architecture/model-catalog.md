@@ -2,60 +2,68 @@
 
 > **Status:** evolving
 
-`src/rust-models.ts` decides what the Rust binary knows about models, and where its
-agent home lives. Both answers changed substantially in 0.2.0, and the previous
-answers are still described in older material — treat this page as authoritative.
+`src/model-registry.generated.json` is the extension's bundled model catalog, and
+`src/model-catalog.ts` holds the pure helpers that read it. The Pi SDK the extension loads keeps
+its own live catalog; the bundled one is the extension's authoritative copy of what each model
+owner publishes (prices, thinking tiers).
 
 ## One agent home, shared with the CLI
 
-Rust sessions run with `PI_CODING_AGENT_DIR` pointing at the user's own
-`~/.pi/agent` — the same directory the `pi` CLI uses. Earlier versions relocated it
-to an extension-owned folder so that writing the bundled catalog could not clobber a
-user's `models.json`. That relocation created a second problem it could not solve:
-the binary reads `auth.json` from *its* agent home, so the credential had to be
-carried across.
+Sessions run in-process on the user's installed Pi SDK, which uses Pi's agent home (`getAgentDir()`,
+by default `~/.pi/agent`, or `PI_CODING_AGENT_DIR`): the same directory the `pi` CLI uses. The
+SDK's `ModelRuntime` (created in `SdkService`) reads the user's `models.json` and `auth.json`
+there, so models, credentials and OAuth refreshes are shared with the CLI. The extension keeps
+no copy of either and writes neither.
 
-Every mechanism for carrying it was wrong. A symlink is refused outright by rust-pi
-0.3.0 (`auth.json must be a regular non-link file`, exit code 1). A copy diverges,
-because OAuth refresh tokens **rotate** — whichever copy refreshes first invalidates
-the other, and the user meets `invalid_grant` on a credential they never touched. A
-hard link is one file and therefore correct, but breaks whenever a writer saves
-atomically (rename gives a new inode, `nlink` drops to 1) and is impossible when
-`~/.pi` is a different filesystem, making behaviour depend on disk layout.
+## What the bundled catalog is used for
 
-Sharing the directory removes the problem rather than managing it: one home, one
-`auth.json`, nothing to synchronise, identical on every platform.
+`PiService.catalogProviders` returns the bundled registry's `providers`. It is generated from
+pi-ai by `pnpm run gen:model-registry` (`scripts/gen-model-registry.mjs`), and
+`pnpm run check:model-registry` verifies it is current. Its consumers:
 
-## Merge, don't rewrite
+- **Thinking capability.** `reconcileThinkingCapability` upgrades a model the SDK reports as
+  non-reasoning when the catalog knows it reasons (a custom `models.json` entry that omits
+  `reasoning` makes the SDK default it to `false`, which would clamp the level to "off" and
+  collapse the picker). It never downgrades a model the SDK already reports as reasoning.
+- **Cost rates.** `findCatalogModelCost` fills the rates of a resumed model whose `models.json`
+  entry omits `cost`, since the SDK would then default them to zero and show no cost.
+  `activeCostRates` feeds the status-bar cost. A model whose published price the four flat rates
+  cannot express (native `deepseek`, billed by time of day) is withheld and shows `$??`
+  (`catalogRatesAreUnexpressible`, `costWithheldReason`).
+- **`/model` fallback.** When the SDK's auth-filtered list is empty, the fallback list is built
+  from the catalog.
+- **Currency nudge.** `TARGET_PI_AI_VERSION` is the pi-ai version the bundled catalog was
+  generated from. A user whose installed SDK carries an older pi-ai is told so once per window
+  (`piAiVersionNotice`).
 
-Because the home is now the user's, `models.json` is theirs. The extension **merges**
-per-model entries into it, each stamped `_managedBy: "pi-code-gui@<version>"`:
+`pi-code-gui.contextBudget` (when above 0) replaces the active model's `contextWindow` with the
+chosen budget, so compaction happens at that size.
 
-- an entry carrying the marker is ours, and is refreshed on each session start;
-- an entry **without** it is the user's and is left exactly as found, even when its
-  id collides with one we manage — deleting the marker takes an entry out of
-  management permanently.
+## Cleaning up after earlier versions
 
-Entries are written only for providers the user can authenticate to
-(`credentialedProviders`): env keys derived as `<ID>_API_KEY`, with five irregular
-ones mirroring `pi --list-providers`, plus any OAuth entry in the shared `auth.json`.
-Describing all 963 bundled models wrote ~501 KB for models the user could not reach;
-scoped, a typical machine gets ~1.6 KB for one provider.
+Pi Code Gui 0.2.0 through 0.2.8 pre-releases wrote entries into the user's `models.json`. Those
+entries outlive the feature, and Pi reads that file, so `src/managed-models-cleanup.ts` removes
+them at every startup (`cleanupManagedModelsAtStartup`, run from `activate()`; it never throws and
+logs its outcome). The rule:
 
-## Why the catalog is needed at all
-
-rust-pi 0.3.0 ships 94 built-in models and **none of the DeepSeek V4 family**, so the
-merged entries are what make current models reachable. They also carry metadata a
-live `--fetch-models` cannot supply: `contextWindow` clamped to the context budget
-(so auto-compaction fires where the user set it), a real `maxTokens`, and the
-`thinkingLevelMap` / `thinkingFormat` the picker and the binary both need.
+- An entry stamped `_managedBy: "pi-code-gui@<version>"` is ours and goes, unless the user added a
+  key we never write, which makes it theirs (kept whole).
+- A provider's `api` plus `baseUrl` that 0.2.x filled in unstamped goes only when it is a pair we
+  shipped for that provider and every entry in its `models` list is ours and unedited; the
+  provider's other keys stay.
+- Providers and containers our removal empties go too. Everything else is kept value for value.
+- A file that is not strict JSON in the shape of a models file, or is read-only, is never written;
+  the log says why. Nothing to remove means nothing is written.
 
 ## Cross-reference
 
-- [Runtime Selection](runtime-selection.md) — how a session picks its runtime
-- [Session Modes](session-modes.md) — approval mode also lives in this shared home
-- [Runtime Debugging](../operations/runtime-debugging.md) — what to check when a model is missing
+- [PiService](pi-service.md): `catalogProviders`, `activeCostRates`
+- [Runtime Debugging](../operations/runtime-debugging.md): what to check when a model is missing
+- [SDK Resolution](../operations/sdk-resolution.md): where the SDK comes from
+- [Open items](../operations/open-items.md): known gaps in the generated catalog
 
-> **Last updated:** 2026-08-31 — new page. The catalog and agent-home rules were
-> undocumented, and the one place that mentioned them (runtime-selection.md)
-> described the relocated home and linked auth.json that 0.2.0 removed.
+> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): page rewritten for the single
+> in-process runtime; the `models.json` override writer, the catalog-source and the background
+> refresh are gone; the startup cleanup is documented.
+> **Earlier:** 2026-10-18 — Design S (0.2.8): per-model overrides written at a start of the second runtime (removed).
+> **Earlier:** 2026-08-31 — new page: shared agent home rule.

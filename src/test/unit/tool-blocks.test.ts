@@ -130,6 +130,17 @@ test("tool-end marks the card errored when isError is set", () => {
   assert.equal(el.getAttribute("data-status"), "error");
 });
 
+// A failed tool call is an error whatever its text says. The webview used to downgrade a result
+// mentioning a "queued user message" to a neutral one; only an earlier version's second runtime
+// ever produced that text, and on Pi it would hide a real failure.
+test("tool-end keeps a failed call errored even when its text mentions a queued user message", () => {
+  reset();
+  toolsMod.handleToolStart({ toolCallId: "c4q", toolName: "write", args: { path: "q.ts", content: "z" }, fromMessage: false });
+  const el = stateMod.state.currentToolBlocks["c4q"].el;
+  toolsMod.handleToolEnd({ toolCallId: "c4q", toolName: "write", result: { content: [{ type: "text", text: "Skipped due to queued user message" }] }, isError: true });
+  assert.equal(el.getAttribute("data-status"), "error");
+});
+
 test("handleBashOutput falls back to currentToolBlocks when bashBlocks has no entry", () => {
   reset();
   // A tool-start-created bash card with NO bashBlocks entry — this is the path that read

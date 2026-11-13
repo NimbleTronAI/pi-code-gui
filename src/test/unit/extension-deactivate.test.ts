@@ -1,7 +1,7 @@
 // Cover for deactivate(), which disposed sessions while iterating the LIVE `sessions` array.
 // webviewPanel.dispose() fires onDidDispose → handlePanelDispose → removeSession →
-// sessions.splice(), so a for…of over that same array SKIPPED every other session: its Rust
-// subprocess was orphaned, and a TypeScript session's unflushed _rewriteFile() never ran —
+// sessions.splice(), so a for…of over that same array SKIPPED every other session: its
+// unflushed _rewriteFile() never ran —
 // losing conversation entries on an ordinary window close with more than one tab open.
 //
 // extension.ts is imported headlessly via the vscode stub (scripts/vscode-stub.mjs); this is the

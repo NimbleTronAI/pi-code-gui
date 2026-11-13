@@ -3,8 +3,8 @@
 // The option labels go through an inner html`` (which escapes them), and the resulting string
 // was then interpolated into the OUTER html``, which escaped it again. Users saw the raw
 // `<div class="pi-dialog-option" data-index="0"> Option A </div>` as the dialog body with no
-// way to choose. Latent since the 0.1.3 XSS hardening and only surfaced when rust-pi's `ask`
-// tool became the first thing to routinely open a select dialog.
+// way to choose. Latent since the 0.1.3 XSS hardening and only surfaced when an `ask` tool
+// became the first thing to routinely open a select dialog.
 
 import { test, before } from "node:test";
 import assert from "node:assert/strict";

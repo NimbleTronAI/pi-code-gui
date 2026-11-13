@@ -3,13 +3,9 @@
 // (tryHandleCommand) stays in PiService because its actions ARE PiService methods; what's
 // extracted here is the testable logic: which commands the webview should offer, and how a
 // command line splits into name + argument.
-import type { BackendCapabilities } from "./pi-backend.js";
-
 export interface SlashCommand { cmd: string; desc: string; source: string; }
 
-/** The GUI/session commands the extension services directly, available on every runtime
- *  (the pickers + session ops branch internally, so they work from chat regardless of
- *  backend). */
+/** The GUI/session commands the extension services directly. */
 const GUI_COMMANDS: readonly SlashCommand[] = [
   { cmd: "/model", desc: "Switch model", source: "builtin" },
   { cmd: "/new", desc: "Start new session", source: "builtin" },
@@ -20,26 +16,17 @@ const GUI_COMMANDS: readonly SlashCommand[] = [
   { cmd: "/debug", desc: "Dump webview state for troubleshooting", source: "builtin" },
 ];
 
-/** Assemble the full slash-command list the webview autocompletes: the active backend's
- *  agent-provided commands, the always-available GUI/session commands, then the
- *  capability-gated ones. Pure — a function of (agentCommands, capabilities), no runtime
- *  branch (capabilities are data flags). Rust's RPC can't run the gated ones from chat, so
- *  they're advertised only where the backend can service them. */
-export function buildSlashCommandList(agentCommands: SlashCommand[], caps: BackendCapabilities): SlashCommand[] {
-  const result: SlashCommand[] = [...agentCommands, ...GUI_COMMANDS];
-  if (caps.fork) {
-    result.push({ cmd: "/resume", desc: "Resume a previous session", source: "builtin" });
-    result.push({ cmd: "/fork", desc: "Fork session from message", source: "builtin" });
-  }
-  // Capability alone — no identity conjunct. exportHtml is the one flag true for BOTH runtimes,
-  // and the handler now routes through PiBackend.exportToHtml, so the command works on either.
-  if (caps.exportHtml) {
-    result.push({ cmd: "/export", desc: "Export session to HTML", source: "builtin" });
-  }
-  if (caps.toolsPicker) {
-    result.push({ cmd: "/tools", desc: "Select which tools are active", source: "builtin" });
-  }
-  return result;
+/** Assemble the full slash-command list the webview autocompletes: the session's
+ *  agent-provided commands, then the GUI/session commands. Pure. */
+export function buildSlashCommandList(agentCommands: SlashCommand[]): SlashCommand[] {
+  return [
+    ...agentCommands,
+    ...GUI_COMMANDS,
+    { cmd: "/resume", desc: "Resume a previous session", source: "builtin" },
+    { cmd: "/fork", desc: "Fork session from message", source: "builtin" },
+    { cmd: "/export", desc: "Export session to HTML", source: "builtin" },
+    { cmd: "/tools", desc: "Select which tools are active", source: "builtin" },
+  ];
 }
 
 /** Split a slash-command line into its command name (no leading "/") and trimmed argument

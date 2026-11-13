@@ -9,7 +9,7 @@
 // and then CLEARED from settings, so an existing user is fixed on next activation without being
 // asked to re-enter anything.
 //
-// SecretStorage is async but the config seam (SdkDeps/RustDeps `config()`) is synchronous, so
+// SecretStorage is async but the config seam (SdkDeps `config()`) is synchronous, so
 // the keys are loaded into memory once at activation and served synchronously afterwards. They
 // are registered with the logger so they are scrubbed from log/UI output regardless of origin.
 import type * as vscode from "vscode";

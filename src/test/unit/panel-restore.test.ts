@@ -8,36 +8,48 @@ import { planPanelRestore, resolvePanelLocation } from "../../panel-restore.js";
 const exists = () => true;
 const missing = () => false;
 
-test("persisted session file that exists → open on the persisted runtime", () => {
+test("persisted session file that exists → open it", () => {
   assert.deepEqual(
-    planPanelRestore({ sessionFilePath: "/s/a.jsonl", runtime: "rust" }, exists, "typescript"),
-    { action: "open", runtime: "rust", openPath: "/s/a.jsonl" },
+    planPanelRestore({ sessionFilePath: "/s/a.jsonl", runtime: "typescript" }, exists),
+    { action: "open", openPath: "/s/a.jsonl" },
   );
 });
 
 test("persisted session file that is GONE → dispose the revived panel", () => {
-  assert.equal(planPanelRestore({ sessionFilePath: "/s/gone.jsonl", runtime: "typescript" }, missing, "typescript").action, "dispose");
+  assert.equal(planPanelRestore({ sessionFilePath: "/s/gone.jsonl", runtime: "typescript" }, missing).action, "dispose");
 });
 
-test("no session file persisted (nothing hit disk) → fresh session on the persisted runtime", () => {
+test("no session file persisted (nothing hit disk) → fresh session", () => {
+  assert.deepEqual(planPanelRestore({ runtime: "typescript" }, exists), { action: "fresh" });
+});
+
+// An earlier version also saved the runtime a panel ran on. The only value ever written besides
+// "typescript" was its second runtime's name, which this version no longer has: any other value
+// closes the panel, so that session's file is never opened (and rewritten) here.
+test("a panel an earlier version saved for a runtime this version no longer has is closed, its file untouched", () => {
+  let probed = false;
   assert.deepEqual(
-    planPanelRestore({ runtime: "rust" }, exists, "typescript"),
-    { action: "fresh", runtime: "rust" },
+    planPanelRestore({ sessionFilePath: "/s/r.jsonl", runtime: "native" }, () => { probed = true; return true; }),
+    { action: "dispose", retiredSessionFile: "/s/r.jsonl" },
   );
+  assert.equal(probed, false, "the file is not even probed");
+  assert.deepEqual(planPanelRestore({ runtime: "native" }, exists), { action: "dispose" });
+  assert.deepEqual(planPanelRestore({ sessionFilePath: "/s/p.jsonl", runtime: "python" }, exists),
+    { action: "dispose", retiredSessionFile: "/s/p.jsonl" }, "any value but typescript");
 });
 
-test("foreign/legacy state (e.g. the step-0 probe) → fresh session on the default runtime", () => {
-  assert.deepEqual(
-    planPanelRestore({ step0Probe: true, seededAt: "2026-07-03" }, exists, "typescript"),
-    { action: "fresh", runtime: "typescript" },
-  );
+test("state saved without a runtime (this version's shape) restores normally", () => {
+  assert.deepEqual(planPanelRestore({ sessionFilePath: "/s/a.jsonl" }, exists), { action: "open", openPath: "/s/a.jsonl" });
+  assert.deepEqual(planPanelRestore({}, exists), { action: "fresh" });
 });
 
-test("null/undefined/garbage state never throws and falls back to fresh + default", () => {
-  for (const s of [null, undefined, 42, "x", { sessionFilePath: 7, runtime: "python" }]) {
-    const plan = planPanelRestore(s, exists, "rust");
-    assert.equal(plan.action, "fresh");
-    assert.equal(plan.runtime, "rust");
+test("foreign/legacy state (e.g. the step-0 probe) → fresh session", () => {
+  assert.deepEqual(planPanelRestore({ step0Probe: true, seededAt: "2026-07-03" }, exists), { action: "fresh" });
+});
+
+test("null/undefined/garbage state never throws and falls back to fresh", () => {
+  for (const s of [null, undefined, 42, "x", { sessionFilePath: 7 }]) {
+    assert.deepEqual(planPanelRestore(s, exists), { action: "fresh" });
   }
 });
 

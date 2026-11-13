@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
-import type { PiPackageService, InstalledPackage, MarketplacePackage, RustPackageInfo } from "./pi-package-service.js";
-import type { Runtime } from "./types.js";
+import type { PiPackageService, InstalledPackage, MarketplacePackage } from "./pi-package-service.js";
 
 /**
  * Tree data provider for the Pi Packages view.
@@ -78,60 +77,17 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
   private searchQuery = "";
   private updatesAvail = new Map<string, boolean>();
 
-  /** Runtime of the focused session — packages are shown from its perspective. */
-  private focusedRuntime: Runtime = "typescript";
-  /** Sources actually loaded ("active") by the focused runtime. */
+  /** Installed sources Pi sessions actually load ("active"); the rest are "available". */
   private activeSources = new Set<string>();
-  /** Provenance / safety signals per installed source (from `rust-pi info`). */
-  private installedSafety = new Map<string, RustPackageInfo>();
 
   constructor(private pkgService: PiPackageService) {}
 
-  /**
-   * Point the view at a session runtime (called when session focus changes).
-   * Recomputes which installed packages are active under that runtime, so the
-   * same shared catalog is shown "available vs active" for whichever session is
-   * in focus. No-op when the runtime is unchanged (avoids re-probing on every
-   * panel activation).
-   */
-  async setFocusedRuntime(runtime: Runtime): Promise<void> {
-    if (runtime === this.focusedRuntime) { return; } // refreshAll keeps the set current
-    this.focusedRuntime = runtime;
-    await this.recomputeActive();
-    this._onDidChangeTreeData.fire();
-  }
-
-  private runtimeLabel(): string {
-    return this.focusedRuntime === "rust" ? "Rust" : "TypeScript";
-  }
-
   private async recomputeActive(): Promise<void> {
     try {
-      this.activeSources = await this.pkgService.computeActiveSources(this.focusedRuntime, this.installed);
+      this.activeSources = await this.pkgService.computeActiveSources(this.installed);
     } catch {
       this.activeSources = new Set(this.installed.map((p) => p.source));
     }
-  }
-
-  /** Fetch provenance/safety signals for installed packages (background, cached). */
-  private loadSafetyInfo(): void {
-    for (const pkg of this.installed) {
-      if (this.installedSafety.has(pkg.source)) { continue; }
-      this.pkgService.getSafetyInfo(pkg.source).then((info) => {
-        if (info) { this.installedSafety.set(pkg.source, info); this.fireRefresh(); }
-      }).catch(() => {});
-    }
-  }
-
-  /** "risk: low · caps: none · npm" style summary, or "" when no signals known. */
-  private safetySummary(source: string): string {
-    const s = this.installedSafety.get(source);
-    if (!s) { return ""; }
-    const parts: string[] = [];
-    if (s.risk) { parts.push(`risk: ${s.risk}`); }
-    if (s.capabilities) { parts.push(`caps: ${s.capabilities}`); }
-    if (s.source) { parts.push(s.source); }
-    return parts.join("  ·  ");
   }
 
   // ── Refresh ──────────────────────────────────────────
@@ -141,7 +97,6 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
     if (explicitSearch) { this.searchQuery = searchQuery; }
     await this.loadInstalled();
     await this.recomputeActive();
-    this.loadSafetyInfo();
     await this.loadUpdates();
     await this.loadInstalledEnrichment();
     // Re-search when an explicit query was given (including clearing to ""),
@@ -225,14 +180,12 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
         "packages-installed-header",
         n > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.None,
       );
-      // Show which session runtime the active/available state reflects.
-      const activeCount = this.installed.filter((p) => this.activeSources.has(p.source)).length;
-      installedHeader.description = n > 0
-        ? `${this.runtimeLabel()} · ${activeCount}/${n} active`
-        : `${this.runtimeLabel()} session`;
+      if (n > 0) {
+        const activeCount = this.installed.filter((p) => this.activeSources.has(p.source)).length;
+        installedHeader.description = `${activeCount}/${n} active`;
+      }
       installedHeader.tooltip = new vscode.MarkdownString(
-        `Packages are shared across runtimes. **Active** = loaded by the focused **${this.runtimeLabel()}** session; ` +
-        `**available** = installed but not loaded by it.`,
+        "**Active** = loaded by Pi sessions; **available** = installed but not loaded.",
       );
       children.push(installedHeader);
 
@@ -273,8 +226,8 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
         vscode.TreeItemCollapsibleState.Collapsed,
       );
       item.installedData = pkg;
-      // "available, not loaded" calls out packages the focused runtime can't/won't load.
-      const stateNote = active ? "" : `  · not loaded by ${this.runtimeLabel()}`;
+      // "available, not loaded" calls out packages Pi sessions do not load.
+      const stateNote = active ? "" : "  · not loaded";
       item.description = `${pkg.scope}${hasUpdate ? "  ⬆" : ""}${stateNote}`;
       item.iconPath = active
         ? new vscode.ThemeIcon(hasUpdate ? "sync" : pkg.scope === "project" ? "folder-library" : "package")
@@ -445,25 +398,6 @@ export class PiPackagesTreeProvider implements vscode.TreeDataProvider<PkgTreeIt
       hpItem.command = { command: "pi-code-gui.openUrl", title: "Open Homepage", arguments: [mp.homepage] };
       hpItem.tooltip = mp.homepage;
       children.push(hpItem);
-    }
-
-    // ── 4b. Safety / provenance (installed; from rust-pi info) ──
-    if (installed) {
-      const summary = this.safetySummary(installed.source);
-      if (summary) {
-        const safetyItem = new PkgTreeItem(summary, "pkg-overview-safety");
-        safetyItem.iconPath = new vscode.ThemeIcon("shield");
-        const s = this.installedSafety.get(installed.source);
-        safetyItem.tooltip = new vscode.MarkdownString(
-          `**Safety signals** (Rust catalog)\n\n` +
-          (s?.risk ? `- Risk: ${s.risk}\n` : "") +
-          (s?.confidence ? `- Confidence: ${s.confidence}\n` : "") +
-          (s?.capabilities ? `- Capabilities: ${s.capabilities}\n` : "") +
-          (s?.categories ? `- Categories: ${s.categories}\n` : "") +
-          (s?.source ? `- Source: ${s.source}\n` : ""),
-        );
-        children.push(safetyItem);
-      }
     }
 
     // ── 5. Actions ──

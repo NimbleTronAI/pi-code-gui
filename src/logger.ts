@@ -16,12 +16,12 @@ import type * as vscode from "vscode";
 
 // ── Secret redaction ────────────────────────────────────────────────────────
 // The output channel PERSISTS to on-disk log files that users attach to bug reports, and the
-// same strings reach the webview as error cards (extension.ts surfaces init failures, and the
-// Rust child's stderr tail is attached to RPC rejections). Nothing filtered them.
+// same strings reach the webview as error cards (extension.ts surfaces init failures).
+// Nothing filtered them.
 //
 // Two layers: exact values the user configured (registered at read time — the only way to catch
 // a key that doesn't match a known vendor prefix), and shape-based patterns for anything that
-// leaks from a provider error or the subprocess.
+// leaks from a provider error.
 
 const REDACTED = "\u2039redacted\u203a";
 /** Exact secret values to scrub, registered by whoever reads them from config. */
@@ -72,6 +72,11 @@ export function initLogger(channel: vscode.LogOutputChannel): void {
  * late log (e.g. from the process-level unhandledRejection handler) can't throw
  * "Channel has been closed" and turn a benign rejection into a crash.
  */
+/** Reveal the output channel. A warning that tells the user to "check the log" is useless if
+ *  nothing opens it — and a button wired to a command that does not exist is worse, because it
+ *  fails silently. This goes through the channel we already own. */
+export function revealLog(): void { _channel?.show(true); }
+
 export function disposeLogger(): void {
   _disposed = true;
   _channel = null;

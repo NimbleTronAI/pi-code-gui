@@ -1,16 +1,14 @@
-// SdkService — owns the in-process TypeScript SDK runtime (@earendil-works/
-// pi-coding-agent), mirroring how RustService owns the out-of-process Rust one.
+// SdkService — owns the in-process Pi SDK runtime (@earendil-works/pi-coding-agent).
 //
-// Extracted from PiService (the audits' top structural finding: the Rust path was
-// cleanly extracted, the TS path never was). SdkService owns the SDK *plumbing* —
+// Extracted from PiService (the audits' top structural finding). SdkService owns the SDK
+// *plumbing* —
 // module resolution/loading, pi-ai version adaptation, auth/registry/settings,
 // model selection, ResourceLoader, tools, SessionManager, and createAgentSession
-// (the old init Steps 1–9). PiService remains the runtime-agnostic orchestrator:
+// (the old init Steps 1–9). PiService remains the orchestrator:
 // it applies the returned shared state and wires the session to the UI (event
-// subscription, extension binding, history replay — the old Steps 10–12), and all
-// per-method runtime branching still lives there, reaching the SDK objects through
-// thin getters over this service.
-// This module is vscode-free (like RustService): every environment dependency —
+// subscription, extension binding, history replay — the old Steps 10–12), reaching the SDK
+// objects through thin getters over this service.
+// This module is vscode-free: every environment dependency —
 // config reads, workspace cwd, dynamic module import, filesystem, the outdated-SDK
 // UI nudge — is injected through `SdkDeps`, so the whole resolve→load→session init
 // sequence is driven headlessly in unit tests (see sdk-service.test.ts). The real
@@ -20,28 +18,31 @@ import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
 import { piDebug, piWarn } from "./logger.js";
 import { piAiVersionNotice } from "./version-compare.js";
-import { buildRuntimeIdentityPrompt } from "./runtime-identity.js";
-import type { PlanMode, ApprovalMode } from "./types.js";
 import bundledRegistry from "./model-registry.generated.json";
 import { clampThinkingLevel, reconcileThinkingCapability, findCatalogModelCost, type ThinkingModel } from "./model-catalog.js";
 import { humanizeProviderError } from "./extension-errors.js";
 import type { PiServiceEvent } from "./types.js";
-import { backendCapabilityDefaults, type BackendCapabilities, type BackendUsage, type PiBackend } from "./pi-backend.js";
+import type { BackendUsage, PiBackend, ReloadOutcome } from "./pi-backend.js";
 
 /** The bundled pi-ai catalog providers map shape (a subset of
  *  model-registry.generated.json) — reasoning + thinkingLevelMap + cost per model. */
 export type CatalogProviders = Record<string, { models: Array<ThinkingModel & { id: string; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> }>;
 
-/** The pi-ai SDK version this extension targets (the 0.80 model-API redesign:
- *  createModels()/providers-all). Below this we still run via a legacy fallback,
- *  but warn the user once per host to update. */
-const SUPPORTED_PI_AI_VERSION = "0.80.0";
+/** The oldest pi-ai SDK a Pi session can start on. initialize() Step 3 needs
+ *  SDK.ModelRuntime, and pi-coding-agent exports ModelRuntime only from 0.80.8 (the pi-ai check
+ *  is a best-effort early warning: caret ranges can nest a newer pi-ai under an old
+ *  pi-coding-agent; Step 3 feature-detects ModelRuntime for the hard error).
+ *  Below this the session cannot start; the user is warned once per host to update. */
+const SUPPORTED_PI_AI_VERSION = "0.80.8";
+
+/** The oldest pi-coding-agent that exports ModelRuntime (absent from 0.80.7 and 0.79.x). */
+const MIN_CODING_AGENT_VERSION = "0.80.8";
 
 /** The pi-ai version this build of the extension is actually current with — taken from the
  *  bundled catalog, which is generated from it. Self-maintaining: every `pnpm run
  *  gen:model-registry` moves this target, so shipping a fresher catalog automatically starts
  *  nudging users whose SDK predates it. That matters because the catalog is what the extension
- *  hands the backends: models, thinking tiers and PRICING it carries can outrun an older SDK. */
+ *  hands the SDK: models, thinking tiers and PRICING it carries can outrun an older SDK. */
 const TARGET_PI_AI_VERSION = (bundledRegistry as { piAiVersion?: string }).piAiVersion ?? SUPPORTED_PI_AI_VERSION;
 let _piAiVersionWarned = false;
 
@@ -51,7 +52,7 @@ let _piAiVersionWarned = false;
  *  protocol: `C:\\Users\\...\\dist\\index.js` fails with "Only URLs with a scheme in: file,
  *  data, node, and electron are supported ... Received protocol 'c:'". Every SDK module this
  *  extension loads is addressed by an absolute path built with path.join, so on Windows the
- *  TypeScript runtime could not start at all (gh #71).
+ *  extension could not start a session at all (gh #71).
  *
  *  pathToFileURL is the standard-library answer and handles drive letters, UNC paths and
  *  percent-encoding correctly — none of which a string concat of "file://" gets right. Applied
@@ -114,16 +115,12 @@ export interface PiAi {
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ── System prompt / context files / prompt templates ──────
-// TS-SDK-only resources (they reference the vscode_* bridge tools, which exist
-// only on this runtime), assembled into the SDK's DefaultResourceLoader.
+// SDK resources (they reference the vscode_* bridge tools), assembled into the SDK's
+// DefaultResourceLoader.
 
 /** Build the VS Code-aware system prompt */
-function buildSystemPrompt(identity?: { provider: string; id: string } | null): string {
-  // The identity block goes FIRST: it is the one fact a session cannot work out for itself,
-  // and the one a reviewer is most likely to get wrong (see runtime-identity.ts).
-  return `${buildRuntimeIdentityPrompt({ runtime: "typescript", model: identity })}
-
-You are a coding assistant running inside VS Code through the Pi Code Gui extension.
+function buildSystemPrompt(): string {
+  return `You are a coding assistant running inside VS Code through the Pi Code Gui extension.
 You have access to VS Code editor state through bridge tools (prefixed with vscode_)
 when they are enabled.
 
@@ -291,7 +288,7 @@ export interface SdkConfig {
 }
 
 /** Environment dependencies SdkService needs, injected so its init/handshake is
- *  headlessly testable (mirrors RustDeps). The real vscode-backed impl lives in
+ *  headlessly testable. The real vscode-backed impl lives in
  *  PiService.makeSdkDeps(); tests supply stubs. */
 export interface SdkDeps {
   workspaceCwd(): string;
@@ -301,16 +298,16 @@ export interface SdkDeps {
   importModule(absPath: string): Promise<any>;
   fileExists(p: string): boolean;
   readFileUtf8(p: string): Promise<string>;
-  /** Surface the "installed pi-ai is older than supported" nudge (UI; no-op in tests). */
-  /** `belowFloor` distinguishes "we fall back to a legacy code path" (a real compatibility
-   *  problem) from "a newer tested version exists" (a nudge). */
+  /** Surface the "installed pi-ai is older than supported" nudge (UI; no-op in tests).
+   *  `belowFloor` distinguishes "the Pi SDK cannot start" (breakage) from "a
+   *  newer tested version exists" (a nudge). */
   notifyOutdatedPiAi(installed: string, supported: string, belowFloor: boolean): void;
   /** Build the vscode_* bridge tools (keeps the vscode-coupled bridge-tools module
    *  out of this file, so SdkService stays headlessly importable). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   buildBridgeTools(defineTool: Function, typebox: any): any[];
-  /** The bundled pi-ai catalog providers (authoritative capability/cost source).
-   *  Injected rather than imported so this module needs no JSON import (headless). */
+  /** The model catalog (authoritative capability/cost source): the bundled registry. Injected
+   *  rather than imported so tests can supply their own. */
   catalogProviders(): CatalogProviders | undefined;
   /** Ask the user whether a pi extension may run a custom message renderer (arbitrary JS) in
    *  the webview. Remembered per custom type; see the TRUST BOUNDARY note at the call site. */
@@ -321,8 +318,6 @@ export interface SdkDeps {
 export interface SdkInitOutcome {
   success: boolean;
   error?: string;
-  errorKind?: string;
-  warning?: string;
   /** Final active model identity (after default/resume/reconcile overrides). */
   model?: { id?: string; name?: string; provider?: string };
   /** Models for /model cycling (registry-available, or built-in fallbacks). */
@@ -356,32 +351,19 @@ export class SdkService implements PiBackend {
 
   constructor(private readonly host: SdkHost, private readonly deps: SdkDeps) {}
 
-  /** What the in-process TypeScript runtime can do — the full feature surface (bridge
-   *  tools, interactive cards, /tools, fork, reload, export, rename). PiService reads
-   *  these instead of hard-coding `_backendKind === "typescript"` gates. The SDK handles
-   *  thinking per-provider in-process, so the level is always "live"; and PiService
-   *  intercepts builtin slash commands before session.prompt (as the CLI does). */
-  // ── Session modes: the SDK has neither plan mode nor an approval posture. Inert rather
-  //    than absent, so PiService can call the seam without narrowing to a concrete class;
-  //    capabilities.sessionModes is what gates the UI.
-  get planMode(): PlanMode { return "off"; }
-  get approvalMode(): ApprovalMode { return "always-ask"; }
-  get currentSessionPath(): string | null { return null; }
-  async setPlanMode(_on: boolean): Promise<PlanMode> { return "off"; }
   async setSessionName(name: string): Promise<boolean> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sess = (this as any).sessionManager ?? (this as any).session;
-    if (typeof sess?.setSessionName !== "function") { return false; }
-    sess.setSessionName(name);
-    return true;
-  }
-  async approvePlan(): Promise<string | null> { return null; }
-  async rejectPlan(): Promise<boolean> { return false; }
-
-  get capabilities(): BackendCapabilities {
-    // All flags are the runtime default for TypeScript (everything on; thinking always live in
-    // process). Single source of truth — see backendCapabilityDefaults.
-    return backendCapabilityDefaults("typescript");
+    // The AgentSession names the session: it appends the session_info entry (which Past Sessions
+    // reads) and emits session_info_changed. Pi's SessionManager has no setSessionName — asking
+    // it first returned "no such method" and silently saved nothing (59a7226 to 0.2.8).
+    if (typeof this.session?.setSessionName === "function") {
+      this.session.setSessionName(name);
+      return true;
+    }
+    if (typeof this.sessionManager?.appendSessionInfo === "function") {
+      this.sessionManager.appendSessionInfo(name);
+      return true;
+    }
+    return false;
   }
 
   /** Resolve, load, and wire the TypeScript SDK up to a live agent session
@@ -434,8 +416,9 @@ export class SdkService implements PiBackend {
     // so on a 0.80+ SDK every AI.getModel(...) threw "is not a function". When the
     // root entrypoint lacks getModel, adapt AI to the durable providers/all
     // entrypoint (getBuiltinModel + a builtinModels() instance) — NOT the
-    // deprecated /compat surface, which upstream will delete. Purely additive: on
-    // 0.79.x getModel/complete are already present and this branch is skipped.
+    // deprecated /compat surface, which upstream will delete. Purely additive: an SDK whose
+    // root still has getModel skips this branch (below the 0.80.8 floor the runtime fails at
+    // Step 3 anyway).
     await this.warnIfPiAiOutdated();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof (this.AI as any).getModel !== "function") {
@@ -452,7 +435,7 @@ export class SdkService implements PiBackend {
         } as PiAi;
         piDebug("pi-ai >=0.80 detected — adapted AI to the providers/all entrypoint (getBuiltinModel + builtinModels()).");
       } catch (e: unknown) {
-        return { success: false, error: `pi-ai >=0.80 is installed but its providers/all entrypoint could not load (${e instanceof Error ? e.message : String(e)}). Update @earendil-works/pi-coding-agent, or pin it to a 0.79.x release.` };
+        return { success: false, error: `pi-ai >=0.80 is installed but its providers/all entrypoint could not load (${e instanceof Error ? e.message : String(e)}). Update @earendil-works/pi-coding-agent (needs pi-ai ${SUPPORTED_PI_AI_VERSION}+).` };
       }
     }
 
@@ -477,6 +460,11 @@ export class SdkService implements PiBackend {
     // the single async ModelRuntime (0.80.8 CHANGELOG "Unified model runtime and provider
     // authentication"). It owns credentials (auth.json), the dynamic catalog, and request
     // auth; create it once and pass it to createAgentSession via the `modelRuntime` option.
+    // Feature-detect: the pi-ai floor check above is only an early warning (a caret range can nest
+    // a newer pi-ai under an old pi-coding-agent), so this is the hard, actionable stop.
+    if (typeof SDK.ModelRuntime?.create !== "function") {
+      return { success: false, error: `The installed @earendil-works/pi-coding-agent is too old for this extension (needs ${MIN_CODING_AGENT_VERSION}+, which provides ModelRuntime). Update it: npm install -g @earendil-works/pi-coding-agent` };
+    }
     try {
       this.modelRuntime = await SDK.ModelRuntime.create();
 
@@ -568,11 +556,7 @@ export class SdkService implements PiBackend {
         cwd,
         agentDir: getAgentDir ? getAgentDir() : undefined,
         // Custom system prompt with VS Code context
-        // Resolved lazily: systemPromptOverride is called per turn, so a model switched
-        // mid-session is reflected without rebuilding the session.
-        systemPromptOverride: () => buildSystemPrompt(
-          this._model?.provider && this._model?.id ? { provider: this._model.provider, id: this._model.id } : null,
-        ),
+        systemPromptOverride: () => buildSystemPrompt(),
         // Prevent DefaultResourceLoader from appending default append files
         appendSystemPromptOverride: () => [],
         // Inject virtual context files with project-specific guidelines
@@ -690,7 +674,7 @@ export class SdkService implements PiBackend {
       piDebug(`Skipping session restore (fresh=${fresh}, hasSessionManager=${!!this.sessionManager})`);
     }
 
-    // Reconcile the model's thinking capability against the authoritative bundled
+    // Reconcile the model's thinking capability against the authoritative model
     // catalog FIRST, so a custom ~/.pi/agent/models.json that omits `reasoning` can't
     // make a known-reasoning model look non-reasoning. Upgrade resumeModel IN PLACE so
     // both our clamp below AND the SDK's own clamp (createAgentSession → sdk.js
@@ -790,9 +774,9 @@ export class SdkService implements PiBackend {
     };
   }
 
-  /** Once-per-host nudge when the installed pi-ai predates the version this
-   *  extension targets. We still run on older SDKs (legacy getModel path), but the
-   *  0.80 model-API redesign is what we're built against, so nudge the user. */
+  /** Once-per-host notice when the installed pi-ai predates this build: a warning below the
+   *  floor (a Pi session cannot start there), a nudge when merely behind the target
+   *  (the pi-ai version the bundled catalog was generated from). */
   private async warnIfPiAiOutdated(): Promise<void> {
     if (_piAiVersionWarned || !this.piRoot) { return; }
     try {
@@ -813,10 +797,8 @@ export class SdkService implements PiBackend {
   }
 
   // ── PiBackend primitive operations (delegated from PiService) ──
-  // The TS-runtime halves of the per-method runtime split: the raw session
-  // operations, with orchestration + UI (slash interception, vision auto-switch,
-  // pickers, status formatting, cost policy) staying in PiService. RustService
-  // implements the same PiBackend surface for the out-of-process runtime.
+  // The raw session operations, with orchestration + UI (slash interception, vision
+  // auto-switch, pickers, status formatting, cost policy) staying in PiService.
   /* eslint-disable @typescript-eslint/no-explicit-any -- dynamically typed SDK session objects */
 
   /** Send a user turn / steer / follow-up on the in-process session. Slash-command
@@ -876,9 +858,7 @@ export class SdkService implements PiBackend {
     // Re-apply the context budget, exactly as initialize() does. Without this the budget was a
     // one-shot: it governed the model chosen at startup and then silently stopped applying the
     // moment the user switched models mid-session, because the SDK reads model.contextWindow for
-    // BOTH the auto-compaction trigger and the context-% denominator. The Rust path has no such
-    // gap — applyState re-clamps on every get_state — so the same action produced a clamped
-    // readout on one runtime and an unclamped one on the other.
+    // BOTH the auto-compaction trigger and the context-% denominator.
     const budget = this.deps.config().contextBudget;
     if (budget > 0) { model = { ...model, contextWindow: budget }; }
     await this.session.setModel(model);
@@ -892,7 +872,7 @@ export class SdkService implements PiBackend {
 
   /** Set the thinking level on the session. The SDK records the CLAMPED effective
    *  level itself (appendThinkingLevelChange); we echo the requested level back for
-   *  PiService's shared state (the TS transport always transmits it). */
+   *  PiService's shared state (the SDK always transmits it). */
   async setThinkingLevel(level: string): Promise<string> {
     if (!this.session) { piWarn(`setThinkingLevel("${level}") ignored: session not initialized`); return level; }
     this.session.setThinkingLevel(level);
@@ -915,11 +895,23 @@ export class SdkService implements PiBackend {
   setStreaming(v: boolean): void { this._isStreaming = v; }
 
   /** Toggle auto-compaction on the session (if the SDK build exposes the setter). */
-  /** The SDK session reloads extensions/skills/context files in place. */
-  async reloadContext(): Promise<boolean> {
-    if (!this.session?.reload) { return false; }
-    await this.session.reload();
-    return true;
+  /** The SDK session reloads extensions/skills/context files in place. Since pi 1.5.1 (#9222)
+   *  `reload()` throws while a response or compaction runs; check first and report which, so the
+   *  caller can say "wait" instead of showing a failure. A turn that starts between the check
+   *  and the call throws the same messages, which map to the same outcomes. */
+  async reloadContext(): Promise<ReloadOutcome> {
+    if (!this.session?.reload) { return "unsupported"; }
+    if (this.session.isStreaming) { return "busy-response"; }
+    if (this.session.isCompacting) { return "busy-compaction"; }
+    try {
+      await this.session.reload();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/^Wait for the current response/.test(msg)) { return "busy-response"; }
+      if (/^Wait for compaction/.test(msg)) { return "busy-compaction"; }
+      throw e;
+    }
+    return "reloaded";
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
@@ -928,8 +920,7 @@ export class SdkService implements PiBackend {
     }
   }
 
-  /** Auto-retry has no in-process SDK session toggle — PiService tracks the flag
-   *  locally. Kept for PiBackend symmetry (a no-op on the TS runtime). */
+  /** Push the auto-retry toggle to the session (PiService also tracks the flag locally). */
   async setAutoRetry(enabled: boolean): Promise<void> {
     // The SDK DOES expose this (AgentSession.setAutoRetryEnabled → SettingsManager.setRetryEnabled);
     // it simply was never wired, so the settings toggle flipped an extension-local flag, told the
@@ -943,8 +934,7 @@ export class SdkService implements PiBackend {
   /** The session's ACTUAL settings, for seeding the UI at init.
    *
    *  PiService previously hardcoded both to `true` and never read them back, so a resumed
-   *  session whose settings differed showed toggles that disagreed with its own behaviour. The
-   *  Rust path never had this gap — applyState syncs both from get_state. Undefined when the
+   *  session whose settings differed showed toggles that disagreed with its own behaviour. Undefined when the
    *  SDK predates the getters, so the caller keeps its default rather than inventing one. */
   readSessionSettings(): { autoCompaction?: boolean; autoRetry?: boolean } {
     const s = this.session;
@@ -955,40 +945,46 @@ export class SdkService implements PiBackend {
     };
   }
 
-  /** Cumulative token/cost usage from the session manager's assistant entries, plus
-   *  live context %/window. Cost here is the SDK's own per-turn cost; the catalog-rate
-   *  fallback + costKnown policy stay in PiService.getUsageStats. */
+  /** Cumulative token/cost usage from the session's entries, plus live context %/window. Counts
+   *  the same entries Pi's own `getSessionStats()` does: assistant turns, cache warm-ups
+   *  ("usage" entries, on by default since pi 1.5.1), compaction and branch summaries, and tool
+   *  results that carry usage. Cost is the SDK's own per-record total; `costFromProvider` says
+   *  whether those totals were billed by the provider (pi-ai 1.5.0 `totalFromProvider`). The
+   *  costKnown policy stays in computeUsageStats. */
   getUsage(): BackendUsage {
-    if (!this.sessionManager) { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPercent: null, contextWindow: 0 }; }
+    if (!this.sessionManager) { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costFromProvider: "none", contextPercent: null, contextWindow: 0 }; }
     const entries = this.sessionManager.getEntries();
     let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+    let billed = 0, estimated = 0;
     for (const entry of entries) {
-      if (entry.type === "message" && entry.message?.role === "assistant") {
-        const usage = entry.message.usage;
-        if (usage) {
-          input += usage.input ?? 0;
-          output += usage.output ?? 0;
-          cacheRead += usage.cacheRead ?? 0;
-          cacheWrite += usage.cacheWrite ?? 0;
-          cost += usage.cost?.total ?? 0;
-        }
-      }
+      const usage = usageOf(entry);
+      if (!usage) { continue; }
+      input += usage.input ?? 0;
+      output += usage.output ?? 0;
+      cacheRead += usage.cacheRead ?? 0;
+      cacheWrite += usage.cacheWrite ?? 0;
+      cost += usage.cost?.total ?? 0;
+      // A record with no tokens and no cost (an errored turn) says nothing about billing.
+      const counts = (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) > 0 || (usage.cost?.total ?? 0) > 0;
+      if (!counts) { continue; }
+      if (usage.cost?.totalFromProvider === true) { billed++; } else { estimated++; }
     }
+    const costFromProvider = billed > 0 && estimated === 0 ? "all" : billed > 0 ? "some" : "none";
     let contextPercent: number | null = null;
     let contextWindow = 0;
     try {
       const contextUsage = this.session?.getContextUsage?.();
       if (contextUsage) { contextPercent = contextUsage.percent; contextWindow = contextUsage.contextWindow; }
     } catch (e: unknown) { piWarn(`Non-critical failure (ignored): ${e instanceof Error ? e.message : String(e)}`); }
-    return { input, output, cacheRead, cacheWrite, cost, contextPercent, contextWindow };
+    return { input, output, cacheRead, cacheWrite, cost, costFromProvider, contextPercent, contextWindow };
   }
 
   /** Session entries for the Open Sessions tree (display only). */
   getEntries(): any[] { return this.sessionManager?.getEntries?.() ?? []; }
 
-  /** The TS runtime's own slash commands: extension-registered commands (introspected
-   *  from the session's extension runner) + the builtin VS Code prompt templates. Rust
-   *  supplies its equivalents over RPC; PiService appends the shared GUI/capability set. */
+  /** The session's own slash commands: extension-registered commands (introspected
+   *  from the session's extension runner) + the builtin VS Code prompt templates. PiService
+   *  appends the GUI/session commands. */
   getSlashCommands(): Array<{ cmd: string; desc: string; source: string }> {
     const result: Array<{ cmd: string; desc: string; source: string }> = [];
     try {
@@ -1003,7 +999,8 @@ export class SdkService implements PiBackend {
         }
       }
     } catch (e: unknown) { piWarn(`Best-effort failure: ${e instanceof Error ? e.message : String(e)}`); }
-    // Builtin prompt templates are TS-SDK-registered (Rust supplies its own via get_commands).
+    // Builtin prompt templates registered by the extension.
+
     result.push(
       { cmd: "/fix-diagnostics", desc: "Fix all diagnostics in open file", source: "builtin" },
       { cmd: "/explain-code", desc: "Explain the code at current cursor position", source: "builtin" },
@@ -1064,4 +1061,16 @@ export class SdkService implements PiBackend {
     this.AI = null;
     this.piRoot = null;
   }
+}
+
+/** The usage record an entry carries, for the entry kinds Pi's getSessionStats() counts. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function usageOf(entry: any): any {
+  if (entry?.type === "usage") { return entry.usage; }
+  if (entry?.type === "compaction" || entry?.type === "branch_summary") { return entry.usage; }
+  if (entry?.type === "message") {
+    const role = entry.message?.role;
+    if (role === "assistant" || role === "toolResult") { return entry.message.usage; }
+  }
+  return undefined;
 }
