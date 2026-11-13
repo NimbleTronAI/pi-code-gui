@@ -124,3 +124,4 @@ pass performed), `archive` (page moved to archive).
 ## [2026-11-12] update | Open items W1: watch pi-durable (founder: watch, don't build); README DeepSeek gotcha states the reason generically
 ## [2026-11-12] update | Session names saved again: SdkService.setSessionName goes through AgentSession.setSessionName (fallback SessionManager.appendSessionInfo); the SessionManager has no setSessionName, so names went unsaved from 59a7226 (0.2.1) o
 ## [2026-11-12] update | Review fixes from the Pi session's analysis: closed-tab message names Rust Pi and points at the README; tdd.md count 455/40; pi-backend.md line count dropped; status page lists every justified acceptance-grep hit
+## [2026-11-13] update | Marketplace: npm search 5xx errors say the search is temporarily unavailable (npmSearchFailureText in pi-package-filter.ts)

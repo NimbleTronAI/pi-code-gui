@@ -45,7 +45,7 @@ Decision logic, no `vscode` import, directly unit-tested:
 | `panel-restore.ts` | reviving a panel from serialized state | `panel serializer` |
 | `version-compare.ts` | semver-ish compare; which SDK notice to show | `sdk-service.ts` |
 | `agent-events.ts` | agent event → `PiServiceEvent` translation | `PiService.handleAgentEvent` |
-| `pi-package-filter.ts` | is this npm package a Pi extension? | package tree |
+| `pi-package-filter.ts` | is this npm package a Pi extension? what does a failed npm search say? | package tree |
 | `pi-package-path.ts` | resolving the bundled SDK package path | `pi-service.ts` |
 | `managed-models-cleanup.ts` | which `models.json` entries earlier versions wrote, and whether the file is safe to rewrite (pure apart from fs; run at startup) | new in 0.2.8 |
 | `bridge-limits.ts` | output-size guards for bridge tools | `bridge-tools.ts` |
@@ -79,6 +79,7 @@ vs large files. It is not application code; edit freely.
 - [PiBackend](pi-backend.md) — the SDK seam
 - [TDD discipline](../discipline/tdd.md) — how these are tested
 
-> **Last updated:** 2026-11-12 — Second runtime removed (0.2.8): dropped the second runtime's modules, runtime-pick, runtime-identity, rpc-behavior and session-format rows.
+> **Last updated:** 2026-11-13 — `pi-package-filter.ts` also words failed npm searches (`npmSearchFailureText`: 429 and 5xx say try again).
+> **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): dropped the second runtime's modules, runtime-pick, runtime-identity, rpc-behavior and session-format rows.
 > **Earlier:** 2026-08-05 — new page. 29 modules had no mention anywhere in the
 > wiki; this indexes all of them and records the extraction pattern they follow.

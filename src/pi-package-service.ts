@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { importSpecifierFor } from "./sdk-service.js";
 import { resolvePiPackagePath } from "./pi-service.js";
 import { resolveWorkspaceCwd } from "./workspace.js";
-import { isPiMarketplacePackage } from "./pi-package-filter.js";
+import { isPiMarketplacePackage, npmSearchFailureText } from "./pi-package-filter.js";
 
 /**
  * Wraps the Pi SDK's DefaultPackageManager for use in the VS Code extension.
@@ -244,11 +244,8 @@ export class PiPackageService {
         signal: AbortSignal.timeout(10000),
       });
 
-      if (response.status === 429) {
-        throw new Error("Npm rate limit — please wait a few seconds and try again.");
-      }
       if (!response.ok) {
-        throw new Error(`npm search returned ${response.status}`);
+        throw new Error(npmSearchFailureText(response.status));
       }
 
  

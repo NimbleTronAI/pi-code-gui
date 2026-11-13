@@ -10,6 +10,7 @@
 - **Model catalog refreshed to pi-ai 1.5.2**, and tested against pi-coding-agent 1.5.2.
 - **`/reload` and Reload Context while Pi is responding or compacting** now tell you to wait and reload nothing. Pi 1.5.x refuses a reload at those times; run it again when Pi is idle.
 - **The session cost and token counts now include everything Pi records**: cache warm-ups (on by default since Pi 1.5.1), compaction and summaries, as well as model turns. Hover the cost to see whether it is the provider's bill or an estimate from catalog prices. A cost billed by the provider (OpenRouter today) is shown even for models with no catalog price, where it used to show `$??`. DeepSeek still shows `$??`; hover it for DeepSeek's peak and off-peak hours and why the figure is withheld.
+- **When npm's package search is down** (HTTP 5xx), the Marketplace says it is temporarily unavailable and to try again in a minute, instead of showing a bare status code.
 
 ### Fixed
 - **Session names weren't saved** (since 0.2.1), so Past Sessions showed a session's first message instead of the name on its tab, and a reopened session got a new name. Names are saved again; a session from the affected versions gets its name saved the next time you open it.
