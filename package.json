@@ -4,7 +4,7 @@
   "author": "Jack Noppé",
   "displayName": "Pi Code Gui",
   "description": "Native VS Code editor experience for Pi coding agent",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "license": "MIT",
   "sponsor": {
     "url": "https://github.com/sponsors/NimbleTronAI"
@@ -504,7 +504,7 @@
     "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.12.0",
-    "jsdom": "^30.1.2",
+    "jsdom": "^31.0.1",
     "npm-run-all2": "^9.0.3",
     "ovsx": "^1.2.0",
     "typescript": "^5.9.3",
