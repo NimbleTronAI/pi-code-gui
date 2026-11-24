@@ -65,7 +65,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
       - run: corepack enable
       # check-currency.mjs also runs the supply-chain scan over installed packages, so the
       # dependencies have to be present. A CRITICAL finding is worth an issue on the same footing
@@ -109,7 +109,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
 
@@ -178,7 +178,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       # Installed the way users install it. The extension finds it through PATH, as it would on a
@@ -244,7 +244,7 @@ jobs:
           fetch-depth: 0   # the read-only GITHUB_TOKEN stays for git fetch; nothing is pushed with it
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
       - uses: actions/download-artifact@v8
         with:
           pattern: prepared-*
@@ -315,7 +315,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
       - uses: actions/download-artifact@v8
         with:
           name: currency-report
