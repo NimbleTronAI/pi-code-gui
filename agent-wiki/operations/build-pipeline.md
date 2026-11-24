@@ -100,6 +100,13 @@ workflow trigger on the same push and run concurrently, so the publish can finis
 before CI reports. Both publish jobs now run it themselves, making publish a superset
 of CI rather than a race.
 
+**"Has this version been released?" is asked of the remote.** `release.yml` releases when the
+version's tag does not exist yet, so a refused release is retried by the next push touching
+`package.json`. It checked with a local `git rev-parse`, but `actions/checkout` with a
+`fetch-depth` fetches no tags, so it never found one: every push touching `package.json`
+without a version bump re-attempted the already-released version. #100 did that for v0.2.8 and
+was stopped by the stale-catalog gate. It now uses `git ls-remote --tags origin`.
+
 **Bot PRs that release.** Two kinds of automated PR bump the version, so merging one ships
 it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds the bump) and
 the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and adds a
@@ -107,7 +114,8 @@ CHANGELOG line itself. Both push with tokens whose pushes trigger no workflows: 
 own PR events start CI as usual, and the upstream PRs start `ci.yml` through
 `workflow_dispatch`. See [Upstream bump PRs](upstream-bump-prs.md).
 
-> **Last updated:** 2026-11-24 — bot PRs that release: the upstream-currency PRs, and
-> `ci.yml` gained `workflow_dispatch` for them.
+> **Last updated:** 2026-11-24 — release.yml checks the tag on the remote (shallow checkouts
+> have no tags); bot PRs that release: the upstream-currency PRs, and `ci.yml` gained
+> `workflow_dispatch` for them.
 > **Earlier:** 2026-08-31 — documented the release/publish chain, the tag-ref
 > requirement, the absent approval gate, and the publish-time supply-chain scan.
