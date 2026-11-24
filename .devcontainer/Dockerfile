@@ -15,7 +15,7 @@
 # release (minor/patch auto-merge; they ship nothing, so no release follows) and
 # every rebuild gets the same image. 5.2.7-24-trixie had the same digest as
 # 24-trixie when pinned (2026-11-24).
-FROM mcr.microsoft.com/devcontainers/typescript-node:5.2.7-24-trixie
+FROM mcr.microsoft.com/devcontainers/typescript-node:5-26-trixie
 
 ARG USERNAME=node
 
