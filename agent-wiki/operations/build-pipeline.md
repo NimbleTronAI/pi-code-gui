@@ -100,5 +100,14 @@ workflow trigger on the same push and run concurrently, so the publish can finis
 before CI reports. Both publish jobs now run it themselves, making publish a superset
 of CI rather than a race.
 
-> **Last updated:** 2026-08-31 — documented the release/publish chain, the tag-ref
+**Bot PRs that release.** Two kinds of automated PR bump the version, so merging one ships
+it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds the bump) and
+the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and adds a
+CHANGELOG line itself. Both push with tokens whose pushes trigger no workflows: Dependabot's
+own PR events start CI as usual, and the upstream PRs start `ci.yml` through
+`workflow_dispatch`. See [Upstream bump PRs](upstream-bump-prs.md).
+
+> **Last updated:** 2026-11-24 — bot PRs that release: the upstream-currency PRs, and
+> `ci.yml` gained `workflow_dispatch` for them.
+> **Earlier:** 2026-08-31 — documented the release/publish chain, the tag-ref
 > requirement, the absent approval gate, and the publish-time supply-chain scan.

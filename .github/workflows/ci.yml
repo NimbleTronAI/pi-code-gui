@@ -7,6 +7,10 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # The upstream-bump PRs (upstream-currency.yml) push with the workflow's GITHUB_TOKEN, and
+  # GitHub does not let those pushes trigger workflows. That workflow starts this one on the
+  # branch instead; workflow_dispatch is the documented exception.
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -26,7 +26,7 @@ The project runs two tiers of tests:
 - **Headless unit tests (primary, default).** `pnpm run test:unit` →
   `compile-tests` (tsc → `out/`), then `compile-tests:webview` (compiles
   `src/webview` + `src/shared` to `out/` via `tsconfig.test-webview.json` for the
-  jsdom seam), then `node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js` (`vscode` is stubbed). The Node built-in test
+  jsdom seam), then `node --import ./scripts/vscode-register.mjs --test out/test/unit/*.test.js scripts/test/*.test.mjs` (`vscode` is stubbed; `scripts/test/` holds the tests for the pure parts of the repo's own `.mjs` scripts, such as the upstream-bump PR helpers). The Node built-in test
   runner (`node:test`), no VS Code; almost all are pure and DOM-free, the lone
   exception being the jsdom dispatch seam (see below). As of 2026-11, there are
   **about 455 tests across 40 files** in `src/test/unit/` (agent-events, sdk-service,
@@ -99,7 +99,8 @@ silently add full module coverage beyond the scope of the change.
 - [Think Before Acting](think-before-acting.md) — the plan phase before TDD
 - [Verify, Don't Assume](verify-dont-assume.md) — what "tests pass" actually means
 
-> **Last updated:** 2026-11-12 — count corrected to about 455 tests across 40 files (0.2.8, after the /reload, cost, retry-card and session-name fixes).
+> **Last updated:** 2026-11-24 — `test:unit` also runs `scripts/test/*.test.mjs` (registry diff, upstream-bump PR helpers).
+> **Earlier:** 2026-11-12 — count corrected to about 455 tests across 40 files (0.2.8, after the /reload, cost, retry-card and session-name fixes).
 > **Earlier:** 2026-11-12 — Second runtime removed (0.2.8): the second runtime's init and transport tests and precedents are gone.
 > **Earlier:** 2026-07-21 — count at 461 tests across 47 files (adversarial-review remediation: security, activation, lifecycle, perf)
 > **Earlier:** 2026-06-25 — count to 199 tests across 18 files (added `extension-errors` — runtime-error classifiers)

@@ -38,6 +38,7 @@ reference; follow the links for depth.
 
 - [Batch 0.2.8 — status](operations/batch-0.2.8-status.md) — what 0.2.8 ships, what was proven, what was deferred
 - [Open items](operations/open-items.md) — known gaps recorded and left unfixed (catalog generator, currency gate, custom-message validation)
+- [Upstream bump PRs](operations/upstream-bump-prs.md) — how pi-ai and pi-coding-agent releases become ready-to-review PRs (catalog price diff, live SDK check), Dependabot-style
 - [Pi 1.5.2 findings](operations/pi-1.5.2-findings.md) — what 1.4.0 → 1.5.2 changed for us, and the live run of the extension on 1.5.2
 - [SDK Resolution & Init](operations/sdk-resolution.md) — how the globally installed Pi SDK is found and loaded in-process
 - [Build Pipeline](operations/build-pipeline.md) — esbuild, tsc, ESLint, VSIX packaging, CI publish

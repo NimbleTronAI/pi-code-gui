@@ -63,17 +63,17 @@ let drift = 0, unreachable = 0;
 /** Structured mirror of `rows`, for --json. Same data, without the column padding. */
 const items = [];
 
-function record(name, ours, latest, extra) {
+function record(id, name, ours, latest, extra) {
   if (latest === null) {
     unreachable++;
     rows.push([name, ours, "(unreachable)", "?"]);
-    items.push({ name, ours: String(ours), latest: null, state: "unreachable" });
+    items.push({ id, name, ours: String(ours), latest: null, state: "unreachable" });
     return;
   }
   const stale = older(ours, latest);
   if (stale) { drift++; }
   rows.push([name, ours, latest, stale ? "STALE" : "current"]);
-  items.push({ name, ours: String(ours), latest: String(latest), state: stale ? "stale" : "current",
+  items.push({ id, name, ours: String(ours), latest: String(latest), state: stale ? "stale" : "current",
                action: stale && extra ? extra.replace(/^\s*->\s*/m, "").trim() : undefined });
   if (stale && extra) { notes.push(extra); }
 }
@@ -84,7 +84,7 @@ const bundledPiAi = registry.piAiVersion;
 let piAiLatest = null;
 try { piAiLatest = (await getJson("https://registry.npmjs.org/@earendil-works/pi-ai/latest")).version; }
 catch (e) { notes.push(`  ! could not reach npm for pi-ai: ${e.message}`); }
-record("pi-ai (catalog + PRICING)", bundledPiAi, piAiLatest,
+record("pi-ai", "pi-ai (catalog + PRICING)", bundledPiAi, piAiLatest,
   `  -> pnpm add -D @earendil-works/pi-ai@latest && pnpm run gen:model-registry\n` +
   `     Model PRICING lives in this file: while it is stale the status bar quotes old rates.`);
 
@@ -120,7 +120,7 @@ if (sdkInstalled && sdkTested && sdkInstalled !== sdkTested) {
 let sdkLatest = null;
 try { sdkLatest = (await getJson("https://registry.npmjs.org/@earendil-works/pi-coding-agent/latest")).version; }
 catch (e) { notes.push(`  ! could not reach npm for pi-coding-agent: ${e.message}`); }
-record("pi-coding-agent (TS backend)", sdkOurs, sdkLatest,
+record("pi-coding-agent", "pi-coding-agent (TS backend)", sdkOurs, sdkLatest,
   `  -> npm install -g @earendil-works/pi-coding-agent@latest, run the extension\n` +
   `     against it, then bump "testedAgainst" in src/pi-sdk-version.json.`);
 

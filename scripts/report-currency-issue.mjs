@@ -1,30 +1,31 @@
 // Turn `check-currency.mjs --json` into a GitHub ISSUE, and keep exactly one of them open.
 //
-//   node scripts/report-currency-issue.mjs currency.json     ← needs gh + GH_TOKEN
-//   node scripts/report-currency-issue.mjs currency.json --dry-run
+//   node scripts/report-currency-issue.mjs currency.json [--prs prs.jsonl]     ← needs gh + GH_TOKEN
+//   node scripts/report-currency-issue.mjs currency.json [--prs prs.jsonl] --dry-run
 //
-// WHY AN ISSUE AND NOT A PR: what we track cannot be bumped mechanically.
+// THE ISSUE IS NOW THE FALLBACK. A stale target normally becomes a pull request that already does
+// the work (scripts/upstream-pr.mjs; agent-wiki/operations/upstream-bump-prs.md), and a PR notifies
+// on its own. The issue is for what no PR can carry:
 //
-//   - pi-ai carries model PRICING. A bare bump leaves the generated registry stamped at the old
-//     version and fails the build; the regenerated prices want a human look (0.86.1 moved 67 of
-//     them). That is exactly why .github/dependabot.yml ignores it by name.
+//   - a stale target with NO PR: its preparation failed (e.g. the live SDK check failed, so
+//     testedAgainst must not move), or PR creation itself failed. The row in --prs says why.
+//   - a CRITICAL supply-chain finding.
 //
-// So the deliverable is a short issue that says what moved and what to do about it. Dependabot
-// cannot do this job at all: it reads manifests, and a globally-installed npm package
-// (pi-coding-agent) is not a manifest dependency.
+// A target with an open PR is listed with a link and does not by itself keep the issue open.
 //
 // NOTIFICATION DISCIPLINE: editing an issue body is silent on GitHub, while a comment notifies.
 // So the body is rewritten on every run (always current, never spam) and a comment is posted
 // only when something NEWLY goes stale. The previous state rides along in an HTML comment in the
 // body, which is how "newly" is known without any external store.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const [, , jsonPath, ...flags] = process.argv;
 const DRY = flags.includes("--dry-run");
+const prsPath = flags.includes("--prs") ? flags[flags.indexOf("--prs") + 1] : null;
 if (!jsonPath) {
-  console.error("usage: report-currency-issue.mjs <currency.json> [--dry-run]");
+  console.error("usage: report-currency-issue.mjs <currency.json> [--prs prs.jsonl] [--dry-run]");
   process.exit(2);
 }
 
@@ -34,10 +35,18 @@ const MARKER = "currency-state:";
 
 const report = JSON.parse(readFileSync(jsonPath, "utf8"));
 
-/** Anything worth an open issue: a stale target, or a CRITICAL supply-chain finding. */
+/** One row per bump the workflow attempted (scripts/upstream-pr.mjs --out). Absent → none attempted. */
+const prRows = prsPath && existsSync(prsPath)
+  ? readFileSync(prsPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+  : [];
+const prFor = (item) => prRows.find((r) => r.target === item.id && r.version === item.latest && r.url) ?? null;
+const attemptFor = (item) => prRows.find((r) => r.target === item.id && r.version === item.latest) ?? null;
+
+/** Anything worth an open issue: a stale target nobody has a PR for, or a CRITICAL finding. */
 const stale = report.items.filter((i) => i.state === "stale");
+const uncovered = stale.filter((i) => !prFor(i));
 const critical = report.supplyChain?.critical ?? [];
-const actionable = stale.length > 0 || critical.length > 0;
+const actionable = uncovered.length > 0 || critical.length > 0;
 
 function gh(args, { allowFail = false } = {}) {
   if (DRY && args[0] === "issue" && ["create", "edit", "comment", "close", "reopen"].includes(args[1])) {
@@ -85,15 +94,18 @@ function buildBody() {
   lines.push("| target | ours | latest | |");
   lines.push("| --- | --- | --- | --- |");
   for (const i of report.items) {
-    const mark = i.state === "stale" ? "**behind**" : i.state === "unreachable" ? "unreachable" : "current";
+    const pr = i.state === "stale" ? prFor(i) : null;
+    const mark = pr ? `behind: PR ${pr.number ? `#${pr.number}` : pr.url}` : i.state === "stale" ? "**behind, no PR**" : i.state === "unreachable" ? "unreachable" : "current";
     lines.push(`| ${i.name} | \`${i.ours}\` | ${i.latest ? `\`${i.latest}\`` : "—"} | ${mark} |`);
   }
-  if (stale.length) {
+  if (uncovered.length) {
     lines.push("");
     lines.push("### What to do");
-    for (const i of stale) {
-      lines.push(`- **${i.name}** → \`${i.latest}\``);
+    for (const i of uncovered) {
+      const a = attemptFor(i);
+      lines.push(`- **${i.name}** → \`${i.latest}\`: ${a ? `no PR was opened because ${a.reason ?? a.error ?? "its preparation failed"}.` : "no PR was attempted."}`);
       if (i.action) { for (const l of i.action.split("\n")) { lines.push(`  ${l.trim()}`); } }
+      if (a?.report) { lines.push("", "<details><summary>Report</summary>", "", a.report.trim(), "", "</details>", ""); }
     }
   }
   if (critical.length) {
@@ -104,7 +116,7 @@ function buildBody() {
   lines.push("");
   lines.push(`<sub>Checked ${report.checkedAt}. Reproduce locally: \`node scripts/check-currency.mjs\`.</sub>`);
   lines.push("");
-  lines.push(`<!-- ${MARKER} ${JSON.stringify({ stale: stale.map((i) => i.name) })} -->`);
+  lines.push(`<!-- ${MARKER} ${JSON.stringify({ stale: uncovered.map((i) => i.name) })} -->`);
   return lines.join("\n");
 }
 
@@ -112,12 +124,14 @@ const existing = findOpenIssue();
 
 if (!actionable) {
   if (existing) {
-    gh(["issue", "comment", String(existing.number), "--body",
-        "Everything we target is current again — closing. The workflow will reopen this if that changes."]);
+    const prs = stale.map(prFor).filter(Boolean);
+    gh(["issue", "comment", String(existing.number), "--body", prs.length
+      ? `Every target is either current or has a PR: ${prs.map((p) => p.url).join(", ")}. Closing; the workflow opens a new issue if a bump cannot be prepared.`
+      : "Everything we target is current again — closing. The workflow will reopen this if that changes."]);
     gh(["issue", "close", String(existing.number)]);
     console.log(`Closed #${existing.number}: current with upstream.`);
   } else {
-    console.log("Current with upstream; no issue to open.");
+    console.log(stale.length ? "Every stale target has a PR; no issue to open." : "Current with upstream; no issue to open.");
   }
   process.exit(0);
 }
@@ -127,7 +141,7 @@ const body = buildBody();
 if (!existing) {
   ensureLabel();
   const out = gh(["issue", "create", "--title", TITLE, "--label", LABEL, "--body", body]);
-  console.log(`Opened an issue for: ${stale.map((i) => i.name).join(", ") || "supply-chain findings"}`);
+  console.log(`Opened an issue for: ${uncovered.map((i) => i.name).join(", ") || "supply-chain findings"}`);
   if (out.trim()) { console.log(out.trim()); }
   process.exit(0);
 }
@@ -135,7 +149,7 @@ if (!existing) {
 // Update in place (silent), then notify only about what is new since last run.
 gh(["issue", "edit", String(existing.number), "--body", body]);
 const was = previousStale(existing.body);
-const newly = stale.filter((i) => !was.has(i.name));
+const newly = uncovered.filter((i) => !was.has(i.name));
 if (newly.length) {
   gh(["issue", "comment", String(existing.number), "--body",
       `New since the last check:\n\n${newly.map((i) => `- **${i.name}** is now behind at \`${i.latest}\``).join("\n")}`]);
