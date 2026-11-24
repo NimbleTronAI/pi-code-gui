@@ -54,7 +54,14 @@ jobs:
           # package.json re-attempts an untagged version, so fixing what the gate objected to
           # is all it takes. The HEAD~1 comparison is kept for the log line, where being
           # approximate is harmless.
-          if [ -n "$new" ] && ! git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+          #
+          # Ask the REMOTE whether the tag exists, not the local clone. actions/checkout with a
+          # fetch-depth fetches no tags (fetch-tags defaults to false), so a local lookup found
+          # no tag on EVERY run, and any push touching package.json without a version bump re-
+          # attempted the current, already-released version. #100 (a scripts change) did exactly
+          # that for v0.2.8: the stale-catalog gate below refused it, and had the catalog been
+          # current, the tag push would have failed instead, as v0.2.8 already exists.
+          if [ -n "$new" ] && ! git ls-remote --exit-code --tags origin "refs/tags/v$new" >/dev/null; then
             echo "release=true" >> "$GITHUB_OUTPUT"
             if [ "$new" = "$old" ]; then
               echo "Releasing v$new — unchanged since HEAD~1 but never tagged (a retry)."
