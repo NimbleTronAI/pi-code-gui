@@ -1,0 +1,55 @@
+name: Release PR for dependency updates
+
+# After every push to main, keep one "Release X" PR open (branch release/next) while main holds
+# Dependabot updates to package.json / pnpm-lock.yaml that have not shipped; close it once they
+# have. It bumps the patch version on top of main and is set to auto-merge, so merging it releases
+# through release.yml. See the header of scripts/release-pr.mjs.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-pr
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    # Writes go through the bot App's token; this job's token only approves the App's PR.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      BOT_APP_ID: ${{ vars.UPSTREAM_BOT_APP_ID || secrets.UPSTREAM_BOT_APP_ID }}
+      BOT_KEY_SET: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY != '' }}
+    steps:
+      - name: Require the bot App
+        if: env.BOT_APP_ID == '' || env.BOT_KEY_SET != 'true'
+        run: |
+          echo "::error title=Bot App not set up::Set the repo variable UPSTREAM_BOT_APP_ID and secret UPSTREAM_BOT_PRIVATE_KEY (agent-wiki/operations/upstream-bump-prs.md)."
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Get the bot App's token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ env.BOT_APP_ID }}
+          private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open, refresh or close the release PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APPROVER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_BOT_SLUG: ${{ steps.app.outputs.app-slug }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/release-pr.mjs

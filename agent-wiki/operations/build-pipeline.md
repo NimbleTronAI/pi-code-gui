@@ -113,13 +113,20 @@ version's tag does not exist yet, so a refused release is retried by the next pu
 without a version bump re-attempted the already-released version. #100 did that for v0.2.8 and
 was stopped by the stale-catalog gate. It now uses `git ls-remote --tags origin`.
 
-**Bot PRs that release.** Two kinds of automated PR bump the version, so merging one ships
-it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds the bump, as a
-signed commit by the org's bot App) and
-the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and adds a
-CHANGELOG line itself. The upstream PRs are pushed by an org GitHub App, whose pushes and PRs
-start CI like anyone's. **Some of them merge themselves**, and so ship unattended: Dependabot
-minor/patch PRs, and every pi-ai PR whose checks passed, once CI passes. See
+**Bot PRs that release.** Two automated PRs bump the version, so merging one ships it through
+the chain above: the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and
+adds a CHANGELOG line itself, and the **"Release X" PR** on `release/next` from `release-pr.yml`
+(`scripts/release-pr.mjs`). After every push to main, that workflow keeps one release PR open
+while main holds Dependabot updates to `package.json`/`pnpm-lock.yaml` that have not shipped, and
+closes it once they have; Actions and dev-container updates ship nothing and start no release.
+Dependabot PRs themselves no longer carry a version bump: they used to (`dependabot-version-bump.yml`,
+removed 2026-11-24), so every second open PR conflicted on the version line once the first
+merged, and Dependabot will not rebase a branch with someone else's commit on it (#113). The
+branch name carries no version; the version is main's plus one patch, so a hand bump to 0.3.0
+makes the next automatic release 0.3.1. (At 1.0 the `marketplace` environment's `v0.*` tag
+rule must become `v*`.) All of these are pushed by an org GitHub App, whose pushes and PRs start
+CI like anyone's, and **they merge themselves** once CI passes: Dependabot minor/patch PRs
+(`dependabot-auto-merge.yml`), every pi-ai PR whose checks passed, and the release PR. See
 [Upstream bump PRs](upstream-bump-prs.md).
 
 > **Last updated:** 2026-11-24 — publish dispatch retried; release.yml checks the tag on the remote (shallow checkouts

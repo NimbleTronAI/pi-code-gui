@@ -231,7 +231,7 @@ function api(method, path, body) {
 }
 
 /** Recreate the local HEAD commit on GitHub as a SIGNED commit, and point `branch` at it. */
-function publishSigned(branch, remoteExists) {
+export function publishSigned(branch, remoteExists) {
   const parent = git(["rev-parse", "origin/main"]).trim();
   const localTree = git(["rev-parse", "HEAD^{tree}"]).trim();
   const message = git(["log", "-1", "--format=%B"]).trim();
