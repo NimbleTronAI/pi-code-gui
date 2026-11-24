@@ -88,6 +88,12 @@ explicitly, **on the tag**: the `marketplace` environment admits only tag refs m
 `v0.*`, so a dispatch with `--ref main` is rejected before any step runs (~2s, no
 runner, no steps) — which reads as a build failure and is not one.
 
+**Starting the publish is retried.** v0.2.9 was tagged and released, then the dispatch of
+`publish.yml` got an HTTP 500 from GitHub and nothing shipped, with no later retry (the tag
+existed). The dispatch now tries three times, 15s and 45s apart, and on a final failure leaves an
+error annotation naming the manual publish. Do not "Re-run" a run that got that far: it stops at
+`git tag`, because the tag exists. Run **Publish the VS Code Extension** from the tag instead.
+
 **There is no approval gate.** The `marketplace` environment has no required reviewers
 and no wait timer, only that branch policy. Comments in both workflows once claimed a
 release would "queue that publish for your approval"; it does not. A merge to `main`
@@ -116,7 +122,7 @@ start CI like anyone's. **Some of them merge themselves**, and so ship unattende
 minor/patch PRs, and every pi-ai PR whose checks passed, once CI passes. See
 [Upstream bump PRs](upstream-bump-prs.md).
 
-> **Last updated:** 2026-11-24 — release.yml checks the tag on the remote (shallow checkouts
+> **Last updated:** 2026-11-24 — publish dispatch retried; release.yml checks the tag on the remote (shallow checkouts
 > have no tags); bot PRs that release: the upstream-currency PRs, pushed by an org GitHub App.
 > **Earlier:** 2026-08-31 — documented the release/publish chain, the tag-ref
 > requirement, the absent approval gate, and the publish-time supply-chain scan.
