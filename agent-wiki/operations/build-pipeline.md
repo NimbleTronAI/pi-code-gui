@@ -110,12 +110,10 @@ was stopped by the stale-catalog gate. It now uses `git ls-remote --tags origin`
 **Bot PRs that release.** Two kinds of automated PR bump the version, so merging one ships
 it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds the bump) and
 the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and adds a
-CHANGELOG line itself. Both push with tokens whose pushes trigger no workflows: Dependabot's
-own PR events start CI as usual, and the upstream PRs start `ci.yml` through
-`workflow_dispatch`. See [Upstream bump PRs](upstream-bump-prs.md).
+CHANGELOG line itself. The upstream PRs are pushed by an org GitHub App, whose pushes and PRs
+start CI like anyone's. See [Upstream bump PRs](upstream-bump-prs.md).
 
 > **Last updated:** 2026-11-24 — release.yml checks the tag on the remote (shallow checkouts
-> have no tags); bot PRs that release: the upstream-currency PRs, and `ci.yml` gained
-> `workflow_dispatch` for them.
+> have no tags); bot PRs that release: the upstream-currency PRs, pushed by an org GitHub App.
 > **Earlier:** 2026-08-31 — documented the release/publish chain, the tag-ref
 > requirement, the absent approval gate, and the publish-time supply-chain scan.

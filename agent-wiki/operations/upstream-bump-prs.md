@@ -22,11 +22,11 @@ pull request that already does the bump, the way Dependabot does for ordinary de
    and flagging them buried the real moves.
 3. **prepare-sdk** (read-only token, no secrets): installs the release globally and
    runs `scripts/live-sdk-check.mjs`, described below. `testedAgainst` moves only on a pass.
-4. **open-prs** (the only job that can push): `scripts/upstream-pr.mjs` refuses a patch that
-   touches files outside its target's allowlist. It then commits to `upstream/<target>-<version>`
-   on top of main and opens or updates the PR. A newer release closes the older PR, and the job
-   starts `ci.yml` through `workflow_dispatch`, because pushes made with GITHUB_TOKEN trigger no
-   workflows.
+4. **open-prs** (the only job that can push, as the org's bot App): `scripts/upstream-pr.mjs`
+   refuses a patch that touches files outside its target's allowlist. It then commits to
+   `upstream/<target>-<version>` on top of main and opens or updates the PR. A newer release
+   closes the older PR. Because the App's pushes and PRs trigger workflows, CI runs on them as on
+   anyone's.
 5. **report:** `scripts/report-currency-issue.mjs` keeps an issue open only for a stale target
    with no PR (preparation failed, or PR creation failed) or a CRITICAL supply-chain finding.
 
@@ -37,6 +37,16 @@ opens as a draft. A failed live check opens no PR, and the issue carries its rep
 **Trust split:** upstream code (the install, the generator, the live check) runs only in the
 read-only prepare jobs. The job that can push applies a patch and calls git and gh; it never
 installs or imports upstream code.
+
+**Why a GitHub App pushes, not GITHUB_TOKEN.** Three rules meet. `main` requires signed commits,
+and a `git commit` on a runner is unsigned, so the bot builds the commit locally (for its exact
+tree) and recreates it through GitHub's git-data API (blobs, tree, commit, ref), which GitHub signs
+for a bot token only when the request names no custom author. The org ruleset
+`nimbletron-author-email` requires an `@nimbletron.ai` author on every branch, so the bot's own
+author needs a bypass. And a ruleset bypass list accepts GitHub Apps but not the built-in GitHub
+Actions bot. The first real run (2026-11-24, as `github-actions[bot]`) was refused with GH013, and
+#99 carried the error, as designed. The script stops if GitHub's tree differs from the local one
+or the commit comes back unverified.
 
 **Weekly reruns:** the branch is rebuilt on the latest main and force-pushed, but only when its
 content would change, since a needless push re-runs CI and dismisses reviews. Once anyone else
@@ -67,10 +77,20 @@ Verified on 1.5.2 and 1.6.0, and it fails on a deliberately dropped thinking-del
 
 ## One-time setup
 
-- Settings → Actions → General → **Allow GitHub Actions to create and approve pull requests**.
-  That is all: the live check needs no secret.
+1. Org → Settings → Developer settings → GitHub Apps → **New GitHub App**: any name (the bot
+   commits as `<slug>[bot]`), Homepage URL the repo, Webhook **Active** unticked, repository
+   permissions **Contents** and **Pull requests** read and write, installable on this account only.
+2. **Generate a private key**; **Install App** on `pi-code-gui` only.
+3. Repo → Settings → Secrets and variables → Actions: secret **`UPSTREAM_BOT_PRIVATE_KEY`** (the
+   `.pem` contents) and variable **`UPSTREAM_BOT_APP_ID`**.
+4. Org ruleset **`nimbletron-author-email`** → Bypass list: the App, and **Dependabot** if it is
+   offered, both "Always allow". Dependabot's commits break the same rule; the ruleset was last
+   edited on 2026-10-16, and Dependabot has opened no PR since 2026-10-13.
+
+Without 1–3 no PR is attempted and the issue says the App is not set up. The live check needs no
+secret.
 
 Related: [Build Pipeline](build-pipeline.md), [SDK Resolution](sdk-resolution.md),
 [Open items](open-items.md).
 
-> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key.
+> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list.
