@@ -1,5 +1,10 @@
 # Change Log
 
+## [0.2.9]
+
+### Changed
+- **Model catalog refreshed to pi-ai 1.6.0**, with its current models and prices.
+
 ## [0.2.8]
 
 ### Removed
