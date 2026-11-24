@@ -230,6 +230,12 @@ jobs:
     # GITHUB_TOKEN only reads here; every write goes through the App's token below.
     permissions:
       contents: read
+    env:
+      # The App ID is not secret, so a repo VARIABLE is where it belongs, but a secret of the same
+      # name is accepted too (an easy slip in the settings UI). Secrets can't appear in a step's
+      # `if:`, hence these job-level copies.
+      BOT_APP_ID: ${{ vars.UPSTREAM_BOT_APP_ID || secrets.UPSTREAM_BOT_APP_ID }}
+      BOT_KEY_SET: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -246,10 +252,10 @@ jobs:
       # A token for the org's bot App, limited to this repo and to what opening a PR needs.
       - name: Get the bot App's token
         id: app
-        if: vars.UPSTREAM_BOT_APP_ID != ''
+        if: env.BOT_APP_ID != '' && env.BOT_KEY_SET == 'true'
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ vars.UPSTREAM_BOT_APP_ID }}
+          app-id: ${{ env.BOT_APP_ID }}
           private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
@@ -270,7 +276,10 @@ jobs:
             t="${pair%%|*}"; v="${pair#*|}"
             [ -n "$v" ] || continue
             if [ -z "$GH_TOKEN" ]; then
-              skip "$t" "$v" "the bot App is not set up (repo variable UPSTREAM_BOT_APP_ID, secret UPSTREAM_BOT_PRIVATE_KEY; see agent-wiki/operations/upstream-bump-prs.md)"
+              missing=""
+              [ -n "$BOT_APP_ID" ] || missing="the repo variable UPSTREAM_BOT_APP_ID"
+              [ "$BOT_KEY_SET" = "true" ] || missing="${missing:+$missing and }the repo secret UPSTREAM_BOT_PRIVATE_KEY"
+              skip "$t" "$v" "the bot App is not set up: this run could not see ${missing:-its token} (Settings → Secrets and variables → Actions; see agent-wiki/operations/upstream-bump-prs.md)"
             elif [ -d "prepared/prepared-$t" ]; then
               node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl || true
             else
@@ -310,7 +319,8 @@ jobs:
         continue-on-error: true
 
       # The issue is the fallback now: it stays open only for a stale target with no PR, or a
-      # CRITICAL supply-chain finding. See the header of scripts/report-currency-issue.mjs.
+      # CRITICAL supply-chain finding — and in exactly those cases this step, and so the run,
+      # FAILS after writing the issue. See the header of scripts/report-currency-issue.mjs.
       - name: Open, update or close the tracking issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
