@@ -2,6 +2,6 @@
   "_comment": "External dependency: the @earendil-works/pi-coding-agent release the extension is tested against. This pins NOTHING at runtime — the extension loads whatever the user has installed globally (see src/sdk-service.ts), and the devcontainer takes @latest. scripts/check-currency.mjs compares it with npm latest, because on a CI runner no global install exists. Move `testedAgainst` only after running the extension on that release: scripts/live-sdk-check.mjs is that run (`pnpm run check:live-sdk`), and .github/workflows/upstream-currency.yml runs it on each new release and opens a PR that moves this file only when it passes. See agent-wiki/operations/upstream-bump-prs.md.",
   "datasource": "npm",
   "package": "@earendil-works/pi-coding-agent",
-  "testedAgainst": "1.5.2",
-  "verifiedBy": "a manual live run on 2026-11-11 (agent-wiki/operations/pi-1.5.2-findings.md)"
+  "testedAgainst": "1.6.0",
+  "verifiedBy": "scripts/live-sdk-check.mjs on 2026-11-24 (22/22 checks), run by upstream-currency.yml"
 }
