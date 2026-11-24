@@ -24,9 +24,13 @@ on:
 permissions:
   contents: read   # every write goes through the bot App's token
 
-# One bump at a time per PR; cancel a superseded run if the branch moves again.
+# One bump at a time per PR; cancel a superseded run if Dependabot moves the branch again.
+# Keyed by ACTOR too: the bot App's own bump commit fires `synchronize`, and that run (which
+# skips every job) must not cancel the Dependabot run that made the commit — it did on #110,
+# before that run's auto-merge job had started, which on a minor/patch PR would silently leave
+# auto-merge off.
 concurrency:
-  group: version-bump-${{ github.event.pull_request.number }}
+  group: version-bump-${{ github.event.pull_request.number }}-${{ github.actor }}
   cancel-in-progress: true
 
 jobs:
