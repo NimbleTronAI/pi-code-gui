@@ -1,22 +1,31 @@
 name: Upstream currency
 
-# Watch the projects this extension targets and open a GITHUB ISSUE when one releases.
+# Watch the projects this extension targets and, when one releases, open a PULL REQUEST that does
+# the bump — the way Dependabot does for ordinary dependencies. See
+# agent-wiki/operations/upstream-bump-prs.md.
 #
-# WHY THIS EXISTS: scripts/check-currency.mjs already detected all of this. It runs in ci.yml
-# and publish.yml, and it had been correctly reporting a stale upstream pin for months — into
-# build logs, where nobody read it. We found out by searching upstream's issue tracker for
-# something else. Detection was never the gap; being TOLD was. So this workflow exists purely to move that finding somewhere it cannot be missed.
+# WHY THIS EXISTS: scripts/check-currency.mjs had been correctly reporting a stale upstream pin for
+# months — into build logs nobody read. Moving that into an issue fixed "nobody was told", but an
+# issue still waits for someone to run the bump by hand. Both bumps are now done here, and the
+# part that needs a human (reading the price changes; reading the live-check result) is the PR
+# review.
 #
 # WHY NOT DEPENDABOT: it reads manifests, and not everything we need watched is one.
 #   - @earendil-works/pi-coding-agent is installed GLOBALLY and is deliberately not a dependency
-#     of this package. Adding it to package.json just to make Dependabot see it would install a
-#     copy we never load, to track a number — a second store for one fact.
-#   - @earendil-works/pi-ai IS a devDependency and Dependabot could bump it, which is why
-#     .github/dependabot.yml ignores it BY NAME: the bump is incomplete without
-#     `pnpm run gen:model-registry`, and the repriced models want a human look.
+#     of this package. What we record is `testedAgainst` in src/pi-sdk-version.json, and moving
+#     it means actually running the extension on that release (scripts/live-sdk-check.mjs).
+#   - @earendil-works/pi-ai IS a devDependency, but .github/dependabot.yml ignores it BY NAME: a
+#     bare bump leaves src/model-registry.generated.json behind and fails the build. Here the
+#     bump, the regeneration and the price table land in one PR.
 #
-# WHY AN ISSUE AND NOT A PR: see the header of scripts/report-currency-issue.mjs. What we track cannot
-# be moved mechanically, and a PR that looks mergeable but isn't is worse than no PR.
+# TRUST SPLIT. The prepare jobs run upstream code (pnpm add, the catalog generator, the live
+# check) and get a READ-ONLY token and no secrets: the live check drives a scripted model, not a
+# vendor's. They hand a patch to `open-prs`, which can push but never installs or runs upstream code: it checks the patch
+# touches only the files its target owns, then uses git and gh (scripts/upstream-pr.mjs).
+#
+# ONE-TIME REPO SETUP:
+#   - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+#     Without it, PR creation fails and the bump is reported in the issue instead.
 
 on:
   schedule:
@@ -25,11 +34,9 @@ on:
     - cron: "0 7 * * 1"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
-# A scheduled run and a manual one must not both edit the issue.
+# A scheduled run and a manual one must not both push the same branch or edit the same issue.
 concurrency:
   group: upstream-currency
   cancel-in-progress: false
@@ -37,33 +44,253 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pi_ai: ${{ steps.pick.outputs.pi_ai }}
+      sdk: ${{ steps.pick.outputs.sdk }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - run: corepack enable
       # check-currency.mjs also runs the supply-chain scan over installed packages, so the
-      # dependencies have to be present. That is deliberate: a CRITICAL finding is worth an
-      # issue on exactly the same footing as a stale pin.
+      # dependencies have to be present. A CRITICAL finding is worth an issue on the same footing
+      # as a stale pin.
       - run: pnpm install --frozen-lockfile
 
-      # `|| true`: a non-zero exit here means drift or a finding, which is the normal case this
-      # workflow exists to report — not a reason to fail before reporting it. The reporter reads
-      # the JSON, and a genuinely broken check produces no JSON and fails the next step.
+      # `|| true`: a non-zero exit means drift or a finding, which is what this workflow reports.
+      # A genuinely broken check produces no JSON and fails the next step.
       - name: Check upstream currency
         run: node scripts/check-currency.mjs --json > currency.json || true
 
-      - name: Open or update the tracking issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/report-currency-issue.mjs currency.json
+      # The version to move each target to, or empty when it is current or unreachable.
+      - name: Pick what to bump
+        id: pick
+        run: |
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync("currency.json", "utf8"));
+            const v = (id) => (r.items.find((i) => i.id === id && i.state === "stale") || {}).latest || "";
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, `pi_ai=${v("pi-ai")}\nsdk=${v("pi-coding-agent")}\n`);
+          '
 
-      # Keep the raw report for 90 days: when a pin is finally bumped it is useful to see when
-      # upstream actually shipped it, and the issue body only ever holds the latest check.
+      # Kept 90 days: when a pin finally moves it is useful to see when upstream shipped it.
       - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: currency-report
           path: currency.json
           retention-days: 90
+
+  prepare-pi-ai:
+    needs: check
+    if: needs.check.outputs.pi_ai != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      V: ${{ needs.check.outputs.pi_ai }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: Bump pi-ai and regenerate the catalog
+        run: |
+          cp src/model-registry.generated.json "$RUNNER_TEMP/old-registry.json"
+          pnpm add -D "@earendil-works/pi-ai@$V"
+          pnpm run gen:model-registry
+
+      # Every check runs even after one fails, so the PR shows the whole picture. A failing build
+      # still gets a PR, as a draft, because the fix belongs on that branch. A CRITICAL
+      # supply-chain finding gets NO PR: nothing should invite merging a compromised tree.
+      - name: Verify the bumped tree
+        run: |
+          mkdir -p prepared
+          { echo "| check | result |"; echo "| --- | --- |"; } > prepared/checks.md
+          failed=""
+          supply_ok=1
+          for c in "Supply-chain scan|node scripts/check-currency.mjs" \
+                   "Type-check|pnpm run check-types" \
+                   "Lint|pnpm run lint" \
+                   "Unit tests|pnpm run test:unit" \
+                   "Catalog consistency|node scripts/check-model-registry.mjs" \
+                   "Production build|node esbuild.js --production && node esbuild.webview.js --production"; do
+            name="${c%%|*}"; cmd="${c#*|}"
+            echo "::group::$name"
+            if bash -c "$cmd"; then r="pass"; else r="**FAIL**"; failed="${failed:+$failed, }$name"
+              [ "$name" = "Supply-chain scan" ] && supply_ok=0
+            fi
+            echo "::endgroup::"
+            echo "| $name | $r |" >> prepared/checks.md
+          done
+          echo "" >> prepared/checks.md
+          echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> prepared/checks.md
+
+          node scripts/registry-diff.mjs "$RUNNER_TEMP/old-registry.json" src/model-registry.generated.json > prepared/report.md
+          if [ "$supply_ok" = 1 ]; then
+            git diff --binary -- package.json pnpm-lock.yaml src/model-registry.generated.json > prepared/change.patch
+          fi
+          FAILED="$failed" SUPPLY_OK="$supply_ok" node -e '
+            const f = process.env.FAILED;
+            const s = process.env.SUPPLY_OK === "1"
+              ? { ready: !f, reason: f ? `these checks failed on the bumped tree: ${f}` : null }
+              : { ready: false, reason: "the supply-chain scan found a CRITICAL problem in the bumped install" };
+            require("fs").writeFileSync("prepared/status.json", JSON.stringify(s));
+          '
+          cat prepared/status.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: prepared-pi-ai
+          path: prepared/
+          retention-days: 14
+
+  prepare-sdk:
+    needs: check
+    if: needs.check.outputs.sdk != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      V: ${{ needs.check.outputs.sdk }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      # Installed the way users install it. The extension finds it through PATH, as it would on a
+      # user's machine.
+      - run: npm install -g "@earendil-works/pi-coding-agent@$V"
+      - run: pnpm run compile-tests
+
+      # No API key: the check runs the SDK against pi-ai's scripted (faux) provider.
+      - name: Live check on the released SDK
+        id: live
+        run: |
+          mkdir -p prepared
+          set +e
+          node --import ./scripts/vscode-register.mjs scripts/live-sdk-check.mjs --report prepared/report.md --json prepared/live.json
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      # testedAgainst moves ONLY on a passing run. Otherwise there is no patch, hence no PR, and
+      # the issue carries the report instead.
+      - name: Record the result
+        env:
+          CODE: ${{ steps.live.outputs.code }}
+        run: |
+          summary=$(node -e 'const j=require("./prepared/live.json"); console.log(`${j.passed}/${j.passed + j.failed} checks`)')
+          if [ "$CODE" = "0" ]; then
+            node scripts/upstream-pr.mjs set-sdk-version "$V" --summary "$summary"
+            git diff --binary -- src/pi-sdk-version.json > prepared/change.patch
+            echo '{"ready":true}' > prepared/status.json
+          else
+            node -e '
+              const j = require("./prepared/live.json");
+              const reason = process.env.CODE === "2"
+                ? `the live check could not run: ${j.note}`
+                : `the live check failed (${process.argv[1]}), so testedAgainst stays where it is`;
+              require("fs").writeFileSync("prepared/status.json", JSON.stringify({ ready: false, reason }));
+            ' "$summary"
+          fi
+          cat prepared/status.json
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: prepared-pi-coding-agent
+          path: prepared/
+          retention-days: 14
+
+  open-prs:
+    needs: [check, prepare-pi-ai, prepare-sdk]
+    if: always() && needs.check.result == 'success' && (needs.check.outputs.pi_ai != '' || needs.check.outputs.sdk != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push the upstream/* branch
+      pull-requests: write   # open / update / close the PR
+      actions: write         # start ci.yml on the branch (GITHUB_TOKEN pushes don't trigger it)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: prepared-*
+          path: prepared
+        continue-on-error: true   # none at all when both prepare jobs failed
+
+      - name: Open or update the PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PI_AI: ${{ needs.check.outputs.pi_ai }}
+          SDK: ${{ needs.check.outputs.sdk }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          : > prs.jsonl
+          for pair in "pi-ai|$PI_AI" "pi-coding-agent|$SDK"; do
+            t="${pair%%|*}"; v="${pair#*|}"
+            [ -n "$v" ] || continue
+            if [ -d "prepared/prepared-$t" ]; then
+              node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl || true
+            else
+              T="$t" VER="$v" node -e 'require("fs").appendFileSync("prs.jsonl", JSON.stringify({ target: process.env.T, version: process.env.VER, state: "skipped", reason: `its prepare job failed (${process.env.RUN_URL})` }) + "\n")'
+            fi
+          done
+          cat prs.jsonl
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: prs
+          path: prs.jsonl
+          retention-days: 14
+
+  report:
+    needs: [check, open-prs]
+    if: always() && needs.check.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v5
+        with:
+          name: currency-report
+      - uses: actions/download-artifact@v5
+        if: needs.open-prs.result != 'skipped'
+        with:
+          name: prs
+        continue-on-error: true
+
+      # The issue is the fallback now: it stays open only for a stale target with no PR, or a
+      # CRITICAL supply-chain finding. See the header of scripts/report-currency-issue.mjs.
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f prs.jsonl ]; then
+            node scripts/report-currency-issue.mjs currency.json --prs prs.jsonl
+          else
+            node scripts/report-currency-issue.mjs currency.json
+          fi
