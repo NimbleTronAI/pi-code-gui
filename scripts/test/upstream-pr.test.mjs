@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  TARGETS, branchName, bumpPatchVersion, addChangelogEntry, disallowedPaths, supersededPrs, setTestedAgainst, composeBody, treeEntriesFromRaw, isBotAuthor,
+  TARGETS, branchName, bumpPatchVersion, addChangelogEntry, disallowedPaths, supersededPrs, setTestedAgainst, composeBody, treeEntriesFromRaw, isBotAuthor, sdkTestedFor, autoMergeDecision,
 } from "../upstream-pr.mjs";
 
 test("one branch per target and version, so a new upstream release gets a new PR", () => {
@@ -117,4 +117,30 @@ test("only the bot App's own commits keep a bot branch under the bot's control",
   assert.equal(isBotAuthor(`123456+${slug}[bot]@users.noreply.github.com`, undefined), false);
   assert.equal(isBotAuthor("1+a.b[bot]@users.noreply.github.com", "a.b"), true);
   assert.equal(isBotAuthor("1+axb[bot]@users.noreply.github.com", "a.b"), false);
+});
+
+test("the pi-ai release note names the SDK it was tested against, and the PR says merge order is free", () => {
+  assert.equal(TARGETS["pi-ai"].changelogLine("1.6.0", "1.6.0"),
+    "- **Model catalog refreshed to pi-ai 1.6.0**, with its current models and prices, and tested against pi-coding-agent 1.6.0.");
+  assert.equal(TARGETS["pi-ai"].changelogLine("1.6.0"), "- **Model catalog refreshed to pi-ai 1.6.0**, with its current models and prices.");
+  // This run's live check passed → the new SDK; failed or not run → main's record.
+  assert.deepEqual(sdkTestedFor({ sdkVersion: "1.6.0", sdkReady: true, mainTested: "1.5.2" }), { version: "1.6.0", source: "run" });
+  assert.deepEqual(sdkTestedFor({ sdkVersion: "1.6.0", sdkReady: false, mainTested: "1.5.2" }), { version: "1.5.2", source: "main" });
+  assert.deepEqual(sdkTestedFor({ sdkVersion: "", sdkReady: false, mainTested: "1.6.0" }), { version: "1.6.0", source: "main" });
+  assert.equal(sdkTestedFor({}), null);
+  assert.match(composeBody("pi-ai", "1.6.0", { ready: true, sdkTested: { version: "1.6.0", source: "run" } }), /Merge the two in either order/);
+  assert.doesNotMatch(composeBody("pi-coding-agent", "1.6.0", { ready: true, sdkTested: { version: "1.6.0", source: "run" } }), /release note/);
+});
+
+test("auto-merge: every bot PR whose checks passed, whatever the prices did", () => {
+  assert.deepEqual(autoMergeDecision("pi-coding-agent", { ready: true }), { auto: true, why: "the live check passed" });
+  assert.deepEqual(autoMergeDecision("pi-ai", { ready: true }), { auto: true, why: "every check passed" });
+  assert.equal(autoMergeDecision("pi-ai", { ready: false }).auto, false, "a draft cannot merge");
+  assert.equal(autoMergeDecision("pi-coding-agent", { ready: false }).auto, false);
+});
+
+test("the PR says whether it will merge itself", () => {
+  assert.match(composeBody("pi-ai", "1.6.0", { ready: true, autoMerge: { auto: true, why: "w" } }), /\*\*Auto-merge is on\*\* \(w\).*merging it releases/);
+  assert.doesNotMatch(composeBody("pi-coding-agent", "1.6.0", { ready: true, autoMerge: { auto: true, why: "w" } }), /merging it releases/);
+  assert.match(composeBody("pi-ai", "1.6.0", { ready: true, autoMerge: { auto: false, why: "3 price moves" } }), /\*\*Waiting for your review:\*\* 3 price moves\./);
 });

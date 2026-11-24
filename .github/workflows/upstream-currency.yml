@@ -227,9 +227,11 @@ jobs:
     needs: [check, prepare-pi-ai, prepare-sdk]
     if: always() && needs.check.result == 'success' && (needs.check.outputs.pi_ai != '' || needs.check.outputs.sdk != '')
     runs-on: ubuntu-latest
-    # GITHUB_TOKEN only reads here; every write goes through the App's token below.
+    # Every write goes through the App's token below, except the approval: a PR's author (the App)
+    # cannot approve its own PR, and main needs one, so this job's token gives it.
     permissions:
       contents: read
+      pull-requests: write
     env:
       # The App ID is not secret, so a repo VARIABLE is where it belongs, but a secret of the same
       # name is accepted too (an easy slip in the settings UI). Secrets can't appear in a step's
@@ -263,6 +265,7 @@ jobs:
       - name: Open or update the PRs
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          APPROVER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_BOT_SLUG: ${{ steps.app.outputs.app-slug }}
           PI_AI: ${{ needs.check.outputs.pi_ai }}
           SDK: ${{ needs.check.outputs.sdk }}
@@ -281,7 +284,11 @@ jobs:
               [ "$BOT_KEY_SET" = "true" ] || missing="${missing:+$missing and }the repo secret UPSTREAM_BOT_PRIVATE_KEY"
               skip "$t" "$v" "the bot App is not set up: this run could not see ${missing:-its token} (Settings → Secrets and variables → Actions; see agent-wiki/operations/upstream-bump-prs.md)"
             elif [ -d "prepared/prepared-$t" ]; then
-              node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl || true
+              # pi-ai's release note says which Pi SDK it was tested against: this run's, if its
+              # live check passed, else main's testedAgainst.
+              extra=()
+              [ "$t" = pi-ai ] && extra=(--sdk-version "$SDK" --sdk-dir prepared/prepared-pi-coding-agent)
+              node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl "${extra[@]}" || true
             else
               skip "$t" "$v" "its prepare job failed ($RUN_URL)"
             fi

@@ -1,20 +1,28 @@
 name: Bump version on dependency PRs
 
 # Adds a patch-version bump commit to Dependabot PRs, so merging one produces a
-# new releasable version (picked up by release.yml on the default branch).
+# new releasable version (picked up by release.yml on the default branch), and
+# turns on AUTO-MERGE for minor and patch updates (job `auto-merge` below).
 #
 # Why pull_request_target: Dependabot's own workflow runs get a READ-ONLY token,
-# which can't push. pull_request_target runs in the BASE-branch context with a
-# write token. To stay safe we only ever run the inline git/node below — never
-# the PR's own scripts (no install/build) — and we gate on the Dependabot actor,
-# so the write token is never exposed to untrusted code.
+# which can't push. pull_request_target runs in the BASE-branch context, with
+# this repo's secrets. To stay safe we only ever run the inline node below —
+# never the PR's own scripts (no install/build) — and we gate on the Dependabot
+# actor, so nothing from the PR is executed with a write token around.
+#
+# WHO COMMITS: the org's bot App (the same one upstream-currency.yml uses), through
+# GitHub's contents API. Two rules forbid the obvious `git commit && git push` as
+# github-actions[bot]: main requires SIGNED commits (GitHub signs an App's API commit,
+# not a runner's local one), and the org ruleset `nimbletron-author-email` requires an
+# @nimbletron.ai author on every branch, which only a bypass-listed App escapes; the
+# built-in Actions bot cannot be bypass-listed. See agent-wiki/operations/upstream-bump-prs.md.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read   # every write goes through the bot App's token
 
 # One bump at a time per PR; cancel a superseded run if the branch moves again.
 concurrency:
@@ -25,47 +33,117 @@ jobs:
   bump:
     if: ${{ github.actor == 'dependabot[bot]' }}
     runs-on: ubuntu-latest
+    env:
+      # As in upstream-currency.yml: the App ID belongs in a variable, a same-named secret works too.
+      BOT_APP_ID: ${{ vars.UPSTREAM_BOT_APP_ID || secrets.UPSTREAM_BOT_APP_ID }}
+      BOT_KEY_SET: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY != '' }}
     steps:
+      - name: Require the bot App
+        if: env.BOT_APP_ID == '' || env.BOT_KEY_SET != 'true'
+        run: |
+          echo "::error title=Bot App not set up::Set the repo variable UPSTREAM_BOT_APP_ID and secret UPSTREAM_BOT_PRIVATE_KEY (agent-wiki/operations/upstream-bump-prs.md). Without them this PR gets no version bump."
+          exit 1
+
+      - name: Get the bot App's token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.BOT_APP_ID }}
+          private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      # Read-only checkout of the PR head: only package.json is read, nothing is run.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Bump patch version (skip if already bumped vs base)
         env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git fetch origin "$BASE_REF" --depth=1
+          base_ver=$(gh api "repos/$REPO/contents/package.json?ref=$BASE_REF" --jq .content | base64 -d \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const m=s.match(/\"version\"\s*:\s*\"([^\"]+)\"/);process.stdout.write(m?m[1]:'')})")
 
-          # Surgical read of the top-level "version" string (tolerant of the
-          # repo's non-strict-semver values, e.g. "0.1.01").
-          ver_of() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const m=s.match(/\"version\"\s*:\s*\"([^\"]+)\"/);process.stdout.write(m?m[1]:'')})"; }
-          base_ver=$(git show "origin/$BASE_REF:package.json" | ver_of)
-          head_ver=$(ver_of < package.json)
-
-          if [ "$base_ver" != "$head_ver" ]; then
-            echo "Version already bumped in this PR ($base_ver -> $head_ver); nothing to do."
-            exit 0
-          fi
-
-          new_ver=$(node -e '
+          # Surgical edit of the top-level "version" string (tolerant of the repo's
+          # non-strict-semver values, e.g. "0.1.01"); writes the request body for the
+          # contents API, or nothing when the PR already carries a bump.
+          BASE_VER="$base_ver" node -e '
             const fs = require("fs");
-            let t = fs.readFileSync("package.json", "utf8");
+            const t = fs.readFileSync("package.json", "utf8");
             const cur = t.match(/"version"\s*:\s*"([^"]+)"/)[1];
+            if (cur !== process.env.BASE_VER) { console.log(`Version already bumped in this PR (${process.env.BASE_VER} -> ${cur}); nothing to do.`); process.exit(0); }
             const p = cur.split(".");
             p[p.length - 1] = String(Number(p[p.length - 1]) + 1);
             const nv = p.join(".");
-            // Replace only the first (top-level) version field; preserve all
-            // other formatting so the diff is a single clean line.
-            fs.writeFileSync("package.json", t.replace(/("version"\s*:\s*")[^"]+(")/, `$1${nv}$2`));
-            process.stdout.write(nv);
-          ')
+            const out = t.replace(/("version"\s*:\s*")[^"]+(")/, `$1${nv}$2`);
+            fs.writeFileSync(process.env.RUNNER_TEMP + "/bump.json", JSON.stringify({
+              message: `chore: bump version to ${nv}`,
+              content: Buffer.from(out).toString("base64"),
+              branch: process.env.HEAD_REF,
+            }));
+            console.log(`Bumping ${cur} -> ${nv}.`);
+          '
+          [ -f "$RUNNER_TEMP/bump.json" ] || exit 0
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json
-          git commit -m "chore: bump version to $new_ver"
-          git push origin "HEAD:$HEAD_REF"
-          echo "Bumped $head_ver -> $new_ver and pushed to $HEAD_REF."
+          # The contents API needs the blob being replaced, AT the PR head: if Dependabot pushed
+          # in the meantime this fails rather than overwriting, and the new push re-runs this.
+          blob=$(git rev-parse "HEAD:package.json")
+          node -e 'const f=process.argv[1]; const b=JSON.parse(require("fs").readFileSync(f)); b.sha=process.argv[2]; require("fs").writeFileSync(f, JSON.stringify(b))' "$RUNNER_TEMP/bump.json" "$blob"
+
+          # No author/committer in the request: naming either makes GitHub skip the signature.
+          verified=$(gh api -X PUT "repos/$REPO/contents/package.json" --input "$RUNNER_TEMP/bump.json" --jq '.commit.verification.verified')
+          if [ "$verified" != "true" ]; then
+            echo "::error title=Unsigned bump commit::GitHub did not sign the version-bump commit, and main requires signed commits."
+            exit 1
+          fi
+          echo "Bumped and pushed to $HEAD_REF as the bot App (signed)."
+
+  # Minor and patch updates merge themselves once CI passes, and each merge releases. Majors
+  # (dependabot.yml gives each its own PR) wait for a person. main needs one approval and the
+  # PR's author cannot give it, so this job's token approves; the bot App enables auto-merge, so
+  # the merge is the App's and its push to main triggers release.yml (a GITHUB_TOKEN merge would not).
+  auto-merge:
+    needs: bump
+    if: ${{ github.actor == 'dependabot[bot]' && github.event.action != 'synchronize' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      BOT_APP_ID: ${{ vars.UPSTREAM_BOT_APP_ID || secrets.UPSTREAM_BOT_APP_ID }}
+    steps:
+      - name: What kind of update is this
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get the bot App's token
+        id: app
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.BOT_APP_ID }}
+          private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Approve and enable auto-merge
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR: ${{ github.event.pull_request.html_url }}
+          KIND: ${{ steps.meta.outputs.update-type }}
+          APPROVER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          GH_TOKEN="$APPROVER_TOKEN" gh pr review "$PR" --approve --body "Approved for auto-merge: a ${KIND#version-update:semver-} update."
+          gh pr merge "$PR" --auto --merge
+          echo "Auto-merge on for $PR ($KIND)."
