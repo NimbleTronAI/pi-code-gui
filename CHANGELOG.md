@@ -3,7 +3,7 @@
 ## [0.2.9]
 
 ### Changed
-- **Model catalog refreshed to pi-ai 1.6.0**, with its current models and prices.
+- **Model catalog refreshed to pi-ai 1.6.0**, with its current models and prices, and tested against pi-coding-agent 1.6.0.
 
 ## [0.2.8]
 
