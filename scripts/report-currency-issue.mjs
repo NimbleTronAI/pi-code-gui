@@ -13,6 +13,10 @@
 //
 // A target with an open PR is listed with a link and does not by itself keep the issue open.
 //
+// THE RUN GOES RED when anything here is actionable — a stale target with no PR, or a CRITICAL
+// finding — AFTER the issue is written, so the issue is current and the failure shows in the
+// Actions list and in GitHub's failed-run email. A green run means every stale target has a PR.
+//
 // NOTIFICATION DISCIPLINE: editing an issue body is silent on GitHub, while a comment notifies.
 // So the body is rewritten on every run (always current, never spam) and a comment is posted
 // only when something NEWLY goes stale. The previous state rides along in an HTML comment in the
@@ -120,6 +124,17 @@ function buildBody() {
   return lines.join("\n");
 }
 
+/** Exit non-zero, with one annotation per reason so the run summary says what is stuck. */
+function failRun() {
+  const esc = (t) => String(t).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  for (const i of uncovered) {
+    const a = attemptFor(i);
+    console.log(`::error title=${esc(`${i.name} is behind at ${i.latest} with no PR`)}::${esc(a ? (a.reason ?? a.error ?? "its preparation failed") : "no PR was attempted")}`);
+  }
+  for (const c of critical) { console.log(`::error title=Supply-chain finding::${esc(c)}`); }
+  process.exit(1);
+}
+
 const existing = findOpenIssue();
 
 if (!actionable) {
@@ -143,7 +158,7 @@ if (!existing) {
   const out = gh(["issue", "create", "--title", TITLE, "--label", LABEL, "--body", body]);
   console.log(`Opened an issue for: ${uncovered.map((i) => i.name).join(", ") || "supply-chain findings"}`);
   if (out.trim()) { console.log(out.trim()); }
-  process.exit(0);
+  failRun();
 }
 
 // Update in place (silent), then notify only about what is new since last run.
@@ -157,3 +172,4 @@ if (newly.length) {
 } else {
   console.log(`Updated #${existing.number} in place; nothing newly stale, so no comment.`);
 }
+failRun();

@@ -28,7 +28,9 @@ pull request that already does the bump, the way Dependabot does for ordinary de
    closes the older PR. Because the App's pushes and PRs trigger workflows, CI runs on them as on
    anyone's.
 5. **report:** `scripts/report-currency-issue.mjs` keeps an issue open only for a stale target
-   with no PR (preparation failed, or PR creation failed) or a CRITICAL supply-chain finding.
+   with no PR (preparation failed, or PR creation failed) or a CRITICAL supply-chain finding,
+   and in exactly those cases it then **fails the run**, with one annotation per reason. A
+   green run means every stale target has a PR. (Until 2026-11-24 a stuck run finished green.)
 
 The pi-ai PR bumps the patch version and adds a CHANGELOG line, so merging it releases the new
 catalog. The SDK PR changes nothing that ships, so it does neither. A PR whose checks failed
@@ -82,7 +84,8 @@ Verified on 1.5.2 and 1.6.0, and it fails on a deliberately dropped thinking-del
    permissions **Contents** and **Pull requests** read and write, installable on this account only.
 2. **Generate a private key**; **Install App** on `pi-code-gui` only.
 3. Repo → Settings → Secrets and variables → Actions: secret **`UPSTREAM_BOT_PRIVATE_KEY`** (the
-   `.pem` contents) and variable **`UPSTREAM_BOT_APP_ID`**.
+   `.pem` contents) and variable **`UPSTREAM_BOT_APP_ID`** (the numeric App ID; a secret of that
+   name is accepted too).
 4. Org ruleset **`nimbletron-author-email`** → Bypass list: the App, and **Dependabot** if it is
    offered, both "Always allow". Dependabot's commits break the same rule; the ruleset was last
    edited on 2026-10-16, and Dependabot has opened no PR since 2026-10-13.
@@ -93,4 +96,4 @@ secret.
 Related: [Build Pipeline](build-pipeline.md), [SDK Resolution](sdk-resolution.md),
 [Open items](open-items.md).
 
-> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list.
+> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails.
