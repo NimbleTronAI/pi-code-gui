@@ -63,8 +63,7 @@ export const TARGETS = {
       "`src/model-registry.generated.json` (`pnpm run gen:model-registry`), a patch version bump and a CHANGELOG line,",
       "so merging this releases it.",
       "",
-      "**Review before merging:** the price changes below. The status bar quotes these rates, so a wrong one is shown",
-      "to users with full confidence. :warning: marks a move of 2x or more, or to or from free.",
+      "The price changes are tabled below for the record. :warning: marks a move of 2x or more, or to or from free.",
     ],
   },
   "pi-coding-agent": {
@@ -77,8 +76,7 @@ export const TARGETS = {
       `it records that the extension ran on ${v}, and the live check below is that run: the real \`PiService\` and`,
       "`SdkService` against the released SDK on the runner, with pi-ai's scripted (faux) provider standing in for a vendor model.",
       "",
-      "**Review before merging:** the check table, and upstream's changelog for anything a live run cannot see",
-      `(https://github.com/earendil-works/pi/releases/tag/v${v}).`,
+      `Upstream's changelog: https://github.com/earendil-works/pi/releases/tag/v${v}`,
     ],
   },
 };
@@ -154,9 +152,21 @@ export function sdkTestedFor({ sdkVersion, sdkReady, mainTested }) {
   return mainTested ? { version: mainTested, source: "main" } : null;
 }
 
-export function composeBody(id, version, { ready, reason, report, checks, handsOff, sdkTested } = {}) {
+/** Whether a bot PR merges itself once CI passes: always, except a draft (a failed check opens
+ *  one, and GitHub cannot merge a draft). Founder's call, 2026-11-24: no hold for price moves. */
+export function autoMergeDecision(id, { ready } = {}) {
+  if (!ready) { return { auto: false, why: "not every check passed, so it is a draft" }; }
+  return { auto: true, why: id === "pi-ai" ? "every check passed" : "the live check passed" };
+}
+
+export function composeBody(id, version, { ready, reason, report, checks, handsOff, sdkTested, autoMerge } = {}) {
   const t = target(id);
   const L = [...t.intro(version), ""];
+  if (autoMerge) {
+    L.push(autoMerge.auto
+      ? `**Auto-merge is on** (${autoMerge.why}): this merges by itself once CI passes${target(id).releases ? ", and merging it releases" : ""}. To stop it, disable auto-merge on this PR.`
+      : `**Waiting for your review:** ${autoMerge.why}.`, "");
+  }
   if (id === "pi-ai" && sdkTested) {
     L.push(sdkTested.source === "run"
       ? `The release note says *tested against pi-coding-agent ${sdkTested.version}*: its live check passed in this run, and its own PR records that. **Merge the two in either order**; the note is true either way.`
@@ -199,10 +209,10 @@ const argv = process.argv.slice(2);
 const flag = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
 const DRY = argv.includes("--dry-run");
 
-function run(cmd, args, { allowFail = false, mutates = false } = {}) {
+function run(cmd, args, { allowFail = false, mutates = false, env } = {}) {
   if (DRY && mutates) { console.log(`[dry-run] ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`); return ""; }
   try {
-    return execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
   } catch (e) {
     if (allowFail) { return null; }
     throw new Error(`${cmd} ${args.slice(0, 3).join(" ")} failed: ${e.stderr || e.message}`);
@@ -318,7 +328,8 @@ function openPr() {
     }
   }
 
-  const body = composeBody(id, version, { ...status, report: readMaybe(join(dir, "report.md")), checks: readMaybe(join(dir, "checks.md")), handsOff, sdkTested });
+  const autoMerge = autoMergeDecision(id, { ready: status.ready });
+  const body = composeBody(id, version, { ...status, report: readMaybe(join(dir, "report.md")), checks: readMaybe(join(dir, "checks.md")), handsOff, sdkTested, autoMerge });
   const bodyFile = join(process.env.RUNNER_TEMP || tmpdir(), `upstream-pr-${id}.md`);
   writeFileSync(bodyFile, body);
 
@@ -346,7 +357,22 @@ function openPr() {
 
   // No CI kick needed: the App's branch update and PR events trigger ci.yml like anyone else's.
 
-  record({ state, number, url, draft: !status.ready, handsOff });
+  // Auto-merge. main needs one approval and a PR's author cannot approve it, so the workflow's own
+  // token (APPROVER_TOKEN) approves — new content only; main keeps approvals across pushes — and
+  // the App enables auto-merge, so the merge itself is the App's and triggers release.yml.
+  if (number) {
+    if (autoMerge.auto) {
+      if (state === "opened" || pushed) {
+        if (!process.env.APPROVER_TOKEN && !DRY) { throw new Error("APPROVER_TOKEN is not set, so the PR cannot be approved for auto-merge"); }
+        gh(["pr", "review", String(number), "--approve", "--body", `Approved for auto-merge: ${autoMerge.why}.`], { mutates: true, env: { GH_TOKEN: process.env.APPROVER_TOKEN } });
+      }
+      gh(["pr", "merge", String(number), "--auto", "--merge"], { mutates: true });
+    } else if (mine) {
+      gh(["pr", "merge", String(number), "--disable-auto"], { mutates: true, allowFail: true });   // fails when it was never on
+    }
+  }
+
+  record({ state, number, url, draft: !status.ready, handsOff, autoMerge: autoMerge.auto, autoMergeWhy: autoMerge.why });
 }
 
 function setSdkVersion() {

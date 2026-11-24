@@ -112,7 +112,9 @@ it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds t
 signed commit by the org's bot App) and
 the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and adds a
 CHANGELOG line itself. The upstream PRs are pushed by an org GitHub App, whose pushes and PRs
-start CI like anyone's. See [Upstream bump PRs](upstream-bump-prs.md).
+start CI like anyone's. **Some of them merge themselves**, and so ship unattended: Dependabot
+minor/patch PRs, and every pi-ai PR whose checks passed, once CI passes. See
+[Upstream bump PRs](upstream-bump-prs.md).
 
 > **Last updated:** 2026-11-24 — release.yml checks the tag on the remote (shallow checkouts
 > have no tags); bot PRs that release: the upstream-currency PRs, pushed by an org GitHub App.
