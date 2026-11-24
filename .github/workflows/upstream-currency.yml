@@ -255,7 +255,7 @@ jobs:
       - name: Get the bot App's token
         id: app
         if: env.BOT_APP_ID != '' && env.BOT_KEY_SET == 'true'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ env.BOT_APP_ID }}
           private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}

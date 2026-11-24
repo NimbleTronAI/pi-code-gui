@@ -50,7 +50,7 @@ jobs:
 
       - name: Get the bot App's token
         id: app
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ env.BOT_APP_ID }}
           private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
@@ -132,7 +132,7 @@ jobs:
       - name: Get the bot App's token
         id: app
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ env.BOT_APP_ID }}
           private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
