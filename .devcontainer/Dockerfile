@@ -30,14 +30,17 @@ ENV NPM_CONFIG_PREFIX=/home/${USERNAME}/.npm-global \
 
 RUN mkdir -p /home/${USERNAME}/.npm-global/bin /home/${USERNAME}/.local/bin
 
-# Install the pnpm shim via corepack (the actual pnpm version is fetched lazily
-# on first use, driven by the workspace's packageManager field — the workspace
-# isn't mounted at build time, so we can't `corepack prepare --activate` here).
+# Node 25+ no longer bundles corepack, so install it from npm first (into the
+# user-writable prefix above), then install the pnpm shim via corepack. The
+# actual pnpm version is fetched lazily on first use, driven by the workspace's
+# packageManager field — the workspace isn't mounted at build time, so we can't
+# `corepack prepare --activate` here.
 # --install-directory targets the user-writable npm prefix; without it corepack
 # tries to symlink into /usr/local/bin and fails with EACCES under the node user.
 # Also seed pi-coding-agent so the extension finds it
 # immediately.
-RUN corepack enable --install-directory /home/${USERNAME}/.npm-global/bin && \
+RUN npm install -g corepack && \
+    corepack enable --install-directory /home/${USERNAME}/.npm-global/bin && \
     npm install -g @earendil-works/pi-coding-agent@latest
 
 WORKDIR /workspaces
