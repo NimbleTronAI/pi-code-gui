@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  TARGETS, branchName, bumpPatchVersion, addChangelogEntry, disallowedPaths, supersededPrs, setTestedAgainst, composeBody,
+  TARGETS, branchName, bumpPatchVersion, addChangelogEntry, disallowedPaths, supersededPrs, setTestedAgainst, composeBody, treeEntriesFromRaw, isBotAuthor,
 } from "../upstream-pr.mjs";
 
 test("one branch per target and version, so a new upstream release gets a new PR", () => {
@@ -83,4 +83,38 @@ test("the PR body says what to review, includes the prepared report, and marks i
   const draft = composeBody("pi-coding-agent", "1.6.0", { ready: false, reason: "live check failed", report: "R" });
   assert.match(draft, /draft/i);
   assert.match(draft, /live check failed/);
+});
+
+test("the signed commit's tree entries come straight from git diff --raw", () => {
+  const a = "a".repeat(40), b = "b".repeat(40), z = "0".repeat(40);
+  const raw = [
+    `:100644 100644 ${a} ${b} M\tpackage.json`,
+    `:000000 100644 ${z} ${b} A\tsrc/new file.json`,
+    `:100755 000000 ${a} ${z} D\tscripts/old.sh`,
+    "",
+  ].join("\n");
+  assert.deepEqual(treeEntriesFromRaw(raw), [
+    { path: "package.json", mode: "100644", type: "blob", sha: b },
+    { path: "src/new file.json", mode: "100644", type: "blob", sha: b },
+    { path: "scripts/old.sh", mode: "100755", type: "blob", sha: null },
+  ]);
+  assert.deepEqual(treeEntriesFromRaw(""), []);
+});
+
+test("anything but a plain file change is refused rather than half-published", () => {
+  const a = "a".repeat(40), b = "b".repeat(40);
+  assert.throws(() => treeEntriesFromRaw(`:120000 120000 ${a} ${b} M\tlink`), /non-file change to link/);
+  assert.throws(() => treeEntriesFromRaw(`:160000 160000 ${a} ${b} M\tsub`), /non-file change to sub/);
+  assert.throws(() => treeEntriesFromRaw(`:100644 100644 ${a} ${b} R100\told\tnew`), /unexpected change/);
+});
+
+test("only the bot App's own commits keep a bot branch under the bot's control", () => {
+  const slug = "nimbletron-upstream-bot";
+  assert.equal(isBotAuthor(`123456+${slug}[bot]@users.noreply.github.com`, slug), true);
+  assert.equal(isBotAuthor("jack@nimbletron.ai", slug), false);
+  assert.equal(isBotAuthor("41898282+github-actions[bot]@users.noreply.github.com", slug), false);
+  assert.equal(isBotAuthor(`123456+${slug}-evil[bot]@users.noreply.github.com`, slug), false);
+  assert.equal(isBotAuthor(`123456+${slug}[bot]@users.noreply.github.com`, undefined), false);
+  assert.equal(isBotAuthor("1+a.b[bot]@users.noreply.github.com", "a.b"), true);
+  assert.equal(isBotAuthor("1+axb[bot]@users.noreply.github.com", "a.b"), false);
 });

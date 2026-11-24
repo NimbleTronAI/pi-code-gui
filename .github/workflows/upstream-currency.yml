@@ -20,12 +20,22 @@ name: Upstream currency
 #
 # TRUST SPLIT. The prepare jobs run upstream code (pnpm add, the catalog generator, the live
 # check) and get a READ-ONLY token and no secrets: the live check drives a scripted model, not a
-# vendor's. They hand a patch to `open-prs`, which can push but never installs or runs upstream code: it checks the patch
-# touches only the files its target owns, then uses git and gh (scripts/upstream-pr.mjs).
+# vendor's. They hand a patch to `open-prs`, which can push but never installs or runs upstream
+# code: it checks the patch touches only the files its target owns, then uses git and gh
+# (scripts/upstream-pr.mjs).
 #
-# ONE-TIME REPO SETUP:
-#   - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
-#     Without it, PR creation fails and the bump is reported in the issue instead.
+# WHO PUSHES: an org-owned GitHub App, not the workflow's GITHUB_TOKEN. Three rules meet here:
+# main requires SIGNED commits (GitHub signs a bot's commit made through its API, but only when the
+# request names no custom author); the org ruleset `nimbletron-author-email` requires an
+# @nimbletron.ai author on EVERY branch (so the bot's own author needs a bypass); and a ruleset's
+# bypass list accepts GitHub Apps but not the built-in GitHub Actions bot. An App's pushes and PRs
+# also trigger workflows, so CI runs on the bot's PRs like on anyone else's.
+#
+# ONE-TIME SETUP (agent-wiki/operations/upstream-bump-prs.md has the click-by-click):
+#   - A GitHub App owned by the org, installed on this repo only, with Contents and Pull requests
+#     read/write. Its App ID in the repo VARIABLE UPSTREAM_BOT_APP_ID, its private key in the repo
+#     SECRET UPSTREAM_BOT_PRIVATE_KEY. Without them no PR is attempted and the issue says why.
+#   - That App on the bypass list of the org ruleset `nimbletron-author-email`, "Always allow".
 
 on:
   schedule:
@@ -217,14 +227,13 @@ jobs:
     needs: [check, prepare-pi-ai, prepare-sdk]
     if: always() && needs.check.result == 'success' && (needs.check.outputs.pi_ai != '' || needs.check.outputs.sdk != '')
     runs-on: ubuntu-latest
+    # GITHUB_TOKEN only reads here; every write goes through the App's token below.
     permissions:
-      contents: write        # push the upstream/* branch
-      pull-requests: write   # open / update / close the PR
-      actions: write         # start ci.yml on the branch (GITHUB_TOKEN pushes don't trigger it)
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # the read-only GITHUB_TOKEN stays for git fetch; nothing is pushed with it
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -234,21 +243,38 @@ jobs:
           path: prepared
         continue-on-error: true   # none at all when both prepare jobs failed
 
+      # A token for the org's bot App, limited to this repo and to what opening a PR needs.
+      - name: Get the bot App's token
+        id: app
+        if: vars.UPSTREAM_BOT_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.UPSTREAM_BOT_APP_ID }}
+          private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Open or update the PRs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          UPSTREAM_BOT_SLUG: ${{ steps.app.outputs.app-slug }}
           PI_AI: ${{ needs.check.outputs.pi_ai }}
           SDK: ${{ needs.check.outputs.sdk }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           : > prs.jsonl
+          skip() {
+            T="$1" VER="$2" WHY="$3" node -e 'require("fs").appendFileSync("prs.jsonl", JSON.stringify({ target: process.env.T, version: process.env.VER, state: "skipped", reason: process.env.WHY }) + "\n")'
+          }
           for pair in "pi-ai|$PI_AI" "pi-coding-agent|$SDK"; do
             t="${pair%%|*}"; v="${pair#*|}"
             [ -n "$v" ] || continue
-            if [ -d "prepared/prepared-$t" ]; then
+            if [ -z "$GH_TOKEN" ]; then
+              skip "$t" "$v" "the bot App is not set up (repo variable UPSTREAM_BOT_APP_ID, secret UPSTREAM_BOT_PRIVATE_KEY; see agent-wiki/operations/upstream-bump-prs.md)"
+            elif [ -d "prepared/prepared-$t" ]; then
               node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl || true
             else
-              T="$t" VER="$v" node -e 'require("fs").appendFileSync("prs.jsonl", JSON.stringify({ target: process.env.T, version: process.env.VER, state: "skipped", reason: `its prepare job failed (${process.env.RUN_URL})` }) + "\n")'
+              skip "$t" "$v" "its prepare job failed ($RUN_URL)"
             fi
           done
           cat prs.jsonl

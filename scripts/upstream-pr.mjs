@@ -16,6 +16,14 @@
 // installs or imports upstream code: it checks the patch touches only the files its target owns,
 // applies it, and talks to git and gh.
 //
+// SIGNED COMMITS: main requires signed commits, and a `git commit` on a runner is unsigned, so a
+// bot PR built that way could never merge. The commit is therefore built locally (to get its
+// exact tree) and then created through GitHub's git-data API, which GitHub signs for a bot token
+// as long as the request names NO custom author or committer. The author is therefore the org's
+// bot App (`<slug>[bot]`), which must be on the bypass list of the org ruleset
+// `nimbletron-author-email`, or the branch update is refused and the issue says so. The workflow
+// passes the App's token as GH_TOKEN and its slug as UPSTREAM_BOT_SLUG.
+//
 // "Prepared" directory, written by the workflow's prepare jobs:
 //   change.patch   git diff of the bump (absent or empty: nothing to propose)
 //   status.json    { "ready": bool, "reason": "…" }   ready=false → a DRAFT PR, or no PR without a patch
@@ -30,8 +38,13 @@ import { tmpdir } from "node:os";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const LABEL = "upstream-currency";
-const BOT_NAME = "github-actions[bot]";
-const BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
+/** Whether a commit author is the bot App: `<user id>+<slug>[bot]@users.noreply.github.com`.
+ *  Anyone else on a bot branch makes it hands-off. */
+export function isBotAuthor(email, slug) {
+  if (!slug) { return false; }
+  const s = slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\d+\\+${s}\\[bot\\]@users\\.noreply\\.github\\.com$`).test(email);
+}
 const WORKFLOW = "`.github/workflows/upstream-currency.yml`";
 
 export const TARGETS = {
@@ -148,6 +161,22 @@ export function composeBody(id, version, { ready, reason, report, checks, handsO
   return L.join("\n");
 }
 
+/** `git diff --raw --no-abbrev base head` → tree entries for GitHub's create-a-tree API. A deleted
+ *  file is an entry with sha null; anything that is not a regular file is refused, since no target
+ *  of this script owns one and a mode change there would be surprising. */
+export function treeEntriesFromRaw(raw) {
+  const entries = [];
+  for (const line of raw.split("\n").filter(Boolean)) {
+    const m = line.match(/^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([AMD])\t(.+)$/);
+    if (!m) { throw new Error(`unexpected change in the bot commit: ${line}`); }
+    const [, oldMode, newMode, , newSha, kind, path] = m;
+    const mode = kind === "D" ? oldMode : newMode;
+    if (mode !== "100644" && mode !== "100755") { throw new Error(`refusing a non-file change to ${path} (mode ${mode})`); }
+    entries.push(kind === "D" ? { path, mode, type: "blob", sha: null } : { path, mode, type: "blob", sha: newSha });
+  }
+  return entries;
+}
+
 // ── side effects ─────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
@@ -166,6 +195,39 @@ function run(cmd, args, { allowFail = false, mutates = false } = {}) {
 const git = (args, o) => run("git", args, o);
 const gh = (args, o) => run("gh", args, o);
 const readMaybe = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
+const REPO = process.env.GITHUB_REPOSITORY || "{owner}/{repo}";
+/** A JSON POST/PATCH through `gh api`. The body goes in a file: the catalog is ~350KB, past what a
+ *  single command-line argument may hold. */
+function api(method, path, body) {
+  const f = join(process.env.RUNNER_TEMP || tmpdir(), `upstream-pr-api-${process.pid}.json`);
+  writeFileSync(f, JSON.stringify(body));
+  return JSON.parse(gh(["api", "-X", method, `repos/${REPO}/${path}`, "--input", f]));
+}
+
+/** Recreate the local HEAD commit on GitHub as a SIGNED commit, and point `branch` at it. */
+function publishSigned(branch, remoteExists) {
+  const parent = git(["rev-parse", "origin/main"]).trim();
+  const localTree = git(["rev-parse", "HEAD^{tree}"]).trim();
+  const message = git(["log", "-1", "--format=%B"]).trim();
+  const entries = treeEntriesFromRaw(git(["diff", "--raw", "--no-abbrev", "--no-renames", "origin/main", "HEAD"]));
+  for (const e of entries.filter((x) => x.sha)) {
+    const content = execFileSync("git", ["cat-file", "blob", e.sha], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }).toString("base64");
+    const blob = api("POST", "git/blobs", { content, encoding: "base64" });
+    if (blob.sha !== e.sha) { throw new Error(`GitHub stored ${e.path} as ${blob.sha}, expected ${e.sha}`); }
+  }
+  const baseTree = git(["rev-parse", "origin/main^{tree}"]).trim();
+  const tree = api("POST", "git/trees", { base_tree: baseTree, tree: entries });
+  // Same content ⇒ same tree hash. A mismatch means the API commit would not be what was checked.
+  if (tree.sha !== localTree) { throw new Error(`the tree built on GitHub (${tree.sha}) differs from the local one (${localTree})`); }
+  // No author/committer fields: naming either makes GitHub skip the signature.
+  const commit = api("POST", "git/commits", { message, tree: tree.sha, parents: [parent] });
+  if (!commit.verification?.verified) {
+    throw new Error(`GitHub did not sign the bot commit (${commit.verification?.reason ?? "no verification info"}), and main requires signed commits`);
+  }
+  if (remoteExists) { api("PATCH", `git/refs/heads/${branch}`, { sha: commit.sha, force: true }); }
+  else { api("POST", "git/refs", { ref: `refs/heads/${branch}`, sha: commit.sha }); }
+  return commit.sha;
+}
 
 function openPr() {
   const id = flag("--target"), version = flag("--version"), dir = flag("--dir"), out = flag("--out");
@@ -192,15 +254,18 @@ function openPr() {
   const bad = disallowedPaths(id, touched);
   if (bad.length) { throw new Error(`refusing a ${id} patch that touches ${bad.join(", ")} (allowed: ${t.paths.join(", ")})`); }
 
-  git(["config", "user.name", BOT_NAME], { mutates: true });
-  git(["config", "user.email", BOT_EMAIL], { mutates: true });
+  const slug = process.env.UPSTREAM_BOT_SLUG;
+  if (!slug && !DRY) { throw new Error("UPSTREAM_BOT_SLUG is not set (the bot App's slug, from actions/create-github-app-token)"); }
+  // Identity for the LOCAL commit only, which is never pushed: GitHub recreates it, signed, as the App.
+  git(["config", "user.name", `${slug ?? "upstream-bot"}[bot]`], { mutates: true });
+  git(["config", "user.email", "upstream-bot@localhost"], { mutates: true });
   git(["fetch", "--quiet", "origin", "main"]);
   const remoteExists = git(["ls-remote", "--exit-code", "--heads", "origin", branch], { allowFail: true }) !== null;
   if (remoteExists) { git(["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]); }
 
   // A human pushed to this branch → stop rebuilding it; only the description is refreshed.
   const foreign = remoteExists
-    ? git(["log", "--format=%ae", `origin/main..origin/${branch}`]).trim().split("\n").filter((e) => e && e !== BOT_EMAIL)
+    ? git(["log", "--format=%ae", `origin/main..origin/${branch}`]).trim().split("\n").filter((e) => e && !isBotAuthor(e, slug))
     : [];
   const handsOff = foreign.length > 0;
 
@@ -224,7 +289,8 @@ function openPr() {
     const sameContent = remoteExists && !DRY && git(["diff", "--quiet", `origin/${branch}`, "HEAD"], { allowFail: true }) !== null;
     const onMain = remoteExists && git(["merge-base", "--is-ancestor", "origin/main", `origin/${branch}`], { allowFail: true }) !== null;
     if (!(sameContent && onMain)) {
-      git(["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${branch}`], { mutates: true });
+      if (DRY) { console.log(`[dry-run] publish a signed commit to ${branch}`); }
+      else { console.log(`${branch} → ${publishSigned(branch, remoteExists)} (signed)`); }
       pushed = true;
     }
   }
@@ -255,9 +321,7 @@ function openPr() {
     gh(["pr", "close", String(old.number), "--delete-branch", "--comment", `Superseded by ${url ?? `the ${version} PR`}: upstream released ${version}.`], { mutates: true });
   }
 
-  // Pushes made with the workflow's GITHUB_TOKEN do not trigger other workflows, so CI would
-  // never run on this branch by itself. workflow_dispatch is the documented exception.
-  if (pushed) { gh(["workflow", "run", "ci.yml", "--ref", branch], { mutates: true, allowFail: true }); }
+  // No CI kick needed: the App's branch update and PR events trigger ci.yml like anyone else's.
 
   record({ state, number, url, draft: !status.ready, handsOff });
 }
@@ -279,7 +343,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   } catch (e) {
     console.error(e.message);
     // A failed `open` still leaves a row, so the issue reporter can say WHY there is no PR
-    // (most often: the repo setting that lets Actions create pull requests is off).
+    // (most often: the org ruleset refused the branch, or the bot App lacks a permission).
     const out = flag("--out");
     if (argv[0] === "open" && out) {
       appendFileSync(out, JSON.stringify({ target: flag("--target"), version: flag("--version"), state: "skipped", reason: `opening the PR failed: ${e.message.slice(0, 500)}` }) + "\n");
