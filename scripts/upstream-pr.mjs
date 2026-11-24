@@ -2,6 +2,7 @@
 // .github/workflows/upstream-currency.yml.
 //
 //   node scripts/upstream-pr.mjs open --target pi-ai --version 1.6.0 --dir <prepared> [--out prs.json] [--dry-run]
+//        [--sdk-version 1.6.0 --sdk-dir <prepared SDK>]   pi-ai only: what its release note may claim was tested
 //   node scripts/upstream-pr.mjs set-sdk-version 1.6.0 --summary "22/22 checks"
 //
 // WHY A PR, WHEN THIS USED TO BE AN ISSUE: the issue said what moved and what to run, then sat
@@ -54,14 +55,15 @@ export const TARGETS = {
     // The catalog ships inside the extension, so this is a release: bump the version (release.yml
     // tags it on merge) and say so in the changelog, which is user-visible by our own rule.
     releases: true,
-    changelogLine: (v) => `- **Model catalog refreshed to pi-ai ${v}**, with its current models and prices.`,
+    // `sdk`: the pi-coding-agent release this one was tested against (see sdkTestedFor), so the
+    // release note says it, as 0.2.8's did.
+    changelogLine: (v, sdk) => `- **Model catalog refreshed to pi-ai ${v}**, with its current models and prices${sdk ? `, and tested against pi-coding-agent ${sdk}` : ""}.`,
     intro: (v) => [
       `Moves the bundled model catalog to **pi-ai ${v}**: the \`@earendil-works/pi-ai\` devDependency, a regenerated`,
       "`src/model-registry.generated.json` (`pnpm run gen:model-registry`), a patch version bump and a CHANGELOG line,",
       "so merging this releases it.",
       "",
-      "**Review before merging:** the price changes below. The status bar quotes these rates, so a wrong one is shown",
-      "to users with full confidence. :warning: marks a move of 2x or more, or to or from free.",
+      "The price changes are tabled below for the record. :warning: marks a move of 2x or more, or to or from free.",
     ],
   },
   "pi-coding-agent": {
@@ -74,8 +76,7 @@ export const TARGETS = {
       `it records that the extension ran on ${v}, and the live check below is that run: the real \`PiService\` and`,
       "`SdkService` against the released SDK on the runner, with pi-ai's scripted (faux) provider standing in for a vendor model.",
       "",
-      "**Review before merging:** the check table, and upstream's changelog for anything a live run cannot see",
-      `(https://github.com/earendil-works/pi/releases/tag/v${v}).`,
+      `Upstream's changelog: https://github.com/earendil-works/pi/releases/tag/v${v}`,
     ],
   },
 };
@@ -143,9 +144,34 @@ export function setTestedAgainst(jsonText, version, date, summary) {
   return JSON.stringify(o, null, 2) + "\n";
 }
 
-export function composeBody(id, version, { ready, reason, report, checks, handsOff } = {}) {
+/** Which pi-coding-agent release a pi-ai PR can say it was tested against: the latest SDK, if
+ *  its live check passed in THIS run (its own PR may still be open; merge order does not change
+ *  what is true), otherwise what main records. Null when neither is known. */
+export function sdkTestedFor({ sdkVersion, sdkReady, mainTested }) {
+  if (sdkVersion && sdkReady) { return { version: sdkVersion, source: "run" }; }
+  return mainTested ? { version: mainTested, source: "main" } : null;
+}
+
+/** Whether a bot PR merges itself once CI passes: always, except a draft (a failed check opens
+ *  one, and GitHub cannot merge a draft). Founder's call, 2026-11-24: no hold for price moves. */
+export function autoMergeDecision(id, { ready } = {}) {
+  if (!ready) { return { auto: false, why: "not every check passed, so it is a draft" }; }
+  return { auto: true, why: id === "pi-ai" ? "every check passed" : "the live check passed" };
+}
+
+export function composeBody(id, version, { ready, reason, report, checks, handsOff, sdkTested, autoMerge } = {}) {
   const t = target(id);
   const L = [...t.intro(version), ""];
+  if (autoMerge) {
+    L.push(autoMerge.auto
+      ? `**Auto-merge is on** (${autoMerge.why}): this merges by itself once CI passes${target(id).releases ? ", and merging it releases" : ""}. To stop it, disable auto-merge on this PR.`
+      : `**Waiting for your review:** ${autoMerge.why}.`, "");
+  }
+  if (id === "pi-ai" && sdkTested) {
+    L.push(sdkTested.source === "run"
+      ? `The release note says *tested against pi-coding-agent ${sdkTested.version}*: its live check passed in this run, and its own PR records that. **Merge the two in either order**; the note is true either way.`
+      : `The release note says *tested against pi-coding-agent ${sdkTested.version}*, the release main records as tested.`, "");
+  }
   if (!ready) {
     L.push(`> [!WARNING]`, `> **Opened as a draft:** ${reason ?? "the prepare job did not pass"}. Fix it on this branch, then mark it ready.`, "");
   }
@@ -183,10 +209,10 @@ const argv = process.argv.slice(2);
 const flag = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
 const DRY = argv.includes("--dry-run");
 
-function run(cmd, args, { allowFail = false, mutates = false } = {}) {
+function run(cmd, args, { allowFail = false, mutates = false, env } = {}) {
   if (DRY && mutates) { console.log(`[dry-run] ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`); return ""; }
   try {
-    return execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return execFileSync(cmd, args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
   } catch (e) {
     if (allowFail) { return null; }
     throw new Error(`${cmd} ${args.slice(0, 3).join(" ")} failed: ${e.stderr || e.message}`);
@@ -233,6 +259,13 @@ function openPr() {
   const id = flag("--target"), version = flag("--version"), dir = flag("--dir"), out = flag("--out");
   if (!id || !version || !dir) { throw new Error("open needs --target, --version and --dir"); }
   const t = target(id);
+  // For the pi-ai release note: the SDK this run prepared (--sdk-version, --sdk-dir), else main's.
+  const sdkDir = flag("--sdk-dir");
+  const sdkStatus = sdkDir && existsSync(join(sdkDir, "status.json")) ? JSON.parse(readFileSync(join(sdkDir, "status.json"), "utf8")) : null;
+  const sdkTested = id === "pi-ai" ? sdkTestedFor({
+    sdkVersion: flag("--sdk-version"), sdkReady: !!sdkStatus?.ready,
+    mainTested: JSON.parse(readFileSync(join(ROOT, "src", "pi-sdk-version.json"), "utf8")).testedAgainst,
+  }) : null;
   const branch = branchName(id, version);
   const status = existsSync(join(dir, "status.json")) ? JSON.parse(readFileSync(join(dir, "status.json"), "utf8")) : { ready: false, reason: "the prepare job wrote no status" };
   const patchPath = join(dir, "change.patch");
@@ -278,7 +311,7 @@ function openPr() {
       const pkg = bumpPatchVersion(readFileSync(join(ROOT, "package.json"), "utf8"));
       writeFileSync(join(ROOT, "package.json"), pkg.text);
       const cl = join(ROOT, "CHANGELOG.md");
-      writeFileSync(cl, addChangelogEntry(readFileSync(cl, "utf8"), pkg.to, t.changelogLine(version)));
+      writeFileSync(cl, addChangelogEntry(readFileSync(cl, "utf8"), pkg.to, t.changelogLine(version, sdkTested?.version)));
       git(["add", "package.json", "CHANGELOG.md"]);
       msg += `\n\nVersion ${pkg.from} -> ${pkg.to}.`;
     }
@@ -295,7 +328,8 @@ function openPr() {
     }
   }
 
-  const body = composeBody(id, version, { ...status, report: readMaybe(join(dir, "report.md")), checks: readMaybe(join(dir, "checks.md")), handsOff });
+  const autoMerge = autoMergeDecision(id, { ready: status.ready });
+  const body = composeBody(id, version, { ...status, report: readMaybe(join(dir, "report.md")), checks: readMaybe(join(dir, "checks.md")), handsOff, sdkTested, autoMerge });
   const bodyFile = join(process.env.RUNNER_TEMP || tmpdir(), `upstream-pr-${id}.md`);
   writeFileSync(bodyFile, body);
 
@@ -323,7 +357,22 @@ function openPr() {
 
   // No CI kick needed: the App's branch update and PR events trigger ci.yml like anyone else's.
 
-  record({ state, number, url, draft: !status.ready, handsOff });
+  // Auto-merge. main needs one approval and a PR's author cannot approve it, so the workflow's own
+  // token (APPROVER_TOKEN) approves — new content only; main keeps approvals across pushes — and
+  // the App enables auto-merge, so the merge itself is the App's and triggers release.yml.
+  if (number) {
+    if (autoMerge.auto) {
+      if (state === "opened" || pushed) {
+        if (!process.env.APPROVER_TOKEN && !DRY) { throw new Error("APPROVER_TOKEN is not set, so the PR cannot be approved for auto-merge"); }
+        gh(["pr", "review", String(number), "--approve", "--body", `Approved for auto-merge: ${autoMerge.why}.`], { mutates: true, env: { GH_TOKEN: process.env.APPROVER_TOKEN } });
+      }
+      gh(["pr", "merge", String(number), "--auto", "--merge"], { mutates: true });
+    } else if (mine) {
+      gh(["pr", "merge", String(number), "--disable-auto"], { mutates: true, allowFail: true });   // fails when it was never on
+    }
+  }
+
+  record({ state, number, url, draft: !status.ready, handsOff, autoMerge: autoMerge.auto, autoMergeWhy: autoMerge.why });
 }
 
 function setSdkVersion() {
