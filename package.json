@@ -497,19 +497,19 @@
     "@earendil-works/pi-ai": "^1.6.0",
     "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "^30.0.0",
-    "@types/node": "~26.6.5",
+    "@types/node": "~26.6.6",
     "@types/vscode": "^1.125.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^4.0.0",
+    "@vscode/vsce": "^4.1.1",
     "esbuild": "^0.28.2",
-    "eslint": "^10.12.0",
+    "eslint": "^10.15.0",
     "jsdom": "^31.0.1",
-    "npm-run-all2": "^9.0.3",
-    "ovsx": "^1.2.0",
+    "npm-run-all2": "^9.1.0",
+    "ovsx": "^1.4.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.71.1",
-    "zod": "^4.6.5"
+    "typescript-eslint": "^8.73.0",
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "@types/mocha": "^10.0.10"
