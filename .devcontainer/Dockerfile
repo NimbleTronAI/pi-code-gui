@@ -7,15 +7,18 @@
 # volume-cached binaries built on an older base (esbuild, ripgrep/fd, native
 # node modules) remain forward-compatible; do not move back to bookworm.
 #
-# Pinned to a VERSIONED tag (<image version>-<node>-trixie), not the floating
-# `24-trixie`. Microsoft rebuilds `24-trixie` under the same name, and Dependabot
-# compares tag names, so the floating tag never produced an update PR (last one:
-# 22 -> 24 on 2026-08-08) while the container silently got whatever the tag held
-# on rebuild day. With the version in the tag, Dependabot proposes each image
-# release (minor/patch auto-merge; they ship nothing, so no release follows) and
-# every rebuild gets the same image. 5.2.7-24-trixie had the same digest as
-# 24-trixie when pinned (2026-11-24).
-FROM mcr.microsoft.com/devcontainers/typescript-node:5.2.7-24-trixie
+# Node 26 (the active LTS line since 2026-10), matching `node-version: '26'` in
+# every workflow: keep the two in step, or local runs and CI test different Nodes.
+#
+# Pinned by DIGEST on the `26-trixie` tag. Microsoft rebuilds that tag under the
+# same name, and Dependabot compares tag names, so a bare tag never produced an
+# update PR (none from 2026-08-08 to 2026-11-24) while each rebuild silently took
+# whatever the tag held that day. With the digest, Dependabot proposes each
+# rebuild as a digest update (auto-merged; the dev container ships nothing, so no
+# release follows). A versioned tag (5.2.7-24-trixie) was tried and does not work:
+# Dependabot misread this image's <image>-<node>-trixie scheme and proposed the
+# floating `5-26-trixie` (#118).
+FROM mcr.microsoft.com/devcontainers/typescript-node:26-trixie@sha256:fa6520fb01b8971e78312715c39672e7299f6abdb040e4b444b42ea0b7cd44d9
 
 ARG USERNAME=node
 

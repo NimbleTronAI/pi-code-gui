@@ -37,7 +37,7 @@ jobs:
           fetch-tags: true
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
       - name: Get the bot App's token
         id: app
         uses: actions/create-github-app-token@v3
