@@ -38,6 +38,17 @@ passed in the same run (its own PR may still be open), otherwise the one main re
 the line is true, so the two PRs can be merged in any order, and the PR says so. The SDK PR changes nothing that ships, so it does neither. A PR whose checks failed
 opens as a draft. A failed live check opens no PR, and the issue carries its report.
 
+**Auto-merge.** Every bot PR whose checks passed merges itself once CI passes; only a draft
+(a failed check) waits. There is deliberately no hold for price moves (founder's decision,
+2026-11-24); the price table stays in the PR as a record. main needs one approval and a PR's
+author cannot approve it, so the job's GITHUB_TOKEN approves (repo setting "Allow GitHub Actions
+to create and approve pull requests") and the App enables auto-merge, so the merge into main is
+the App's and triggers `release.yml`: **an auto-merged pi-ai PR releases with nobody involved.**
+Dependabot minor and patch PRs get the same treatment in `dependabot-version-bump.yml`
+(`dependabot/fetch-metadata` reads the update type); majors wait. This relies on main requiring
+the CI check ("Lint, type-check and test", which `ci.yml` also runs on `merge_group`), and on the
+repo's "Allow auto-merge" setting.
+
 **Trust split:** upstream code (the install, the generator, the live check) runs only in the
 read-only prepare jobs. The job that can push applies a patch and calls git and gh; it never
 installs or imports upstream code.
@@ -102,4 +113,4 @@ secret.
 Related: [Build Pipeline](build-pipeline.md), [SDK Resolution](sdk-resolution.md),
 [Open items](open-items.md).
 
-> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails; the pi-ai note names the tested SDK; the Dependabot bump commits through the App.
+> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails; the pi-ai note names the tested SDK; the Dependabot bump commits through the App; auto-merge for every passing bot PR and Dependabot minor/patch.

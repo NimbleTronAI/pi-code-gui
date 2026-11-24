@@ -1,7 +1,8 @@
 name: Bump version on dependency PRs
 
 # Adds a patch-version bump commit to Dependabot PRs, so merging one produces a
-# new releasable version (picked up by release.yml on the default branch).
+# new releasable version (picked up by release.yml on the default branch), and
+# turns on AUTO-MERGE for minor and patch updates (job `auto-merge` below).
 #
 # Why pull_request_target: Dependabot's own workflow runs get a READ-ONLY token,
 # which can't push. pull_request_target runs in the BASE-branch context, with
@@ -103,3 +104,46 @@ jobs:
             exit 1
           fi
           echo "Bumped and pushed to $HEAD_REF as the bot App (signed)."
+
+  # Minor and patch updates merge themselves once CI passes, and each merge releases. Majors
+  # (dependabot.yml gives each its own PR) wait for a person. main needs one approval and the
+  # PR's author cannot give it, so this job's token approves; the bot App enables auto-merge, so
+  # the merge is the App's and its push to main triggers release.yml (a GITHUB_TOKEN merge would not).
+  auto-merge:
+    needs: bump
+    if: ${{ github.actor == 'dependabot[bot]' && github.event.action != 'synchronize' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      BOT_APP_ID: ${{ vars.UPSTREAM_BOT_APP_ID || secrets.UPSTREAM_BOT_APP_ID }}
+    steps:
+      - name: What kind of update is this
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get the bot App's token
+        id: app
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.BOT_APP_ID }}
+          private-key: ${{ secrets.UPSTREAM_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Approve and enable auto-merge
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR: ${{ github.event.pull_request.html_url }}
+          KIND: ${{ steps.meta.outputs.update-type }}
+          APPROVER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          GH_TOKEN="$APPROVER_TOKEN" gh pr review "$PR" --approve --body "Approved for auto-merge: a ${KIND#version-update:semver-} update."
+          gh pr merge "$PR" --auto --merge
+          echo "Auto-merge on for $PR ($KIND)."
