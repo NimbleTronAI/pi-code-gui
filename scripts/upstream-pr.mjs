@@ -2,6 +2,7 @@
 // .github/workflows/upstream-currency.yml.
 //
 //   node scripts/upstream-pr.mjs open --target pi-ai --version 1.6.0 --dir <prepared> [--out prs.json] [--dry-run]
+//        [--sdk-version 1.6.0 --sdk-dir <prepared SDK>]   pi-ai only: what its release note may claim was tested
 //   node scripts/upstream-pr.mjs set-sdk-version 1.6.0 --summary "22/22 checks"
 //
 // WHY A PR, WHEN THIS USED TO BE AN ISSUE: the issue said what moved and what to run, then sat
@@ -54,7 +55,9 @@ export const TARGETS = {
     // The catalog ships inside the extension, so this is a release: bump the version (release.yml
     // tags it on merge) and say so in the changelog, which is user-visible by our own rule.
     releases: true,
-    changelogLine: (v) => `- **Model catalog refreshed to pi-ai ${v}**, with its current models and prices.`,
+    // `sdk`: the pi-coding-agent release this one was tested against (see sdkTestedFor), so the
+    // release note says it, as 0.2.8's did.
+    changelogLine: (v, sdk) => `- **Model catalog refreshed to pi-ai ${v}**, with its current models and prices${sdk ? `, and tested against pi-coding-agent ${sdk}` : ""}.`,
     intro: (v) => [
       `Moves the bundled model catalog to **pi-ai ${v}**: the \`@earendil-works/pi-ai\` devDependency, a regenerated`,
       "`src/model-registry.generated.json` (`pnpm run gen:model-registry`), a patch version bump and a CHANGELOG line,",
@@ -143,9 +146,22 @@ export function setTestedAgainst(jsonText, version, date, summary) {
   return JSON.stringify(o, null, 2) + "\n";
 }
 
-export function composeBody(id, version, { ready, reason, report, checks, handsOff } = {}) {
+/** Which pi-coding-agent release a pi-ai PR can say it was tested against: the latest SDK, if
+ *  its live check passed in THIS run (its own PR may still be open; merge order does not change
+ *  what is true), otherwise what main records. Null when neither is known. */
+export function sdkTestedFor({ sdkVersion, sdkReady, mainTested }) {
+  if (sdkVersion && sdkReady) { return { version: sdkVersion, source: "run" }; }
+  return mainTested ? { version: mainTested, source: "main" } : null;
+}
+
+export function composeBody(id, version, { ready, reason, report, checks, handsOff, sdkTested } = {}) {
   const t = target(id);
   const L = [...t.intro(version), ""];
+  if (id === "pi-ai" && sdkTested) {
+    L.push(sdkTested.source === "run"
+      ? `The release note says *tested against pi-coding-agent ${sdkTested.version}*: its live check passed in this run, and its own PR records that. **Merge the two in either order**; the note is true either way.`
+      : `The release note says *tested against pi-coding-agent ${sdkTested.version}*, the release main records as tested.`, "");
+  }
   if (!ready) {
     L.push(`> [!WARNING]`, `> **Opened as a draft:** ${reason ?? "the prepare job did not pass"}. Fix it on this branch, then mark it ready.`, "");
   }
@@ -233,6 +249,13 @@ function openPr() {
   const id = flag("--target"), version = flag("--version"), dir = flag("--dir"), out = flag("--out");
   if (!id || !version || !dir) { throw new Error("open needs --target, --version and --dir"); }
   const t = target(id);
+  // For the pi-ai release note: the SDK this run prepared (--sdk-version, --sdk-dir), else main's.
+  const sdkDir = flag("--sdk-dir");
+  const sdkStatus = sdkDir && existsSync(join(sdkDir, "status.json")) ? JSON.parse(readFileSync(join(sdkDir, "status.json"), "utf8")) : null;
+  const sdkTested = id === "pi-ai" ? sdkTestedFor({
+    sdkVersion: flag("--sdk-version"), sdkReady: !!sdkStatus?.ready,
+    mainTested: JSON.parse(readFileSync(join(ROOT, "src", "pi-sdk-version.json"), "utf8")).testedAgainst,
+  }) : null;
   const branch = branchName(id, version);
   const status = existsSync(join(dir, "status.json")) ? JSON.parse(readFileSync(join(dir, "status.json"), "utf8")) : { ready: false, reason: "the prepare job wrote no status" };
   const patchPath = join(dir, "change.patch");
@@ -278,7 +301,7 @@ function openPr() {
       const pkg = bumpPatchVersion(readFileSync(join(ROOT, "package.json"), "utf8"));
       writeFileSync(join(ROOT, "package.json"), pkg.text);
       const cl = join(ROOT, "CHANGELOG.md");
-      writeFileSync(cl, addChangelogEntry(readFileSync(cl, "utf8"), pkg.to, t.changelogLine(version)));
+      writeFileSync(cl, addChangelogEntry(readFileSync(cl, "utf8"), pkg.to, t.changelogLine(version, sdkTested?.version)));
       git(["add", "package.json", "CHANGELOG.md"]);
       msg += `\n\nVersion ${pkg.from} -> ${pkg.to}.`;
     }
@@ -295,7 +318,7 @@ function openPr() {
     }
   }
 
-  const body = composeBody(id, version, { ...status, report: readMaybe(join(dir, "report.md")), checks: readMaybe(join(dir, "checks.md")), handsOff });
+  const body = composeBody(id, version, { ...status, report: readMaybe(join(dir, "report.md")), checks: readMaybe(join(dir, "checks.md")), handsOff, sdkTested });
   const bodyFile = join(process.env.RUNNER_TEMP || tmpdir(), `upstream-pr-${id}.md`);
   writeFileSync(bodyFile, body);
 

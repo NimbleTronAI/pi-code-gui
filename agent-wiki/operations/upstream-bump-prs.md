@@ -33,7 +33,9 @@ pull request that already does the bump, the way Dependabot does for ordinary de
    green run means every stale target has a PR. (Until 2026-11-24 a stuck run finished green.)
 
 The pi-ai PR bumps the patch version and adds a CHANGELOG line, so merging it releases the new
-catalog. The SDK PR changes nothing that ships, so it does neither. A PR whose checks failed
+catalog. The line also says which Pi SDK it was tested against: the new release if its live check
+passed in the same run (its own PR may still be open), otherwise the one main records. Either way
+the line is true, so the two PRs can be merged in any order, and the PR says so. The SDK PR changes nothing that ships, so it does neither. A PR whose checks failed
 opens as a draft. A failed live check opens no PR, and the issue carries its report.
 
 **Trust split:** upstream code (the install, the generator, the live check) runs only in the
@@ -90,10 +92,14 @@ Verified on 1.5.2 and 1.6.0, and it fails on a deliberately dropped thinking-del
    offered, both "Always allow". Dependabot's commits break the same rule; the ruleset was last
    edited on 2026-10-16, and Dependabot has opened no PR since 2026-10-13.
 
+The same App makes the version-bump commit on Dependabot PRs
+(`dependabot-version-bump.yml`, through the contents API, so it is signed), because the old
+`git push` as github-actions[bot] breaks the same two rules.
+
 Without 1–3 no PR is attempted and the issue says the App is not set up. The live check needs no
 secret.
 
 Related: [Build Pipeline](build-pipeline.md), [SDK Resolution](sdk-resolution.md),
 [Open items](open-items.md).
 
-> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails.
+> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails; the pi-ai note names the tested SDK; the Dependabot bump commits through the App.

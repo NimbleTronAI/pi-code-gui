@@ -281,7 +281,11 @@ jobs:
               [ "$BOT_KEY_SET" = "true" ] || missing="${missing:+$missing and }the repo secret UPSTREAM_BOT_PRIVATE_KEY"
               skip "$t" "$v" "the bot App is not set up: this run could not see ${missing:-its token} (Settings → Secrets and variables → Actions; see agent-wiki/operations/upstream-bump-prs.md)"
             elif [ -d "prepared/prepared-$t" ]; then
-              node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl || true
+              # pi-ai's release note says which Pi SDK it was tested against: this run's, if its
+              # live check passed, else main's testedAgainst.
+              extra=()
+              [ "$t" = pi-ai ] && extra=(--sdk-version "$SDK" --sdk-dir prepared/prepared-pi-coding-agent)
+              node scripts/upstream-pr.mjs open --target "$t" --version "$v" --dir "prepared/prepared-$t" --out prs.jsonl "${extra[@]}" || true
             else
               skip "$t" "$v" "its prepare job failed ($RUN_URL)"
             fi

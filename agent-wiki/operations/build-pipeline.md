@@ -108,7 +108,8 @@ without a version bump re-attempted the already-released version. #100 did that 
 was stopped by the stale-catalog gate. It now uses `git ls-remote --tags origin`.
 
 **Bot PRs that release.** Two kinds of automated PR bump the version, so merging one ships
-it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds the bump) and
+it through the chain above: Dependabot PRs (`dependabot-version-bump.yml` adds the bump, as a
+signed commit by the org's bot App) and
 the pi-ai catalog PR from `upstream-currency.yml`, which bumps the version and adds a
 CHANGELOG line itself. The upstream PRs are pushed by an org GitHub App, whose pushes and PRs
 start CI like anyone's. See [Upstream bump PRs](upstream-bump-prs.md).

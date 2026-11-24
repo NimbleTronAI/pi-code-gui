@@ -5,8 +5,13 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    # The merge queue's temporary branches are covered by merge_group below; running here too
+    # would only duplicate every queue run.
+    branches: ['**', '!gh-readonly-queue/**']
   pull_request:
+  # main merges through a merge queue and requires this job's check, so it must also run on the
+  # queue's merge groups — without this trigger every queued PR waits for a check that never comes.
+  merge_group:
   # Run CI on any branch by hand (Actions → CI → Run workflow).
   workflow_dispatch:
 
