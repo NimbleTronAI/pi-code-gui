@@ -27,7 +27,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '26'
-      - run: corepack enable
+      # Node 25+ no longer bundles corepack.
+      - run: npm install -g corepack && corepack enable
       - run: pnpm install --frozen-lockfile
       # Supply-chain gate: known-compromised versions, IOC filenames/strings/hashes, and
       # install hooks outside the allowlist. Exits non-zero on a CRITICAL finding.

@@ -66,7 +66,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '26'
-      - run: corepack enable
+      # Node 25+ no longer bundles corepack.
+      - run: npm install -g corepack && corepack enable
       # check-currency.mjs also runs the supply-chain scan over installed packages, so the
       # dependencies have to be present. A CRITICAL finding is worth an issue on the same footing
       # as a stale pin.
@@ -110,7 +111,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '26'
-      - run: corepack enable
+      # Node 25+ no longer bundles corepack.
+      - run: npm install -g corepack && corepack enable
       - run: pnpm install --frozen-lockfile
 
       - name: Bump pi-ai and regenerate the catalog
@@ -179,7 +181,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '26'
-      - run: corepack enable
+      # Node 25+ no longer bundles corepack.
+      - run: npm install -g corepack && corepack enable
       - run: pnpm install --frozen-lockfile
       # Installed the way users install it. The extension finds it through PATH, as it would on a
       # user's machine.
