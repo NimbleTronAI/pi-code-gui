@@ -116,4 +116,18 @@ jobs:
           # both jobs fail in ~2s with no runner and no steps, which reads as a build failure
           # and is not one. That is exactly how v0.1.6 failed. The tag also pins the workflow
           # definition to the released commit, so a publish reflects what was tagged.
-          gh workflow run publish.yml --ref "$V" -f tag="$V"
+          #
+          # Retried, because a failure here strands the version: v0.2.9 was tagged and released,
+          # then this call got an HTTP 500 from GitHub and nothing was published. Nothing retries
+          # it later either: the tag now exists, so the next push treats the version as done.
+          for wait in 15 45 0; do
+            if gh workflow run publish.yml --ref "$V" -f tag="$V"; then
+              echo "Publish dispatched for $V."
+              exit 0
+            fi
+            [ "$wait" = 0 ] && break
+            echo "Dispatch failed; retrying in ${wait}s."
+            sleep "$wait"
+          done
+          echo "::error title=$V is tagged and released but NOT published::Starting publish.yml failed three times. Publish it by hand: Actions → Publish the VS Code Extension → Run workflow, from tag $V, with tag $V."
+          exit 1
