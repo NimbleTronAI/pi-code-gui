@@ -59,9 +59,8 @@ installs or imports upstream code.
 and a `git commit` on a runner is unsigned, so the bot builds the commit locally (for its exact
 tree) and recreates it through GitHub's git-data API (blobs, tree, commit, ref), which GitHub signs
 for a bot token only when the request names no custom author. The org ruleset
-`nimbletron-author-email` requires an `@nimbletron.ai` author on every branch, so the bot's own
-author needs a bypass. And a ruleset bypass list accepts GitHub Apps but not the built-in GitHub
-Actions bot. The first real run (2026-11-24, as `github-actions[bot]`) was refused with GH013, and
+`nimbletron-author-email` restricts commit authors on every branch, so the bot's own author has to
+be allowed by name (see setup step 4). The first real run (2026-11-24, as `github-actions[bot]`) was refused with GH013, and
 #99 carried the error, as designed. The script stops if GitHub's tree differs from the local one
 or the commit comes back unverified.
 
@@ -101,9 +100,21 @@ Verified on 1.5.2 and 1.6.0, and it fails on a deliberately dropped thinking-del
 3. Repo → Settings → Secrets and variables → Actions: secret **`UPSTREAM_BOT_PRIVATE_KEY`** (the
    `.pem` contents) and variable **`UPSTREAM_BOT_APP_ID`** (the numeric App ID; a secret of that
    name is accepted too).
-4. Org ruleset **`nimbletron-author-email`** → Bypass list: the App, and **Dependabot** if it is
-   offered, both "Always allow". Dependabot's commits break the same rule; the ruleset was last
-   edited on 2026-10-16, and Dependabot has opened no PR since 2026-10-13.
+4. Org ruleset **`nimbletron-author-email`** → its author-email metadata restriction is
+   **"Must match a given regex pattern"** (not "must end with", which takes the pattern as literal
+   text), allowing `@nimbletron.ai` and exactly the three bot identities that commit here:
+
+   ```
+   ^([A-Za-z0-9._%+-]+@nimbletron\.ai|49699333\+dependabot\[bot\]@users\.noreply\.github\.com|360807551\+nimbletron-upstream-bot\[bot\]@users\.noreply\.github\.com|41898282\+github-actions\[bot\]@users\.noreply\.github\.com)$
+   ```
+
+   Dependabot, the bot App, and `github-actions[bot]` (`release.yml`). A new App means a new
+   `<id>+<slug>[bot]` address here. **Why not the bypass list:** auto-merge waits for every rule to
+   pass. With `@nimbletron.ai` as a plain suffix rule, Dependabot PR #121 sat at "Merge is blocked"
+   with the App's auto-merge on (2026-11-25); the regex unblocked it, and the next three App PRs
+   (#122 Release 0.2.11, #123, #124) merged unattended. A bypass entry for the App is harmless but
+   no longer needed. The author email is unverified text anyway; main's signed-commit rule is the
+   real check.
 
 The same App makes the signed "Release X" commit on `release/next` (`release-pr.yml`) and
 enables auto-merge on Dependabot minor/patch PRs (`dependabot-auto-merge.yml`).
@@ -114,4 +125,4 @@ secret.
 Related: [Build Pipeline](build-pipeline.md), [SDK Resolution](sdk-resolution.md),
 [Open items](open-items.md).
 
-> **Last updated:** 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails; the pi-ai note names the tested SDK; auto-merge for every passing bot PR and Dependabot minor/patch; Dependabot releases via one release/next PR instead of per-PR bumps.
+> **Last updated:** 2026-11-25 — the author-email ruleset allows the bot identities by regex instead of a bypass list (auto-merge never uses a bypass); first unattended chain Dependabot → Release PR → upstream PRs → v0.2.12. 2026-11-24 — created: the currency issue became PRs (branch `ci/upstream-bump-prs`); live check moved to the faux provider, so no API key; bot commits signed through the API and pushed by an org GitHub App on the ruleset's bypass list; a stuck run now fails; the pi-ai note names the tested SDK; auto-merge for every passing bot PR and Dependabot minor/patch; Dependabot releases via one release/next PR instead of per-PR bumps.

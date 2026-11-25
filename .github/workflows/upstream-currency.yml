@@ -26,16 +26,15 @@ name: Upstream currency
 #
 # WHO PUSHES: an org-owned GitHub App, not the workflow's GITHUB_TOKEN. Three rules meet here:
 # main requires SIGNED commits (GitHub signs a bot's commit made through its API, but only when the
-# request names no custom author); the org ruleset `nimbletron-author-email` requires an
-# @nimbletron.ai author on EVERY branch (so the bot's own author needs a bypass); and a ruleset's
-# bypass list accepts GitHub Apps but not the built-in GitHub Actions bot. An App's pushes and PRs
+# request names no custom author); and the org ruleset `nimbletron-author-email` restricts commit
+# authors on EVERY branch, so the App's own author must be allowed in its regex. An App's pushes and PRs
 # also trigger workflows, so CI runs on the bot's PRs like on anyone else's.
 #
 # ONE-TIME SETUP (agent-wiki/operations/upstream-bump-prs.md has the click-by-click):
 #   - A GitHub App owned by the org, installed on this repo only, with Contents and Pull requests
 #     read/write. Its App ID in the repo VARIABLE UPSTREAM_BOT_APP_ID, its private key in the repo
 #     SECRET UPSTREAM_BOT_PRIVATE_KEY. Without them no PR is attempted and the issue says why.
-#   - That App on the bypass list of the org ruleset `nimbletron-author-email`, "Always allow".
+#   - That App's author address allowed by the org ruleset `nimbletron-author-email`'s regex.
 
 on:
   schedule:

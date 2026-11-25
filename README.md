@@ -283,7 +283,8 @@ Pick whichever suits you:
    git clone https://github.com/NimbleTronAI/pi-code-gui.git
    cd pi-code-gui
    git checkout v0.2.3
-   corepack enable && pnpm install --frozen-lockfile
+   npm install -g corepack && corepack enable      # Node 25+ no longer bundles corepack
+   pnpm install --frozen-lockfile
    pnpm run vsix                                   # needs ripgrep (rg) on your PATH
    code --install-extension pi-code-gui-0.2.3.vsix
    ```

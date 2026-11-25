@@ -21,8 +21,9 @@
 // bot PR built that way could never merge. The commit is therefore built locally (to get its
 // exact tree) and then created through GitHub's git-data API, which GitHub signs for a bot token
 // as long as the request names NO custom author or committer. The author is therefore the org's
-// bot App (`<slug>[bot]`), which must be on the bypass list of the org ruleset
-// `nimbletron-author-email`, or the branch update is refused and the issue says so. The workflow
+// bot App (`<id>+<slug>[bot]@users.noreply.github.com`), which the org ruleset
+// `nimbletron-author-email` must allow in its author regex, or the branch update is refused and
+// the issue says so (agent-wiki/operations/upstream-bump-prs.md, setup step 4). The workflow
 // passes the App's token as GH_TOKEN and its slug as UPSTREAM_BOT_SLUG.
 //
 // "Prepared" directory, written by the workflow's prepare jobs:
