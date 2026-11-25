@@ -4,7 +4,7 @@
   "author": "Jack Noppé",
   "displayName": "Pi Code Gui",
   "description": "Native VS Code editor experience for Pi coding agent",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "license": "MIT",
   "sponsor": {
     "url": "https://github.com/sponsors/NimbleTronAI"
@@ -494,7 +494,7 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^1.6.0",
+    "@earendil-works/pi-ai": "^1.6.1",
     "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "^30.0.0",
     "@types/node": "~26.6.6",
